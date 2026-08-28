@@ -2,60 +2,151 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 
-// 使用项目中定义的类型
 using ProtocolSyncCheck;
 
 var repositoryRoot = ResolveRepositoryRoot(args);
 var outputPath = Path.Combine(repositoryRoot, "docs", "protocol-sync-report.md");
+var skipPull = args.Any(arg => arg.Equals("--skip-pull", StringComparison.OrdinalIgnoreCase));
 
-// 拉取参考项目最新代码
-GitPullHelper.PullReferenceProjects(repositoryRoot);
+// 拉取两个参考项目（CLIProxyAPI + cc-switch），避免扫描过期基准。
+var cpaPullResult = skipPull
+    ? GitPullHelper.DescribeCurrentHead(repositoryRoot, "CLIProxyAPI")
+    : GitPullHelper.PullReferenceProject(
+        repositoryRoot,
+        "CLIProxyAPI",
+        fallbackUrl: "https://github.com/router-for-me/CLIProxyAPI.git",
+        fallbackBranch: "main");
+var ccPullResult = skipPull
+    ? GitPullHelper.DescribeCurrentHead(repositoryRoot, "cc-switch")
+    : GitPullHelper.PullReferenceProject(
+        repositoryRoot,
+        "cc-switch",
+        fallbackUrl: "https://github.com/farion1231/cc-switch.git",
+        fallbackBranch: "main");
 
-// 路由级扫描
 var catalog = ProtocolCatalog.CreateDefault();
 var projects = new[]
 {
     ProjectScanDefinition.CurrentProject(repositoryRoot),
-    ProjectScanDefinition.NewApi(repositoryRoot),
-    ProjectScanDefinition.CliProxyApi(repositoryRoot)
+    ProjectScanDefinition.CliProxyApi(repositoryRoot),
+    ProjectScanDefinition.CcSwitch(repositoryRoot)
 };
 
 var results = projects
     .Select(project => ProtocolScanner.Scan(project, catalog))
     .ToArray();
 
-// 字段级扫描
-var goStructs = GoStructScanner.ScanDirectory(
-    Path.Combine(repositoryRoot, "reference-projects", "new-api", "dto"));
-
+// 协议桥接已独立为 AITool.Protocol 项目（原 AITool.Web/Services/ProxyProtocol 目录已移除）。
+// 递归扫描源码目录，但排除 bin/obj 中的自动生成代码。
+var protocolSourceDir = Path.Combine(repositoryRoot, "src", "AITool.Protocol");
 var currentProjectFiles = Directory
-    .GetFiles(Path.Combine(repositoryRoot, "src", "AITool.Infrastructure", "ProxyProtocol"), "*.cs")
-    .Concat(Directory.GetFiles(Path.Combine(repositoryRoot, "src", "AITool.Core", "Controllers", "Proxy"), "*.cs"))
+    .EnumerateFiles(protocolSourceDir, "*.cs", SearchOption.AllDirectories)
+    .Where(file => !file.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+        && !file.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+    .Concat(Directory.GetFiles(Path.Combine(repositoryRoot, "src", "AITool.Web", "Controllers", "Proxy"), "*.cs"))
+    .Append(Path.Combine(repositoryRoot, "src", "AITool.Web", "Controllers", "Admin", "ChatApiController.cs"))
     .ToArray();
 
 var currentFields = CSharpFieldScanner.ScanFiles(currentProjectFiles);
-var newApiStructGroups = NewApiFieldGroupBuilder.BuildGroups(repositoryRoot, goStructs);
-var newApiFieldDiffs = FieldDiffEngine.ComputeDiffs(newApiStructGroups, currentFields);
 var cpaFieldGroups = CpaFieldGroupBuilder.BuildGroups(repositoryRoot);
 var cpaFieldDiffs = FieldDiffEngine.ComputeDiffs(cpaFieldGroups, currentFields);
+var ccFieldGroups = CcSwitchFieldGroupBuilder.BuildGroups(repositoryRoot);
+var ccFieldDiffs = FieldDiffEngine.ComputeDiffs(ccFieldGroups, currentFields);
 
-// 生成报告
-var report = ProtocolReportBuilder.Build(results, catalog, newApiFieldDiffs, cpaFieldDiffs);
+// 反向推导协议向量：从 cc-switch 的 Rust 测试提取（输入→断言），在 AITool.Protocol 真实转换上执行。
+var vectorSourceDir = Path.Combine(repositoryRoot, "reference-projects", "cc-switch", "src-tauri", "src", "proxy", "providers");
+var vectorFiles = new[]
+{
+    "transform.rs", "transform_responses.rs", "transform_codex_chat.rs", "transform_codex_anthropic.rs"
+};
+var testVectors = vectorFiles
+    .SelectMany(file => RustTestVectorExtractor.ExtractFile(Path.Combine(vectorSourceDir, file)))
+    .ToList();
+var vectorResults = ProtocolVectorRunner.RunAll(testVectors);
+
+// 运行间基线：读取上次快照计算「参考项目协议变更」，扫描完成后写入新快照。
+var previousBaseline = SyncBaselineStore.Load(repositoryRoot);
+var currentBaseline = SyncBaselineStore.Capture(results, cpaFieldDiffs, ccFieldDiffs, cpaPullResult.CommitHash, ccPullResult.CommitHash);
+var baselineChanges = previousBaseline is null
+    ? []
+    : SyncBaselineStore.ComputeChanges(previousBaseline, currentBaseline);
+
+var report = ProtocolReportBuilder.Build(results, catalog, cpaFieldDiffs, ccFieldDiffs, cpaPullResult, ccPullResult, previousBaseline, baselineChanges, vectorResults);
 File.WriteAllText(outputPath, report, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+SyncBaselineStore.Save(repositoryRoot, currentBaseline);
 
-Console.WriteLine($"协议同步报告已生成：{Path.GetRelativePath(repositoryRoot, outputPath)}");
+Console.WriteLine("协议同步报告已生成：" + Path.GetRelativePath(repositoryRoot, outputPath));
+Console.WriteLine("CLIProxyAPI 基准版本：" + cpaPullResult.CommitHash + "（" + cpaPullResult.CommitDate + "）");
+if (!cpaPullResult.Success)
+{
+    Console.WriteLine("⚠️ CLIProxyAPI 拉取未成功：" + cpaPullResult.Message);
+}
+Console.WriteLine("cc-switch 基准版本：" + ccPullResult.CommitHash + "（" + ccPullResult.CommitDate + "）");
+if (!ccPullResult.Success)
+{
+    Console.WriteLine("⚠️ cc-switch 拉取未成功：" + ccPullResult.Message);
+}
+
 foreach (var result in results)
 {
-    Console.WriteLine($"{result.ProjectName}: {result.Routes.Count} routes");
+    Console.WriteLine(result.ProjectName + ": " + result.Routes.Count + " routes"
+        + (result.UnclassifiedRoutes.Count > 0 ? "（另有 " + result.UnclassifiedRoutes.Count + " 条未跟踪路由）" : string.Empty));
 }
-Console.WriteLine($"字段级对比：new-api {goStructs.Count} 个 Go struct、{newApiFieldDiffs.Count} 个分组；CPA {cpaFieldDiffs.Count} 个分组；当前项目 {currentFields.Count} 个字段");
 
-/// <summary>
-/// 解析当前仓库根目录，默认从工具运行目录向上查找项目标记文件。
-/// </summary>
+Console.WriteLine("字段级对比：CLIProxyAPI " + cpaFieldDiffs.Count + " 个分组；cc-switch " + ccFieldDiffs.Count + " 个分组；AITool " + currentFields.Count + " 个字段");
+
+// 反向推导向量测试结果摘要。
+var vectorPassed = vectorResults.Count(result => result.Status == VectorRunStatus.Passed);
+var vectorFailed = vectorResults.Count(result => result.Status == VectorRunStatus.Failed);
+var vectorSkipped = vectorResults.Count(result => result.Status == VectorRunStatus.Skipped);
+Console.WriteLine("反向推导向量：提取 " + testVectors.Count + " 个（来自 cc-switch 测试），执行通过 " + vectorPassed
+    + "，失败 " + vectorFailed + "，跳过 " + vectorSkipped);
+if (vectorFailed > 0)
+{
+    Console.WriteLine("❌ 向量测试失败 " + vectorFailed + " 个（详见报告「反向推导协议向量测试」，逐路径定位差异）");
+}
+
+if (previousBaseline is null)
+{
+    Console.WriteLine("首次运行：已建立协议基线快照（下次运行起将对比参考项目变更）");
+}
+else if (baselineChanges.Count > 0)
+{
+    Console.WriteLine("⚠️ 自上次运行以来检测到 " + baselineChanges.Count + " 处协议变更（详见报告「自上次运行以来的协议变更」）");
+}
+else
+{
+    Console.WriteLine("✅ 自上次运行以来参考项目协议无变化");
+}
+
+// 高优先级缺口时以非零退出码结束，便于脚本/CI 判断。
+// 判定口径：CLIProxyAPI 是 AITool 的直接协议对标（同形态网关），其缺口立即失败；
+// cc-switch 包含 AITool 有意不做的能力（Gemini、thinking 签名桥接、alpha-search 等），
+// 其未覆盖字段仅提示不失败，由报告的快速结论与明细供人工甄别。
+var missingRoutes = results
+    .First(result => result.ProjectName == "CLIProxyAPI")
+    .Routes.Select(route => route.Key)
+    .Except(results.First(result => result.ProjectName == "AITool").Routes.Select(route => route.Key), StringComparer.OrdinalIgnoreCase)
+    .Count();
+var cpaMissingFields = cpaFieldDiffs.Sum(diff => diff.Rows.Count(row => row.TypeMatchStatus == FieldTypeMatchStatus.Missing));
+var ccMissingFields = ccFieldDiffs.Sum(diff => diff.Rows.Count(row => row.TypeMatchStatus == FieldTypeMatchStatus.Missing));
+if (ccMissingFields > 0)
+{
+    Console.WriteLine("ℹ️ cc-switch 有 " + ccMissingFields + " 个字段 AITool 未覆盖（含 Gemini/签名桥接等专属能力，供人工甄别，不影响退出码）");
+}
+
+if (missingRoutes > 0 || cpaMissingFields > 0 || vectorFailed > 0)
+{
+    Console.WriteLine("❌ 发现高优先级缺口：CLIProxyAPI 未实现路由 " + missingRoutes + " 条、未检测到字段 " + cpaMissingFields
+        + " 个、向量测试失败 " + vectorFailed + " 个（退出码 1）");
+    return 1;
+}
+
+return 0;
+
 static string ResolveRepositoryRoot(string[] args)
 {
-    if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]))
+    if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]) && !args[0].StartsWith("--", StringComparison.Ordinal))
     {
         return Path.GetFullPath(args[0]);
     }
@@ -63,8 +154,7 @@ static string ResolveRepositoryRoot(string[] args)
     var current = new DirectoryInfo(AppContext.BaseDirectory);
     while (current is not null)
     {
-        if (File.Exists(Path.Combine(current.FullName, "protocol-url-reference.md"))
-            || Directory.Exists(Path.Combine(current.FullName, "src", "AITool.Core")))
+        if (Directory.Exists(Path.Combine(current.FullName, "src", "AITool.Web")))
         {
             return current.FullName;
         }
@@ -75,152 +165,112 @@ static string ResolveRepositoryRoot(string[] args)
     return Directory.GetCurrentDirectory();
 }
 
-/// <summary>
-/// 描述一个项目中需要扫描的协议路由文件和路由写法。
-/// </summary>
 internal sealed class ProjectScanDefinition
 {
-    /// <summary>
-    /// 当前项目在报告中的显示名称。
-    /// </summary>
     public required string Name { get; init; }
-
-    /// <summary>
-    /// 需要参与扫描的源码文件列表。
-    /// </summary>
     public required IReadOnlyList<RouteSourceFile> Files { get; init; }
 
-    /// <summary>
-    /// 创建当前 AITool 项目的扫描定义。
-    /// </summary>
-    public static ProjectScanDefinition CurrentProject(string root)
+    public static ProjectScanDefinition CurrentProject(string root) => new()
     {
-        return new ProjectScanDefinition
+        Name = "AITool",
+        Files = new[]
         {
-            Name = "当前项目 AITool",
-            Files = new[]
-            {
-                RouteSourceFile.CSharpController(root, "src/AITool.Core/Controllers/Proxy/OpenAiProxyController.cs"),
-                RouteSourceFile.CSharpController(root, "src/AITool.Core/Controllers/Proxy/OpenAiProxyController.Responses.cs"),
-                RouteSourceFile.CSharpController(root, "src/AITool.Core/Controllers/Proxy/AnthropicProxyController.cs")
-            }
-        };
-    }
+            RouteSourceFile.CSharpController(root, "src/AITool.Web/Controllers/Proxy/OpenAiProxyController.cs"),
+            RouteSourceFile.CSharpController(root, "src/AITool.Web/Controllers/Proxy/OpenAiProxyController.Responses.cs"),
+            RouteSourceFile.CSharpController(root, "src/AITool.Web/Controllers/Proxy/AnthropicProxyController.cs")
+        }
+    };
 
-    /// <summary>
-    /// 创建 new-api 参考项目的扫描定义。
-    /// </summary>
-    public static ProjectScanDefinition NewApi(string root)
+    public static ProjectScanDefinition CliProxyApi(string root) => new()
     {
-        return new ProjectScanDefinition
+        Name = "CLIProxyAPI",
+        Files = new[]
         {
-            Name = "new-api",
-            Files = new[]
-            {
-                RouteSourceFile.GinRouter(root, "reference-projects/new-api/router/relay-router.go"),
-                RouteSourceFile.GinRouter(root, "reference-projects/new-api/router/video-router.go")
-            }
-        };
-    }
+            // 不同版本可能将路由拆分到 server_routes.go 或保留在 server.go，两个文件都扫描。
+            RouteSourceFile.GinRouter(root, "reference-projects/CLIProxyAPI/internal/api/server_routes.go"),
+            RouteSourceFile.GinRouter(root, "reference-projects/CLIProxyAPI/internal/api/server.go")
+        }
+    };
 
-    /// <summary>
-    /// 创建 CLIProxyAPI 参考项目的扫描定义。
-    /// </summary>
-    public static ProjectScanDefinition CliProxyApi(string root)
+    public static ProjectScanDefinition CcSwitch(string root) => new()
     {
-        return new ProjectScanDefinition
+        Name = "cc-switch",
+        Files = new[]
         {
-            Name = "CPA / CLIProxyAPI",
-            Files = new[]
-            {
-                RouteSourceFile.GinRouter(root, "reference-projects/CLIProxyAPI/internal/api/server.go")
-            }
-        };
-    }
+            // Axum 路由集中在 proxy/server.rs 的 build_router()（含 compact / alpha-search / gemini 等全部本地端点）。
+            RouteSourceFile.AxumRouter(root, "reference-projects/cc-switch/src-tauri/src/proxy/server.rs")
+        }
+    };
 }
 
-/// <summary>
-/// 描述单个源码文件的相对路径和路由提取模式。
-/// </summary>
 internal sealed class RouteSourceFile
 {
-    /// <summary>
-    /// 仓库根目录到源码文件的相对路径。
-    /// </summary>
     public required string RelativePath { get; init; }
-
-    /// <summary>
-    /// 源码文件绝对路径。
-    /// </summary>
     public required string FullPath { get; init; }
-
-    /// <summary>
-    /// 路由提取模式。
-    /// </summary>
     public required RouteSourceKind Kind { get; init; }
 
-    /// <summary>
-    /// 创建 ASP.NET Core Controller 文件的扫描配置。
-    /// </summary>
-    public static RouteSourceFile CSharpController(string root, string relativePath)
-    {
-        return Create(root, relativePath, RouteSourceKind.CSharpController);
-    }
+    public static RouteSourceFile CSharpController(string root, string relativePath) =>
+        Create(root, relativePath, RouteSourceKind.CSharpController);
 
-    /// <summary>
-    /// 创建 Gin Router 文件的扫描配置。
-    /// </summary>
-    public static RouteSourceFile GinRouter(string root, string relativePath)
-    {
-        return Create(root, relativePath, RouteSourceKind.GinRouter);
-    }
+    public static RouteSourceFile GinRouter(string root, string relativePath) =>
+        Create(root, relativePath, RouteSourceKind.GinRouter);
 
-    /// <summary>
-    /// 根据相对路径和扫描模式创建源码文件描述。
-    /// </summary>
-    private static RouteSourceFile Create(string root, string relativePath, RouteSourceKind kind)
+    public static RouteSourceFile AxumRouter(string root, string relativePath) =>
+        Create(root, relativePath, RouteSourceKind.AxumRouter);
+
+    private static RouteSourceFile Create(string root, string relativePath, RouteSourceKind kind) => new()
     {
-        var normalized = relativePath.Replace('/', Path.DirectorySeparatorChar);
-        return new RouteSourceFile
-        {
-            RelativePath = relativePath,
-            FullPath = Path.Combine(root, normalized),
-            Kind = kind
-        };
-    }
+        RelativePath = relativePath,
+        FullPath = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)),
+        Kind = kind
+    };
 }
 
-/// <summary>
-/// 表示支持的源码路由写法类型。
-/// </summary>
 internal enum RouteSourceKind
 {
-    /// <summary>
-    /// ASP.NET Core 控制器特性路由。
-    /// </summary>
     CSharpController,
-
-    /// <summary>
-    /// Gin Router 方法调用路由。
-    /// </summary>
-    GinRouter
+    GinRouter,
+    AxumRouter
 }
 
 /// <summary>
-/// 从源码文件提取协议路由。
+/// 扫描结果中的一条原始路由（无论是否被协议目录识别）。
 /// </summary>
+internal sealed record RawRoute(string Method, string Path, string SourcePath, int LineNumber);
+
 internal static class ProtocolScanner
 {
-    private static readonly Regex CSharpRouteRegex = new(@"\[Http(?<method>Get|Post|Delete|Put|Patch)\(""(?<path>[^""#]+)""\)\]", RegexOptions.Compiled);
-    private static readonly Regex GinRouteRegex = new(@"(?<receiver>\w+)\.(?<method>GET|POST|DELETE|PUT|PATCH)\(""(?<path>[^""#]+)""", RegexOptions.Compiled);
-    private static readonly Regex GinGroupRegex = new(@"(?<name>\w+)\s*:=\s*(?:(?<parent>[\w.]+)\.)?Group\(""(?<prefix>[^""]*)""\)", RegexOptions.Compiled);
+    private static readonly Regex CSharpRouteRegex = new(
+        "\\[Http(?<method>Get|Post|Delete|Put|Patch)\\(\\\"(?<path>[^\\\"#]+)\\\"\\)\\]",
+        RegexOptions.Compiled);
 
-    /// <summary>
-    /// 扫描一个项目定义中的全部源码文件。
-    /// </summary>
+    private static readonly Regex GinRouteRegex = new(
+        "(?<receiver>\\w+)\\.(?<method>GET|POST|DELETE|PUT|PATCH)\\(\\\"(?<path>[^\\\"#]+)\\\"",
+        RegexOptions.Compiled);
+
+    private static readonly Regex GinGroupRegex = new(
+        "(?<name>\\w+)\\s*:=\\s*(?:(?<parent>[\\w.]+)\\.)?Group\\(\\\"(?<prefix>[^\"]*)\\\"",
+        RegexOptions.Compiled);
+
+    /// <summary>Axum 单行路由：.route("/path", post(handler))。</summary>
+    private static readonly Regex AxumInlineRouteRegex = new(
+        "\\.route\\(\\s*\\\"(?<path>[^\\\"]+)\\\"\\s*,\\s*(?<method>get|post|put|delete|patch|any)\\s*\\(",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>Axum 多行路由：路径字面量独占一行（.route( 换行 "/path" 换行 post(...) )）。</summary>
+    private static readonly Regex AxumPathLiteralRegex = new(
+        "^\\s*\\\"(?<path>[^\\\"]+)\\\"\\s*,?\\s*$",
+        RegexOptions.Compiled);
+
+    /// <summary>Axum 方法行：post(handlers::xxx) / get(health_check) 等。</summary>
+    private static readonly Regex AxumMethodRegex = new(
+        "(?<method>get|post|put|delete|patch|any)\\s*\\(\\s*[\\w:]+",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public static ProjectScanResult Scan(ProjectScanDefinition project, ProtocolCatalog catalog)
     {
         var routes = new List<ProtocolRoute>();
+        var unclassified = new List<RawRoute>();
         var missingFiles = new List<string>();
 
         foreach (var file in project.Files)
@@ -231,13 +281,18 @@ internal static class ProtocolScanner
                 continue;
             }
 
-            var fileRoutes = file.Kind switch
+            switch (file.Kind)
             {
-                RouteSourceKind.CSharpController => ScanCSharpController(file, catalog),
-                RouteSourceKind.GinRouter => ScanGinRouter(file, catalog),
-                _ => []
-            };
-            routes.AddRange(fileRoutes);
+                case RouteSourceKind.CSharpController:
+                    ScanCSharpController(file, catalog, routes, unclassified);
+                    break;
+                case RouteSourceKind.GinRouter:
+                    ScanGinRouter(file, catalog, routes, unclassified);
+                    break;
+                case RouteSourceKind.AxumRouter:
+                    ScanAxumRouter(file, catalog, routes, unclassified);
+                    break;
+            }
         }
 
         var distinctRoutes = routes
@@ -248,15 +303,22 @@ internal static class ProtocolScanner
             .ThenBy(route => route.Method, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return new ProjectScanResult(project.Name, distinctRoutes, missingFiles);
+        var distinctUnclassified = unclassified
+            .GroupBy(route => route.Method + " " + route.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderBy(route => route.SourcePath, StringComparer.OrdinalIgnoreCase).First())
+            .OrderBy(route => route.Path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(route => route.Method, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new ProjectScanResult(project.Name, distinctRoutes, distinctUnclassified, missingFiles);
     }
 
-    /// <summary>
-    /// 扫描 ASP.NET Core 控制器特性路由。
-    /// </summary>
-    private static List<ProtocolRoute> ScanCSharpController(RouteSourceFile file, ProtocolCatalog catalog)
+    private static void ScanCSharpController(
+        RouteSourceFile file,
+        ProtocolCatalog catalog,
+        List<ProtocolRoute> routes,
+        List<RawRoute> unclassified)
     {
-        var routes = new List<ProtocolRoute>();
         var lines = File.ReadAllLines(file.FullPath);
         for (var index = 0; index < lines.Length; index++)
         {
@@ -266,31 +328,23 @@ internal static class ProtocolScanner
                 continue;
             }
 
-            var method = match.Groups["method"].Value.ToUpperInvariant();
-            var rawPath = NormalizeRoutePath(match.Groups["path"].Value);
-            if (catalog.TryClassify(method, rawPath, out var primaryClassification))
-            {
-                AddRoute(routes, method, rawPath, file.RelativePath, index + 1, primaryClassification, false);
-            }
-
-            if (catalog.TryClassifyAll(method, rawPath, out var classifications))
-            {
-                foreach (var classification in classifications.Where(item => !item.MatchPath))
-                {
-                    AddRoute(routes, method, rawPath, file.RelativePath, index + 1, classification, false);
-                }
-            }
+            AddClassifiedRoutes(
+                routes,
+                unclassified,
+                catalog,
+                match.Groups["method"].Value.ToUpperInvariant(),
+                NormalizeRoutePath(match.Groups["path"].Value),
+                file.RelativePath,
+                index + 1);
         }
-
-        return routes;
     }
 
-    /// <summary>
-    /// 扫描 Gin Router 路由，并尝试拼接同文件内的 Group 前缀。
-    /// </summary>
-    private static List<ProtocolRoute> ScanGinRouter(RouteSourceFile file, ProtocolCatalog catalog)
+    private static void ScanGinRouter(
+        RouteSourceFile file,
+        ProtocolCatalog catalog,
+        List<ProtocolRoute> routes,
+        List<RawRoute> unclassified)
     {
-        var routes = new List<ProtocolRoute>();
         var groupPrefixes = new Dictionary<string, string>(StringComparer.Ordinal);
         var lines = File.ReadAllLines(file.FullPath);
 
@@ -318,58 +372,129 @@ internal static class ProtocolScanner
             }
 
             var receiver = routeMatch.Groups["receiver"].Value;
-            var method = routeMatch.Groups["method"].Value.ToUpperInvariant();
             var path = NormalizeRoutePath(routeMatch.Groups["path"].Value);
             if (groupPrefixes.TryGetValue(receiver, out var groupPrefix))
             {
                 path = CombinePaths(groupPrefix, path);
             }
 
-            var isNotImplemented = line.Contains("RelayNotImplemented", StringComparison.Ordinal);
-            if (catalog.TryClassify(method, path, out var primaryClassification))
-            {
-                AddRoute(routes, method, path, file.RelativePath, index + 1, primaryClassification, isNotImplemented);
-            }
-
-            if (catalog.TryClassifyAll(method, path, out var classifications))
-            {
-                foreach (var classification in classifications.Where(item => !item.MatchPath))
-                {
-                    AddRoute(routes, method, path, file.RelativePath, index + 1, classification, isNotImplemented);
-                }
-            }
+            AddClassifiedRoutes(
+                routes,
+                unclassified,
+                catalog,
+                routeMatch.Groups["method"].Value.ToUpperInvariant(),
+                path,
+                file.RelativePath,
+                index + 1);
         }
-
-        return routes;
     }
 
-    /// <summary>
-    /// 根据目录分类和忽略规则追加一条路由。
-    /// </summary>
-    private static void AddRoute(
+    private static void AddClassifiedRoutes(
         List<ProtocolRoute> routes,
+        List<RawRoute> unclassified,
+        ProtocolCatalog catalog,
         string method,
         string path,
         string sourcePath,
-        int lineNumber,
-        RouteClassification classification,
-        bool isNotImplemented)
+        int lineNumber)
     {
-        var normalizedPath = NormalizeRoutePath(path);
-        routes.Add(new ProtocolRoute(
-            method,
-            normalizedPath,
-            classification.Protocol,
-            classification.Category,
-            classification.Description,
-            isNotImplemented || classification.IsKnownStub,
-            sourcePath,
-            lineNumber));
+        if (!catalog.TryClassifyAll(method, path, out var classifications))
+        {
+            unclassified.Add(new RawRoute(method, path, sourcePath, lineNumber));
+            return;
+        }
+
+        foreach (var classification in classifications)
+        {
+            routes.Add(new ProtocolRoute(
+                method,
+                path,
+                classification.Protocol,
+                classification.Category,
+                classification.Description,
+                classification.IsKnownStub,
+                sourcePath,
+                lineNumber));
+        }
     }
 
     /// <summary>
-    /// 规范化不同框架中的路径占位符写法。
+    /// 扫描 Axum 路由（cc-switch，Rust）。兼容两种书写形式：
+    /// 单行 .route("/path", post(handler)) 与多行 .route( 换行 "/path", 换行 post(handler), )。
+    /// any(..) 方法归一化为 ANY（Gemini 通配路由），无法匹配目录时进入未跟踪列表。
     /// </summary>
+    private static void ScanAxumRouter(
+        RouteSourceFile file,
+        ProtocolCatalog catalog,
+        List<ProtocolRoute> routes,
+        List<RawRoute> unclassified)
+    {
+        var lines = File.ReadAllLines(file.FullPath);
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index];
+            var inlineMatch = AxumInlineRouteRegex.Match(line);
+            if (inlineMatch.Success)
+            {
+                AddClassifiedRoutes(
+                    routes,
+                    unclassified,
+                    catalog,
+                    inlineMatch.Groups["method"].Value.ToUpperInvariant(),
+                    NormalizeRoutePath(inlineMatch.Groups["path"].Value),
+                    file.RelativePath,
+                    index + 1);
+                continue;
+            }
+
+            // 多行形式：当前行以 .route( 结尾，向后找路径字面量行与方法行（限制窗口避免误扫跨路由内容）。
+            if (!line.Contains(".route(", StringComparison.Ordinal)
+                || line.Contains('"'))
+            {
+                continue;
+            }
+
+            string? path = null;
+            var pathLine = -1;
+            for (var next = index + 1; next < Math.Min(index + 4, lines.Length); next++)
+            {
+                var pathMatch = AxumPathLiteralRegex.Match(lines[next]);
+                if (!pathMatch.Success)
+                {
+                    continue;
+                }
+
+                path = NormalizeRoutePath(pathMatch.Groups["path"].Value);
+                pathLine = next;
+                break;
+            }
+
+            if (path is null)
+            {
+                continue;
+            }
+
+            for (var next = pathLine; next < Math.Min(pathLine + 3, lines.Length); next++)
+            {
+                var methodMatch = AxumMethodRegex.Match(lines[next]);
+                if (!methodMatch.Success)
+                {
+                    continue;
+                }
+
+                AddClassifiedRoutes(
+                    routes,
+                    unclassified,
+                    catalog,
+                    methodMatch.Groups["method"].Value.ToUpperInvariant(),
+                    path,
+                    file.RelativePath,
+                    index + 1);
+                break;
+            }
+        }
+    }
+
     private static string NormalizeRoutePath(string path)
     {
         var normalized = path.Trim();
@@ -394,31 +519,18 @@ internal static class ProtocolScanner
         return normalized.Replace("//", "/", StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// 拼接 Gin Group 前缀和相对路由路径。
-    /// </summary>
-    private static string CombinePaths(string prefix, string path)
-    {
-        if (prefix == "/")
-        {
-            return NormalizeRoutePath(path);
-        }
-
-        return NormalizeRoutePath(prefix.TrimEnd('/') + "/" + path.TrimStart('/'));
-    }
+    private static string CombinePaths(string prefix, string path) =>
+        prefix == "/"
+            ? NormalizeRoutePath(path)
+            : NormalizeRoutePath(prefix.TrimEnd('/') + "/" + path.TrimStart('/'));
 }
 
-/// <summary>
-/// 保存一个项目的扫描结果。
-/// </summary>
 internal sealed record ProjectScanResult(
     string ProjectName,
     IReadOnlyList<ProtocolRoute> Routes,
+    IReadOnlyList<RawRoute> UnclassifiedRoutes,
     IReadOnlyList<string> MissingFiles);
 
-/// <summary>
-/// 表示扫描得到的一条协议路由。
-/// </summary>
 internal sealed record ProtocolRoute(
     string Method,
     string Path,
@@ -429,15 +541,9 @@ internal sealed record ProtocolRoute(
     string SourcePath,
     int LineNumber)
 {
-    /// <summary>
-    /// 用于三方对比的规范化键。
-    /// </summary>
-    public string Key => $"{Method} {Path}";
+    public string Key => Protocol + ":" + Method + " " + Path;
 }
 
-/// <summary>
-/// 保存已知协议路径分类规则。
-/// </summary>
 internal sealed class ProtocolCatalog
 {
     private readonly Dictionary<string, RouteClassification> _knownRoutes;
@@ -447,81 +553,50 @@ internal sealed class ProtocolCatalog
         _knownRoutes = routes.ToDictionary(route => route.Key, StringComparer.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// 创建当前项目关心的 OpenAI 与 Anthropic 协议目录。
-    /// </summary>
-    public static ProtocolCatalog CreateDefault()
+    public static ProtocolCatalog CreateDefault() => new(new[]
     {
-        return new ProtocolCatalog(new[]
-        {
-            RouteClassification.Primary("OpenAI", "GET", "/v1/models", "模型列表"),
-            RouteClassification.Primary("OpenAI", "GET", "/v1/models/:model", "单模型查询"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/chat/completions", "Chat Completions"),
-            RouteClassification.Legacy("OpenAI", "POST", "/v1/completions", "legacy Completions"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/responses", "Responses API"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/responses/compact", "Responses compact 扩展"),
-            RouteClassification.Extension("OpenAI", "GET", "/v1/responses", "Responses WebSocket 扩展"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/embeddings", "Embeddings"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/images/generations", "图像生成"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/images/edits", "图像编辑"),
-            RouteClassification.Legacy("OpenAI", "POST", "/v1/edits", "旧式 edits"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/audio/transcriptions", "音频转录"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/audio/translations", "音频翻译"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/audio/speech", "语音合成"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/moderations", "Moderations"),
-            RouteClassification.Primary("OpenAI", "POST", "/v1/videos", "视频创建"),
-            RouteClassification.Primary("OpenAI", "GET", "/v1/videos/:id", "视频查询"),
-            RouteClassification.Extension("OpenAI", "GET", "/v1/realtime", "Realtime WebSocket"),
-            RouteClassification.Extension("OpenAI", "GET", "/v1/videos/:id/content", "视频内容代理"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/video/generations", "视频生成扩展"),
-            RouteClassification.Extension("OpenAI", "GET", "/v1/video/generations/:id", "视频任务查询扩展"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/videos/:video_id/remix", "视频 remix 扩展"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/videos/generations", "xAI 视频生成扩展"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/videos/edits", "xAI 视频编辑扩展"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/videos/extensions", "xAI 视频扩展"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/rerank", "Rerank 扩展"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/engines/:model/embeddings", "旧式 embeddings 兼容路径"),
-            RouteClassification.Extension("OpenAI", "POST", "/v1/models/*path", "Gemini 兼容路径"),
-            RouteClassification.Primary("Anthropic", "GET", "/v1/models", "Anthropic 模型列表", matchPath: false),
-            RouteClassification.Primary("Anthropic", "GET", "/v1/models/:model", "Anthropic 单模型查询", matchPath: false),
-            RouteClassification.Primary("Anthropic", "POST", "/v1/messages", "Anthropic Messages"),
-            RouteClassification.Primary("Anthropic", "POST", "/v1/messages/count_tokens", "Anthropic Count Tokens"),
-            RouteClassification.Stub("OpenAI", "POST", "/v1/images/variations", "new-api 501 图像 variations"),
-            RouteClassification.Stub("OpenAI", "GET", "/v1/files", "new-api 501 files"),
-            RouteClassification.Stub("OpenAI", "POST", "/v1/files", "new-api 501 files"),
-            RouteClassification.Stub("OpenAI", "DELETE", "/v1/files/:id", "new-api 501 files"),
-            RouteClassification.Stub("OpenAI", "GET", "/v1/files/:id", "new-api 501 files"),
-            RouteClassification.Stub("OpenAI", "GET", "/v1/files/:id/content", "new-api 501 files"),
-            RouteClassification.Stub("OpenAI", "POST", "/v1/fine-tunes", "new-api 501 fine-tunes"),
-            RouteClassification.Stub("OpenAI", "GET", "/v1/fine-tunes", "new-api 501 fine-tunes"),
-            RouteClassification.Stub("OpenAI", "GET", "/v1/fine-tunes/:id", "new-api 501 fine-tunes"),
-            RouteClassification.Stub("OpenAI", "POST", "/v1/fine-tunes/:id/cancel", "new-api 501 fine-tunes"),
-            RouteClassification.Stub("OpenAI", "GET", "/v1/fine-tunes/:id/events", "new-api 501 fine-tunes"),
-            RouteClassification.Stub("OpenAI", "DELETE", "/v1/models/:model", "new-api 501 model delete")
-        });
-    }
+        RouteClassification.Primary("OpenAI", "GET", "/v1/models", "模型列表"),
+        RouteClassification.Primary("OpenAI", "GET", "/v1/models/:model", "单模型查询"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/chat/completions", "Chat Completions"),
+        RouteClassification.Legacy("OpenAI", "POST", "/v1/completions", "Legacy Completions"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/responses", "Responses API"),
+        RouteClassification.Extension("OpenAI", "POST", "/v1/responses/compact", "Responses compact 扩展"),
+        RouteClassification.Extension("OpenAI", "GET", "/v1/responses", "Responses WebSocket 扩展"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/embeddings", "Embeddings"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/images/generations", "图像生成"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/images/edits", "图像编辑"),
+        RouteClassification.Legacy("OpenAI", "POST", "/v1/edits", "Legacy edits"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/audio/transcriptions", "音频转录"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/audio/translations", "音频翻译"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/audio/speech", "语音合成"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/moderations", "Moderations"),
+        RouteClassification.Primary("OpenAI", "POST", "/v1/videos", "视频创建"),
+        RouteClassification.Primary("OpenAI", "GET", "/v1/videos/:id", "视频查询"),
+        RouteClassification.Extension("OpenAI", "GET", "/v1/realtime", "Realtime WebSocket"),
+        RouteClassification.Extension("OpenAI", "POST", "/v1/videos/generations", "视频生成扩展"),
+        RouteClassification.Extension("OpenAI", "GET", "/v1/videos/generations/:id", "视频任务查询扩展"),
+        RouteClassification.Extension("OpenAI", "POST", "/v1/videos/:video_id/remix", "视频 remix 扩展"),
+        RouteClassification.Extension("OpenAI", "POST", "/v1/videos/edits", "视频编辑扩展"),
+        RouteClassification.Extension("OpenAI", "POST", "/v1/videos/extensions", "视频扩展"),
+        RouteClassification.Extension("OpenAI", "GET", "/v1/videos/:id/content", "视频内容代理"),
+        RouteClassification.Extension("OpenAI", "POST", "/v1/rerank", "Rerank 扩展"),
+        RouteClassification.Extension("OpenAI", "POST", "/v1/engines/:model/embeddings", "旧式 embeddings 兼容路径"),
+        RouteClassification.Extension("OpenAI", "POST", "/v1/models/*path", "Gemini 兼容路径"),
+        RouteClassification.Primary("Anthropic", "GET", "/v1/models", "Anthropic 模型列表", matchPath: false),
+        RouteClassification.Primary("Anthropic", "GET", "/v1/models/:model", "Anthropic 单模型查询", matchPath: false),
+        RouteClassification.Primary("Anthropic", "POST", "/v1/messages", "Anthropic Messages"),
+        RouteClassification.Primary("Anthropic", "POST", "/v1/messages/count_tokens", "Anthropic Count Tokens")
+    });
 
-    /// <summary>
-    /// 尝试根据方法和路径识别协议分类。
-    /// </summary>
-    public bool TryClassify(string method, string path, out RouteClassification classification)
-    {
-        return _knownRoutes.TryGetValue(RouteClassification.BuildKey(method, path), out classification!)
-            || _knownRoutes.TryGetValue(RouteClassification.BuildKey(method, path, "Anthropic"), out classification!);
-    }
-
-    /// <summary>
-    /// 返回路径匹配到的所有协议分类，主要用于 /v1/models 这类双协议复用路径。
-    /// </summary>
     public bool TryClassifyAll(string method, string path, out IReadOnlyList<RouteClassification> classifications)
     {
         var matches = new List<RouteClassification>();
-        if (_knownRoutes.TryGetValue(RouteClassification.BuildKey(method, path), out var directMatch))
+        if (_knownRoutes.TryGetValue(RouteClassification.BuildLookupKey(method, path), out var directMatch))
         {
             matches.Add(directMatch);
         }
 
-        if (_knownRoutes.TryGetValue(RouteClassification.BuildKey(method, path, "Anthropic"), out var protocolMatch))
+        if (_knownRoutes.TryGetValue(RouteClassification.BuildLookupKey(method, path, "Anthropic"), out var protocolMatch))
         {
             matches.Add(protocolMatch);
         }
@@ -531,7 +606,7 @@ internal sealed class ProtocolCatalog
     }
 
     /// <summary>
-    /// 返回目录中所有主协议和 legacy 协议路由，用于生成缺口报告。
+    /// 需要与参考项目对齐的接口（主协议 + legacy）。
     /// </summary>
     public IReadOnlyList<RouteClassification> SyncTargets => _knownRoutes.Values
         .Where(route => route.Category is "主协议" or "legacy")
@@ -541,9 +616,6 @@ internal sealed class ProtocolCatalog
         .ToList();
 }
 
-/// <summary>
-/// 表示一个已知路由的协议分类。
-/// </summary>
 internal sealed record RouteClassification(
     string Protocol,
     string Method,
@@ -553,629 +625,802 @@ internal sealed record RouteClassification(
     bool IsKnownStub = false,
     bool MatchPath = true)
 {
-    /// <summary>
-    /// 用于字典查找的规范化键。
-    /// </summary>
-    public string Key => BuildKey(Method, Path, MatchPath ? string.Empty : Protocol);
+    public string Key => BuildLookupKey(Method, Path, MatchPath ? string.Empty : Protocol);
+    public string ComparisonKey => Protocol + ":" + Method.ToUpperInvariant() + " " + Path;
 
-    /// <summary>
-    /// 构造规范化路由键。
-    /// </summary>
-    public static string BuildKey(string method, string path, string protocol = "") =>
+    public static string BuildLookupKey(string method, string path, string protocol = "") =>
         string.IsNullOrWhiteSpace(protocol)
-            ? $"{method.ToUpperInvariant()} {path}"
-            : $"{protocol}:{method.ToUpperInvariant()} {path}";
+            ? method.ToUpperInvariant() + " " + path
+            : protocol + ":" + method.ToUpperInvariant() + " " + path;
 
-    /// <summary>
-    /// 创建主协议路由分类。
-    /// </summary>
     public static RouteClassification Primary(string protocol, string method, string path, string description, bool matchPath = true) =>
         new(protocol, method, path, "主协议", description, MatchPath: matchPath);
 
-    /// <summary>
-    /// 创建 legacy 协议路由分类。
-    /// </summary>
     public static RouteClassification Legacy(string protocol, string method, string path, string description) =>
         new(protocol, method, path, "legacy", description);
 
-    /// <summary>
-    /// 创建协议扩展路由分类。
-    /// </summary>
     public static RouteClassification Extension(string protocol, string method, string path, string description) =>
         new(protocol, method, path, "扩展", description);
-
-    /// <summary>
-    /// 创建已知未实现路由分类。
-    /// </summary>
-    public static RouteClassification Stub(string protocol, string method, string path, string description) =>
-        new(protocol, method, path, "501/stub", description, IsKnownStub: true);
 }
 
 /// <summary>
-/// 根据扫描结果生成 Markdown 协议同步报告。
+/// 单个接口的对齐状态。
 /// </summary>
+internal enum RouteSyncStatus
+{
+    FullyAligned,      // 路由双方都有，且关联字段基线全部对齐
+    IncompleteFields,  // 路由双方都有，但部分字段未在 AITool 中检测到或类型不一致
+    NotImplemented,    // CLIProxyAPI 有、AITool 没有
+    AIToolOnly,        // AITool 有、CLIProxyAPI 没有（已移除或未提供）
+    RouteOnlyAligned,  // 路由双方都有，但没有字段基线分组（仅路由级一致）
+    NeitherImplemented // 双方都没有实现（目录内但参考项目未提供）
+}
+
+internal sealed class RouteSyncEntry
+{
+    public required RouteClassification Target { get; init; }
+    public required RouteSyncStatus Status { get; init; }
+    public int MisalignedFieldCount { get; init; }
+    public int TotalFieldCount { get; init; }
+    public List<string> MissingFields { get; } = [];
+    public required bool CpaHasRoute { get; init; }
+    public required bool AitoolHasRoute { get; init; }
+}
+
 internal static class ProtocolReportBuilder
 {
-    /// <summary>
-    /// 根据三方扫描结果和字段级对比生成完整 Markdown 报告。
-    /// 报告主体只保留两类信息：参考项目已支持但当前项目未实现的接口，以及已实现接口的字段对齐情况。
-    /// </summary>
     public static string Build(
         IReadOnlyList<ProjectScanResult> results,
         ProtocolCatalog catalog,
-        List<FieldDiffResult> newApiFieldDiffs,
-        List<FieldDiffResult> cpaFieldDiffs)
+        List<FieldDiffResult> cpaFieldDiffs,
+        List<FieldDiffResult> ccFieldDiffs,
+        GitPullResult cpaPullResult,
+        GitPullResult ccPullResult,
+        SyncBaseline? previousBaseline,
+        List<BaselineChange> baselineChanges,
+        List<VectorRunResult> vectorResults)
     {
-        var current = results.First(result => result.ProjectName == "当前项目 AITool");
-        var references = results.Where(result => result.ProjectName != current.ProjectName).ToArray();
-        var newApi = references.First(result => result.ProjectName == "new-api");
-        var cpa = references.First(result => result.ProjectName == "CPA / CLIProxyAPI");
+        var current = results.First(result => result.ProjectName == "AITool");
+        var cpa = results.First(result => result.ProjectName == "CLIProxyAPI");
+        var ccSwitch = results.FirstOrDefault(result => result.ProjectName == "cc-switch");
         var builder = new StringBuilder();
 
-        builder.AppendLine("# 协议同步检查报告");
+        builder.AppendLine("# AITool 与参考项目协议同步检查报告");
         builder.AppendLine();
-        AppendOverview(builder, current, newApi, cpa, catalog, newApiFieldDiffs, cpaFieldDiffs);
-        AppendReferenceRouteComparison(builder, current, newApi, catalog);
-        AppendFieldAlignmentReport(builder, "new-api", newApiFieldDiffs);
-        AppendReferenceRouteComparison(builder, current, cpa, catalog);
-        AppendFieldAlignmentReport(builder, "CPA / CLIProxyAPI", cpaFieldDiffs);
-        AppendReferenceFieldComparison(builder, newApiFieldDiffs, cpaFieldDiffs);
-        AppendCurrentProjectFieldRecommendations(builder, newApiFieldDiffs, cpaFieldDiffs);
+        AppendRunMetadata(builder, cpaPullResult, ccPullResult);
+        AppendQuickSummary(builder, current, cpa, ccSwitch, catalog, cpaFieldDiffs, ccFieldDiffs, previousBaseline, baselineChanges, vectorResults);
+        if (previousBaseline is not null)
+        {
+            AppendBaselineChanges(builder, previousBaseline, baselineChanges, cpaPullResult, ccPullResult);
+        }
+
+        AppendVectorReport(builder, vectorResults);
+
+        AppendScanPrerequisites(builder, results);
+        AppendOverview(builder, current, cpa, catalog, cpaFieldDiffs);
+        AppendRouteStatusTable(builder, current, cpa, catalog, cpaFieldDiffs);
+        if (ccSwitch is not null)
+        {
+            AppendCcSwitchMatrix(builder, current, cpa, ccSwitch, catalog);
+            AppendCcSwitchOnlyRoutes(builder, ccSwitch);
+        }
+
+        AppendUntrackedRoutes(builder, current, cpa);
+        AppendFieldAlignmentReport(builder, cpaFieldDiffs, "CLIProxyAPI");
+        AppendFieldAlignmentReport(builder, ccFieldDiffs, "cc-switch");
+        AppendDiagnosticConclusion(builder, current, cpa, cpaFieldDiffs, ccFieldDiffs);
         return builder.ToString();
     }
 
     /// <summary>
-    /// 输出报告顶部总览，只汇总用户关心的两件事。
+    /// 顶部快速结论：一眼看清本次运行的不一致数量与优先级。
     /// </summary>
-    private static void AppendOverview(
+    private static void AppendQuickSummary(
         StringBuilder builder,
         ProjectScanResult current,
-        ProjectScanResult newApi,
         ProjectScanResult cpa,
+        ProjectScanResult? ccSwitch,
         ProtocolCatalog catalog,
-        List<FieldDiffResult> newApiFieldDiffs,
-        List<FieldDiffResult> cpaFieldDiffs)
+        List<FieldDiffResult> cpaFieldDiffs,
+        List<FieldDiffResult> ccFieldDiffs,
+        SyncBaseline? previousBaseline,
+        List<BaselineChange> baselineChanges,
+        List<VectorRunResult> vectorResults)
     {
-        var newApiReferenceOnlyRoutes = CollectReferenceOnlyRoutes(current, newApi, catalog);
-        var cpaReferenceOnlyRoutes = CollectReferenceOnlyRoutes(current, cpa, catalog);
-        var newApiMismatchedGroups = newApiFieldDiffs.Where(diff => diff.HasMismatch).ToList();
-        var newApiAlignedGroups = newApiFieldDiffs.Where(diff => !diff.HasMismatch).ToList();
-        var cpaMismatchedGroups = cpaFieldDiffs.Where(diff => diff.HasMismatch).ToList();
-        var cpaAlignedGroups = cpaFieldDiffs.Where(diff => !diff.HasMismatch).ToList();
+        var entries = BuildRouteEntries(current, cpa, catalog, cpaFieldDiffs);
+        var notImplemented = entries.Count(e => e.Status == RouteSyncStatus.NotImplemented);
+        var incomplete = entries.Count(e => e.Status == RouteSyncStatus.IncompleteFields);
+        var cpaMissingFields = cpaFieldDiffs.Sum(diff => diff.Rows.Count(row => row.TypeMatchStatus == FieldTypeMatchStatus.Missing));
+        var cpaTypeMismatches = cpaFieldDiffs.Sum(diff => diff.Rows.Count(row => row.TypeMatchStatus == FieldTypeMatchStatus.TypeMismatch));
+        var ccMissingFields = ccFieldDiffs.Sum(diff => diff.Rows.Count(row => row.TypeMatchStatus == FieldTypeMatchStatus.Missing));
+        var ccTypeMismatches = ccFieldDiffs.Sum(diff => diff.Rows.Count(row => row.TypeMatchStatus == FieldTypeMatchStatus.TypeMismatch));
 
-        builder.AppendLine("## 总览");
+        builder.AppendLine("## 快速结论");
         builder.AppendLine();
-        builder.AppendLine($"- new-api 已支持但本项目未实现的接口：**{newApiReferenceOnlyRoutes.Count}** 个");
-        builder.AppendLine($"- CPA / CLIProxyAPI 已支持但本项目未实现的接口：**{cpaReferenceOnlyRoutes.Count}** 个");
-        builder.AppendLine($"- 基于 new-api 的未对齐分组：**{newApiMismatchedGroups.Count}** 个，完全对齐分组：**{newApiAlignedGroups.Count}** 个");
-        builder.AppendLine($"- 基于 CPA / CLIProxyAPI 的未对齐分组：**{cpaMismatchedGroups.Count}** 个，完全对齐分组：**{cpaAlignedGroups.Count}** 个");
-        builder.AppendLine();
-    }
-
-    /// <summary>
-    /// 按单个参考项目展示该项目已支持但当前项目未实现的接口。
-    /// </summary>
-    private static void AppendReferenceRouteComparison(
-        StringBuilder builder,
-        ProjectScanResult current,
-        ProjectScanResult reference,
-        ProtocolCatalog catalog)
-    {
-        var routes = CollectReferenceOnlyRoutes(current, reference, catalog);
-
-        builder.AppendLine($"## 与 {EscapeMarkdown(reference.ProjectName)} 对比");
-        builder.AppendLine();
-        builder.AppendLine($"### {EscapeMarkdown(reference.ProjectName)} 已支持但本项目未实现的接口");
-        builder.AppendLine();
-
-        if (routes.Count == 0)
+        builder.AppendLine("| 维度 | 数量 | 含义 |");
+        builder.AppendLine("| --- | --- | --- |");
+        builder.AppendLine("| ❌ CLIProxyAPI 有而 AITool 未实现的路由 | **" + notImplemented + "** | 高优先级：补齐路由 |");
+        builder.AppendLine("| ⚠️ 已实现但字段不全的路由 | **" + incomplete + "** | 结合字段明细核对 |");
+        builder.AppendLine("| ❌ CLIProxyAPI 字段未在 AITool 检测到 | **" + cpaMissingFields + "** | 高优先级：核对字段处理 |");
+        builder.AppendLine("| ⚠️ CLIProxyAPI 字段类型线索不一致 | **" + cpaTypeMismatches + "** | 核对类型 |");
+        builder.AppendLine("| ❌ cc-switch 字段未在 AITool 检测到 | **" + ccMissingFields + "** | cc-switch 处理了而 AITool 未覆盖（含 Gemini/签名桥接等专属能力，需人工甄别） |");
+        builder.AppendLine("| ⚠️ cc-switch 字段类型线索不一致 | **" + ccTypeMismatches + "** | 核对类型 |");
+        if (previousBaseline is null)
         {
-            builder.AppendLine($"✅ 当前没有发现 {EscapeMarkdown(reference.ProjectName)} 已支持但本项目尚未实现的 OpenAI / Anthropic 接口。");
-            builder.AppendLine();
-            return;
-        }
-
-        builder.AppendLine("| 协议 | 分类 | Method | URL | 说明 |");
-        builder.AppendLine("| --- | --- | --- | --- | --- |");
-        foreach (var item in routes)
-        {
-            builder.AppendLine($"| {EscapeMarkdown(item.Target.Protocol)} | {EscapeMarkdown(item.Target.Category)} | {item.Target.Method} | `{item.Target.Path}` | {EscapeMarkdown(item.Target.Description)} |");
-        }
-
-        builder.AppendLine();
-    }
-
-    /// <summary>
-    /// 输出已实现接口的字段对齐情况：明确标注当前字段对比基于哪个参考项目。
-    /// </summary>
-    private static void AppendFieldAlignmentReport(StringBuilder builder, string referenceProjectName, List<FieldDiffResult> fieldDiffs)
-    {
-        var mismatchedGroups = fieldDiffs
-            .Where(diff => diff.HasMismatch)
-            .OrderByDescending(diff => diff.MisalignedRows.Count)
-            .ThenBy(diff => diff.Group.Label, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var alignedGroups = fieldDiffs
-            .Where(diff => !diff.HasMismatch)
-            .OrderBy(diff => diff.Group.Label, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        builder.AppendLine($"### 基于 {EscapeMarkdown(referenceProjectName)} 的字段对齐情况");
-        builder.AppendLine();
-        builder.AppendLine($"> 当前字段明细对比来源：**{EscapeMarkdown(referenceProjectName)}**。表格仅展示**未对齐字段**。`当前类型线索` 来自当前项目对 JsonNode / JsonObject 的实际读写代码。");
-        builder.AppendLine();
-
-        builder.AppendLine("#### 完全对齐（简要）");
-        builder.AppendLine();
-        if (alignedGroups.Count == 0)
-        {
-            builder.AppendLine("- 无");
+            builder.AppendLine("| 🆕 基线快照 | 首次建立 | 下次运行起自动对比参考项目协议变更 |");
         }
         else
         {
-            foreach (var diff in alignedGroups)
-            {
-                builder.AppendLine($"- **{EscapeMarkdown(diff.Group.Label)}**：{diff.Rows.Count}/{diff.Rows.Count} 字段已对齐");
-            }
+            builder.AppendLine("| " + (baselineChanges.Count == 0 ? "✅" : "🔔") + " 自上次运行的协议变更 | **" + baselineChanges.Count + "** 处 | 详见下一节 |");
         }
+
+        var vectorPassed = vectorResults.Count(result => result.Status == VectorRunStatus.Passed);
+        var vectorFailed = vectorResults.Count(result => result.Status == VectorRunStatus.Failed);
+        var vectorSkipped = vectorResults.Count(result => result.Status == VectorRunStatus.Skipped);
+        builder.AppendLine(vectorFailed == 0
+            ? "| ✅ 反向推导向量测试（cc-switch 基准） | **" + vectorPassed + "** 通过 / " + vectorSkipped + " 跳过 | cc-switch 测试断言在 AITool 转换上全部复现 |"
+            : "| ❌ 反向推导向量测试失败 | **" + vectorFailed + "** / " + vectorResults.Count + " | 高优先级：逐路径定位与 cc-switch 的转换分歧 |");
 
         builder.AppendLine();
-        builder.AppendLine("#### 未对齐接口");
-        builder.AppendLine();
-
-        if (mismatchedGroups.Count == 0)
-        {
-            builder.AppendLine($"✅ 当前基于 {EscapeMarkdown(referenceProjectName)} 的字段扫描中，已实现接口字段均已对齐。");
-            builder.AppendLine();
-            return;
-        }
-
-        foreach (var diff in mismatchedGroups)
-        {
-            builder.AppendLine($"##### {EscapeMarkdown(diff.Group.Label)}");
-            builder.AppendLine();
-            builder.AppendLine($"> {EscapeMarkdown(diff.Group.Description)}");
-            builder.AppendLine();
-            builder.AppendLine($"- 对齐情况：{diff.AlignedRows.Count}/{diff.Rows.Count}");
-            builder.AppendLine($"- 未对齐字段：{diff.MisalignedRows.Count}");
-            builder.AppendLine();
-            builder.AppendLine("| 字段 | 参考类型 | 可选 | 当前状态 | 当前类型线索 |");
-            builder.AppendLine("| --- | --- | --- | --- | --- |");
-            foreach (var row in diff.MisalignedRows)
-            {
-                builder.AppendLine($"| `{row.FieldName}` | `{EscapeMarkdown(row.ReferenceType)}` | {FormatOptional(row.Optional)} | {FormatFieldStatus(row.TypeMatchStatus)} | {EscapeMarkdown(row.CurrentTypeHint)} |");
-            }
-            builder.AppendLine();
-        }
     }
 
     /// <summary>
-    /// 追加 new-api 与 CPA / CLIProxyAPI 的字段基线互相比对。
+    /// 反向推导协议向量测试报告：从 cc-switch 测试提取的（输入→断言）在 AITool.Protocol 真实转换上执行的结果。
+    /// 每条失败精确到：测试名 + 来源位置 + 断言路径 + cc-switch 期望值 + AITool 实际值。
     /// </summary>
-    private static void AppendReferenceFieldComparison(
-        StringBuilder builder,
-        List<FieldDiffResult> newApiFieldDiffs,
-        List<FieldDiffResult> cpaFieldDiffs)
+    private static void AppendVectorReport(StringBuilder builder, List<VectorRunResult> vectorResults)
     {
-        var newApiIndex = newApiFieldDiffs.ToDictionary(diff => NormalizeReferenceGroupLabel(diff.Group.Label), StringComparer.OrdinalIgnoreCase);
-        var cpaIndex = cpaFieldDiffs.ToDictionary(diff => NormalizeReferenceGroupLabel(diff.Group.Label), StringComparer.OrdinalIgnoreCase);
-        var commonGroupKeys = newApiIndex.Keys
-            .Intersect(cpaIndex.Keys, StringComparer.OrdinalIgnoreCase)
-            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        builder.AppendLine("## CPA / CLIProxyAPI 与 new-api 字段基线对比");
+        builder.AppendLine("## 反向推导协议向量测试（以 cc-switch 测试为基准）");
         builder.AppendLine();
-        builder.AppendLine("> 对比基础：仅比较**当前项目已经实现的接口**中，new-api 与 CPA / CLIProxyAPI 都能建立字段基线的分组。这里比较的是两个参考项目之间的字段基线，不涉及当前项目字段是否已实现。");
+        builder.AppendLine("> 从 cc-switch 的 Rust 测试（`transform.rs` / `transform_responses.rs` / `transform_codex_chat.rs` / `transform_codex_anthropic.rs`）反向提取「输入 JSON → 断言路径/期望值」，在 AITool.Protocol 的真实转换代码上执行（与生产链路同一公开 API）。cc-switch 怎么转，AITool 就怎么跑——失败即分歧，明细定位到具体路径。");
         builder.AppendLine();
 
-        if (commonGroupKeys.Count == 0)
+        var passed = vectorResults.Count(result => result.Status == VectorRunStatus.Passed);
+        var failed = vectorResults.Count(result => result.Status == VectorRunStatus.Failed);
+        var skipped = vectorResults.Count(result => result.Status == VectorRunStatus.Skipped);
+        builder.AppendLine("- 执行结果：✅ 通过 **" + passed + "** / ❌ 失败 **" + failed + "** / ⏭ 跳过 **" + skipped + "**（共 " + vectorResults.Count + "）");
+        var failedAssertions = vectorResults.SelectMany(result => result.Failures).Count();
+        if (failed > 0)
         {
-            builder.AppendLine("当前没有可同时在 new-api 与 CPA / CLIProxyAPI 中建立字段基线的共同接口分组。");
+            builder.AppendLine("- 失败断言总数：**" + failedAssertions + "**（下表逐条列出）");
+        }
+
+        builder.AppendLine();
+        if (vectorResults.Count == 0)
+        {
+            builder.AppendLine("⚠️ 未提取到任何测试向量——检查 cc-switch 参考代码是否就位。");
             builder.AppendLine();
             return;
         }
 
-        foreach (var key in commonGroupKeys)
+        if (failed == 0)
         {
-            var newApiDiff = newApiIndex[key];
-            var cpaDiff = cpaIndex[key];
-            var rows = BuildReferenceComparisonRows(key, newApiDiff, cpaDiff, newApiFieldDiffs);
-            var alignedCount = rows.Count(row => row.Category == "两边都有");
+            builder.AppendLine("✅ 全部向量通过：cc-switch 测试所断言的协议行为，AITool 协议桥全部复现。");
+            builder.AppendLine();
+            return;
+        }
 
-            builder.AppendLine($"### {EscapeMarkdown(key)}");
+        // 按方向分组输出失败明细。
+        foreach (var directionGroup in vectorResults
+                     .Where(result => result.Status == VectorRunStatus.Failed)
+                     .GroupBy(result => result.Vector.Direction)
+                     .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            builder.AppendLine("### " + EscapeMarkdown(directionGroup.Key));
             builder.AppendLine();
-            builder.AppendLine($"- 字段基线对齐：{alignedCount}/{rows.Count}");
-            builder.AppendLine($"- new-api 字段数：{newApiDiff.Rows.Count}");
-            builder.AppendLine($"- CPA / CLIProxyAPI 字段数：{cpaDiff.Rows.Count}");
-            builder.AppendLine();
-            builder.AppendLine("| 字段 | 类别 | new-api 类型 | new-api 可选 | CPA 类型 | CPA 可选 |");
+            builder.AppendLine("| 测试 | 位置 | 断言路径 | cc-switch 期望 | AITool 实际 | 原因 |");
             builder.AppendLine("| --- | --- | --- | --- | --- | --- |");
-            foreach (var row in rows)
+            foreach (var result in directionGroup)
             {
-                builder.AppendLine($"| `{row.FieldName}` | {row.Category} | {FormatReferenceType(row.NewApiType)} | {FormatNullableOptional(row.NewApiOptional)} | {FormatReferenceType(row.CpaType)} | {FormatNullableOptional(row.CpaOptional)} |");
+                foreach (var failure in result.Failures.Take(6))
+                {
+                    builder.AppendLine(
+                        "| `" + EscapeMarkdown(result.Vector.TestName) + "` | `" + result.Vector.SourceFile + ":" + result.Vector.Line + "` | `"
+                        + EscapeMarkdown(failure.Path) + "` | " + EscapeMarkdown(failure.Expected) + " | "
+                        + EscapeMarkdown(failure.Actual) + " | " + EscapeMarkdown(failure.Reason) + " |");
+                }
+
+                if (result.Failures.Count > 6)
+                {
+                    builder.AppendLine("| `" + EscapeMarkdown(result.Vector.TestName) + "` | … | … | … | … | 另有 " + (result.Failures.Count - 6) + " 条断言失败 |");
+                }
             }
+
             builder.AppendLine();
         }
-    }
 
-    /// <summary>
-    /// 根据参考项目交集与当前项目缺口，生成主体属性补充建议栏目。
-    /// </summary>
-    private static void AppendCurrentProjectFieldRecommendations(
-        StringBuilder builder,
-        List<FieldDiffResult> newApiFieldDiffs,
-        List<FieldDiffResult> cpaFieldDiffs)
-    {
-        var referenceRows = BuildAllReferenceComparisonRows(newApiFieldDiffs, cpaFieldDiffs);
-        var candidates = referenceRows
-            .Where(row => !string.IsNullOrWhiteSpace(row.CurrentProjectStatus))
-            .Where(row => string.Equals(row.CurrentProjectStatus, "未检测到", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(row => row.InterfaceLabel, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(row => row.FieldName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        builder.AppendLine("## 基于现有实现接口的主体属性补充建议");
-        builder.AppendLine();
-        builder.AppendLine("> 这一节基于下方 **CPA / CLIProxyAPI 与 new-api 字段基线对比**，只筛选“**两个参考项目都已具备**、且**当前项目在已实现接口中仍未检测到**”的主体属性，目的是辅助后续决定哪些字段值得补到当前项目。");
-        builder.AppendLine();
-
-        var highPriority = candidates.Where(IsHighPriorityField).ToList();
-        var mediumPriority = candidates.Where(row => !IsHighPriorityField(row) && !IsLowPriorityField(row)).ToList();
-        var lowPriority = candidates.Where(IsLowPriorityField).ToList();
-
-        builder.AppendLine("### 建议优先补充");
-        builder.AppendLine();
-        AppendRecommendationTable(builder, highPriority, "高优先级");
-
-        builder.AppendLine("### 建议第二批评估");
-        builder.AppendLine();
-        AppendRecommendationTable(builder, mediumPriority, "中优先级");
-
-        builder.AppendLine("### 当前不建议仅基于本报告立即补充");
-        builder.AppendLine();
-        AppendLowPriorityTable(builder, lowPriority);
-
-        builder.AppendLine("### 结论");
-        builder.AppendLine();
-        builder.AppendLine("如果遵循“**最小改动、最大收益**”的原则，建议当前项目优先补充顺序为：");
-        builder.AppendLine();
-        foreach (var row in highPriority.Concat(mediumPriority).Take(8))
+        if (skipped > 0)
         {
-            builder.AppendLine($"- `{row.FieldName}`");
-        }
-        builder.AppendLine();
-    }
-
-    /// <summary>
-    /// 构建 new-api 与 CPA 的全量字段对比行，并补充当前项目状态。
-    /// </summary>
-    private static List<ReferenceFieldComparisonRow> BuildAllReferenceComparisonRows(
-        List<FieldDiffResult> newApiFieldDiffs,
-        List<FieldDiffResult> cpaFieldDiffs)
-    {
-        var newApiIndex = newApiFieldDiffs.ToDictionary(diff => NormalizeReferenceGroupLabel(diff.Group.Label), StringComparer.OrdinalIgnoreCase);
-        var cpaIndex = cpaFieldDiffs.ToDictionary(diff => NormalizeReferenceGroupLabel(diff.Group.Label), StringComparer.OrdinalIgnoreCase);
-        var commonGroupKeys = newApiIndex.Keys
-            .Intersect(cpaIndex.Keys, StringComparer.OrdinalIgnoreCase)
-            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var rows = new List<ReferenceFieldComparisonRow>();
-        foreach (var key in commonGroupKeys)
-        {
-            rows.AddRange(BuildReferenceComparisonRows(key, newApiIndex[key], cpaIndex[key], newApiFieldDiffs));
-        }
-
-        return rows;
-    }
-
-    /// <summary>
-    /// 输出推荐字段表格。
-    /// </summary>
-    private static void AppendRecommendationTable(StringBuilder builder, List<ReferenceFieldComparisonRow> rows, string priorityLabel)
-    {
-        if (rows.Count == 0)
-        {
-            builder.AppendLine("- 无");
+            builder.AppendLine("<details><summary>⏭ 跳过的向量（" + skipped + " 个，多为宏内含 Rust 表达式无法静态解析）</summary>");
             builder.AppendLine();
-            return;
-        }
-
-        builder.AppendLine("| 接口 | 字段 | 两参考项目情况 | 当前项目情况 | 是否建议补充 | 原因 |");
-        builder.AppendLine("| --- | --- | --- | --- | --- | --- |");
-        foreach (var row in rows)
-        {
-            builder.AppendLine($"| {EscapeMarkdown(row.InterfaceLabel)} | `{row.FieldName}` | {EscapeMarkdown(BuildReferenceSituation(row))} | {EscapeMarkdown(row.CurrentProjectStatus ?? "—")} | {priorityLabel} | {EscapeMarkdown(BuildRecommendationReason(row, priorityLabel))} |");
-        }
-        builder.AppendLine();
-    }
-
-    /// <summary>
-    /// 输出低优先级字段表格。
-    /// </summary>
-    private static void AppendLowPriorityTable(StringBuilder builder, List<ReferenceFieldComparisonRow> rows)
-    {
-        if (rows.Count == 0)
-        {
-            builder.AppendLine("- 无");
-            builder.AppendLine();
-            return;
-        }
-
-        builder.AppendLine("| 接口 | 字段 | 原因 |");
-        builder.AppendLine("| --- | --- | --- |");
-        foreach (var row in rows)
-        {
-            builder.AppendLine($"| {EscapeMarkdown(row.InterfaceLabel)} | `{row.FieldName}` | {EscapeMarkdown(BuildRecommendationReason(row, "低优先级"))} |");
-        }
-        builder.AppendLine();
-    }
-
-    /// <summary>
-    /// 判断是否属于高优先级字段。
-    /// </summary>
-    private static bool IsHighPriorityField(ReferenceFieldComparisonRow row)
-    {
-        return row.InterfaceLabel == "OpenAI Chat Completions 请求"
-            && row.FieldName is "temperature" or "top_p";
-    }
-
-    /// <summary>
-    /// 判断是否属于低优先级字段。
-    /// </summary>
-    private static bool IsLowPriorityField(ReferenceFieldComparisonRow row)
-    {
-        return row.FieldName is "echo" or "first_id" or "has_more" or "last_id";
-    }
-
-    /// <summary>
-    /// 构建两个参考项目字段基线的逐字段对比行。
-    /// </summary>
-    private static List<ReferenceFieldComparisonRow> BuildReferenceComparisonRows(
-        string interfaceLabel,
-        FieldDiffResult newApiDiff,
-        FieldDiffResult cpaDiff,
-        List<FieldDiffResult> currentProjectDiffs)
-    {
-        var newApiRows = newApiDiff.Rows.ToDictionary(row => row.FieldName, StringComparer.OrdinalIgnoreCase);
-        var cpaRows = cpaDiff.Rows.ToDictionary(row => row.FieldName, StringComparer.OrdinalIgnoreCase);
-        var currentProjectDiff = currentProjectDiffs.FirstOrDefault(diff => string.Equals(diff.Group.Label, newApiDiff.Group.Label, StringComparison.OrdinalIgnoreCase));
-        var currentProjectRows = currentProjectDiff?.Rows.ToDictionary(row => row.FieldName, StringComparer.OrdinalIgnoreCase)
-            ?? new Dictionary<string, FieldAlignmentRow>(StringComparer.OrdinalIgnoreCase);
-
-        var allFields = newApiRows.Keys
-            .Union(cpaRows.Keys, StringComparer.OrdinalIgnoreCase)
-            .OrderBy(field => field, StringComparer.OrdinalIgnoreCase);
-
-        var rows = new List<ReferenceFieldComparisonRow>();
-        foreach (var field in allFields)
-        {
-            newApiRows.TryGetValue(field, out var newApiRow);
-            cpaRows.TryGetValue(field, out var cpaRow);
-            currentProjectRows.TryGetValue(field, out var currentProjectRow);
-
-            var category = (newApiRow, cpaRow) switch
+            foreach (var result in vectorResults.Where(result => result.Status == VectorRunStatus.Skipped).Take(20))
             {
-                ({ } left, { } right) when !string.Equals(left.ReferenceType, right.ReferenceType, StringComparison.OrdinalIgnoreCase) => "两边都有 / 类型不同",
-                ({ }, { }) => "两边都有",
-                ({ }, null) => "仅 new-api",
-                (null, { }) => "仅 CPA",
-                _ => "未知"
+                builder.AppendLine("- `" + result.Vector.TestName + "`（" + result.Vector.SourceFile + ":" + result.Vector.Line + "）：" + EscapeMarkdown(result.SkipReason ?? string.Empty));
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("</details>");
+            builder.AppendLine();
+        }
+    }
+
+    /// <summary>
+    /// 自上次运行以来的协议变更：参考项目 commit 变化 + 三方路由增删 + 参考字段基线增删。
+    /// </summary>
+    private static void AppendBaselineChanges(
+        StringBuilder builder,
+        SyncBaseline previousBaseline,
+        List<BaselineChange> changes,
+        GitPullResult cpaPullResult,
+        GitPullResult ccPullResult)
+    {
+        builder.AppendLine("## 自上次运行以来的协议变更");
+        builder.AppendLine();
+        builder.AppendLine("- 上次基线：" + previousBaseline.GeneratedAt.ToString("yyyy-MM-dd HH:mm:ss")
+            + "（CLIProxyAPI `" + (previousBaseline.References.TryGetValue("CLIProxyAPI", out var cpaHash) ? cpaHash : "未知")
+            + "`，cc-switch `" + (previousBaseline.References.TryGetValue("cc-switch", out var ccHash) ? ccHash : "未知") + "`）");
+        builder.AppendLine("- 本次基准：CLIProxyAPI `" + cpaPullResult.CommitHash + "`，cc-switch `" + ccPullResult.CommitHash + "`");
+        builder.AppendLine();
+
+        if (changes.Count == 0)
+        {
+            builder.AppendLine("✅ 两次运行之间三个项目的路由与参考字段基线无变化。");
+            builder.AppendLine();
+            return;
+        }
+
+        builder.AppendLine("> 下表是两次运行快照的差集：**参考项目新增的字段/路由意味着上游协议演进，AITool 侧若未同步跟进会出现行为差异**；AITool 自身路由增删则反映本地开发进度。");
+        builder.AppendLine();
+        builder.AppendLine("| 变更 | 范围 | 类型 | 值 |");
+        builder.AppendLine("| --- | --- | --- | --- |");
+        foreach (var change in changes.OrderBy(change => change.Scope, StringComparer.OrdinalIgnoreCase).ThenBy(change => change.Value, StringComparer.OrdinalIgnoreCase))
+        {
+            var marker = change.ChangeKind == BaselineChangeKind.Added ? "➕ 新增" : "➖ 移除";
+            builder.AppendLine("| " + marker + " | " + EscapeMarkdown(change.Scope) + " | " + change.Kind + " | `" + EscapeMarkdown(change.Value) + "` |");
+        }
+
+        builder.AppendLine();
+    }
+
+    private static void AppendRunMetadata(StringBuilder builder, GitPullResult cpaPullResult, GitPullResult ccPullResult)
+    {
+        builder.AppendLine("## 本次运行信息");
+        builder.AppendLine();
+        builder.AppendLine("- 生成时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+        builder.AppendLine("- CLIProxyAPI 基准版本：`" + cpaPullResult.CommitHash + "`（" + cpaPullResult.CommitDate + "）");
+        builder.AppendLine(cpaPullResult.Success
+            ? "- CLIProxyAPI 拉取结果：✅ " + EscapeMarkdown(cpaPullResult.Message)
+            : "- CLIProxyAPI 拉取结果：⚠️ 未更新（" + EscapeMarkdown(cpaPullResult.Message) + "）");
+        builder.AppendLine("- cc-switch 基准版本：`" + ccPullResult.CommitHash + "`（" + ccPullResult.CommitDate + "）");
+        builder.AppendLine(ccPullResult.Success
+            ? "- cc-switch 拉取结果：✅ " + EscapeMarkdown(ccPullResult.Message)
+            : "- cc-switch 拉取结果：⚠️ 未更新（" + EscapeMarkdown(ccPullResult.Message) + "）");
+        builder.AppendLine();
+    }
+
+    private static void AppendScanPrerequisites(StringBuilder builder, IReadOnlyList<ProjectScanResult> results)
+    {
+        var missing = results
+            .SelectMany(result => result.MissingFiles.Select(file => result.ProjectName + "：`" + file + "`"))
+            .ToList();
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        builder.AppendLine("## 扫描前提异常");
+        builder.AppendLine();
+        builder.AppendLine("> 参考文件缺失时，相关差异结论可能不完整。");
+        foreach (var item in missing)
+        {
+            builder.AppendLine("- 未找到 " + item);
+        }
+        builder.AppendLine();
+    }
+
+    /// <summary>
+    /// 三方路由矩阵：协议目录内每条目标路由在 AITool / CLIProxyAPI / cc-switch 的覆盖情况。
+    /// cc-switch 侧额外把等价别名（如 /v1/v1/*、/codex/*、不带 /v1 前缀）折叠进主路由判断。
+    /// </summary>
+    private static void AppendCcSwitchMatrix(
+        StringBuilder builder,
+        ProjectScanResult current,
+        ProjectScanResult cpa,
+        ProjectScanResult ccSwitch,
+        ProtocolCatalog catalog)
+    {
+        builder.AppendLine("## 三方路由覆盖矩阵（AITool / CLIProxyAPI / cc-switch）");
+        builder.AppendLine();
+        builder.AppendLine("> cc-switch 为 Rust/Axum 本地网关，列出现的是协议目录内主路由与 legacy 路由的覆盖情况；其特有别名前缀（`/v1/v1/*`、`/codex/*`、`/grokbuild/*`、`/claude/*`）与 Gemini 通配路由见下方专属清单。");
+        builder.AppendLine();
+        builder.AppendLine("| 协议 | Method | URL | AITool | CLIProxyAPI | cc-switch | 说明 |");
+        builder.AppendLine("| --- | --- | --- | --- | --- | --- | --- |");
+
+        var currentKeys = current.Routes.Select(route => route.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var cpaKeys = cpa.Routes.Select(route => route.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ccKeys = ccSwitch.Routes.Select(route => route.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ccAliasKeys = BuildCcSwitchAliasKeys(ccSwitch);
+
+        foreach (var target in catalog.SyncTargets)
+        {
+            var comparisonKey = target.ComparisonKey;
+            var aitoolHas = currentKeys.Contains(comparisonKey);
+            var cpaHas = cpaKeys.Contains(comparisonKey);
+            var ccHas = ccKeys.Contains(comparisonKey) || ccAliasKeys.Contains(comparisonKey);
+            builder.AppendLine(
+                "| " + EscapeMarkdown(target.Protocol) + " | " + target.Method + " | `" + target.Path + "` | "
+                + FormatPresence(aitoolHas) + " | " + FormatPresence(cpaHas) + " | " + FormatPresence(ccHas) + " | "
+                + EscapeMarkdown(target.Description) + " |");
+        }
+
+        builder.AppendLine();
+    }
+
+    /// <summary>
+    /// cc-switch 等价别名集合：本地端点支持 /v1/v1/*（客户端双重前缀）、/codex/*（Codex CLI 前缀）、
+    /// 以及不带 /v1 的裸路径（/responses、/chat/completions），这些与主路由语义等价，折叠后不判缺失。
+    /// </summary>
+    private static HashSet<string> BuildCcSwitchAliasKeys(ProjectScanResult ccSwitch)
+    {
+        var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var route in ccSwitch.Routes.Concat(ccSwitch.UnclassifiedRoutes.Select(ToProtocolRoute)))
+        {
+            var path = route.Path;
+            string? stripped = null;
+            if (path.StartsWith("/v1/v1/", StringComparison.Ordinal))
+            {
+                stripped = path["/v1".Length..];
+            }
+            else if (path.StartsWith("/codex/v1/", StringComparison.Ordinal))
+            {
+                stripped = path["/codex".Length..];
+            }
+            else if (path.StartsWith("/responses", StringComparison.Ordinal)
+                || path.StartsWith("/chat/completions", StringComparison.Ordinal)
+                || path.StartsWith("/models", StringComparison.Ordinal))
+            {
+                stripped = "/v1" + path;
+            }
+
+            if (stripped is not null)
+            {
+                aliases.Add(route.Protocol + ":" + route.Method + " " + stripped);
+            }
+        }
+
+        return aliases;
+    }
+
+    private static ProtocolRoute ToProtocolRoute(RawRoute route) => new(
+        route.Method,
+        route.Path,
+        string.Empty,
+        "未跟踪",
+        string.Empty,
+        IsNotImplemented: false,
+        route.SourcePath,
+        route.LineNumber);
+
+    private static string FormatPresence(bool present) => present ? "✅" : "—";
+
+    /// <summary>
+    /// cc-switch 特有路由清单（不在协议目录内）：Gemini 通配、别名前缀、alpha-search 等，供人工确认。
+    /// </summary>
+    private static void AppendCcSwitchOnlyRoutes(StringBuilder builder, ProjectScanResult ccSwitch)
+    {
+        var currentKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var allCcRoutes = ccSwitch.Routes.Concat(ccSwitch.UnclassifiedRoutes.Select(ToProtocolRoute))
+            .GroupBy(route => route.Method + " " + route.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(route => route.Path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(route => route.Method, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (allCcRoutes.Count == 0)
+        {
+            return;
+        }
+
+        builder.AppendLine("## cc-switch 本地端点全量清单");
+        builder.AppendLine();
+        builder.AppendLine("> cc-switch 的 Axum 路由全集（含协议目录内路由与本地别名/Gemini 通配/健康检查）。与 AITool 对照用于发现可借鉴的端点（如 compact 多前缀、alpha-search）。");
+        builder.AppendLine();
+        builder.AppendLine("| Method | URL | 位置 |");
+        builder.AppendLine("| --- | --- | --- |");
+        foreach (var route in allCcRoutes)
+        {
+            builder.AppendLine("| " + route.Method + " | `" + route.Path + "` | `" + Path.GetFileName(route.SourcePath) + ":" + route.LineNumber + "` |");
+        }
+
+        builder.AppendLine();
+    }
+
+    private static void AppendOverview(
+        StringBuilder builder,
+        ProjectScanResult current,
+        ProjectScanResult cpa,
+        ProtocolCatalog catalog,
+        List<FieldDiffResult> cpaFieldDiffs)
+    {
+        var entries = BuildRouteEntries(current, cpa, catalog, cpaFieldDiffs);
+        var fullyAligned = entries.Count(e => e.Status == RouteSyncStatus.FullyAligned);
+        var incomplete = entries.Count(e => e.Status == RouteSyncStatus.IncompleteFields);
+        var notImplemented = entries.Count(e => e.Status == RouteSyncStatus.NotImplemented);
+        var aitoolOnly = entries.Count(e => e.Status == RouteSyncStatus.AIToolOnly);
+        var routeOnly = entries.Count(e => e.Status == RouteSyncStatus.RouteOnlyAligned);
+        var neither = entries.Count(e => e.Status == RouteSyncStatus.NeitherImplemented);
+
+        builder.AppendLine("## 总览");
+        builder.AppendLine();
+        builder.AppendLine("| 状态 | 数量 | 说明 |");
+        builder.AppendLine("| --- | --- | --- |");
+        builder.AppendLine("| ✅ 完全一致 | **" + fullyAligned + "** | 路由与字段均与 CLIProxyAPI 对齐 |");
+        builder.AppendLine("| ⚠️ 已实现但字段不全 | **" + incomplete + "** | 路由已实现，但部分字段未检测到或类型不一致 |");
+        builder.AppendLine("| ❌ 未实现 | **" + notImplemented + "** | CLIProxyAPI 已支持，AITool 缺少路由 |");
+        builder.AppendLine("| ➕ AITool 独有 | **" + aitoolOnly + "** | AITool 有路由，CLIProxyAPI 未提供（可能已移除） |");
+        builder.AppendLine("| 🔵 路由一致（无字段基线） | **" + routeOnly + "** | 双方都有路由，但参考代码未提供字段基线 |");
+        builder.AppendLine("| ⚪ 双方均未实现 | **" + neither + "** | 协议目录内，但 CLIProxyAPI 与 AITool 均未提供 |");
+        builder.AppendLine();
+    }
+
+    private static void AppendRouteStatusTable(
+        StringBuilder builder,
+        ProjectScanResult current,
+        ProjectScanResult cpa,
+        ProtocolCatalog catalog,
+        List<FieldDiffResult> cpaFieldDiffs)
+    {
+        var entries = BuildRouteEntries(current, cpa, catalog, cpaFieldDiffs);
+
+        builder.AppendLine("## 协议接口状态");
+        builder.AppendLine();
+        builder.AppendLine("| 状态 | 协议 | Method | URL | 字段 | 说明 |");
+        builder.AppendLine("| --- | --- | --- | --- | --- | --- |");
+        foreach (var entry in entries)
+        {
+            var statusText = entry.Status switch
+            {
+                RouteSyncStatus.FullyAligned => "✅ 完全一致",
+                RouteSyncStatus.IncompleteFields => "⚠️ 已实现但字段不全",
+                RouteSyncStatus.NotImplemented => "❌ 未实现",
+                RouteSyncStatus.AIToolOnly => "➕ AITool 独有",
+                RouteSyncStatus.NeitherImplemented => "⚪ 双方均未实现",
+                _ => "🔵 路由一致"
             };
 
-            rows.Add(new ReferenceFieldComparisonRow(
-                interfaceLabel,
-                field,
-                category,
-                newApiRow?.ReferenceType,
-                newApiRow?.Optional,
-                cpaRow?.ReferenceType,
-                cpaRow?.Optional,
-                currentProjectRow is null ? null : FormatFieldStatus(currentProjectRow.TypeMatchStatus)));
+            var fieldText = entry.Status switch
+            {
+                RouteSyncStatus.IncompleteFields => (entry.TotalFieldCount - entry.MisalignedFieldCount) + "/" + entry.TotalFieldCount + " 对齐，" + entry.MisalignedFieldCount + " 个待处理",
+                RouteSyncStatus.FullyAligned when entry.TotalFieldCount > 0 => entry.TotalFieldCount + "/" + entry.TotalFieldCount,
+                RouteSyncStatus.FullyAligned => "—",
+                RouteSyncStatus.NotImplemented => "—",
+                RouteSyncStatus.AIToolOnly => "—",
+                RouteSyncStatus.NeitherImplemented => "—",
+                _ => "无字段基线"
+            };
+
+            builder.AppendLine("| " + statusText + " | " + EscapeMarkdown(entry.Target.Protocol) + " | " + entry.Target.Method + " | `" + entry.Target.Path + "` | " + fieldText + " | " + EscapeMarkdown(entry.Target.Description) + " |");
         }
-
-        return rows;
+        builder.AppendLine();
     }
 
     /// <summary>
-    /// 拼装参考项目情况说明。
+    /// 构建每个协议接口的路由 + 字段对齐状态。
     /// </summary>
-    private static string BuildReferenceSituation(ReferenceFieldComparisonRow row)
-    {
-        if (row.InterfaceLabel == "OpenAI Chat Completions 请求" && row.FieldName is "temperature" or "top_p")
-        {
-            return "new-api、CPA 都有";
-        }
-
-        if (row.Category == "两边都有 / 类型不同" || row.Category == "两边都有")
-        {
-            return "new-api、CPA 都有";
-        }
-
-        return row.Category switch
-        {
-            "仅 new-api" => "new-api 有，CPA 未体现为共同字段",
-            "仅 CPA" => "CPA 明确有，new-api 共同基线未体现",
-            _ => row.Category
-        };
-    }
-
-    /// <summary>
-    /// 构建建议原因。
-    /// </summary>
-    private static string BuildRecommendationReason(ReferenceFieldComparisonRow row, string priorityLabel)
-    {
-        return row.FieldName switch
-        {
-            "temperature" => "主流采样参数，直接影响生成行为，兼容收益高。",
-            "top_p" => "主流采样参数，和 temperature 一样属于高频能力。",
-            "top_k" => "更偏扩展兼容参数，建议在采样参数补齐后再考虑。",
-            "frequency_penalty" => "对 OpenAI 兼容性有价值，但不如 temperature / top_p 直接。",
-            "presence_penalty" => "与 frequency_penalty 类似，属于增强兼容项。",
-            "top_logprobs" => "主要影响高级调试/分析用途，不是大多数请求的核心主体参数。",
-            "reasoning" => "对 reasoning 模型有价值，但从当前双方共同字段证据看不如采样参数明确。",
-            "output_config" => "对 Anthropic 特定能力有帮助，但不属于两边都明确具备的共识字段。",
-            "echo" => "偏 legacy/兼容参数，不属于当前主流 Chat Completions 核心主体属性。",
-            "first_id" or "has_more" or "last_id" => "属于列表响应分页信息，不是当前已实现核心代理接口的主体属性补齐重点。",
-            _ when priorityLabel == "高优先级" => "两个参考项目都已具备，且当前项目缺失，建议优先补齐。",
-            _ when priorityLabel == "中优先级" => "具备一定兼容价值，但优先级低于主流采样参数。",
-            _ => "当前不建议仅基于本报告立即补充。"
-        };
-    }
-
-    /// <summary>
-    /// 规范化参考项目字段分组名，方便 new-api 与 CPA 对齐。
-    /// </summary>
-    private static string NormalizeReferenceGroupLabel(string label)
-    {
-        return label.Replace("（CPA）", string.Empty, StringComparison.Ordinal).Trim();
-    }
-
-    /// <summary>
-    /// 格式化参考类型展示。
-    /// </summary>
-    private static string FormatReferenceType(string? type)
-    {
-        return string.IsNullOrWhiteSpace(type) ? "—" : $"`{EscapeMarkdown(type)}`";
-    }
-
-    /// <summary>
-    /// 格式化可选状态展示。
-    /// </summary>
-    private static string FormatNullableOptional(bool? optional)
-    {
-        return optional is null ? "—" : FormatOptional(optional.Value);
-    }
-
-    /// <summary>
-    /// 收集单个参考项目已支持但当前项目未实现的接口。
-    /// </summary>
-    private static List<ReferenceOnlyRoute> CollectReferenceOnlyRoutes(
+    private static List<RouteSyncEntry> BuildRouteEntries(
         ProjectScanResult current,
-        ProjectScanResult reference,
-        ProtocolCatalog catalog)
+        ProjectScanResult cpa,
+        ProtocolCatalog catalog,
+        List<FieldDiffResult> cpaFieldDiffs)
     {
         var currentKeys = current.Routes
             .Where(route => !route.IsNotImplemented)
             .Select(route => route.Key)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var referenceKeys = reference.Routes
+        var cpaKeys = cpa.Routes
             .Where(route => !route.IsNotImplemented)
             .Select(route => route.Key)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        return catalog.SyncTargets
-            .Where(target => referenceKeys.Contains(target.Key) && !currentKeys.Contains(target.Key))
-            .Select(target => new ReferenceOnlyRoute(target))
-            .OrderBy(item => item.Target.Protocol, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Target.Category, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Target.Path, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Target.Method, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    /// <summary>
-    /// 将字段对齐状态转换为直观文案。
-    /// </summary>
-    private static string FormatFieldStatus(FieldTypeMatchStatus status)
-    {
-        return status switch
+        var entries = new List<RouteSyncEntry>();
+        foreach (var target in catalog.SyncTargets)
         {
-            FieldTypeMatchStatus.PassThrough => "已透传",
-            FieldTypeMatchStatus.BridgeHandled => "已兼容中转",
-            FieldTypeMatchStatus.SemanticHandled => "已语义映射",
-            FieldTypeMatchStatus.Missing => "未检测到",
-            FieldTypeMatchStatus.TypeMismatch => "类型线索不一致",
-            _ => "已对齐"
-        };
-    }
+            var cpaHas = cpaKeys.Contains(target.ComparisonKey);
+            var aitoolHas = currentKeys.Contains(target.ComparisonKey);
 
-    /// <summary>
-    /// 格式化字段可选性。
-    /// </summary>
-    private static string FormatOptional(bool optional)
-    {
-        return optional ? "是" : "否";
-    }
+            var status = !cpaHas
+                ? (aitoolHas ? RouteSyncStatus.AIToolOnly : RouteSyncStatus.NeitherImplemented)
+                : !aitoolHas
+                    ? RouteSyncStatus.NotImplemented
+                    : RouteSyncStatus.RouteOnlyAligned;
 
-    /// <summary>
-    /// 转义 Markdown 表格中容易破坏结构的字符。
-    /// </summary>
-    private static string EscapeMarkdown(string value)
-    {
-        return value.Replace("|", "\\|", StringComparison.Ordinal);
-    }
+            // 关联字段分组
+            var boundGroups = cpaFieldDiffs
+                .Where(diff => diff.Group.RouteKeys.Any(key => string.Equals(key, target.ComparisonKey, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
 
-    /// <summary>
-    /// 参考项目字段基线对比行。
-    /// </summary>
-    private sealed record ReferenceFieldComparisonRow(
-        string InterfaceLabel,
-        string FieldName,
-        string Category,
-        string? NewApiType,
-        bool? NewApiOptional,
-        string? CpaType,
-        bool? CpaOptional,
-        string? CurrentProjectStatus);
+            var misaligned = boundGroups.SelectMany(diff => diff.MisalignedRows).ToList();
+            var total = boundGroups.Sum(diff => diff.Rows.Count);
 
-    /// <summary>
-    /// 参考项目已支持但当前项目未实现的接口项。
-    /// </summary>
-    private sealed record ReferenceOnlyRoute(RouteClassification Target);
-}
-/// <summary>
-/// 拉取参考项目（new-api、CLIProxyAPI）的最新代码。
-/// </summary>
-internal static class GitPullHelper
-{
-    /// <summary>
-    /// 拉取参考项目的最新代码，拉取失败时输出警告但不中断主流程。
-    /// </summary>
-    public static void PullReferenceProjects(string repositoryRoot)
-    {
-        var referenceDir = Path.Combine(repositoryRoot, "reference-projects");
-        if (!Directory.Exists(referenceDir))
-        {
-            Console.WriteLine("⚠️ 未找到 reference-projects 目录，跳过拉取。");
-            return;
+            if (status == RouteSyncStatus.RouteOnlyAligned && total > 0)
+            {
+                status = misaligned.Count > 0 ? RouteSyncStatus.IncompleteFields : RouteSyncStatus.FullyAligned;
+            }
+
+            var entry = new RouteSyncEntry
+            {
+                Target = target,
+                Status = status,
+                TotalFieldCount = total,
+                MisalignedFieldCount = misaligned.Count,
+                CpaHasRoute = cpaHas,
+                AitoolHasRoute = aitoolHas
+            };
+            foreach (var row in misaligned.Where(row => row.TypeMatchStatus == FieldTypeMatchStatus.Missing))
+            {
+                entry.MissingFields.Add(row.FieldName);
+            }
+
+            entries.Add(entry);
         }
 
-        foreach (var projectDir in Directory.EnumerateDirectories(referenceDir))
+        return entries;
+    }
+
+    private static void AppendUntrackedRoutes(StringBuilder builder, ProjectScanResult current, ProjectScanResult cpa)
+    {
+        if (cpa.UnclassifiedRoutes.Count > 0)
         {
-            if (!Directory.Exists(Path.Combine(projectDir, ".git")))
+            builder.AppendLine("## CLIProxyAPI 新增但未跟踪的路由");
+            builder.AppendLine();
+            builder.AppendLine("> 这些路由不在协议目录中，可能是参考项目新增的协议、管理接口或非 OpenAI/Anthropic 协议。请人工确认是否需要纳入同步范围。");
+            builder.AppendLine();
+            builder.AppendLine("| Method | URL | 位置 |");
+            builder.AppendLine("| --- | --- | --- |");
+            foreach (var route in cpa.UnclassifiedRoutes)
             {
+                builder.AppendLine("| " + route.Method + " | `" + route.Path + "` | `" + Path.GetFileName(route.SourcePath) + ":" + route.LineNumber + "` |");
+            }
+            builder.AppendLine();
+        }
+
+        if (current.UnclassifiedRoutes.Count > 0)
+        {
+            builder.AppendLine("## AITool 独有但未跟踪的路由");
+            builder.AppendLine();
+            builder.AppendLine("| Method | URL | 位置 |");
+            builder.AppendLine("| --- | --- | --- |");
+            foreach (var route in current.UnclassifiedRoutes)
+            {
+                builder.AppendLine("| " + route.Method + " | `" + route.Path + "` | `" + Path.GetFileName(route.SourcePath) + ":" + route.LineNumber + "` |");
+            }
+            builder.AppendLine();
+        }
+    }
+
+    private static void AppendFieldAlignmentReport(StringBuilder builder, List<FieldDiffResult> fieldDiffs, string referenceName)
+    {
+        builder.AppendLine("## AITool 与 " + referenceName + " 字段对比");
+        builder.AppendLine();
+        builder.AppendLine("> 字段基线来自 " + referenceName + " 的协议转换/流式处理代码；AITool 侧同时扫描协议桥接代码、代理控制器和 Responses 流式状态代码。字段出现但语义未必完全等价，需结合状态和来源位置判断。");
+        builder.AppendLine();
+
+        foreach (var diff in fieldDiffs.OrderBy(diff => diff.Group.Label, StringComparer.OrdinalIgnoreCase))
+        {
+            builder.AppendLine("### " + EscapeMarkdown(diff.Group.Label));
+            builder.AppendLine();
+            builder.AppendLine("- 对齐情况：" + diff.AlignedRows.Count + "/" + diff.Rows.Count);
+            builder.AppendLine("- 需要关注：" + diff.MisalignedRows.Count);
+            builder.AppendLine();
+
+            if (diff.MisalignedRows.Count == 0)
+            {
+                builder.AppendLine("✅ " + referenceName + " 参考字段均已在 AITool 中检测到处理逻辑。");
+                builder.AppendLine();
                 continue;
             }
 
-            var projectName = Path.GetFileName(projectDir);
-            Console.Write($"正在拉取 {projectName} 最新代码...");
-            var (success, output) = RunGitPull(projectDir);
-            if (success)
+            builder.AppendLine("| 字段 | " + referenceName + " 类型 | 可选 | AITool 状态 | AITool 类型线索 | AITool 位置 |");
+            builder.AppendLine("| --- | --- | --- | --- | --- | --- |");
+            foreach (var row in diff.MisalignedRows)
             {
-                Console.WriteLine($" ✅ {ExtractPullSummary(output)}");
+                var locations = GetLocations(row);
+                builder.AppendLine("| `" + row.FieldName + "` | `" + EscapeMarkdown(row.ReferenceType) + "` | " + FormatOptional(row.Optional) + " | " + FormatFieldStatus(row.TypeMatchStatus) + " | " + EscapeMarkdown(row.CurrentTypeHint) + " | " + EscapeMarkdown(locations) + " |");
             }
-            else
-            {
-                Console.WriteLine($" ⚠️ 拉取失败：{output.Split('\n').FirstOrDefault()}");
-            }
+            builder.AppendLine();
         }
     }
 
+    private static string GetLocations(FieldAlignmentRow row)
+    {
+        if (row.CurrentLocations.Count == 0)
+        {
+            return "—";
+        }
+
+        return string.Join("<br>", row.CurrentLocations
+            .Take(3)
+            .Select(location => Path.GetFileName(location.FilePath) + ":" + location.LineNumber));
+    }
+
+    private static void AppendDiagnosticConclusion(
+        StringBuilder builder,
+        ProjectScanResult current,
+        ProjectScanResult cpa,
+        List<FieldDiffResult> fieldDiffs,
+        List<FieldDiffResult> ccFieldDiffs)
+    {
+        var missingRoutes = cpa.Routes
+            .Where(route => !route.IsNotImplemented)
+            .Select(route => route.Key)
+            .Except(current.Routes.Where(route => !route.IsNotImplemented).Select(route => route.Key), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var mismatches = fieldDiffs.SelectMany(diff => diff.MisalignedRows)
+            .Concat(ccFieldDiffs.SelectMany(diff => diff.MisalignedRows))
+            .ToList();
+
+        builder.AppendLine("## 本次运行的排查结论");
+        builder.AppendLine();
+        if (missingRoutes.Count == 0 && mismatches.Count == 0 && current.MissingFiles.Count == 0 && cpa.MissingFiles.Count == 0)
+        {
+            builder.AppendLine("✅ 静态路由和字段扫描没有发现 CLIProxyAPI 与 AITool 的明显协议缺口。");
+            builder.AppendLine("如果运行时仍出现空响应或流式内容缺失，应继续核对实际上游 SSE / JSON 原文及转换日志。");
+            builder.AppendLine();
+            return;
+        }
+
+        builder.AppendLine("### 优先级判断");
+        builder.AppendLine();
+        if (missingRoutes.Count > 0)
+        {
+            builder.AppendLine("- **高优先级：**先补齐上方列出的 CLIProxyAPI 主协议路由缺口。");
+        }
+        if (fieldDiffs.Any(diff => diff.MisalignedRows.Any(row => row.TypeMatchStatus == FieldTypeMatchStatus.Missing)))
+        {
+            builder.AppendLine("- **高优先级：**处理字段状态为“未检测到”的请求、响应和流式事件字段。");
+        }
+        if (fieldDiffs.Any(diff => diff.MisalignedRows.Any(row => row.TypeMatchStatus == FieldTypeMatchStatus.TypeMismatch)))
+        {
+            builder.AppendLine("- **高优先级：**核对类型线索不一致的字段，重点关注数组、对象、标量以及 JsonNode 动态转换。");
+        }
+        if (cpa.UnclassifiedRoutes.Count > 0)
+        {
+            builder.AppendLine("- **待确认：**人工核对 CLIProxyAPI 未跟踪路由，判断是否为需要同步的新协议。");
+        }
+        builder.AppendLine("- **流式重点：**核对 `type`、`delta`、`text`、`index`、`output_index`、工具调用参数和终止事件的顺序。");
+        builder.AppendLine("- **非流式重点：**核对 message/content/output、tool calls、finish reason 和 usage 的最终结构。");
+        builder.AppendLine("- **转换重点：**如果字段通过语义映射、透传或辅助方法处理，应检查对应代码位置，而不能只按同名字段判断。");
+        builder.AppendLine();
+    }
+
+    private static string FormatFieldStatus(FieldTypeMatchStatus status) => status switch
+    {
+        FieldTypeMatchStatus.PassThrough => "已透传",
+        FieldTypeMatchStatus.BridgeHandled => "已兼容中转",
+        FieldTypeMatchStatus.SemanticHandled => "已语义映射",
+        FieldTypeMatchStatus.DynamicHandled => "动态处理，无法确认",
+        FieldTypeMatchStatus.Missing => "未检测到",
+        FieldTypeMatchStatus.TypeMismatch => "类型线索不一致",
+        _ => "已对齐"
+    };
+
+    private static string FormatOptional(bool optional) => optional ? "是" : "否";
+
+    private static string EscapeMarkdown(string value) => value.Replace("|", "\\|", StringComparison.Ordinal);
+}
+
+internal static class GitPullHelper
+{
+    public static GitPullResult DescribeCurrentHead(string repositoryRoot, string projectDirName)
+    {
+        var projectDir = Path.Combine(repositoryRoot, "reference-projects", projectDirName);
+        return new GitPullResult(
+            true,
+            "已跳过拉取（--skip-pull）",
+            GetHeadInfo(projectDir, out var commitDate) ?? "未知",
+            commitDate ?? "未知");
+    }
+
     /// <summary>
-    /// 在指定目录执行 git pull，返回是否成功及命令输出。
+    /// 拉取 reference-projects 下的参考项目：先走 origin（可能是 gh-proxy 镜像），
+    /// 失败时回退官方仓库地址再试一次。
     /// </summary>
-    private static (bool Success, string Output) RunGitPull(string workingDirectory)
+    public static GitPullResult PullReferenceProject(
+        string repositoryRoot,
+        string projectDirName,
+        string fallbackUrl,
+        string fallbackBranch)
+    {
+        var projectDir = Path.Combine(repositoryRoot, "reference-projects", projectDirName);
+        if (!Directory.Exists(Path.Combine(projectDir, ".git")))
+        {
+            return new GitPullResult(false, $"未找到 reference-projects/{projectDirName}/.git，跳过拉取。", "未知", "未知");
+        }
+
+        Console.Write("正在拉取 " + projectDirName + " 最新代码...");
+        var (success, output) = RunGitPull(projectDir);
+        if (!success)
+        {
+            // 镜像源可能失效，回退到官方 GitHub 地址再试一次。
+            Console.WriteLine(" ⚠️ origin 拉取失败：" + output.Split('\n').FirstOrDefault()?.Trim() + "，尝试官方仓库...");
+            var (fallbackSuccess, fallbackOutput) = RunGitPull(projectDir, fallbackUrl, fallbackBranch);
+            if (fallbackSuccess)
+            {
+                success = true;
+                output = fallbackOutput;
+            }
+            else
+            {
+                Console.WriteLine(" ⚠️ 官方仓库拉取也失败：" + fallbackOutput.Split('\n').FirstOrDefault()?.Trim());
+            }
+        }
+
+        if (success)
+        {
+            Console.WriteLine(" ✅ " + ExtractPullSummary(output));
+        }
+
+        var commitHash = GetHeadInfo(projectDir, out var commitDate) ?? "未知";
+        Console.WriteLine("   当前基准：" + commitHash + "（" + (commitDate ?? "未知") + "）");
+        return new GitPullResult(success, output.Split('\n').FirstOrDefault()?.Trim() ?? string.Empty, commitHash, commitDate ?? "未知");
+    }
+
+    private static string? GetHeadInfo(string workingDirectory, out string? commitDate)
+    {
+        commitDate = null;
+        var hash = RunGit(workingDirectory, "log -1 --format=%h");
+        if (hash is null)
+        {
+            return null;
+        }
+
+        commitDate = RunGit(workingDirectory, "log -1 --format=%ci")?.Trim();
+        return hash.Trim();
+    }
+
+    private static string? RunGit(string workingDirectory, string arguments)
     {
         try
         {
             var psi = new ProcessStartInfo
             {
                 FileName = "git",
-                Arguments = "pull --ff-only",
+                Arguments = arguments,
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(psi);
+            if (process is null)
+            {
+                return null;
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            return process.ExitCode == 0 ? output : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static (bool Success, string Output) RunGitPull(string workingDirectory, string? fallbackUrl = null, string? fallbackBranch = null)
+    {
+        try
+        {
+            var arguments = fallbackUrl is null
+                ? "pull --ff-only"
+                : "pull --ff-only \"" + fallbackUrl + "\" " + (fallbackBranch ?? "main");
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = arguments,
                 WorkingDirectory = workingDirectory,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -1192,7 +1437,6 @@ internal static class GitPullHelper
             var output = process.StandardOutput.ReadToEnd();
             var error = process.StandardError.ReadToEnd();
             process.WaitForExit();
-
             return process.ExitCode == 0
                 ? (true, string.IsNullOrEmpty(output) ? error : output)
                 : (false, string.IsNullOrEmpty(error) ? output : error);
@@ -1203,17 +1447,14 @@ internal static class GitPullHelper
         }
     }
 
-    /// <summary>
-    /// 从 git pull 输出中提取简要摘要（如文件变更数）。
-    /// </summary>
     private static string ExtractPullSummary(string output)
     {
         var firstLine = output.Split('\n').FirstOrDefault()?.Trim();
-        if (string.IsNullOrEmpty(firstLine) || firstLine.Equals("Already up to date.", StringComparison.OrdinalIgnoreCase))
-        {
-            return "已是最新";
-        }
-
-        return firstLine;
+        return string.IsNullOrEmpty(firstLine)
+            || firstLine.Equals("Already up to date.", StringComparison.OrdinalIgnoreCase)
+            ? "已是最新"
+            : firstLine;
     }
 }
+
+internal sealed record GitPullResult(bool Success, string Message, string CommitHash, string CommitDate);

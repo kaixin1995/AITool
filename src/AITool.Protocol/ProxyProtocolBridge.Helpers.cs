@@ -1,8 +1,9 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace AITool.Infrastructure.ProxyProtocol;
+namespace AITool.Protocol;
 
 /// <summary>
 /// 负责在 OpenAI 与 Anthropic 协议之间转换请求和响应内容。
@@ -12,23 +13,26 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 解析 Anthropic assistant 内容块，拆分出文本、工具调用和图片内容。
     /// </summary>
-    private static (string? TextContent, JsonArray ToolUseBlocks, JsonArray ImageBlocks) ParseAnthropicContentBlocks(JsonNode? content)
+    private static (string? TextContent, JsonArray ToolUseBlocks, JsonArray ImageBlocks, string? ReasoningText) ParseAnthropicContentBlocks(JsonNode? content)
     {
         string? textContent = null;
         var toolUseBlocks = new JsonArray();
         var imageBlocks = new JsonArray();
+        // thinking block 的文本，供 keep_reasoning 规则映射成 OpenAI 的 reasoning_content。
+        // 默认丢弃（标准 OpenAI 不认 reasoning_content），仅在 deepseek 等要求回传的上游按规则保留。
+        string? reasoningText = null;
 
         if (content is null)
-            return (null, toolUseBlocks, imageBlocks);
+            return (null, toolUseBlocks, imageBlocks, null);
 
         if (content is JsonValue value)
         {
             try { textContent = value.GetValue<string>(); } catch { textContent = value.ToJsonString(); }
-            return (textContent, toolUseBlocks, imageBlocks);
+            return (textContent, toolUseBlocks, imageBlocks, null);
         }
 
         if (content is not JsonArray blocks)
-            return (content.ToJsonString(), toolUseBlocks, imageBlocks);
+            return (content.ToJsonString(), toolUseBlocks, imageBlocks, null);
 
         var textParts = new List<string>();
         foreach (var block in blocks)
@@ -41,6 +45,28 @@ public static partial class ProxyProtocolBridge
                 case "text":
                     var t = blockObj["text"]?.GetValue<string>();
                     if (t is not null) textParts.Add(t);
+                    break;
+                case "thinking":
+                    // 提取思维链文本（thinking 字段，兼容 text/content 写法），由调用方决定是否保留。
+                    // 字段可能是数组/对象（非标准客户端），非字符串时跳过，避免 GetValue<string> 抛异常。
+                    if (blockObj["thinking"] is JsonValue thinkingVal
+                        && thinkingVal.TryGetValue<string>(out var thinking)
+                        && !string.IsNullOrWhiteSpace(thinking))
+                    {
+                        reasoningText = string.Concat(reasoningText, thinking);
+                    }
+                    else if (blockObj["text"] is JsonValue textVal
+                        && textVal.TryGetValue<string>(out var thinkingText)
+                        && !string.IsNullOrWhiteSpace(thinkingText))
+                    {
+                        reasoningText = string.Concat(reasoningText, thinkingText);
+                    }
+                    else if (blockObj["content"] is JsonValue contentVal
+                        && contentVal.TryGetValue<string>(out var thinkingContent)
+                        && !string.IsNullOrWhiteSpace(thinkingContent))
+                    {
+                        reasoningText = string.Concat(reasoningText, thinkingContent);
+                    }
                     break;
                 case "tool_use":
                     toolUseBlocks.Add(new JsonObject
@@ -57,13 +83,30 @@ public static partial class ProxyProtocolBridge
                 case "image":
                     if (blockObj["source"] is JsonObject src)
                     {
-                        var mediaType = src["media_type"]?.GetValue<string>() ?? "image/png";
-                        var data = src["data"]?.GetValue<string>() ?? "";
-                        imageBlocks.Add(new JsonObject
+                        var sourceType = src["type"]?.GetValue<string>() ?? "base64";
+                        if (string.Equals(sourceType, "url", StringComparison.OrdinalIgnoreCase))
                         {
-                            ["type"] = "image_url",
-                            ["image_url"] = new JsonObject { ["url"] = $"data:{mediaType};base64,{data}" }
-                        });
+                            // 远程图片 URL 直接透传（cache_control / prompt_cache_breakpoint 不透传）。
+                            var url = src["url"]?.GetValue<string>() ?? "";
+                            if (!string.IsNullOrEmpty(url))
+                            {
+                                imageBlocks.Add(new JsonObject
+                                {
+                                    ["type"] = "image_url",
+                                    ["image_url"] = new JsonObject { ["url"] = url }
+                                });
+                            }
+                        }
+                        else
+                        {
+                            var mediaType = src["media_type"]?.GetValue<string>() ?? "image/png";
+                            var data = src["data"]?.GetValue<string>() ?? "";
+                            imageBlocks.Add(new JsonObject
+                            {
+                                ["type"] = "image_url",
+                                ["image_url"] = new JsonObject { ["url"] = $"data:{mediaType};base64,{data}" }
+                            });
+                        }
                     }
                     break;
             }
@@ -72,7 +115,7 @@ public static partial class ProxyProtocolBridge
         if (textParts.Count > 0)
             textContent = string.Join("\n", textParts);
 
-        return (textContent, toolUseBlocks, imageBlocks);
+        return (textContent, toolUseBlocks, imageBlocks, reasoningText);
     }
 
     /// <summary>
@@ -630,6 +673,28 @@ public static partial class ProxyProtocolBridge
     }
 
     /// <summary>
+    /// 解析 SSE 单行的字段负载。SSE 规范允许 "data:value"（无空格）与 "data: value" 两种写法，
+    /// 这里统一兼容：仅剥离字段名冒号后的第一个空格，与规范一致。
+    /// </summary>
+    public static bool TryExtractSseFieldPayload(string line, string fieldName, out string value)
+    {
+        value = string.Empty;
+        var prefix = fieldName + ":";
+        if (!line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        value = line[prefix.Length..];
+        if (value.StartsWith(' '))
+        {
+            value = value[1..];
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// 在需要时关闭当前的 thinking 内容块。
     /// </summary>
     private static void CloseThinkingBlockIfNeeded(StringBuilder builder, AnthropicOpenAiStreamState state)
@@ -814,13 +879,45 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string ExtractSystemContent(JsonNode systemNode)
     {
-        return systemNode switch
+        var text = systemNode switch
         {
             JsonValue value => value.ToJsonString().Trim('"'),
             JsonArray array => string.Join("\n", array.Select(ExtractTextFromNode).Where(x => !string.IsNullOrWhiteSpace(x))),
             JsonObject obj => ExtractTextFromNode(obj),
             _ => systemNode.ToJsonString()
         };
+        return StripLeadingAnthropicBillingHeader(text);
+    }
+
+    /// <summary>
+    /// 剥离 Claude Code 动态插入的 billing header 首行（x-anthropic-billing-header: ...）。
+    /// 该行随请求变化，透传会破坏上游 prompt cache 的前缀复用（口径对齐 cc-switch
+    /// strip_leading_anthropic_billing_header，由反向推导向量测试锁定）：
+    /// 仅当文本以该前缀开头时剥离第一行（含 CRLF/LF）；非开头出现时保留原样。
+    /// </summary>
+    internal static string StripLeadingAnthropicBillingHeader(string text)
+    {
+        const string prefix = "x-anthropic-billing-header:";
+        if (string.IsNullOrEmpty(text) || !text.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        var lineEnd = text.IndexOf('\n');
+        if (lineEnd < 0 && !text.Contains('\r'))
+        {
+            // 整段只有 billing header 一行 → 剥离后为空。
+            return string.Empty;
+        }
+
+        var restStart = lineEnd >= 0 ? lineEnd + 1 : text.IndexOf('\r') + 1;
+        // 兼容 \r\n 与连续换行。
+        while (restStart < text.Length && (text[restStart] == '\n' || text[restStart] == '\r'))
+        {
+            restStart++;
+        }
+
+        return text[restStart..];
     }
 
     /// <summary>
@@ -957,12 +1054,11 @@ public static partial class ProxyProtocolBridge
         foreach (var rawLine in responseBody.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r');
-            if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
+            if (!TryExtractSseFieldPayload(line, "data", out var jsonText))
             {
                 continue;
             }
 
-            var jsonText = line["data: ".Length..];
             if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -1013,15 +1109,15 @@ public static partial class ProxyProtocolBridge
         foreach (var rawLine in responseBody.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r');
-            if (line.StartsWith("event: ", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractSseFieldPayload(line, "event", out var eventNameValue))
             {
-                currentEvent = line["event: ".Length..].Trim();
+                currentEvent = eventNameValue.Trim();
                 continue;
             }
 
-            if (line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractSseFieldPayload(line, "data", out var dataValue))
             {
-                dataLines.Add(line["data: ".Length..]);
+                dataLines.Add(dataValue);
                 continue;
             }
 
@@ -1154,22 +1250,33 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string ExtractContentFromMessage(JsonElement message)
     {
+        var parts = new List<string>();
+        if (message.TryGetProperty("refusal", out var refusalElement) && refusalElement.ValueKind == JsonValueKind.String)
+        {
+            AppendIfNotEmpty(parts, refusalElement.GetString());
+        }
+
         if (!message.TryGetProperty("content", out var contentElement))
         {
-            return string.Empty;
+            return string.Join("\n", parts);
         }
 
         if (contentElement.ValueKind == JsonValueKind.String)
         {
-            return contentElement.GetString() ?? string.Empty;
+            AppendIfNotEmpty(parts, contentElement.GetString());
+            return string.Join("\n", parts);
+        }
+
+        if (contentElement.ValueKind == JsonValueKind.Null)
+        {
+            return string.Join("\n", parts);
         }
 
         if (contentElement.ValueKind != JsonValueKind.Array)
         {
-            return string.Empty;
+            return string.Join("\n", parts);
         }
 
-        var parts = new List<string>();
         foreach (var item in contentElement.EnumerateArray())
         {
             var itemType = item.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : string.Empty;
@@ -1179,10 +1286,17 @@ public static partial class ProxyProtocolBridge
                 continue;
             }
 
+            if (string.Equals(itemType, "refusal", StringComparison.OrdinalIgnoreCase))
+            {
+                AppendIfNotEmpty(parts, ExtractElementText(item, "refusal", "text", "content"));
+                continue;
+            }
+
             AppendIfNotEmpty(parts, ExtractElementText(item, "text", "content"));
         }
 
         return string.Join("\n", parts);
+
     }
 
     /// <summary>
@@ -1190,7 +1304,7 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string ExtractReasoningFromElement(JsonElement element)
     {
-        if (element.ValueKind == JsonValueKind.Undefined)
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
         {
             return string.Empty;
         }
@@ -1218,7 +1332,7 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string? ExtractDeltaContent(JsonElement delta)
     {
-        if (delta.ValueKind == JsonValueKind.Undefined)
+        if (delta.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
         {
             return null;
         }
@@ -1266,34 +1380,114 @@ public static partial class ProxyProtocolBridge
 
     /// <summary>
     /// 按协议类型从 usage 节点中提取输入、缓存和输出 token 数。
+    /// 兼容标准 OpenAI（prompt_tokens）、Responses（input_tokens）以及 newapi 等中间层：
+    /// input_tokens 优先、缺失时回退 prompt_tokens；output_tokens 为 0 时回退 completion_tokens。
+    /// <para>
+    /// 返回的 InputTokens 统一为"不含缓存的新输入"：OpenAI/Responses/Anthropic 的输入字段
+    /// 都包含缓存命中部分（cached_tokens / cache_read+cache_creation 是其子集），
+    /// 此处一律先减去缓存，保证 新输入 + 缓存 + 输出 = 总 token 且不重复统计。
+    /// </para>
     /// </summary>
-    private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
+    public static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
     {
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
         {
-            var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
-            var cached = 0;
-            if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
-            {
-                cached += readCache.GetInt32();
-            }
+            // Anthropic 的 input_tokens 已包含缓存 token（cache_read + cache_creation 是其子集），
+            // 必须减去缓存才是真正的"新输入"，否则缓存会在"输入"列和"缓存"列重复统计，
+            // 导致总 token 虚高、缓存命中率看起来偏低。
+            var input = ReadUsageInteger(usage, "input_tokens");
+            var cached = ReadUsageInteger(usage, "cache_read_input_tokens")
+                + ReadUsageInteger(usage, "cache_creation_input_tokens");
 
-            if (usage.TryGetProperty("cache_creation_input_tokens", out var createCache))
-            {
-                cached += createCache.GetInt32();
-            }
-
-            var output = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
-            return (input, cached, output);
+            var newInput = Math.Max(0, input - cached);
+            var output = ReadUsageInteger(usage, "output_tokens");
+            return (newInput, cached, output);
         }
 
-        var prompt = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
-        var promptDetails = usage.TryGetProperty("prompt_tokens_details", out var ptd) ? ptd : default;
-        var cachedTokens = promptDetails.ValueKind == JsonValueKind.Object && promptDetails.TryGetProperty("cached_tokens", out var ct)
-            ? ct.GetInt32()
+        if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            // Gemini usageMetadata：promptTokenCount 已含缓存命中（cachedContentTokenCount 是其子集），
+            // 输出 = candidatesTokenCount + thoughtsTokenCount（思考 token 同样计费）。
+            var geminiPrompt = ReadUsageInteger(usage, "promptTokenCount");
+            var geminiCached = ReadUsageInteger(usage, "cachedContentTokenCount");
+            var candidatesTokens = ReadUsageInteger(usage, "candidatesTokenCount");
+            var thoughtsTokens = ReadUsageInteger(usage, "thoughtsTokenCount");
+            return (Math.Max(0, geminiPrompt - geminiCached), geminiCached, candidatesTokens + thoughtsTokens);
+        }
+
+        var openAiInputTokens = usage.TryGetProperty("input_tokens", out _)
+            ? ReadUsageInteger(usage, "input_tokens")
+            : ReadUsageInteger(usage, "prompt_tokens");
+
+        // OpenAI Chat Completions 与 Responses 的缓存字段结构不同，这里统一兼容两种格式。
+        // 部分中间层（如 newapi）的 input_tokens_details 为 null，需要回退到 prompt_tokens_details。
+        var inputDetails = usage.TryGetProperty("input_tokens_details", out var itd) && itd.ValueKind == JsonValueKind.Object
+            ? itd
+            : usage.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
+                ? ptd
+                : default;
+        var cachedTokens = inputDetails.ValueKind == JsonValueKind.Object
+            ? ReadUsageInteger(inputDetails, "cached_tokens")
             : 0;
-        var completion = usage.TryGetProperty("completion_tokens", out var completionTokens) ? completionTokens.GetInt32() : 0;
-        return (prompt, cachedTokens, completion);
+
+        // 缓存写 token：兼容 cached_creation_tokens（本仓出口与 newapi 使用）与 cache_write_tokens 两种写法。
+        // 未读取时缓存写会被计入"新输入"列，导致输入虚高、缓存列低估。
+        var cacheWriteTokens = 0;
+        if (inputDetails.ValueKind == JsonValueKind.Object)
+        {
+            cacheWriteTokens = inputDetails.TryGetProperty("cached_creation_tokens", out _)
+                ? ReadUsageInteger(inputDetails, "cached_creation_tokens")
+                : ReadUsageInteger(inputDetails, "cache_write_tokens");
+        }
+
+        var totalCachedTokens = cachedTokens + cacheWriteTokens;
+
+        // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
+        // 所以 output_tokens=0 时回退到 completion_tokens。
+        var openAiOutputTokens = ReadUsageInteger(usage, "output_tokens");
+        if (openAiOutputTokens <= 0)
+        {
+            openAiOutputTokens = ReadUsageInteger(usage, "completion_tokens");
+        }
+
+        // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集）。
+        // 与上方 Anthropic 分支一致，返回的 InputTokens 统一为"不含缓存的新输入"（缓存读+写都需扣除），
+        // 否则"输入"列与"缓存"列重复统计，TotalTokens（新输入+缓存+输出）虚高。
+        var newOpenAiInput = Math.Max(0, openAiInputTokens - totalCachedTokens);
+        return (newOpenAiInput, totalCachedTokens, openAiOutputTokens);
+    }
+
+    /// <summary>
+    /// 安全读取 usage 中的整数。部分中间层会返回 null 或字符串，不能让单个字段异常
+    /// 使整条成功响应的用量退化为 (0, 0, 0)。
+    /// </summary>
+    private static int ReadUsageInteger(JsonElement parent, string propertyName)
+    {
+        if (!parent.TryGetProperty(propertyName, out var value))
+        {
+            return 0;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number)
+        {
+            if (value.TryGetInt32(out var integerValue))
+            {
+                return Math.Max(0, integerValue);
+            }
+
+            if (value.TryGetInt64(out var longValue))
+            {
+                return (int)Math.Clamp(longValue, 0L, int.MaxValue);
+            }
+        }
+
+        if (value.ValueKind == JsonValueKind.String
+            && long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedValue))
+        {
+            return (int)Math.Clamp(parsedValue, 0L, int.MaxValue);
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -1301,6 +1495,11 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string? ExtractElementText(JsonElement element, params string[] propertyNames)
     {
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return null;
+        }
+
         foreach (var propertyName in propertyNames)
         {
             if (!element.TryGetProperty(propertyName, out var propertyValue))

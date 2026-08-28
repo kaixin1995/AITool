@@ -6,5 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- 引用真实协议桥：反向推导的测试向量直接在 AITool.Protocol 上执行，
+         cc-switch 测试断言什么，AITool 的转换就跑什么，实现逐路径比对。 -->
+    <ProjectReference Include="..\..\src\AITool.Protocol\AITool.Protocol.csproj" />
+  </ItemGroup>
 
 </Project>

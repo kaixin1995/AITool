@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace AITool.Infrastructure.ProxyProtocol;
+namespace AITool.Protocol;
 
 /// <summary>
 /// 负责在 OpenAI 与 Anthropic 协议之间转换请求和响应内容。
@@ -49,29 +49,79 @@ public static partial class ProxyProtocolBridge
             using var document = JsonDocument.Parse(jsonText);
             var root = document.RootElement;
 
-            if (root.TryGetProperty("usage", out var usage))
+            // 真实 OpenAI 流式分片常携带 usage:null，只有对象值才能提取用量。
+            if (root.TryGetProperty("usage", out var usage)
+                && usage.ValueKind == JsonValueKind.Object)
             {
-                var extracted = ExtractUsageFromElement(usage, "OpenAI");
-                if (extracted.InputTokens > 0)
+                // 拆桶提取：state.CachedTokens 只放缓存读、缓存写单独进 CacheCreationTokens。
+                // 不能复用 ExtractUsageFromElement 的合并值（其 CachedTokens = 读+写），
+                // 否则出口 message_delta 的 cache_read 桶会混入写、与 cache_creation 桶重复计费。
+                var rawInput = 0;
+                if (usage.TryGetProperty("prompt_tokens", out var ptEl) && ptEl.ValueKind == JsonValueKind.Number)
                 {
-                    state.InputTokens = extracted.InputTokens;
+                    rawInput = ptEl.GetInt32();
+                }
+                else if (usage.TryGetProperty("input_tokens", out var itEl) && itEl.ValueKind == JsonValueKind.Number)
+                {
+                    rawInput = itEl.GetInt32();
                 }
 
-                if (extracted.CachedTokens > 0)
+                var details = usage.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
+                    ? ptd
+                    : usage.TryGetProperty("input_tokens_details", out var itd) && itd.ValueKind == JsonValueKind.Object
+                        ? itd
+                        : default;
+                var cachedRead = 0;
+                if (details.ValueKind == JsonValueKind.Object
+                    && details.TryGetProperty("cached_tokens", out var cachedEl)
+                    && cachedEl.ValueKind == JsonValueKind.Number)
                 {
-                    state.CachedTokens = extracted.CachedTokens;
+                    cachedRead = cachedEl.GetInt32();
                 }
 
-                if (extracted.OutputTokens > 0)
+                // 缓存写兼容 cached_creation_tokens / cache_write_tokens 两种写法（防御中间层给 null/字符串形态的值）。
+                var cacheWrite = 0;
+                if (details.ValueKind == JsonValueKind.Object)
                 {
-                    state.OutputTokens = extracted.OutputTokens;
+                    if (details.TryGetProperty("cached_creation_tokens", out var ccEl) && ccEl.ValueKind == JsonValueKind.Number)
+                    {
+                        cacheWrite = ccEl.GetInt32();
+                    }
+                    else if (details.TryGetProperty("cache_write_tokens", out var cwEl) && cwEl.ValueKind == JsonValueKind.Number)
+                    {
+                        cacheWrite = cwEl.GetInt32();
+                    }
                 }
 
-                // 提取 cache_creation_tokens
-                if (usage.TryGetProperty("prompt_tokens_details", out var ptd)
-                    && ptd.TryGetProperty("cached_creation_tokens", out var cct))
+                // OpenAI 的输入 token 含缓存读+写，统一归一化为"不含缓存的新输入"（>0 守卫防止清空外部种子值）。
+                var freshInput = Math.Max(0, rawInput - cachedRead - cacheWrite);
+                if (freshInput > 0)
                 {
-                    state.CacheCreationTokens = cct.GetInt32();
+                    state.InputTokens = freshInput;
+                }
+
+                if (cachedRead > 0)
+                {
+                    state.CachedTokens = cachedRead;
+                }
+
+                state.CacheCreationTokens = cacheWrite;
+
+                // output_tokens 优先；newapi 等中间层把 output_tokens 置 0 时回退 completion_tokens。
+                var rawOutput = 0;
+                if (usage.TryGetProperty("completion_tokens", out var ctEl) && ctEl.ValueKind == JsonValueKind.Number)
+                {
+                    rawOutput = ctEl.GetInt32();
+                }
+
+                if (usage.TryGetProperty("output_tokens", out var otEl) && otEl.ValueKind == JsonValueKind.Number && otEl.GetInt32() > 0)
+                {
+                    rawOutput = otEl.GetInt32();
+                }
+
+                if (rawOutput > 0)
+                {
+                    state.OutputTokens = rawOutput;
                 }
             }
 
@@ -98,9 +148,12 @@ public static partial class ProxyProtocolBridge
                 if (reasoningText.Length > 0)
                 {
                     state.HadAnyContent = true;
-                    if (state.ThinkingIndex < 0)
+                    // 工具调用已关闭 thinking 块后又出现新的推理增量（GLM/DeepSeek 分段思考）：
+                    // 对已 stop 的索引继续发 delta 违反 Anthropic 事件序，这里分配新索引重开一个 thinking 块。
+                    if (state.ThinkingIndex < 0 || state.ThinkingClosed)
                     {
                         state.ThinkingIndex = state.NextContentIndex++;
+                        state.ThinkingClosed = false;
                         AppendSseEvent(builder, "content_block_start", new JsonObject
                         {
                             ["type"] = "content_block_start",
@@ -138,7 +191,8 @@ public static partial class ProxyProtocolBridge
                 }
 
                 var contentText = ExtractDeltaContent(delta);
-                if (contentText is null)
+                // role-only/usage-only 分片通常会携带空字符串，不能因此创建空 text block。
+                if (string.IsNullOrEmpty(contentText))
                 {
                     continue;
                 }
@@ -154,9 +208,11 @@ public static partial class ProxyProtocolBridge
                     state.ThinkingClosed = true;
                 }
 
-                if (state.TextIndex < 0)
+                if (state.TextIndex < 0 || state.TextClosed)
                 {
+                    // 同 thinking：工具调用关闭 text 块后再来的尾段文本用新索引重开，避免对已 stop 的块发 delta。
                     state.TextIndex = state.NextContentIndex++;
+                    state.TextClosed = false;
                     AppendSseEvent(builder, "content_block_start", new JsonObject
                     {
                         ["type"] = "content_block_start",
@@ -183,6 +239,8 @@ public static partial class ProxyProtocolBridge
         }
         catch
         {
+            // 标记当前分片转换失败，调用层可在尚未输出时继续 fallback。
+            state.ConversionFailed = true;
         }
 
         return builder.ToString();
@@ -222,6 +280,9 @@ public static partial class ProxyProtocolBridge
             ["type"] = "message_delta",
             ["usage"] = new JsonObject
             {
+                // Anthropic 官方语义：input_tokens 不含缓存，与 cache_read/creation 三桶相加才是总输入
+                //（官方 cookbook 实例 input=4、cache_read=2051）。与非流式 BuildAnthropicResponseFromOpenAi
+                // 的出口口径一致；此前按"含缓存"输出会导致按官方加法公式计费的客户端重复计算缓存。
                 ["input_tokens"] = state.InputTokens,
                 ["cache_creation_input_tokens"] = state.CacheCreationTokens,
                 ["cache_read_input_tokens"] = state.CachedTokens,
@@ -357,9 +418,13 @@ public static partial class ProxyProtocolBridge
         }
 
         var stopReason = MapOpenAiFinishReason(finishReason);
-        var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
         var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
-        var directInputTokens = Math.Max(effectiveInput - cachedTokens - cacheCreation, 0);
+        // 统一为"不含缓存的新输入"（Anthropic 出口口径）：响应体的 upstreamInput 是原始
+        // prompt_tokens（含缓存），需减缓存；回退入参 inputTokens 本身已是新输入
+        //（aba2773 后的统一口径），不能再减——否则回退分支会被双重扣减导致低估甚至归零。
+        var directInputTokens = upstreamInput > 0
+            ? Math.Max(upstreamInput - cachedTokens - cacheCreation, 0)
+            : inputTokens;
 
         var builder = new StringBuilder();
         AppendSseEvent(builder, "message_start", new JsonObject
@@ -494,7 +559,7 @@ public static partial class ProxyProtocolBridge
             ["type"] = "message_delta",
             ["usage"] = new JsonObject
             {
-                ["input_tokens"] = effectiveInput,
+                ["input_tokens"] = directInputTokens,
                 ["cache_creation_input_tokens"] = cacheCreation,
                 ["cache_read_input_tokens"] = cachedTokens,
                 ["output_tokens"] = effectiveOutput

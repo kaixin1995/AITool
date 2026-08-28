@@ -11,10 +11,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AITool.Application\AITool.Application.csproj" />
+    <ProjectReference Include="..\AITool.Protocol\AITool.Protocol.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="AITool.ApplicationTests" />
+    <InternalsVisibleTo Include="AITool.Core.IntegrationTests" />
+    <InternalsVisibleTo Include="AITool.Admin.IntegrationTests" />
   </ItemGroup>
 
   <ItemGroup>

@@ -2,17 +2,83 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace AITool.Infrastructure.ProxyProtocol;
+namespace AITool.Protocol;
 
 /// <summary>
 /// Responses 协议转换所需的流式转换状态。
 /// </summary>
+public sealed class ResponsesToChatStreamState
+{
+    /// <summary>
+    /// 是否已发送 assistant 角色分片。
+    /// </summary>
+    public bool RoleChunkSent { get; set; }
+    /// <summary>
+    /// 是否已发送 response.completed 对应的结束分片。
+    /// </summary>
+    public bool Completed { get; set; }
+    /// <summary>
+    /// 是否出现无法解析的上游流片段。
+    /// </summary>
+    public bool ConversionFailed { get; set; }
+    /// <summary>
+    /// 当前响应使用的模型名称。
+    /// </summary>
+    public string Model { get; set; } = string.Empty;
+    /// <summary>
+    /// 已累积的正文和推理文本。
+    /// </summary>
+    public StringBuilder ContentText { get; } = new();
+    public StringBuilder ReasoningText { get; } = new();
+    /// <summary>
+    /// 按 Responses output_index 保存工具调用状态。
+    /// </summary>
+    public Dictionary<int, ResponsesToolCallState> ToolCalls { get; } = [];
+    /// <summary>
+    /// 将 Responses output_index 映射为 Chat tool_calls 的连续索引。
+    /// </summary>
+    public Dictionary<int, int> ToolCallChatIndices { get; } = [];
+    /// <summary>
+    /// 按 Chat tool index 保存 Responses function_call 输出项标识。
+    /// </summary>
+    public Dictionary<int, string> ChatToolCallOutputIds { get; } = [];
+    /// <summary>
+    /// 按 Chat tool index 保存 Responses function_call 输出索引。
+    /// </summary>
+    public Dictionary<int, int> ChatToolCallOutputIndices { get; } = [];
+    /// <summary>
+    /// 按 Chat tool index 保存工具调用标识。
+    /// </summary>
+    public Dictionary<int, string> ChatToolCallIds { get; } = [];
+    public int InputTokens { get; set; }
+    public int CachedTokens { get; set; }
+    public int OutputTokens { get; set; }
+}
+
+/// <summary>
+/// 保存 Responses 流式 function_call 的增量状态。
+/// </summary>
+public sealed class ResponsesToolCallState
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public StringBuilder Arguments { get; } = new();
+}
+
 public sealed class ChatToResponsesStreamState
 {
     /// <summary>
     /// 是否已发送 response.created 事件。
     /// </summary>
     public bool ResponseStarted { get; set; }
+    /// <summary>
+    /// 是否已收到真实输出或结束事件，避免无效首帧启动桥接响应。
+    /// </summary>
+    public bool SawMeaningfulEvent { get; set; }
+    /// <summary>
+    /// 是否出现无法解析的上游流片段。
+    /// </summary>
+    public bool ConversionFailed { get; set; }
     /// <summary>
     /// 是否已创建 message 输出项。
     /// </summary>
@@ -38,9 +104,19 @@ public sealed class ChatToResponsesStreamState
     /// </summary>
     public long CreatedAt { get; set; }
     /// <summary>
+    /// 已累积的输出文本（用 StringBuilder 累积，避免流式 delta 逐次整串复制导致 O(n²)）。
+    /// </summary>
+    private readonly StringBuilder _outputTextBuilder = new();
+
+    /// <summary>
     /// 已累积的输出文本。
     /// </summary>
-    public string OutputText { get; set; } = string.Empty;
+    public string OutputText => _outputTextBuilder.ToString();
+
+    /// <summary>
+    /// 追加一段输出文本增量。
+    /// </summary>
+    public void AppendOutputText(string deltaText) => _outputTextBuilder.Append(deltaText);
     /// <summary>
     /// 下一个可分配的工具调用索引。
     /// </summary>
@@ -50,9 +126,66 @@ public sealed class ChatToResponsesStreamState
     /// </summary>
     public List<string> SentToolCallIds { get; } = [];
     /// <summary>
+    /// 按 Anthropic 内容块索引保存 Responses function_call 的输出索引。
+    /// </summary>
+    public Dictionary<int, int> ToolCallOutputIndices { get; } = [];
+    /// <summary>
+    /// 按 Anthropic 内容块索引保存 Responses function_call 的输出项标识。
+    /// </summary>
+    public Dictionary<int, string> ToolCallOutputIds { get; } = [];
+    /// <summary>
+    /// 按 Anthropic 内容块索引保存 Responses function_call 的 call_id。
+    /// </summary>
+    public Dictionary<int, string> ToolCallCallIds { get; } = [];
+    /// <summary>
+    /// 按 Chat tool index 保存 Responses function_call 输出项标识。
+    /// </summary>
+    public Dictionary<int, string> ChatToolCallOutputIds { get; } = [];
+    /// <summary>
+    /// 按 Chat tool index 保存 Responses function_call 输出索引。
+    /// </summary>
+    public Dictionary<int, int> ChatToolCallOutputIndices { get; } = [];
+    /// <summary>
+    /// 按 Chat tool index 保存工具调用标识。
+    /// </summary>
+    public Dictionary<int, string> ChatToolCallIds { get; } = [];
+    /// <summary>
     /// 累积的用量信息。
     /// </summary>
     public (int InputTokens, int CachedTokens, int OutputTokens) Usage { get; set; }
+    /// <summary>
+    /// message 输出项占用的 output_index（Chat→Responses 恒为 0；Anthropic→Responses 在前面
+    /// 额外创建了 reasoning 输出项时会大于 0）。
+    /// </summary>
+    public int MessageOutputIndex { get; set; }
+    /// <summary>
+    /// 在 message 之前已分配的输出项数量（reasoning 项），影响后续所有输出项的 output_index 分配。
+    /// </summary>
+    public int ReservedOutputIndexes { get; set; }
+    /// <summary>
+    /// 流式 reasoning 输出项 id（Anthropic→Responses 桥接时使用）。
+    /// </summary>
+    public string? ReasoningItemId { get; set; }
+    /// <summary>
+    /// reasoning 输出项占用的 output_index。
+    /// </summary>
+    public int ReasoningItemOutputIndex { get; set; } = -1;
+    /// <summary>
+    /// reasoning 输出项是否已发送 output_item.added。
+    /// </summary>
+    public bool ReasoningItemAdded { get; set; }
+    /// <summary>
+    /// reasoning 输出项是否已发送 output_item.done。
+    /// </summary>
+    public bool ReasoningItemClosed { get; set; }
+    /// <summary>
+    /// 累积的 thinking 文本（用于 reasoning 项收口时的 summary 与签名桥接载体）。
+    /// </summary>
+    public StringBuilder ReasoningText { get; } = new();
+    /// <summary>
+    /// 累积的 thinking 签名（Anthropic signature_delta 事件）。
+    /// </summary>
+    public string ReasoningSignature { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -139,7 +272,8 @@ public static partial class ProxyProtocolBridge
             payload["reasoning_effort"] = outputConfigEffort.DeepClone();
         }
 
-        // tools → 转换扁平结构为 Chat Completions 嵌套结构
+        // tools → 转换扁平结构为 Chat Completions 嵌套结构。
+        // Responses 的内置工具由 Responses 上游执行，普通 Chat 上游无法实现，不能原样转发。
         if (root.TryGetPropertyValue("tools", out var toolsNode) && toolsNode is JsonArray toolsArray)
         {
             var chatTools = new JsonArray();
@@ -151,7 +285,7 @@ public static partial class ProxyProtocolBridge
                 }
 
                 var toolType = toolObj["type"]?.ToString() ?? "function";
-                if (toolType == "function")
+                if (string.Equals(toolType, "function", StringComparison.OrdinalIgnoreCase))
                 {
                     var chatTool = new JsonObject { ["type"] = "function" };
                     var function = new JsonObject();
@@ -173,17 +307,23 @@ public static partial class ProxyProtocolBridge
                     chatTool["function"] = function;
                     chatTools.Add(chatTool);
                 }
-                else
+                else if (string.Equals(toolType, "custom", StringComparison.OrdinalIgnoreCase))
                 {
+                    // Chat Completions 新版允许 custom 工具，保留其原始结构。
                     chatTools.Add(toolObj.DeepClone());
                 }
+                // web_search、file_search、computer_use 等 Responses 内置工具直接丢弃，
+                // 避免发送 Chat 上游不认识的 tools[].type 导致整次请求失败。
             }
 
             payload["tools"] = chatTools;
-        }
 
-        // tool_choice → 转换格式
-        if (root.TryGetPropertyValue("tool_choice", out var toolChoiceNode) && toolChoiceNode is not null)
+            if (root.TryGetPropertyValue("tool_choice", out var toolChoiceNode) && toolChoiceNode is not null)
+            {
+                payload["tool_choice"] = ConvertResponsesToolChoiceToChat(toolChoiceNode, chatTools);
+            }
+        }
+        else if (root.TryGetPropertyValue("tool_choice", out var toolChoiceNode) && toolChoiceNode is not null)
         {
             payload["tool_choice"] = ConvertResponsesToolChoiceToChat(toolChoiceNode);
         }
@@ -192,6 +332,29 @@ public static partial class ProxyProtocolBridge
         if (enableStreaming)
         {
             payload["stream_options"] = new JsonObject { ["include_usage"] = true };
+        }
+
+        // parallel_tool_calls / service_tier：Responses 与 Chat 同名字段，直接透传。
+        CopyIfPresent(root, payload, "parallel_tool_calls");
+        CopyIfPresent(root, payload, "service_tier");
+
+        // text.format → response_format（Responses 用 text.format 表达结构化输出）。
+        if (root.TryGetPropertyValue("text", out var textNode) && textNode is JsonObject textObj
+            && textObj.TryGetPropertyValue("format", out var formatNode) && formatNode is JsonObject format)
+        {
+            var formatType = format["type"]?.ToString() ?? string.Empty;
+            if (string.Equals(formatType, "json_object", StringComparison.OrdinalIgnoreCase))
+            {
+                payload["response_format"] = new JsonObject { ["type"] = "json_object" };
+            }
+            else if (string.Equals(formatType, "json_schema", StringComparison.OrdinalIgnoreCase))
+            {
+                payload["response_format"] = new JsonObject
+                {
+                    ["type"] = "json_schema",
+                    ["json_schema"] = format["json_schema"]?.DeepClone() ?? new JsonObject()
+                };
+            }
         }
 
         return payload.ToJsonString();
@@ -284,11 +447,17 @@ public static partial class ProxyProtocolBridge
                         }
 
                         var callId = toolCallObj["id"]?.ToString();
+                        var responseCallId = string.IsNullOrWhiteSpace(callId)
+                            ? $"call_{Guid.NewGuid():N}"
+                            : callId;
+
+                        // Responses 要求 function_call 的资源 id 使用 fc_ 前缀；
+                        // Chat Completions 的 tool call id 通常是 call_，只能作为 call_id 保留。
                         input.Add(new JsonObject
                         {
                             ["type"] = "function_call",
-                            ["id"] = toolCallObj["id"]?.DeepClone() ?? $"fc_{Guid.NewGuid():N}",
-                            ["call_id"] = string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId,
+                            ["id"] = $"fc_{Guid.NewGuid():N}",
+                            ["call_id"] = responseCallId,
                             ["name"] = toolCallObj["function"]?["name"]?.DeepClone() ?? string.Empty,
                             ["arguments"] = toolCallObj["function"]?["arguments"]?.DeepClone() ?? "{}"
                         });
@@ -388,108 +557,268 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     public static string ConvertChatResponseToResponses(string chatResponseBody)
     {
-        var root = JsonNode.Parse(chatResponseBody) as JsonObject;
-        if (root is null)
+        try
         {
-            return chatResponseBody;
-        }
+            var root = JsonNode.Parse(chatResponseBody) as JsonObject;
+            if (root is null || root["choices"] is not JsonArray choices || choices.Count == 0)
+            {
+                return string.Empty;
+            }
 
-        var chatId = root["id"]?.ToString() ?? $"chatcmpl-{Guid.NewGuid():N}";
-        var model = root["model"]?.ToString() ?? string.Empty;
-        var created = root["created"]?.GetValue<long>() ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var outputs = new JsonArray();
-
-        // 解析 choices
-        if (root["choices"] is JsonArray choices && choices.Count > 0)
-        {
             var choice = choices[0] as JsonObject;
             var message = choice?["message"] as JsonObject;
-            if (message is not null)
+            if (message is null)
             {
-                // 文本输出
-                var contentText = message["content"]?.ToString() ?? string.Empty;
-                if (!string.IsNullOrEmpty(contentText))
+                return string.Empty;
+            }
+
+            var outputs = new JsonArray();
+
+            // reasoning 必须作为 Responses 顶层 reasoning 输出项，不能混入 message.content。
+            var reasoningText = ExtractChatReasoningText(message);
+            if (!string.IsNullOrWhiteSpace(reasoningText))
+            {
+                outputs.Add(new JsonObject
                 {
-                    outputs.Add(new JsonObject
+                    ["type"] = "reasoning",
+                    ["id"] = $"rs_{Guid.NewGuid():N}",
+                    ["status"] = "completed",
+                    ["summary"] = new JsonArray
                     {
-                        ["type"] = "message",
-                        ["id"] = $"msg_{Guid.NewGuid():N}",
-                        ["status"] = "completed",
-                        ["role"] = "assistant",
-                        ["content"] = new JsonArray
+                        new JsonObject
                         {
-                            new JsonObject
-                            {
-                                ["type"] = "output_text",
-                                ["text"] = contentText
-                            }
+                            ["type"] = "summary_text",
+                            ["text"] = reasoningText
                         }
+                    }
+                });
+            }
+
+            var messageContent = ConvertChatMessageContentToResponses(message["content"]);
+            var refusal = ExtractChatRefusal(message);
+            if (!string.IsNullOrWhiteSpace(refusal))
+            {
+                messageContent ??= new JsonArray();
+                if (!messageContent.Any(part => part is JsonObject partObject
+                    && string.Equals(partObject["type"]?.ToString(), "refusal", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(partObject["refusal"]?.ToString(), refusal, StringComparison.Ordinal)))
+                {
+                    messageContent.Add(new JsonObject
+                    {
+                        ["type"] = "refusal",
+                        ["refusal"] = refusal
                     });
                 }
+            }
 
-                // 工具调用输出
-                if (message["tool_calls"] is JsonArray toolCalls)
+            if (messageContent is JsonArray { Count: > 0 } outputContent)
+            {
+                outputs.Add(new JsonObject
                 {
-                    foreach (var tc in toolCalls)
-                    {
-                        if (tc is not JsonObject tcObj)
-                        {
-                            continue;
-                        }
+                    ["type"] = "message",
+                    ["id"] = $"msg_{Guid.NewGuid():N}",
+                    ["status"] = "completed",
+                    ["role"] = "assistant",
+                    ["content"] = outputContent
+                });
+            }
 
-                        outputs.Add(new JsonObject
-                        {
-                            ["type"] = "function_call",
-                            ["id"] = $"fc_{Guid.NewGuid():N}",
-                            ["status"] = "completed",
-                            ["call_id"] = tcObj["id"]?.DeepClone(),
-                            ["name"] = tcObj["function"]?["name"]?.DeepClone(),
-                            ["arguments"] = tcObj["function"]?["arguments"]?.DeepClone() ?? "{}"
-                        });
+            // 新版 tool_calls 与旧版 function_call 都转换为 Responses function_call 输出项。
+            if (message["tool_calls"] is JsonArray toolCalls)
+            {
+                foreach (var toolCall in toolCalls)
+                {
+                    if (toolCall is JsonObject toolCallObject)
+                    {
+                        outputs.Add(BuildResponsesFunctionCall(toolCallObject));
+                    }
+                }
+            }
+            else if (message["function_call"] is JsonObject functionCall)
+            {
+                outputs.Add(BuildResponsesFunctionCall(functionCall));
+            }
+
+            // 没有文本、推理、拒答或工具调用时，不生成空 assistant 成功响应。
+            if (outputs.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var chatId = root["id"]?.ToString() ?? $"chatcmpl-{Guid.NewGuid():N}";
+            var model = root["model"]?.ToString() ?? string.Empty;
+            var created = root["created"]?.GetValue<long>() ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            var chatUsage = root["usage"] as JsonObject;
+            var responsesUsage = new JsonObject
+            {
+                ["input_tokens"] = chatUsage?["prompt_tokens"]?.DeepClone() ?? 0,
+                ["output_tokens"] = chatUsage?["completion_tokens"]?.DeepClone() ?? 0,
+                ["total_tokens"] = chatUsage?["total_tokens"]?.DeepClone() ?? 0,
+                ["input_tokens_details"] = new JsonObject
+                {
+                    ["cached_tokens"] = (chatUsage?["prompt_tokens_details"] as JsonObject)?["cached_tokens"]?.DeepClone() ?? 0
+                }
+            };
+
+            var responseId = chatId.StartsWith("resp_", StringComparison.OrdinalIgnoreCase)
+                ? chatId
+                : $"resp_{chatId}";
+            return new JsonObject
+            {
+                ["id"] = responseId,
+                ["object"] = "response",
+                ["created_at"] = created,
+                ["status"] = "completed",
+                ["model"] = model,
+                ["output"] = outputs,
+                ["usage"] = responsesUsage
+            }.ToJsonString();
+        }
+        catch
+        {
+            // 转换失败必须返回空结果，由调用层触发 fallback，而不是伪装成空响应成功。
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// 将 Chat message.content 的字符串或内容数组转换为 Responses 输出文本块。
+    /// </summary>
+    private static JsonArray? ConvertChatMessageContentToResponses(JsonNode? content)
+    {
+        if (content is null)
+        {
+            return null;
+        }
+
+        if (content is JsonValue nullValue && nullValue.ToJsonString() == "null")
+        {
+            return null;
+        }
+
+        var result = new JsonArray();
+        if (content is JsonValue stringValue)
+        {
+            if (stringValue.TryGetValue<string>(out var text) && !string.IsNullOrEmpty(text))
+            {
+                result.Add(new JsonObject { ["type"] = "output_text", ["text"] = text });
+            }
+
+            return result;
+        }
+
+        if (content is not JsonArray parts)
+        {
+            return result;
+        }
+
+        foreach (var part in parts)
+        {
+            if (part is not JsonObject partObject)
+            {
+                continue;
+            }
+
+            var type = partObject["type"]?.ToString() ?? string.Empty;
+            if (string.Equals(type, "text", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(type, "output_text", StringComparison.OrdinalIgnoreCase))
+            {
+                var text = partObject["text"]?.ToString();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    result.Add(new JsonObject { ["type"] = "output_text", ["text"] = text });
+                }
+            }
+            else if (string.Equals(type, "refusal", StringComparison.OrdinalIgnoreCase))
+            {
+                var refusal = partObject["refusal"]?.ToString() ?? partObject["text"]?.ToString();
+                if (!string.IsNullOrEmpty(refusal))
+                {
+                    result.Add(new JsonObject { ["type"] = "refusal", ["refusal"] = refusal });
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 提取 Chat message 上的 reasoning/refusal 兼容字段。
+    /// </summary>
+    private static string ExtractChatReasoningText(JsonObject message)
+    {
+        foreach (var propertyName in new[] { "reasoning_content", "reasoning", "thinking" })
+        {
+            if (message[propertyName] is JsonNode value)
+            {
+                var text = value is JsonValue
+                    ? value.ToString()
+                    : value["text"]?.ToString() ?? value["content"]?.ToString() ?? value["summary_text"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// 提取 message-level 或 content block 中的拒答文本。
+    /// </summary>
+    private static string ExtractChatRefusal(JsonObject message)
+    {
+        var refusal = message["refusal"]?.ToString();
+        if (!string.IsNullOrWhiteSpace(refusal))
+        {
+            return refusal;
+        }
+
+        if (message["content"] is JsonArray parts)
+        {
+            foreach (var part in parts.OfType<JsonObject>())
+            {
+                if (string.Equals(part["type"]?.ToString(), "refusal", StringComparison.OrdinalIgnoreCase))
+                {
+                    var text = part["refusal"]?.ToString() ?? part["text"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        return text;
                     }
                 }
             }
         }
 
-        // 构造用量信息
-        var chatUsage = root["usage"] as JsonObject;
-        var responsesUsage = new JsonObject();
-        if (chatUsage is not null)
-        {
-            responsesUsage["prompt_tokens"] = chatUsage["prompt_tokens"]?.DeepClone() ?? 0;
-            responsesUsage["completion_tokens"] = chatUsage["completion_tokens"]?.DeepClone() ?? 0;
-            responsesUsage["total_tokens"] = chatUsage["total_tokens"]?.DeepClone() ?? 0;
-            var details = new JsonObject();
-            if (chatUsage["prompt_tokens_details"] is JsonObject ptd)
-            {
-                details["cached_tokens"] = ptd["cached_tokens"]?.DeepClone() ?? 0;
-            }
-            responsesUsage["prompt_tokens_details"] = details;
-        }
-
-        var responseId = chatId.StartsWith("resp_") ? chatId : $"resp_{chatId}";
-        var result = new JsonObject
-        {
-            ["id"] = responseId,
-            ["object"] = "response",
-            ["created_at"] = created,
-            ["status"] = "completed",
-            ["model"] = model,
-            ["output"] = outputs,
-            ["usage"] = responsesUsage
-        };
-
-        return result.ToJsonString();
+        return string.Empty;
     }
 
     /// <summary>
-    /// 将 Anthropic 非流式响应转换为 Responses API 非流式响应。
+    /// 构造 Responses function_call 输出项，兼容 tool_calls.function 与 legacy function_call 两种形态。
+    /// </summary>
+    private static JsonObject BuildResponsesFunctionCall(JsonObject source)
+    {
+        var function = source["function"] as JsonObject ?? source;
+        var callId = source["id"]?.ToString();
+        var arguments = function["arguments"];
+        return new JsonObject
+        {
+            ["type"] = "function_call",
+            ["id"] = $"fc_{Guid.NewGuid():N}",
+            ["status"] = "completed",
+            ["call_id"] = string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId,
+            ["name"] = function["name"]?.DeepClone() ?? string.Empty,
+            ["arguments"] = arguments is null ? "{}" : arguments is JsonValue ? arguments.ToString() : arguments.ToJsonString()
+        };
+    }
+
+    /// <summary>
+    /// 将 Anthropic 非流式响应转换为 Responses API 非流式响应（直转，不经 Chat 中转）。
     /// </summary>
     public static string ConvertAnthropicResponseToResponses(string anthropicBody)
     {
-        // 先转成 OpenAI 格式，再转成 Responses 格式
-        var openAiBody = BuildOpenAiResponseFromAnthropic(anthropicBody, "", 0, 0, 0);
-        return ConvertChatResponseToResponses(openAiBody);
+        return BuildResponsesResponseFromAnthropic(anthropicBody);
     }
 
     /// <summary>
@@ -504,8 +833,9 @@ public static partial class ProxyProtocolBridge
             using var doc = JsonDocument.Parse(sseJsonText);
             var root = doc.RootElement;
 
-            // 提取用量
-            if (root.TryGetProperty("usage", out var usageEl))
+            // 真实 OpenAI 流式分片会携带 usage:null，只有对象值才能提取用量。
+            if (root.TryGetProperty("usage", out var usageEl)
+                && usageEl.ValueKind == JsonValueKind.Object)
             {
                 var input = usageEl.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
                 var output = usageEl.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
@@ -517,6 +847,46 @@ public static partial class ProxyProtocolBridge
                 }
 
                 state.Usage = (input, cached, output);
+            }
+
+            // 只有真实输出或完成事件才启动 Responses 响应，避免 role/usage-only 分片制造空响应。
+            var hasChoices = root.TryGetProperty("choices", out var availableChoices)
+                && availableChoices.ValueKind == JsonValueKind.Array
+                && availableChoices.GetArrayLength() > 0;
+            var hasMeaningfulChoice = false;
+            if (hasChoices)
+            {
+                foreach (var availableChoice in availableChoices.EnumerateArray())
+                {
+                    if (availableChoice.TryGetProperty("finish_reason", out var finishReasonElement)
+                        && finishReasonElement.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(finishReasonElement.GetString()))
+                    {
+                        hasMeaningfulChoice = true;
+                        break;
+                    }
+
+                    if (!availableChoice.TryGetProperty("delta", out var availableDelta)
+                        || availableDelta.ValueKind != JsonValueKind.Object)
+                    {
+                        continue;
+                    }
+
+                    if (ExtractDeltaContent(availableDelta) is { Length: > 0 }
+                        || ExtractReasoningFromElement(availableDelta).Length > 0
+                        || (availableDelta.TryGetProperty("tool_calls", out var availableToolCalls)
+                            && availableToolCalls.ValueKind == JsonValueKind.Array
+                            && availableToolCalls.GetArrayLength() > 0))
+                    {
+                        hasMeaningfulChoice = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!hasMeaningfulChoice)
+            {
+                return builder.ToString();
             }
 
             // 首次发送 response.created + response.in_progress
@@ -570,6 +940,7 @@ public static partial class ProxyProtocolBridge
             {
                 state.MessageAdded = true;
                 state.MessageId = $"msg_{Guid.NewGuid():N}";
+                state.MessageOutputIndex = state.ReservedOutputIndexes;
 
                 builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
                 {
@@ -578,13 +949,13 @@ public static partial class ProxyProtocolBridge
                     ["status"] = "in_progress",
                     ["role"] = "assistant",
                     ["content"] = new JsonArray()
-                }, outputIndex: 0));
+                }, outputIndex: state.MessageOutputIndex));
 
                 builder.Append(BuildResponsesEvent("response.content_part.added", new JsonObject
                 {
                     ["type"] = "output_text",
                     ["text"] = ""
-                }, outputIndex: 0, contentIndex: 0));
+                }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
             }
 
             // 文本增量
@@ -597,17 +968,15 @@ public static partial class ProxyProtocolBridge
                 {
                     EnsureMessageStarted(state, builder);
                     builder.Append(BuildResponsesEvent("response.output_text.delta",
-                        deltaText, outputIndex: 0, contentIndex: 0));
-                    state.OutputText += deltaText;
+                        deltaText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
+                    state.AppendOutputText(deltaText);
                 }
             }
 
-            // reasoning 增量
-            if (delta.ValueKind != JsonValueKind.Undefined
-                && delta.TryGetProperty("reasoning_content", out var reasoningEl)
-                && reasoningEl.ValueKind == JsonValueKind.String)
+            // reasoning 增量：兼容 reasoning_content / reasoning / thinking 三种字段（DeepSeek/OpenRouter/Anthropic 风格）。
+            if (delta.ValueKind == JsonValueKind.Object)
             {
-                var reasoningText = reasoningEl.GetString() ?? string.Empty;
+                var reasoningText = ExtractReasoningFromElement(delta);
                 if (!string.IsNullOrEmpty(reasoningText))
                 {
                     builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", reasoningText));
@@ -630,26 +999,45 @@ public static partial class ProxyProtocolBridge
                         ? (funcEl2.TryGetProperty("arguments", out var faEl) ? faEl.GetString() ?? "" : "")
                         : "";
 
-                    if (!string.IsNullOrEmpty(callId) && !state.SentToolCallIds.Contains(callId))
+                    if (!state.ChatToolCallOutputIndices.TryGetValue(idx, out var outputIndex))
                     {
+                        outputIndex = state.ReservedOutputIndexes + state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
+                        state.ChatToolCallOutputIndices[idx] = outputIndex;
+                    }
+
+                    if (string.IsNullOrEmpty(callId) && state.ChatToolCallIds.TryGetValue(idx, out var existingCallId))
+                    {
+                        callId = existingCallId;
+                    }
+
+                    if (string.IsNullOrEmpty(callId))
+                    {
+                        callId = $"call_{Guid.NewGuid():N}";
+                    }
+
+                    if (!state.ChatToolCallOutputIds.TryGetValue(idx, out var itemId))
+                    {
+                        itemId = $"fc_{Guid.NewGuid():N}";
+                        state.ChatToolCallOutputIds[idx] = itemId;
+                        state.ChatToolCallIds[idx] = callId;
                         state.SentToolCallIds.Add(callId);
-                        state.ToolCallIndex = idx + 1;
+                        state.ToolCallIndex = Math.Max(state.ToolCallIndex, idx + 1);
 
                         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
                         {
                             ["type"] = "function_call",
-                            ["id"] = $"fc_{Guid.NewGuid():N}",
+                            ["id"] = itemId,
                             ["status"] = "in_progress",
                             ["call_id"] = callId,
                             ["name"] = funcName,
                             ["arguments"] = ""
-                        }, outputIndex: idx));
+                        }, outputIndex: outputIndex));
                     }
 
                     if (!string.IsNullOrEmpty(funcArgs))
                     {
                         builder.Append(BuildResponsesEvent("response.function_call_arguments.delta",
-                            funcArgs, outputIndex: idx, itemId: callId));
+                            funcArgs, outputIndex: outputIndex, itemId: itemId));
                     }
                 }
             }
@@ -659,17 +1047,25 @@ public static partial class ProxyProtocolBridge
                 && finishEl.ValueKind == JsonValueKind.String
                 && !string.IsNullOrEmpty(finishEl.GetString()))
             {
+                // 幂等守卫：部分上游会连发多个带 finish_reason 的分片，完成事件只能发送一次。
+                if (state.Done)
+                {
+                    return builder.ToString();
+                }
+
                 // 关闭 message 输出项
                 if (state.MessageAdded)
                 {
+                    // 只取一次最终文本，避免 StringBuilder 支撑的属性多次 ToString 重复分配。
+                    var outputText = state.OutputText;
                     builder.Append(BuildResponsesEvent("response.output_text.done",
-                        state.OutputText, outputIndex: 0, contentIndex: 0));
+                        outputText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.content_part.done", new JsonObject
                     {
                         ["type"] = "output_text",
-                        ["text"] = state.OutputText
-                    }, outputIndex: 0, contentIndex: 0));
+                        ["text"] = outputText
+                    }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
                     {
@@ -679,20 +1075,25 @@ public static partial class ProxyProtocolBridge
                         ["role"] = "assistant",
                         ["content"] = new JsonArray
                         {
-                            new JsonObject { ["type"] = "output_text", ["text"] = state.OutputText }
+                            new JsonObject { ["type"] = "output_text", ["text"] = outputText }
                         }
-                    }, outputIndex: 0));
+                    }, outputIndex: state.MessageOutputIndex));
                 }
 
-                // 关闭工具调用输出项
-                for (var i = 0; i < state.SentToolCallIds.Count; i++)
+                // 关闭工具调用输出项，保持 Chat tool index 与输出索引的一致映射。
+                foreach (var toolCall in state.ChatToolCallOutputIndices.OrderBy(pair => pair.Value))
                 {
+                    var chatIndex = toolCall.Key;
+                    var outputIndex = toolCall.Value;
+                    var callId = state.ChatToolCallIds.TryGetValue(chatIndex, out var mappedCallId)
+                        ? mappedCallId
+                        : string.Empty;
                     builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
                     {
                         ["type"] = "function_call",
                         ["status"] = "completed",
-                        ["call_id"] = state.SentToolCallIds[i]
-                    }, outputIndex: state.MessageAdded ? i + 1 : i));
+                        ["call_id"] = callId
+                    }, outputIndex: outputIndex));
                 }
 
                 // 完成
@@ -710,7 +1111,13 @@ public static partial class ProxyProtocolBridge
                         ["prompt_tokens"] = inp,
                         ["completion_tokens"] = outp,
                         ["total_tokens"] = inp + outp,
-                        ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
+                        ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached },
+                        // Responses 协议的 usage 字段名（Codex CLI 等客户端按 input_tokens 读取）。
+                        // Chat 方向的 inp 取自 prompt_tokens（已含缓存），与 prompt_tokens 同值即可。
+                        ["input_tokens"] = inp,
+                        ["output_tokens"] = outp,
+                        ["total_output_tokens"] = outp,
+                        ["input_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
                     }
                 }));
 
@@ -719,6 +1126,7 @@ public static partial class ProxyProtocolBridge
         }
         catch
         {
+            state.ConversionFailed = true;
         }
 
         return builder.ToString();
@@ -739,9 +1147,31 @@ public static partial class ProxyProtocolBridge
             using var doc = JsonDocument.Parse(payloadJson);
             var root = doc.RootElement;
 
-            // 首次收到任何事件 → 发送 response.created + response.in_progress
-            if (!state.ResponseStarted)
+            // 只有已知的 Anthropic 事件才参与转换，未知事件不能制造空 Responses 流。
+            var isMessageStart = string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase);
+            var isContentBlockStart = string.Equals(eventName, "content_block_start", StringComparison.OrdinalIgnoreCase);
+            var isContentBlockDelta = string.Equals(eventName, "content_block_delta", StringComparison.OrdinalIgnoreCase);
+            var isMessageDelta = string.Equals(eventName, "message_delta", StringComparison.OrdinalIgnoreCase);
+            var isMessageStop = string.Equals(eventName, "message_stop", StringComparison.OrdinalIgnoreCase);
+            if (!isMessageStart && !isContentBlockStart && !isContentBlockDelta && !isMessageDelta && !isMessageStop)
             {
+                return string.Empty;
+            }
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                state.ConversionFailed = true;
+                return string.Empty;
+            }
+
+            // 在确认存在可转换输出时才创建 Responses 生命周期，保留尚未写出时的 fallback 能力。
+            void EnsureResponseStarted()
+            {
+                if (state.ResponseStarted)
+                {
+                    return;
+                }
+
                 state.ResponseStarted = true;
                 state.ResponseId = $"resp_{Guid.NewGuid():N}";
                 state.CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -769,8 +1199,8 @@ public static partial class ProxyProtocolBridge
                 }));
             }
 
-            // message_start → 提取用量和模型
-            if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
+            // message_start 仅提供元数据，不能单独启动空的 Responses 流。
+            if (isMessageStart)
             {
                 if (root.TryGetProperty("message", out var message))
                 {
@@ -791,16 +1221,40 @@ public static partial class ProxyProtocolBridge
             }
 
             // content_block_start → 如果是 text 类型则创建 message 输出项
-            if (string.Equals(eventName, "content_block_start", StringComparison.OrdinalIgnoreCase))
+            if (isContentBlockStart)
             {
-                if (root.TryGetProperty("content_block", out var block))
+                if (root.TryGetProperty("content_block", out var block) && block.ValueKind == JsonValueKind.Object)
                 {
                     var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
 
+                    if (blockType == "text" || blockType == "tool_use" || blockType == "thinking")
+                    {
+                        state.SawMeaningfulEvent = true;
+                        EnsureResponseStarted();
+                    }
+
+                    // thinking 块 → reasoning 输出项；分段思考（上一项已关闭）时开新项。
+                    if (blockType == "thinking")
+                    {
+                        if (state.ReasoningItemAdded && state.ReasoningItemClosed)
+                        {
+                            state.ReasoningItemAdded = false;
+                            state.ReasoningItemClosed = false;
+                            state.ReasoningItemId = null;
+                            state.ReasoningItemOutputIndex = -1;
+                            state.ReasoningText.Clear();
+                            state.ReasoningSignature = string.Empty;
+                        }
+
+                        EnsureReasoningItemStarted(state, builder);
+                    }
+
                     if (blockType == "text" && !state.MessageAdded)
                     {
+                        CloseReasoningItemIfNeeded(state, builder);
                         state.MessageAdded = true;
                         state.MessageId = $"msg_{Guid.NewGuid():N}";
+                        state.MessageOutputIndex = state.ReservedOutputIndexes;
 
                         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
                         {
@@ -809,76 +1263,114 @@ public static partial class ProxyProtocolBridge
                             ["status"] = "in_progress",
                             ["role"] = "assistant",
                             ["content"] = new JsonArray()
-                        }, outputIndex: 0));
+                        }, outputIndex: state.MessageOutputIndex));
 
                         builder.Append(BuildResponsesEvent("response.content_part.added", new JsonObject
                         {
                             ["type"] = "output_text",
                             ["text"] = ""
-                        }, outputIndex: 0, contentIndex: 0));
+                        }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
                     }
 
                     // tool_use → 创建 function_call 输出项
                     if (blockType == "tool_use")
                     {
+                        CloseReasoningItemIfNeeded(state, builder);
+                        // 使用 Anthropic content block index 关联后续 input_json_delta，避免多个工具调用串线。
+                        var blockIndex = root.TryGetProperty("index", out var indexEl) && indexEl.ValueKind == JsonValueKind.Number
+                            ? indexEl.GetInt32()
+                            : state.ToolCallOutputIndices.Count;
                         var callId = block.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
                         var name = block.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "";
-                        var idx = state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
+                        var outputIndex = state.ReservedOutputIndexes + state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
+                        var itemId = $"fc_{Guid.NewGuid():N}";
 
-                        if (!string.IsNullOrEmpty(callId))
+                        if (string.IsNullOrEmpty(callId))
                         {
-                            state.SentToolCallIds.Add(callId);
+                            callId = $"call_{Guid.NewGuid():N}";
                         }
+
+                        state.SentToolCallIds.Add(callId);
+                        state.ToolCallOutputIndices[blockIndex] = outputIndex;
+                        state.ToolCallOutputIds[blockIndex] = itemId;
+                        state.ToolCallCallIds[blockIndex] = callId;
 
                         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
                         {
                             ["type"] = "function_call",
-                            ["id"] = $"fc_{Guid.NewGuid():N}",
+                            ["id"] = itemId,
                             ["status"] = "in_progress",
                             ["call_id"] = callId,
                             ["name"] = name,
                             ["arguments"] = ""
-                        }, outputIndex: idx));
+                        }, outputIndex: outputIndex));
                     }
                 }
             }
 
             // content_block_delta → 文本/推理/工具参数增量
-            if (string.Equals(eventName, "content_block_delta", StringComparison.OrdinalIgnoreCase))
+            if (isContentBlockDelta)
             {
-                if (root.TryGetProperty("delta", out var delta))
+                if (root.TryGetProperty("delta", out var delta) && delta.ValueKind == JsonValueKind.Object)
                 {
                     var deltaType = delta.TryGetProperty("type", out var dt) ? dt.GetString() : null;
                     var deltaText = delta.TryGetProperty("text", out var dtEl) ? dtEl.GetString() ?? "" : "";
+                    // Anthropic 的思维链增量在 delta.thinking 字段（delta.text 只是正文）；
+                    // 兼容个别把 thinking 放 text 的中间层，thinking 优先、text 兜底。
+                    var thinkingText = delta.TryGetProperty("thinking", out var thinkingEl) && thinkingEl.ValueKind == JsonValueKind.String
+                        ? thinkingEl.GetString() ?? ""
+                        : string.Empty;
+                    var effectiveThinkingText = thinkingText.Length > 0 ? thinkingText : deltaText;
                     var partialJson = delta.TryGetProperty("partial_json", out var pjEl) ? pjEl.GetString() ?? "" : "";
+                    var signatureText = delta.TryGetProperty("signature", out var sigEl) && sigEl.ValueKind == JsonValueKind.String
+                        ? sigEl.GetString() ?? ""
+                        : string.Empty;
+
+                    if ((deltaType == "text_delta" && !string.IsNullOrEmpty(deltaText))
+                        || (deltaType == "thinking_delta" && !string.IsNullOrEmpty(effectiveThinkingText))
+                        || (deltaType == "signature_delta" && !string.IsNullOrEmpty(signatureText))
+                        || (deltaType == "input_json_delta" && !string.IsNullOrEmpty(partialJson)))
+                    {
+                        state.SawMeaningfulEvent = true;
+                        EnsureResponseStarted();
+                    }
 
                     if (deltaType == "text_delta" && !string.IsNullOrEmpty(deltaText))
                     {
+                        CloseReasoningItemIfNeeded(state, builder);
                         EnsureMessageStarted(state, builder);
                         builder.Append(BuildResponsesEvent("response.output_text.delta",
-                            deltaText, outputIndex: 0, contentIndex: 0));
-                        state.OutputText += deltaText;
+                            deltaText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
+                        state.AppendOutputText(deltaText);
                     }
-                    else if (deltaType == "thinking_delta" && !string.IsNullOrEmpty(deltaText))
+                    else if (deltaType == "thinking_delta" && !string.IsNullOrEmpty(effectiveThinkingText))
                     {
-                        builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", deltaText));
+                        EnsureReasoningItemStarted(state, builder);
+                        state.ReasoningText.Append(effectiveThinkingText);
+                        builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", effectiveThinkingText));
+                    }
+                    else if (deltaType == "signature_delta" && !string.IsNullOrEmpty(signatureText))
+                    {
+                        // Anthropic thinking 签名增量：累积后在 reasoning 项收口时编码进桥接载体。
+                        state.ReasoningSignature += signatureText;
                     }
                     else if (deltaType == "input_json_delta" && !string.IsNullOrEmpty(partialJson))
                     {
-                        var tcIdx = state.SentToolCallIds.Count > 0
-                            ? state.SentToolCallIds.Count - 1 + (state.MessageAdded ? 1 : 0)
-                            : state.MessageAdded ? 1 : 0;
-                        var itemId = state.SentToolCallIds.Count > 0
-                            ? state.SentToolCallIds[^1]
-                            : "";
-                        builder.Append(BuildResponsesEvent("response.function_call_arguments.delta",
-                            partialJson, outputIndex: tcIdx, itemId: itemId));
+                        var blockIndex = root.TryGetProperty("index", out var indexEl) && indexEl.ValueKind == JsonValueKind.Number
+                            ? indexEl.GetInt32()
+                            : -1;
+                        if (blockIndex >= 0 && state.ToolCallOutputIndices.TryGetValue(blockIndex, out var outputIndex))
+                        {
+                            state.ToolCallOutputIds.TryGetValue(blockIndex, out var itemId);
+                            builder.Append(BuildResponsesEvent("response.function_call_arguments.delta",
+                                partialJson, outputIndex: outputIndex, itemId: itemId));
+                        }
                     }
                 }
             }
 
             // message_delta → 提取用量和停止原因
-            if (string.Equals(eventName, "message_delta", StringComparison.OrdinalIgnoreCase))
+            if (isMessageDelta)
             {
                 if (root.TryGetProperty("usage", out var usageEl))
                 {
@@ -888,18 +1380,31 @@ public static partial class ProxyProtocolBridge
             }
 
             // message_stop → 完成整个响应
-            if (string.Equals(eventName, "message_stop", StringComparison.OrdinalIgnoreCase))
+            if (isMessageStop)
             {
+                if (!state.SawMeaningfulEvent)
+                {
+                    state.ConversionFailed = true;
+                    return string.Empty;
+                }
+
+                EnsureResponseStarted();
+
+                // reasoning 项先于 message 项关闭，保持 Responses 事件序与 Anthropic 块序一致。
+                CloseReasoningItemIfNeeded(state, builder);
+
                 if (state.MessageAdded)
                 {
+                    // 只取一次最终文本，避免 StringBuilder 支撑的属性多次 ToString 重复分配。
+                    var outputText = state.OutputText;
                     builder.Append(BuildResponsesEvent("response.output_text.done",
-                        state.OutputText, outputIndex: 0, contentIndex: 0));
+                        outputText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.content_part.done", new JsonObject
                     {
                         ["type"] = "output_text",
-                        ["text"] = state.OutputText
-                    }, outputIndex: 0, contentIndex: 0));
+                        ["text"] = outputText
+                    }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
                     {
@@ -909,19 +1414,24 @@ public static partial class ProxyProtocolBridge
                         ["role"] = "assistant",
                         ["content"] = new JsonArray
                         {
-                            new JsonObject { ["type"] = "output_text", ["text"] = state.OutputText }
+                            new JsonObject { ["type"] = "output_text", ["text"] = outputText }
                         }
-                    }, outputIndex: 0));
+                    }, outputIndex: state.MessageOutputIndex));
                 }
 
-                for (var i = 0; i < state.SentToolCallIds.Count; i++)
+                foreach (var toolCall in state.ToolCallOutputIndices.OrderBy(pair => pair.Value))
                 {
+                    var blockIndex = toolCall.Key;
+                    var outputIndex = toolCall.Value;
+                    var callId = state.ToolCallCallIds.TryGetValue(blockIndex, out var mappedCallId)
+                        ? mappedCallId
+                        : state.SentToolCallIds.ElementAtOrDefault(outputIndex - (state.MessageAdded ? 1 : 0)) ?? string.Empty;
                     builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
                     {
                         ["type"] = "function_call",
                         ["status"] = "completed",
-                        ["call_id"] = state.SentToolCallIds[i]
-                    }, outputIndex: state.MessageAdded ? i + 1 : i));
+                        ["call_id"] = callId
+                    }, outputIndex: outputIndex));
                 }
 
                 var (inp, cached, outp) = state.Usage;
@@ -938,7 +1448,13 @@ public static partial class ProxyProtocolBridge
                         ["prompt_tokens"] = inp,
                         ["completion_tokens"] = outp,
                         ["total_tokens"] = inp + outp,
-                        ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
+                        ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached },
+                        // Responses 协议的 usage 字段名（Codex CLI 等客户端按 input_tokens 读取）。
+                        // Anthropic 方向的 inp 取自 message_start.input_tokens（不含缓存），需加回缓存命中部分。
+                        ["input_tokens"] = inp + cached,
+                        ["output_tokens"] = outp,
+                        ["total_output_tokens"] = outp,
+                        ["input_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
                     }
                 }));
 
@@ -947,6 +1463,7 @@ public static partial class ProxyProtocolBridge
         }
         catch
         {
+            state.ConversionFailed = true;
         }
 
         return builder.ToString();
@@ -961,6 +1478,29 @@ public static partial class ProxyProtocolBridge
         {
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("output", out var output)
+                || output.ValueKind != JsonValueKind.Array)
+            {
+                return string.Empty;
+            }
+
+            // 终态校验：status=failed/cancelled 或携带 error 对象的 2xx 响应不能当成功空回答转换，
+            // 返回空串交由调用层触发 fallback（部分上游失败响应仍会带非空 output）。
+            if (root.TryGetProperty("status", out var statusEl) && statusEl.ValueKind == JsonValueKind.String)
+            {
+                var statusValue = statusEl.GetString();
+                if (string.Equals(statusValue, "failed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(statusValue, "cancelled", StringComparison.OrdinalIgnoreCase))
+                {
+                    return string.Empty;
+                }
+            }
+
+            if (root.TryGetProperty("error", out var errorEl) && errorEl.ValueKind == JsonValueKind.Object)
+            {
+                return string.Empty;
+            }
 
             var responseId = root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
                 ? idEl.GetString() ?? $"chatcmpl-{Guid.NewGuid():N}"
@@ -977,85 +1517,98 @@ public static partial class ProxyProtocolBridge
             var toolCalls = new JsonArray();
             var finishReason = "stop";
 
-            if (root.TryGetProperty("output", out var outputEl) && outputEl.ValueKind == JsonValueKind.Array)
+            foreach (var item in output.EnumerateArray())
             {
-                foreach (var item in outputEl.EnumerateArray())
+                if (!item.TryGetProperty("type", out var itemTypeEl) || itemTypeEl.ValueKind != JsonValueKind.String)
                 {
-                    if (!item.TryGetProperty("type", out var itemTypeEl) || itemTypeEl.ValueKind != JsonValueKind.String)
-                    {
-                        continue;
-                    }
+                    continue;
+                }
 
-                    var itemType = itemTypeEl.GetString();
-                    if (string.Equals(itemType, "message", StringComparison.OrdinalIgnoreCase))
+                var itemType = itemTypeEl.GetString();
+                if (string.Equals(itemType, "message", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (item.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.Array)
                     {
-                        if (item.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.Array)
+                        var textParts = new List<string>();
+                        foreach (var part in contentEl.EnumerateArray())
                         {
-                            var textParts = new List<string>();
-                            foreach (var part in contentEl.EnumerateArray())
+                            if (!part.TryGetProperty("type", out var partTypeEl) || partTypeEl.ValueKind != JsonValueKind.String)
                             {
-                                if (!part.TryGetProperty("type", out var partTypeEl) || partTypeEl.ValueKind != JsonValueKind.String)
-                                {
-                                    continue;
-                                }
-
-                                var partType = partTypeEl.GetString();
-                                if ((string.Equals(partType, "output_text", StringComparison.OrdinalIgnoreCase)
-                                        || string.Equals(partType, "text", StringComparison.OrdinalIgnoreCase))
-                                    && part.TryGetProperty("text", out var textEl)
-                                    && textEl.ValueKind == JsonValueKind.String)
-                                {
-                                    textParts.Add(textEl.GetString() ?? string.Empty);
-                                }
-                                else if ((string.Equals(partType, "reasoning", StringComparison.OrdinalIgnoreCase)
-                                          || string.Equals(partType, "reasoning_summary", StringComparison.OrdinalIgnoreCase))
-                                         && part.TryGetProperty("text", out var reasoningEl)
-                                         && reasoningEl.ValueKind == JsonValueKind.String)
-                                {
-                                    reasoningText = string.Concat(reasoningText, reasoningEl.GetString() ?? string.Empty);
-                                }
+                                continue;
                             }
 
-                            if (textParts.Count > 0)
+                            var partType = partTypeEl.GetString();
+                            if ((string.Equals(partType, "output_text", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(partType, "text", StringComparison.OrdinalIgnoreCase))
+                                && part.TryGetProperty("text", out var textEl)
+                                && textEl.ValueKind == JsonValueKind.String)
                             {
-                                contentText = string.Concat(contentText, string.Join(string.Empty, textParts));
+                                textParts.Add(textEl.GetString() ?? string.Empty);
+                            }
+                            else if (string.Equals(partType, "refusal", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var refusal = part.TryGetProperty("refusal", out var refusalEl)
+                                    && refusalEl.ValueKind == JsonValueKind.String
+                                    ? refusalEl.GetString() ?? string.Empty
+                                    : part.TryGetProperty("text", out var refusalTextEl)
+                                      && refusalTextEl.ValueKind == JsonValueKind.String
+                                        ? refusalTextEl.GetString() ?? string.Empty
+                                        : string.Empty;
+                                if (!string.IsNullOrEmpty(refusal))
+                                {
+                                    textParts.Add(refusal);
+                                }
+                            }
+                            else if ((string.Equals(partType, "reasoning", StringComparison.OrdinalIgnoreCase)
+                                      || string.Equals(partType, "reasoning_summary", StringComparison.OrdinalIgnoreCase))
+                                     && part.TryGetProperty("text", out var reasoningEl)
+                                     && reasoningEl.ValueKind == JsonValueKind.String)
+                            {
+                                reasoningText = string.Concat(reasoningText, reasoningEl.GetString() ?? string.Empty);
                             }
                         }
-                    }
-                    else if (string.Equals(itemType, "function_call", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var callId = item.TryGetProperty("call_id", out var callIdEl) && callIdEl.ValueKind == JsonValueKind.String
-                            ? callIdEl.GetString() ?? string.Empty
-                            : string.Empty;
-                        var toolName = item.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
-                            ? nameEl.GetString() ?? string.Empty
-                            : string.Empty;
-                        var arguments = item.TryGetProperty("arguments", out var argsEl)
-                            ? argsEl.ValueKind == JsonValueKind.String ? argsEl.GetString() ?? "{}" : argsEl.GetRawText()
-                            : "{}";
 
-                        toolCalls.Add(new JsonObject
+                        if (textParts.Count > 0)
                         {
-                            ["id"] = string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId,
-                            ["type"] = "function",
-                            ["function"] = new JsonObject
-                            {
-                                ["name"] = toolName,
-                                ["arguments"] = arguments
-                            }
-                        });
-                        finishReason = "tool_calls";
+                            contentText = string.Concat(contentText, string.Join(string.Empty, textParts));
+                        }
                     }
+                }
+                else if (string.Equals(itemType, "function_call", StringComparison.OrdinalIgnoreCase))
+                {
+                    var callId = item.TryGetProperty("call_id", out var callIdEl) && callIdEl.ValueKind == JsonValueKind.String
+                        ? callIdEl.GetString() ?? string.Empty
+                        : string.Empty;
+                    var toolName = item.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                        ? nameEl.GetString() ?? string.Empty
+                        : string.Empty;
+                    var arguments = item.TryGetProperty("arguments", out var argsEl)
+                        ? argsEl.ValueKind == JsonValueKind.String ? argsEl.GetString() ?? "{}" : argsEl.GetRawText()
+                        : "{}";
+
+                    toolCalls.Add(new JsonObject
+                    {
+                        ["id"] = string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId,
+                        ["type"] = "function",
+                        ["function"] = new JsonObject
+                        {
+                            ["name"] = toolName,
+                            ["arguments"] = arguments
+                        }
+                    });
+                    finishReason = "tool_calls";
                 }
             }
 
             var promptTokens = inputTokens;
             var completionTokens = outputTokens;
+            var inputTokensFromUsage = false;
             if (root.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
             {
                 if (usageEl.TryGetProperty("input_tokens", out var inputEl) && inputEl.ValueKind == JsonValueKind.Number)
                 {
                     promptTokens = inputEl.GetInt32();
+                    inputTokensFromUsage = true;
                 }
 
                 if (usageEl.TryGetProperty("output_tokens", out var usageOutputTokensEl) && usageOutputTokensEl.ValueKind == JsonValueKind.Number)
@@ -1070,6 +1623,18 @@ public static partial class ProxyProtocolBridge
                 {
                     cachedTokens = cachedEl.GetInt32();
                 }
+            }
+
+            // OpenAI 协议的 prompt_tokens 含缓存命中部分。响应体未提供 input_tokens 时，
+            // 传入参数是不含缓存的新输入，必须还原为 新输入+缓存 再输出，避免客户端计费低估。
+            if (!inputTokensFromUsage)
+            {
+                promptTokens = promptTokens + cachedTokens;
+            }
+
+            if (toolCalls.Count == 0 && string.IsNullOrWhiteSpace(contentText) && string.IsNullOrWhiteSpace(reasoningText))
+            {
+                return string.Empty;
             }
 
             var messageObject = new JsonObject
@@ -1118,7 +1683,7 @@ public static partial class ProxyProtocolBridge
         }
         catch
         {
-            return responseBody;
+            return string.Empty;
         }
     }
 
@@ -1127,22 +1692,39 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     public static string ConvertResponsesStreamingToChat(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
+        return ConvertResponsesStreamingToChat(
+            responseBody,
+            new ResponsesToChatStreamState
+            {
+                Model = modelName,
+                InputTokens = inputTokens,
+                CachedTokens = cachedTokens,
+                OutputTokens = outputTokens
+            });
+    }
+
+    /// <summary>
+    /// 将单个 Responses SSE 事件转换为 Chat Completions SSE，并复用同一转换状态。
+    /// </summary>
+    public static string ConvertResponsesStreamingToChat(string responseBody, ResponsesToChatStreamState state)
+    {
         try
         {
-            var contentText = new StringBuilder();
-            var reasoningText = new StringBuilder();
-            var toolCalls = new Dictionary<int, (string Id, string Name, StringBuilder Arguments)>();
-            var finalModelName = modelName;
+            var contentText = state.ContentText;
+            var reasoningText = state.ReasoningText;
+            var toolCalls = state.ToolCalls;
+            var builder = new StringBuilder();
             var finishReason = "stop";
-            var promptTokens = inputTokens;
-            var completionTokens = outputTokens;
+
+            if (state.Completed)
+            {
+                return string.Empty;
+            }
 
             using var reader = new StringReader(responseBody);
             string? line;
             string currentEvent = string.Empty;
             var dataLines = new List<string>();
-            var builder = new StringBuilder();
-            var roleChunkSent = false;
 
             void FlushEvent()
             {
@@ -1177,7 +1759,7 @@ public static partial class ProxyProtocolBridge
                         && responseEl.TryGetProperty("model", out var modelEl)
                         && modelEl.ValueKind == JsonValueKind.String)
                     {
-                        finalModelName = modelEl.GetString() ?? finalModelName;
+                        state.Model = modelEl.GetString() ?? state.Model;
                     }
 
                     currentEvent = string.Empty;
@@ -1191,18 +1773,49 @@ public static partial class ProxyProtocolBridge
                         : string.Empty;
                     if (!string.IsNullOrEmpty(deltaText))
                     {
-                        if (!roleChunkSent)
+                        if (!state.RoleChunkSent)
                         {
-                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                             {
                                 ["role"] = "assistant",
                                 ["content"] = string.Empty
                             }, null, null));
-                            roleChunkSent = true;
+                            state.RoleChunkSent = true;
                         }
 
                         contentText.Append(deltaText);
-                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                        {
+                            ["content"] = deltaText
+                        }, null, null));
+                    }
+
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                if (string.Equals(eventType, "response.refusal.delta", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(eventType, "response.refusal.done", StringComparison.OrdinalIgnoreCase))
+                {
+                    var deltaText = root.TryGetProperty("delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.String
+                        ? deltaEl.GetString() ?? string.Empty
+                        : root.TryGetProperty("refusal", out var refusalEl) && refusalEl.ValueKind == JsonValueKind.String
+                            ? refusalEl.GetString() ?? string.Empty
+                            : string.Empty;
+                    if (!string.IsNullOrEmpty(deltaText))
+                    {
+                        if (!state.RoleChunkSent)
+                        {
+                            builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                            {
+                                ["role"] = "assistant",
+                                ["content"] = string.Empty
+                            }, null, null));
+                            state.RoleChunkSent = true;
+                        }
+
+                        contentText.Append(deltaText);
+                        builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                         {
                             ["content"] = deltaText
                         }, null, null));
@@ -1243,18 +1856,18 @@ public static partial class ProxyProtocolBridge
                     if (extractedTexts.Count > 0)
                     {
                         var deltaText = string.Concat(extractedTexts);
-                        if (!roleChunkSent)
+                        if (!state.RoleChunkSent)
                         {
-                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                             {
                                 ["role"] = "assistant",
                                 ["content"] = string.Empty
                             }, null, null));
-                            roleChunkSent = true;
+                            state.RoleChunkSent = true;
                         }
 
                         contentText.Append(deltaText);
-                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                         {
                             ["content"] = deltaText
                         }, null, null));
@@ -1271,18 +1884,18 @@ public static partial class ProxyProtocolBridge
                         : string.Empty;
                     if (!string.IsNullOrEmpty(deltaText))
                     {
-                        if (!roleChunkSent)
+                        if (!state.RoleChunkSent)
                         {
-                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                             {
                                 ["role"] = "assistant",
                                 ["content"] = string.Empty
                             }, null, null));
-                            roleChunkSent = true;
+                            state.RoleChunkSent = true;
                         }
 
                         reasoningText.Append(deltaText);
-                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                         {
                             ["reasoning_content"] = deltaText
                         }, null, null));
@@ -1309,30 +1922,54 @@ public static partial class ProxyProtocolBridge
                         ? nameEl.GetString() ?? string.Empty
                         : string.Empty;
 
-                    toolCalls[index] = (string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId, name, new StringBuilder());
-
-                    if (!roleChunkSent)
+                    if (!state.ToolCallChatIndices.TryGetValue(index, out var chatIndex))
                     {
-                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        chatIndex = state.ToolCallChatIndices.Count;
+                        state.ToolCallChatIndices[index] = chatIndex;
+                    }
+
+                    if (!toolCalls.TryGetValue(index, out var toolCall))
+                    {
+                        toolCall = new ResponsesToolCallState();
+                        toolCalls[index] = toolCall;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(callId))
+                    {
+                        toolCall.Id = callId;
+                    }
+                    else if (string.IsNullOrWhiteSpace(toolCall.Id))
+                    {
+                        toolCall.Id = $"call_{Guid.NewGuid():N}";
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(name))
+                    {
+                        toolCall.Name = name;
+                    }
+
+                    if (!state.RoleChunkSent)
+                    {
+                        builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                         {
                             ["role"] = "assistant",
                             ["content"] = string.Empty
                         }, null, null));
-                        roleChunkSent = true;
+                        state.RoleChunkSent = true;
                     }
 
-                    builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                    builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                     {
                         ["tool_calls"] = new JsonArray
                         {
                             new JsonObject
                             {
-                                ["index"] = index,
-                                ["id"] = toolCalls[index].Id,
+                                ["index"] = chatIndex,
+                                ["id"] = toolCall.Id,
                                 ["type"] = "function",
                                 ["function"] = new JsonObject
                                 {
-                                    ["name"] = name,
+                                    ["name"] = toolCall.Name,
                                     ["arguments"] = string.Empty
                                 }
                             }
@@ -1345,34 +1982,48 @@ public static partial class ProxyProtocolBridge
 
                 if (string.Equals(eventType, "response.function_call_arguments.delta", StringComparison.OrdinalIgnoreCase))
                 {
-                    var index = root.TryGetProperty("output_index", out var indexEl) && indexEl.ValueKind == JsonValueKind.Number
+                    var outputIndex = root.TryGetProperty("output_index", out var indexEl) && indexEl.ValueKind == JsonValueKind.Number
                         ? indexEl.GetInt32()
                         : -1;
                     var deltaText = root.TryGetProperty("delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.String
                         ? deltaEl.GetString() ?? string.Empty
                         : string.Empty;
-                    if (index >= 0 && toolCalls.TryGetValue(index, out var toolCall) && !string.IsNullOrEmpty(deltaText))
+                    if (outputIndex >= 0 && !string.IsNullOrEmpty(deltaText))
                     {
-                        toolCall.Arguments.Append(deltaText);
-                        toolCalls[index] = toolCall;
-
-                        if (!roleChunkSent)
+                        if (!toolCalls.TryGetValue(outputIndex, out var toolCall))
                         {
-                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            toolCall = new ResponsesToolCallState
+                            {
+                                Id = $"call_{Guid.NewGuid():N}"
+                            };
+                            toolCalls[outputIndex] = toolCall;
+                        }
+
+                        toolCall.Arguments.Append(deltaText);
+
+                        if (!state.ToolCallChatIndices.TryGetValue(outputIndex, out var chatIndex))
+                        {
+                            chatIndex = state.ToolCallChatIndices.Count;
+                            state.ToolCallChatIndices[outputIndex] = chatIndex;
+                        }
+
+                        if (!state.RoleChunkSent)
+                        {
+                            builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                             {
                                 ["role"] = "assistant",
                                 ["content"] = string.Empty
                             }, null, null));
-                            roleChunkSent = true;
+                            state.RoleChunkSent = true;
                         }
 
-                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                         {
                             ["tool_calls"] = new JsonArray
                             {
                                 new JsonObject
                                 {
-                                    ["index"] = index,
+                                    ["index"] = chatIndex,
                                     ["function"] = new JsonObject
                                     {
                                         ["arguments"] = deltaText
@@ -1392,7 +2043,7 @@ public static partial class ProxyProtocolBridge
                 {
                     if (completedResponse.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String)
                     {
-                        finalModelName = modelEl.GetString() ?? finalModelName;
+                        state.Model = modelEl.GetString() ?? state.Model;
                     }
 
                     if (completedResponse.TryGetProperty("output", out var completedOutputEl)
@@ -1402,29 +2053,163 @@ public static partial class ProxyProtocolBridge
                         foreach (var outputItem in completedOutputEl.EnumerateArray())
                         {
                             if (!outputItem.TryGetProperty("type", out var outputItemTypeEl)
-                                || outputItemTypeEl.ValueKind != JsonValueKind.String
-                                || !string.Equals(outputItemTypeEl.GetString(), "message", StringComparison.OrdinalIgnoreCase)
-                                || !outputItem.TryGetProperty("content", out var outputContentEl)
-                                || outputContentEl.ValueKind != JsonValueKind.Array)
+                                || outputItemTypeEl.ValueKind != JsonValueKind.String)
                             {
                                 continue;
                             }
 
-                            foreach (var outputContentPart in outputContentEl.EnumerateArray())
+                            var outputItemType = outputItemTypeEl.GetString();
+                            if (string.Equals(outputItemType, "message", StringComparison.OrdinalIgnoreCase)
+                                && outputItem.TryGetProperty("content", out var outputContentEl)
+                                && outputContentEl.ValueKind == JsonValueKind.Array)
                             {
-                                if (!outputContentPart.TryGetProperty("type", out var outputContentTypeEl)
-                                    || outputContentTypeEl.ValueKind != JsonValueKind.String)
+                                foreach (var outputContentPart in outputContentEl.EnumerateArray())
                                 {
-                                    continue;
+                                    if (!outputContentPart.TryGetProperty("type", out var outputContentTypeEl)
+                                        || outputContentTypeEl.ValueKind != JsonValueKind.String)
+                                    {
+                                        continue;
+                                    }
+
+                                    var outputContentType = outputContentTypeEl.GetString();
+                                    if ((string.Equals(outputContentType, "output_text", StringComparison.OrdinalIgnoreCase)
+                                            || string.Equals(outputContentType, "text", StringComparison.OrdinalIgnoreCase))
+                                        && outputContentPart.TryGetProperty("text", out var outputContentTextEl)
+                                        && outputContentTextEl.ValueKind == JsonValueKind.String)
+                                    {
+                                        extractedTexts.Add(outputContentTextEl.GetString() ?? string.Empty);
+                                    }
+                                    else if ((string.Equals(outputContentType, "reasoning", StringComparison.OrdinalIgnoreCase)
+                                              || string.Equals(outputContentType, "reasoning_summary", StringComparison.OrdinalIgnoreCase))
+                                             && outputContentPart.TryGetProperty("text", out var outputReasoningTextEl)
+                                             && outputReasoningTextEl.ValueKind == JsonValueKind.String)
+                                    {
+                                        var completedReasoning = outputReasoningTextEl.GetString() ?? string.Empty;
+                                        if (!string.IsNullOrEmpty(completedReasoning)
+                                            && reasoningText.Length == 0)
+                                        {
+                                            if (!state.RoleChunkSent)
+                                            {
+                                                builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                                                {
+                                                    ["role"] = "assistant",
+                                                    ["content"] = string.Empty
+                                                }, null, null));
+                                                state.RoleChunkSent = true;
+                                            }
+
+                                            reasoningText.Append(completedReasoning);
+                                            builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                                            {
+                                                ["reasoning_content"] = completedReasoning
+                                            }, null, null));
+                                        }
+                                    }
+                                }
+                            }
+                            else if (string.Equals(outputItemType, "reasoning", StringComparison.OrdinalIgnoreCase)
+                                     && outputItem.TryGetProperty("summary", out var summaryEl)
+                                     && summaryEl.ValueKind == JsonValueKind.Array
+                                     && reasoningText.Length == 0)
+                            {
+                                var completedReasoning = string.Concat(summaryEl.EnumerateArray()
+                                    .Where(summaryPart => summaryPart.TryGetProperty("text", out var summaryTextEl)
+                                        && summaryTextEl.ValueKind == JsonValueKind.String)
+                                    .Select(summaryPart => summaryPart.GetProperty("text").GetString() ?? string.Empty));
+                                if (!string.IsNullOrEmpty(completedReasoning))
+                                {
+                                    if (!state.RoleChunkSent)
+                                    {
+                                        builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                                        {
+                                            ["role"] = "assistant",
+                                            ["content"] = string.Empty
+                                        }, null, null));
+                                        state.RoleChunkSent = true;
+                                    }
+
+                                    reasoningText.Append(completedReasoning);
+                                    builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                                    {
+                                        ["reasoning_content"] = completedReasoning
+                                    }, null, null));
+                                }
+                            }
+                            else if (string.Equals(outputItemType, "function_call", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var index = outputItem.TryGetProperty("output_index", out var outputIndexEl)
+                                    && outputIndexEl.ValueKind == JsonValueKind.Number
+                                    ? outputIndexEl.GetInt32()
+                                    : completedOutputEl.EnumerateArray().ToList().IndexOf(outputItem);
+                                var callId = outputItem.TryGetProperty("call_id", out var callIdEl)
+                                    && callIdEl.ValueKind == JsonValueKind.String
+                                    ? callIdEl.GetString() ?? string.Empty
+                                    : string.Empty;
+                                var name = outputItem.TryGetProperty("name", out var nameEl)
+                                    && nameEl.ValueKind == JsonValueKind.String
+                                    ? nameEl.GetString() ?? string.Empty
+                                    : string.Empty;
+                                var arguments = outputItem.TryGetProperty("arguments", out var argumentsEl)
+                                    ? argumentsEl.ValueKind == JsonValueKind.String
+                                        ? argumentsEl.GetString() ?? string.Empty
+                                        : argumentsEl.GetRawText()
+                                    : string.Empty;
+
+                                if (!toolCalls.TryGetValue(index, out var toolCall))
+                                {
+                                    toolCall = new ResponsesToolCallState
+                                    {
+                                        Id = string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId,
+                                        Name = name
+                                    };
+                                    toolCalls[index] = toolCall;
+
+                                    if (!state.RoleChunkSent)
+                                    {
+                                        builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                                        {
+                                            ["role"] = "assistant",
+                                            ["content"] = string.Empty
+                                        }, null, null));
+                                        state.RoleChunkSent = true;
+                                    }
+
+                                    builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                                    {
+                                        ["tool_calls"] = new JsonArray
+                                        {
+                                            new JsonObject
+                                            {
+                                                ["index"] = index,
+                                                ["id"] = toolCall.Id,
+                                                ["type"] = "function",
+                                                ["function"] = new JsonObject
+                                                {
+                                                    ["name"] = toolCall.Name,
+                                                    ["arguments"] = string.Empty
+                                                }
+                                            }
+                                        }
+                                    }, null, null));
                                 }
 
-                                var outputContentType = outputContentTypeEl.GetString();
-                                if ((string.Equals(outputContentType, "output_text", StringComparison.OrdinalIgnoreCase)
-                                        || string.Equals(outputContentType, "text", StringComparison.OrdinalIgnoreCase))
-                                    && outputContentPart.TryGetProperty("text", out var outputContentTextEl)
-                                    && outputContentTextEl.ValueKind == JsonValueKind.String)
+                                if (!string.IsNullOrEmpty(arguments) && toolCall.Arguments.Length == 0)
                                 {
-                                    extractedTexts.Add(outputContentTextEl.GetString() ?? string.Empty);
+                                    toolCall.Arguments.Append(arguments);
+                                    builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
+                                    {
+                                        ["tool_calls"] = new JsonArray
+                                        {
+                                            new JsonObject
+                                            {
+                                                ["index"] = index,
+                                                ["function"] = new JsonObject
+                                                {
+                                                    ["arguments"] = arguments
+                                                }
+                                            }
+                                        }
+                                    }, null, null));
                                 }
                             }
                         }
@@ -1432,34 +2217,36 @@ public static partial class ProxyProtocolBridge
                         if (extractedTexts.Count > 0 && contentText.Length == 0)
                         {
                             var completedText = string.Concat(extractedTexts);
-                            if (!roleChunkSent)
+                            if (!state.RoleChunkSent)
                             {
-                                builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                                builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                                 {
                                     ["role"] = "assistant",
                                     ["content"] = string.Empty
                                 }, null, null));
-                                roleChunkSent = true;
+                                state.RoleChunkSent = true;
                             }
 
                             contentText.Append(completedText);
-                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject
                             {
                                 ["content"] = completedText
                             }, null, null));
                         }
                     }
 
+                    var inputTokensFromUsage = false;
                     if (completedResponse.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
                     {
                         if (usageEl.TryGetProperty("input_tokens", out var inputEl) && inputEl.ValueKind == JsonValueKind.Number)
                         {
-                            promptTokens = inputEl.GetInt32();
+                            state.InputTokens = inputEl.GetInt32();
+                            inputTokensFromUsage = true;
                         }
 
                         if (usageEl.TryGetProperty("output_tokens", out var outputEl) && outputEl.ValueKind == JsonValueKind.Number)
                         {
-                            completionTokens = outputEl.GetInt32();
+                            state.OutputTokens = outputEl.GetInt32();
                         }
 
                         if (usageEl.TryGetProperty("input_tokens_details", out var detailsEl)
@@ -1467,21 +2254,26 @@ public static partial class ProxyProtocolBridge
                             && detailsEl.TryGetProperty("cached_tokens", out var cachedEl)
                             && cachedEl.ValueKind == JsonValueKind.Number)
                         {
-                            cachedTokens = cachedEl.GetInt32();
+                            state.CachedTokens = cachedEl.GetInt32();
                         }
                     }
 
                     finishReason = toolCalls.Count > 0 ? "tool_calls" : "stop";
-                    builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject(), finishReason, new JsonObject
+                    state.Completed = true;
+                    // OpenAI 协议的 prompt_tokens 含缓存命中部分。completed 未提供 input_tokens 时，
+                    // state.InputTokens 是调用方 seeding 的"不含缓存的新输入"，必须还原为 新输入+缓存
+                    // 再输出，否则客户端侧按 prompt_tokens 计费会低估。
+                    var promptTokens = inputTokensFromUsage ? state.InputTokens : state.InputTokens + state.CachedTokens;
+                    builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject(), finishReason, new JsonObject
                     {
                         ["prompt_tokens"] = promptTokens,
                         ["prompt_tokens_details"] = new JsonObject
                         {
-                            ["cached_tokens"] = cachedTokens,
+                            ["cached_tokens"] = state.CachedTokens,
                             ["cached_creation_tokens"] = 0
                         },
-                        ["completion_tokens"] = completionTokens,
-                        ["total_tokens"] = promptTokens + completionTokens
+                        ["completion_tokens"] = state.OutputTokens,
+                        ["total_tokens"] = promptTokens + state.OutputTokens
                     }));
                     builder.Append("data: [DONE]\n\n");
                 }
@@ -1520,7 +2312,9 @@ public static partial class ProxyProtocolBridge
         }
         catch
         {
-            return responseBody;
+            // 转换失败不能把原始 Responses SSE 当作 Chat SSE 返回。
+            state.ConversionFailed = true;
+            return string.Empty;
         }
     }
 
@@ -1849,27 +2643,114 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 转换 Responses 的 tool_choice 格式为 Chat Completions 格式。
     /// </summary>
-    private static JsonNode? ConvertResponsesToolChoiceToChat(JsonNode toolChoice)
+    private static JsonNode? ConvertResponsesToolChoiceToChat(
+        JsonNode toolChoice,
+        JsonArray? availableTools = null)
     {
         if (toolChoice is JsonValue jv && jv.TryGetValue(out string? sv))
         {
-            return sv;
+            // 内置工具被过滤后，required 已无法满足，改为不强制调用工具，避免上游再次拒绝请求。
+            return string.Equals(sv, "required", StringComparison.OrdinalIgnoreCase)
+                && availableTools is not null
+                && availableTools.Count == 0
+                ? "none"
+                : sv;
         }
 
         if (toolChoice is JsonObject obj)
         {
-            var typeVal = obj["type"]?.ToString() ?? "";
-            if (typeVal == "function" && obj.ContainsKey("name"))
+            var typeVal = obj["type"]?.ToString() ?? string.Empty;
+            if (string.Equals(typeVal, "function", StringComparison.OrdinalIgnoreCase)
+                && obj.ContainsKey("name"))
             {
-                return new JsonObject
-                {
-                    ["type"] = "function",
-                    ["function"] = new JsonObject { ["name"] = obj["name"]?.DeepClone() }
-                };
+                var functionName = obj["name"]?.ToString() ?? string.Empty;
+                var functionExists = availableTools is null
+                    || availableTools
+                        .OfType<JsonObject>()
+                        .Any(tool => string.Equals(
+                            tool["type"]?.ToString(),
+                            "function",
+                            StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(
+                                tool["function"]?["name"]?.ToString(),
+                                functionName,
+                                StringComparison.Ordinal));
+                return functionExists
+                    ? new JsonObject
+                    {
+                        ["type"] = "function",
+                        ["function"] = new JsonObject { ["name"] = obj["name"]?.DeepClone() }
+                    }
+                    : "none";
             }
+
+            if (string.Equals(typeVal, "custom", StringComparison.OrdinalIgnoreCase))
+            {
+                return toolChoice.DeepClone();
+            }
+
+            // Responses 内置工具的 tool_choice 在 Chat 上游没有对应能力。
+            return "none";
         }
 
         return toolChoice.DeepClone();
+    }
+
+    /// <summary>
+    /// 确保 reasoning 输出项已创建（Anthropic→Responses 流式桥接）。
+    /// thinking 增量在 Responses 协议必须挂在一个 reasoning 输出项下，客户端才能跨轮回传。
+    /// </summary>
+    private static void EnsureReasoningItemStarted(ChatToResponsesStreamState state, StringBuilder builder)
+    {
+        if (state.ReasoningItemAdded)
+        {
+            return;
+        }
+
+        state.ReasoningItemAdded = true;
+        state.ReasoningItemId = $"rs_{Guid.NewGuid():N}";
+        state.ReasoningItemOutputIndex = state.ReservedOutputIndexes++;
+
+        builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
+        {
+            ["type"] = "reasoning",
+            ["id"] = state.ReasoningItemId,
+            ["status"] = "in_progress",
+            ["summary"] = new JsonArray()
+        }, outputIndex: state.ReasoningItemOutputIndex));
+    }
+
+    /// <summary>
+    /// 关闭 reasoning 输出项；携带签名时把签名编码进 encrypted_content 桥接载体，
+    /// 下一轮请求方向（BuildAnthropicRequestFromResponses）识别后还原带签名的 thinking block。
+    /// </summary>
+    private static void CloseReasoningItemIfNeeded(ChatToResponsesStreamState state, StringBuilder builder)
+    {
+        if (!state.ReasoningItemAdded || state.ReasoningItemClosed)
+        {
+            return;
+        }
+
+        state.ReasoningItemClosed = true;
+        var reasoningText = state.ReasoningText.ToString();
+        var item = new JsonObject
+        {
+            ["type"] = "reasoning",
+            ["id"] = state.ReasoningItemId,
+            ["status"] = "completed",
+            ["summary"] = new JsonArray()
+        };
+        if (reasoningText.Length > 0)
+        {
+            ((JsonArray)item["summary"]!).Add(new JsonObject { ["type"] = "summary_text", ["text"] = reasoningText });
+        }
+
+        if (!string.IsNullOrEmpty(state.ReasoningSignature))
+        {
+            item["encrypted_content"] = EncodeAnthropicThinkingBridge(reasoningText, state.ReasoningSignature);
+        }
+
+        builder.Append(BuildResponsesEvent("response.output_item.done", item, outputIndex: state.ReasoningItemOutputIndex));
     }
 
     /// <summary>
@@ -1884,6 +2765,7 @@ public static partial class ProxyProtocolBridge
 
         state.MessageAdded = true;
         state.MessageId = $"msg_{Guid.NewGuid():N}";
+        state.MessageOutputIndex = state.ReservedOutputIndexes;
 
         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
         {
@@ -1892,13 +2774,13 @@ public static partial class ProxyProtocolBridge
             ["status"] = "in_progress",
             ["role"] = "assistant",
             ["content"] = new JsonArray()
-        }, outputIndex: 0));
+        }, outputIndex: state.MessageOutputIndex));
 
         builder.Append(BuildResponsesEvent("response.content_part.added", new JsonObject
         {
             ["type"] = "output_text",
             ["text"] = ""
-        }, outputIndex: 0, contentIndex: 0));
+        }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
     }
 
     /// <summary>

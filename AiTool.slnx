@@ -5,6 +5,7 @@
     <Project Path="src/AITool.Core/AITool.Core.csproj" />
     <Project Path="src/AITool.Domain/AITool.Domain.csproj" />
     <Project Path="src/AITool.Infrastructure/AITool.Infrastructure.csproj" />
+    <Project Path="src/AITool.Protocol/AITool.Protocol.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AITool.Admin.IntegrationTests/AITool.Admin.IntegrationTests.csproj" />

@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Domain.Proxy;
 
-namespace AITool.Infrastructure.ProxyProtocol;
+namespace AITool.Protocol;
 
 /// <summary>
 /// 负责在 OpenAI 与 Anthropic 协议之间转换请求和响应内容。
@@ -49,6 +49,10 @@ public static partial class ProxyProtocolBridge
         /// 是否已收到上游流的结束事件。
         /// </summary>
         public bool ReceivedDoneEvent { get; set; }
+        /// <summary>
+        /// 是否出现无法解析的上游流片段。
+        /// </summary>
+        public bool ConversionFailed { get; set; }
         /// <summary>
         /// 输入 token 数。
         /// </summary>
@@ -114,10 +118,72 @@ public static partial class ProxyProtocolBridge
         string? overrideReasoningEffort = null,
         string? targetBaseUrl = null,
         IReadOnlyList<CompatibilityRule>? compatibilityRules = null,
-        bool isPassthrough = true)
+        bool isPassthrough = true,
+        bool isCompact = false,
+        string? geminiProjectId = null)
     {
         string result;
         JsonObject? rootNode = null;
+
+        if (string.Equals(targetProtocol, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            // —— Gemini 目标（Antigravity 上游）——
+            // Responses 客户端先经既有 Responses→Anthropic 直转桥，再统一走 Anthropic→Gemini；
+            // OpenAI 客户端直转；Anthropic 客户端直转。内层构建 → 规范化 → 思考覆盖 → CLI 封套。
+            rootNode = JsonNode.Parse(requestBody) as JsonObject;
+            if (rootNode is null)
+            {
+                return requestBody;
+            }
+
+            JsonObject inner;
+            if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))
+            {
+                inner = BuildGeminiInnerFromAnthropic(rootNode, targetModelName);
+            }
+            else if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                inner = BuildGeminiInnerFromOpenAi(rootNode, targetModelName);
+            }
+            else
+            {
+                var anthropicJson = BuildAnthropicRequestFromResponses(rootNode, targetModelName, enableStreaming);
+                var anthropicNode = JsonNode.Parse(anthropicJson) as JsonObject;
+                if (anthropicNode is null)
+                {
+                    return requestBody;
+                }
+
+                inner = BuildGeminiInnerFromAnthropic(anthropicNode, targetModelName);
+            }
+
+            NormalizeGeminiInner(inner, targetModelName);
+            if (inner["contents"] is not JsonArray { Count: > 0 })
+            {
+                // 极端输入（全空白消息/全部被 part 清理过滤）兜底一条默认用户消息，避免上游 400。
+                inner["contents"] = new JsonArray(new JsonObject
+                {
+                    ["role"] = "user",
+                    ["parts"] = new JsonArray(new JsonObject { ["text"] = "请根据系统指令回答。" })
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(overrideReasoningEffort))
+            {
+                // 思考等级强覆盖（受保护功能）：在 Gemini 目标上以 thinkingConfig 表达。
+                ApplyGeminiThinkingEffort(inner, overrideReasoningEffort, targetModelName);
+            }
+
+            result = WrapGeminiUpstreamBody(inner, targetModelName, geminiProjectId, IsAntigravityTarget(targetBaseUrl));
+
+            // 兼容规则集照常作用于最终封套（generic strip/rename/default）。
+            if (compatibilityRules is { Count: > 0 })
+            {
+                result = ApplyCompatibilityProfile(result, compatibilityRules, isPassthrough: false);
+            }
+
+            return result;
+        }
 
         if (string.Equals(clientProtocol, targetProtocol, StringComparison.OrdinalIgnoreCase))
         {
@@ -127,7 +193,10 @@ public static partial class ProxyProtocolBridge
             }
             else if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
             {
-                result = ReplaceOpenAiModelAndEnsureStreamUsage(requestBody, targetModelName, enableStreaming);
+                // Responses 同协议透传只替换模型名：stream_options.include_usage 是 Chat Completions 专用字段，
+                // 原生 Responses 上游（如 OpenAI 官方）对未知参数严格校验，注入会导致 400。
+                // usage 提取依赖 response.completed 事件，无需 stream_options。
+                result = ReplaceModelName(requestBody, targetModelName);
             }
             else
             {
@@ -144,6 +213,18 @@ public static partial class ProxyProtocolBridge
         {
             result = ConvertResponsesRequestToChat(requestBody, targetModelName, enableStreaming);
         }
+        else if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(targetProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            // Responses → Anthropic 直转（不经 Chat 中转），保留 reasoning/function_call/document 等专有语义。
+            var responsesNode = JsonNode.Parse(requestBody) as JsonObject;
+            if (responsesNode is null)
+            {
+                return requestBody;
+            }
+
+            result = BuildAnthropicRequestFromResponses(responsesNode, targetModelName, enableStreaming);
+        }
         else
         {
             rootNode = JsonNode.Parse(requestBody) as JsonObject;
@@ -152,16 +233,29 @@ public static partial class ProxyProtocolBridge
                 return requestBody;
             }
 
+            // keep_reasoning 规则：deepseek 等上游在 thinking 模式 + 工具调用时要求回传 reasoning_content，
+            // 仅在 Anthropic→OpenAI/Responses 转换时生效。规则在转换前检查，避免转换后 thinking 已丢失。
+            // 按 scope 过滤（仅 all/bridge 生效），与 ApplyCompatibilityProfile 的筛选语义一致：此分支为跨协议
+            // 转换（isPassthrough 恒为 false），scope=passthrough 的规则不应在这里生效。
+            var keepReasoning = compatibilityRules is { Count: > 0 }
+                && compatibilityRules.Any(r =>
+                {
+                    var ruleScope = (r.Scope ?? "all").Trim().ToLowerInvariant();
+                    return string.Equals((r.Op ?? "").Trim(), "keep_reasoning", StringComparison.OrdinalIgnoreCase)
+                        && (ruleScope == "all" || ruleScope == "bridge");
+                });
+
             if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
             {
-                var openAiRequestBody = BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming);
-                result = ConvertChatRequestToResponses(openAiRequestBody, targetModelName, enableStreaming);
+                // Anthropic → Responses 直转（不经 Chat 中转）。thinking 历史块无协议对应物仍会丢弃
+                //（与经 Chat 中转一致），但 document/tool 顺序、工具身份与 instructions 语义不再失真。
+                result = BuildResponsesRequestFromAnthropic(rootNode, targetModelName, enableStreaming);
             }
             else
             {
                 result = string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming)
+                    ? BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming, keepReasoning)
                     : BuildAnthropicRequestFromOpenAi(rootNode, targetModelName, enableStreaming);
             }
         }
@@ -179,7 +273,7 @@ public static partial class ProxyProtocolBridge
         if (string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
         {
             var isCodex = IsCodexTarget(targetBaseUrl);
-            result = NormalizeResponsesBody(result, isCodex);
+            result = NormalizeResponsesBody(result, isCodex, isCompact);
         }
 
         // 应用模型关联的兼容规则集（透传与转换路径都生效，放最后一步统一处理）。
@@ -252,6 +346,12 @@ public static partial class ProxyProtocolBridge
     }
 
     /// <summary>
+    /// 强制覆盖请求体中的思考等级。已内联到 PrepareRequestBody，此方法保留向后兼容。
+    /// </summary>
+    public static string OverrideReasoningEffort(string requestBody, string overrideEffort, string targetProtocol)
+        => ApplyReasoningEffort(requestBody, overrideEffort, targetProtocol);
+
+    /// <summary>
     /// 判断目标 URL 是否为 Codex 上游（chatgpt.com/backend-api/codex）。
     /// 只有 Codex 上游会拒绝 max_output_tokens / temperature / metadata 等参数；
     /// 标准 OpenAI Responses API（api.openai.com）接受这些参数。
@@ -272,9 +372,11 @@ public static partial class ProxyProtocolBridge
     /// 2) 仅 Codex 上游：剔除上游不接受的参数（max_output_tokens / temperature / metadata 等），
     ///    否则会返回 {"detail":"Unsupported parameter: xxx"}（400）。
     ///    清单参考 CPA codex_openai-responses_request.go 的 DeleteBytes 列表。
+    /// 3) Codex 普通请求强制 stream=true（客户端非流式请求由 ProxyForwardService.ForwardAsync 透明聚合成完整 JSON 返回）；
+    ///    Codex 远程压缩（isCompact）端点只接受非流式——删除 stream 字段而非强制（对照 CPA executeCompact）。
     /// 解析失败时原样返回，避免影响可用性。
     /// </summary>
-    public static string NormalizeResponsesBody(string requestBody, bool isCodex)
+    public static string NormalizeResponsesBody(string requestBody, bool isCodex, bool isCompact = false)
     {
         try
         {
@@ -295,6 +397,18 @@ public static partial class ProxyProtocolBridge
                 {
                     rootNode.Remove(unsupported);
                 }
+
+                if (isCompact)
+                {
+                    // 压缩端点不接受流式：删除 stream（含 stream_options 已在上方剔除）。
+                    rootNode.Remove("stream");
+                }
+                else
+                {
+                    // ChatGPT /responses 端点强制 stream=true，否则返回 {"detail":"Stream must be set to true"}。
+                    // 客户端非流式请求由 ProxyForwardService.ForwardAsync 透明聚合成完整 JSON 返回。
+                    rootNode["stream"] = true;
+                }
             }
 
             return rootNode.ToJsonString();
@@ -311,7 +425,7 @@ public static partial class ProxyProtocolBridge
     /// 任一规则失败静默跳过，不影响其他规则和转发可用性。
     /// </summary>
     /// <param name="isPassthrough">当前是否透传路径（clientProtocol==targetProtocol）。true 保留 scope=passthrough/all 的规则；false 保留 scope=bridge/all 的规则。</param>
-    private static string ApplyCompatibilityProfile(string requestBody, IReadOnlyList<CompatibilityRule> rules, bool isPassthrough)
+    public static string ApplyCompatibilityProfile(string requestBody, IReadOnlyList<CompatibilityRule> rules, bool isPassthrough)
     {
         if (rules.Count == 0) return requestBody;
 
@@ -498,7 +612,7 @@ public static partial class ProxyProtocolBridge
     /// 清单与 CPA codex_openai-responses_request.go 的 DeleteBytes 列表保持一致，
     /// 并补充 metadata（CPA 同样遗漏，但实测会被 Codex 拒绝）。
     /// </summary>
-    private static readonly string[] CodexUnsupportedParameters =
+    public static readonly string[] CodexUnsupportedParameters =
     {
         "metadata",
         "temperature",
@@ -513,6 +627,20 @@ public static partial class ProxyProtocolBridge
         "stream_options",
         "context_management"
     };
+
+    /// <summary>
+    /// 判断目标 URL 是否为 Antigravity 上游（daily-cloudcode-pa.googleapis.com）。
+    /// Antigravity 上游使用 v1internal GenerateContent 语义并携带 CLI 封套与客户端请求头。
+    /// </summary>
+    public static bool IsAntigravityTarget(string? targetBaseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(targetBaseUrl))
+        {
+            return false;
+        }
+
+        return targetBaseUrl.Contains("daily-cloudcode-pa", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// 按客户端协议将上游响应内容转换为可直接返回的格式。
@@ -532,6 +660,37 @@ public static partial class ProxyProtocolBridge
             return responseBody;
         }
 
+        if (string.Equals(upstreamProtocol, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            // —— Gemini 上游（Antigravity）——
+            // Anthropic/OpenAI 客户端直转；Responses 客户端经 Anthropic 桥链转（复用既有双向桥）。
+            if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                return isStreaming
+                    ? BuildOpenAiStreamingResponseFromGemini(responseBody, modelName) ?? string.Empty
+                    : BuildOpenAiResponseFromGemini(responseBody, modelName) ?? string.Empty;
+            }
+
+            if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+            {
+                var anthropicBody = isStreaming
+                    ? BuildAnthropicStreamingResponseFromGemini(responseBody, modelName)
+                    : BuildAnthropicResponseFromGemini(responseBody, modelName);
+                if (string.IsNullOrEmpty(anthropicBody))
+                {
+                    return string.Empty;
+                }
+
+                return isStreaming
+                    ? BuildResponsesStreamFromAnthropic(anthropicBody)
+                    : BuildResponsesResponseFromAnthropic(anthropicBody);
+            }
+
+            return isStreaming
+                ? BuildAnthropicStreamingResponseFromGemini(responseBody, modelName) ?? string.Empty
+                : BuildAnthropicResponseFromGemini(responseBody, modelName) ?? string.Empty;
+        }
+
         if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
             && string.Equals(upstreamProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
         {
@@ -540,16 +699,22 @@ public static partial class ProxyProtocolBridge
                 : ConvertResponsesResponseToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens);
         }
 
+        if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(upstreamProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            // Anthropic → Responses 直转（不经 Chat 中转）。流式输入聚合后逐事件重建 Responses 事件流。
+            return isStreaming
+                ? BuildResponsesStreamFromAnthropic(responseBody)
+                : BuildResponsesResponseFromAnthropic(responseBody);
+        }
+
         if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
             && string.Equals(upstreamProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
         {
-            var openAiResponseBody = isStreaming
-                ? ConvertResponsesStreamingToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens)
-                : ConvertResponsesResponseToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens);
-
+            // Responses → Anthropic 直转（不经 Chat 中转）。status=failed/cancelled 的响应按转换失败处理。
             return isStreaming
-                ? BuildAnthropicStreamingResponseFromOpenAi(openAiResponseBody, modelName, inputTokens, cachedTokens, outputTokens)
-                : BuildAnthropicResponseFromOpenAi(openAiResponseBody, modelName, inputTokens, cachedTokens, outputTokens);
+                ? BuildAnthropicStreamFromResponses(responseBody, modelName, inputTokens, cachedTokens, outputTokens)
+                : BuildAnthropicResponseFromResponses(responseBody, modelName, inputTokens, cachedTokens, outputTokens);
         }
 
         if (isStreaming)

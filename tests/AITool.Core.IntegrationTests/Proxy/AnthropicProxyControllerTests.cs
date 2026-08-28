@@ -671,7 +671,8 @@ public sealed class AnthropicProxyControllerTests
         using var document = JsonDocument.Parse(body);
         document.RootElement.GetProperty("type").GetString().Should().Be("message");
         document.RootElement.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("openai-bridged-ok");
-        document.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32().Should().Be(6);
+        // 上游 input_tokens=6 已含缓存（cache_read=2），Anthropic 出口统一三桶口径：新输入不含缓存。
+        document.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32().Should().Be(4);
         document.RootElement.GetProperty("usage").GetProperty("cache_read_input_tokens").GetInt32().Should().Be(2);
         document.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32().Should().Be(9);
     }
@@ -710,7 +711,8 @@ public sealed class AnthropicProxyControllerTests
         using var document = JsonDocument.Parse(body);
         document.RootElement.GetProperty("type").GetString().Should().Be("message");
         document.RootElement.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("responses-bridged-ok");
-        document.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32().Should().Be(6);
+        // 上游 usage input_tokens=6 已含缓存（cached=2），Responses→Anthropic 直转桥还原三桶口径：新输入不含缓存。
+        document.RootElement.GetProperty("usage").GetProperty("input_tokens").GetInt32().Should().Be(4);
         document.RootElement.GetProperty("usage").GetProperty("cache_read_input_tokens").GetInt32().Should().Be(2);
         document.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32().Should().Be(9);
     }

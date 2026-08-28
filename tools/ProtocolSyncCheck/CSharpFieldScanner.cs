@@ -37,6 +37,41 @@ internal static class CSharpFieldScanner
         @"\.(?:TryGetPropertyValue|TryGetProperty)\(""(?<field>[a-z_][a-z0-9_]*)""",
         RegexOptions.Compiled);
 
+    // 匹配 property.Key, "field" 这类键名比较（如 string.Equals(property.Key, "echo", ...) 跳过字段）
+    private static readonly Regex KeyComparisonRegex = new(
+        @"\.Key\s*,\s*""(?<field>[a-z_][a-z0-9_]*)""",
+        RegexOptions.Compiled);
+
+    // 匹配 ["type"] = "event_type" / .Add("type", "event_type") 这类 JSON 值位置的事件/内容块类型
+    private static readonly Regex TypeValueRegex = new(
+        @"\[""type""\]\s*=\s*""(?<field>[a-z_][a-z0-9_]*)""|\.Add\(""type"",\s*""(?<field>[a-z_][a-z0-9_]*)""",
+        RegexOptions.Compiled);
+
+    // 匹配 ["role"] = "role_name" 这类 JSON 值位置的角色
+    private static readonly Regex RoleValueRegex = new(
+        @"\[""role""\]\s*=\s*""(?<field>[a-z_][a-z0-9_]*)""|\.Add\(""role"",\s*""(?<field>[a-z_][a-z0-9_]*)""",
+        RegexOptions.Compiled);
+
+    // 匹配 ["name"] = "tool_name" 这类 JSON 值位置的名称（如 web_search 工具名）
+    private static readonly Regex NameValueRegex = new(
+        @"\[""name""\]\s*=\s*""(?<field>[a-z_][a-z0-9_]*)""|\.Add\(""name"",\s*""(?<field>[a-z_][a-z0-9_]*)""",
+        RegexOptions.Compiled);
+
+    // 匹配 switch case "content_type": 分支中的协议字符串值
+    private static readonly Regex CaseValueRegex = new(
+        @"case\s+[^\r\n]*?(?<field>[a-z_][a-z0-9_]*)""\s*(?:,|:)",
+        RegexOptions.Compiled);
+
+    // 匹配字段剔除清单中的字符串字面量（如 CodexUnsupportedParameters 数组元素）
+    private static readonly Regex FieldListRegex = new(
+        @"^\s*""(?<field>[a-z_][a-z0-9_]*)""\s*,\s*$",
+        RegexOptions.Compiled);
+
+
+    // 匹配 switch 表达式分支返回值中的协议字符串（如 "stop" => "end_turn"）
+    private static readonly Regex SwitchArmValueRegex = new(
+        @"=>\s*""(?<field>[a-z_][a-z0-9_]*)""",
+        RegexOptions.Compiled);
     private static readonly Dictionary<string, string[]> ConversionHelperFieldMap = new(StringComparer.OrdinalIgnoreCase)
     {
         ["ConvertAnthropicToolsToOpenAi"] = ["tools"],
@@ -54,7 +89,9 @@ internal static class CSharpFieldScanner
         ["max_tokens"] = ["max_output_tokens", "max_completion_tokens"],
         ["reasoning_content"] = ["thinking", "reasoning"],
         ["finish_reason"] = ["stop_reason"],
-        ["stop_reason"] = ["finish_reason"]
+        ["stop_reason"] = ["finish_reason"],
+        ["web_search"] = ["web_search_options"],
+        ["input_schema"] = ["parametersJsonSchema"]
     };
 
     /// <summary>
@@ -78,6 +115,13 @@ internal static class CSharpFieldScanner
                 AddMatches(fields, filePath, i + 1, line, IndexerRegex);
                 AddMatches(fields, filePath, i + 1, line, AddMethodRegex);
                 AddMatches(fields, filePath, i + 1, line, PropertyAccessorRegex, ["json", "semantic-source"]);
+                AddMatches(fields, filePath, i + 1, line, KeyComparisonRegex, ["json", "semantic-source"]);
+                AddMatches(fields, filePath, i + 1, line, TypeValueRegex, ["json", "event-type"]);
+                AddMatches(fields, filePath, i + 1, line, RoleValueRegex, ["json", "role-value"]);
+                AddMatches(fields, filePath, i + 1, line, NameValueRegex, ["json", "name-value"]);
+                AddMatches(fields, filePath, i + 1, line, CaseValueRegex, ["json", "case-value"]);
+                AddMatches(fields, filePath, i + 1, line, FieldListRegex, ["json", "field-list"]);
+                AddMatches(fields, filePath, i + 1, line, SwitchArmValueRegex, ["json", "switch-arm"]);
                 AddCopyHelperMatches(fields, filePath, i + 1, line);
                 AddConversionHelperMatches(fields, filePath, i + 1, line);
                 AddSemanticMappingMatches(fields, filePath, i + 1, line);

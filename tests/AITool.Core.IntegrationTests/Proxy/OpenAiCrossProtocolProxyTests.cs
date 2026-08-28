@@ -51,7 +51,9 @@ public sealed class OpenAiCrossProtocolProxyTests
         using var document = JsonDocument.Parse(body);
         document.RootElement.GetProperty("object").GetString().Should().Be("chat.completion");
         document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("anthropic-bridged-ok");
-        document.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32().Should().Be(8);
+        // Anthropic 上游 input_tokens=7 已含缓存（cache_read=1），转 OpenAI 的 prompt_tokens 直接映射为 7，
+        // 不再叠加缓存（旧逻辑 7+1=8 导致缓存重复统计）。
+        document.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32().Should().Be(7);
         document.RootElement.GetProperty("usage").GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(1);
         document.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32().Should().Be(8);
 
@@ -277,6 +279,7 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"reasoning_content\":\"step-1\"");
         body.Should().Contain("\"content\":\"bridged-openai-stream\"");
         body.Should().Contain("\"finish_reason\":\"stop\"");
+        // 流式 usage 由宿主控制器侧计算，Core 控制器同步前的现状口径：7 输入 + 1 缓存 = 8（控制器对齐后改为 7）。
         body.Should().Contain("\"prompt_tokens\":8");
         body.Should().Contain("\"cached_tokens\":1");
         body.Should().Contain("\"completion_tokens\":8");
@@ -327,6 +330,7 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"object\":\"text_completion\"");
         body.Should().Contain("\"text\":\"legacy-stream\"");
         body.Should().Contain("\"finish_reason\":\"stop\"");
+        // 流式 usage 由宿主控制器侧计算，Core 控制器同步前的现状口径：7 输入 + 1 缓存 = 8（控制器对齐后改为 7）。
         body.Should().Contain("\"prompt_tokens\":8");
         body.Should().Contain("data: [DONE]");
         body.Should().NotContain("chat.completion.chunk");

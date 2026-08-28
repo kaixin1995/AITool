@@ -1,11 +1,10 @@
 namespace ProtocolSyncCheck;
 
 /// <summary>
-/// 将 new-api 的 Go struct 按协议接口分组，并与当前项目实际处理的字段做对比。
+/// 将 CLIProxyAPI 的动态 JSON 字段基线与当前项目实际处理的字段做对比。
 /// </summary>
 internal static class FieldDiffEngine
 {
-
     /// <summary>
     /// 计算每个分组中的字段对齐情况。
     /// </summary>
@@ -29,7 +28,7 @@ internal static class FieldDiffEngine
 
                 var referenceFields = fieldGroup.ToList();
                 var referenceTypes = string.Join(" / ", referenceFields
-                    .Select(field => field.GoType)
+                    .Select(field => field.TypeHint)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(type => type, StringComparer.OrdinalIgnoreCase));
 
@@ -37,9 +36,10 @@ internal static class FieldDiffEngine
                 rows.Add(new FieldAlignmentRow(
                     fieldGroup.Key,
                     referenceTypes,
-                    referenceFields.All(field => field.OmitEmpty),
+                    referenceFields.All(field => field.Optional),
                     currentUsage is not null,
                     currentUsage?.DisplayTypeHints ?? "—",
+                    currentUsage?.Locations ?? [],
                     typeMatchStatus));
             }
 
@@ -52,7 +52,7 @@ internal static class FieldDiffEngine
     /// <summary>
     /// 评估字段在类型层面是否存在明显不一致。
     /// </summary>
-    private static FieldTypeMatchStatus EvaluateTypeMatch(List<GoStructField> referenceFields, CurrentFieldUsage? currentUsage)
+    private static FieldTypeMatchStatus EvaluateTypeMatch(List<ProtocolField> referenceFields, CurrentFieldUsage? currentUsage)
     {
         if (currentUsage is null)
         {
@@ -74,31 +74,30 @@ internal static class FieldDiffEngine
             return FieldTypeMatchStatus.SemanticHandled;
         }
 
-        // 当前项目大量通过 JsonNode / JsonObject 动态透传或组装字段。
-        // 只在存在“强类型且明显不一致”的证据时才判为类型不一致，避免把动态处理误报为缺口。
-        if (currentUsage.TypeHints.Contains("json") || currentUsage.TypeHints.Contains("scalar"))
+        // 动态 JSON 只能证明字段被访问，不能证明结构与参考类型一致。
+        if (currentUsage.TypeHints.Contains("json"))
         {
-            return FieldTypeMatchStatus.Matched;
+            return FieldTypeMatchStatus.DynamicHandled;
         }
 
         var referenceKinds = referenceFields
-            .Select(field => NormalizeGoTypeKind(field.GoType))
+            .Select(field => NormalizeReferenceTypeKind(field.TypeHint))
             .Where(kind => kind != "unknown")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (referenceKinds.Count == 0 || referenceKinds.Contains("json"))
         {
-            return FieldTypeMatchStatus.Matched;
+            return FieldTypeMatchStatus.DynamicHandled;
         }
 
         var currentKinds = currentUsage.TypeHints
             .Select(NormalizeCurrentTypeKind)
-            .Where(kind => kind != "unknown" && kind != "json" && kind != "scalar")
+            .Where(kind => kind != "unknown" && kind != "json")
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (currentKinds.Count == 0)
         {
-            return FieldTypeMatchStatus.Matched;
+            return FieldTypeMatchStatus.DynamicHandled;
         }
 
         return currentKinds.Overlaps(referenceKinds)
@@ -107,34 +106,19 @@ internal static class FieldDiffEngine
     }
 
     /// <summary>
-    /// 将 Go 类型归一化为更适合比较的 JSON 类型类别。
+    /// 将参考代码中的类型线索归一化为 JSON 类型类别。
     /// </summary>
-    private static string NormalizeGoTypeKind(string goType)
+    private static string NormalizeReferenceTypeKind(string type)
     {
-        var type = goType.Trim().TrimStart('*');
-        if (type.StartsWith("[]", StringComparison.Ordinal))
-        {
-            return "array";
-        }
-
-        if (type.StartsWith("map[", StringComparison.Ordinal))
-        {
-            return "object";
-        }
-
-        return type switch
+        var normalized = type.Trim();
+        return normalized switch
         {
             "string" => "string",
             "bool" => "bool",
-            "int" or "int32" or "int64" or "uint" or "uint32" or "uint64" or "float32" or "float64" => "number",
-            "interface{}" or "any" => "json",
-            _ when type.Contains("Response", StringComparison.OrdinalIgnoreCase)
-                || type.Contains("Request", StringComparison.OrdinalIgnoreCase)
-                || type.Contains("Message", StringComparison.OrdinalIgnoreCase)
-                || type.Contains("Content", StringComparison.OrdinalIgnoreCase)
-                || type.Contains("Tool", StringComparison.OrdinalIgnoreCase)
-                || type.Contains("Usage", StringComparison.OrdinalIgnoreCase)
-                || type.Contains("Thinking", StringComparison.OrdinalIgnoreCase) => "object",
+            "number" => "number",
+            "array" => "array",
+            "object" => "object",
+            "json" => "json",
             _ => "unknown"
         };
     }
@@ -151,27 +135,43 @@ internal static class FieldDiffEngine
             "number" => "number",
             "array" => "array",
             "object" => "object",
+            "scalar" => "scalar",
             "null" => "null",
-            "json" or "scalar" => currentType,
+            "json" => "json",
             _ => "unknown"
         };
     }
-
 }
 
 /// <summary>
-/// 一个协议接口对应的 struct 字段分组。
+/// 参考项目动态 JSON 处理逻辑中检测到的字段。
+/// </summary>
+internal sealed record ProtocolField(
+    string SourceName,
+    string TypeHint,
+    string JsonName,
+    bool Optional);
+
+/// <summary>
+/// 一个协议接口对应的动态字段分组。
 /// </summary>
 internal sealed class ProtocolStructGroup(
     string label,
     string description,
+    string[] routeKeys,
     List<string> structNames,
-    List<GoStructField> fields)
+    List<ProtocolField> fields)
 {
     public string Label { get; } = label;
     public string Description { get; } = description;
+
+    /// <summary>
+    /// 该分组关联的协议接口键（Protocol:Method Path），用于接口状态表。
+    /// </summary>
+    public IReadOnlyList<string> RouteKeys { get; } = routeKeys;
+
     public List<string> StructNames { get; } = structNames;
-    public List<GoStructField> Fields { get; } = fields;
+    public List<ProtocolField> Fields { get; } = fields;
 }
 
 /// <summary>
@@ -183,6 +183,7 @@ internal sealed class FieldAlignmentRow(
     bool optional,
     bool isDetected,
     string currentTypeHint,
+    List<CurrentFieldLocation> currentLocations,
     FieldTypeMatchStatus typeMatchStatus)
 {
     public string FieldName { get; } = fieldName;
@@ -190,10 +191,13 @@ internal sealed class FieldAlignmentRow(
     public bool Optional { get; } = optional;
     public bool IsDetected { get; } = isDetected;
     public string CurrentTypeHint { get; } = currentTypeHint;
+    public IReadOnlyList<CurrentFieldLocation> CurrentLocations { get; } = currentLocations;
     public FieldTypeMatchStatus TypeMatchStatus { get; } = typeMatchStatus;
-    public bool IsAligned => TypeMatchStatus != FieldTypeMatchStatus.Missing && TypeMatchStatus != FieldTypeMatchStatus.TypeMismatch;
+    public bool IsAligned => TypeMatchStatus is not FieldTypeMatchStatus.Missing
+        and not FieldTypeMatchStatus.TypeMismatch;
     public bool IsPassThrough => TypeMatchStatus == FieldTypeMatchStatus.PassThrough;
-    public bool IsBridgeHandled => TypeMatchStatus == FieldTypeMatchStatus.BridgeHandled || TypeMatchStatus == FieldTypeMatchStatus.SemanticHandled;
+    public bool IsBridgeHandled => TypeMatchStatus is FieldTypeMatchStatus.BridgeHandled
+        or FieldTypeMatchStatus.SemanticHandled;
 }
 
 /// <summary>
@@ -214,6 +218,7 @@ internal sealed class FieldDiffResult(ProtocolStructGroup group, List<FieldAlign
 internal enum FieldTypeMatchStatus
 {
     Matched,
+    DynamicHandled,
     PassThrough,
     BridgeHandled,
     SemanticHandled,

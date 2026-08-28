@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace AITool.Infrastructure.ProxyProtocol;
+namespace AITool.Protocol;
 
 /// <summary>
 /// 负责在 OpenAI 与 Anthropic 协议之间转换请求和响应内容。
@@ -12,7 +12,7 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 将 Anthropic 请求体转换为 OpenAI 请求格式。
     /// </summary>
-    private static string BuildOpenAiRequestFromAnthropic(JsonObject rootNode, string targetModelName, bool enableStreaming)
+    private static string BuildOpenAiRequestFromAnthropic(JsonObject rootNode, string targetModelName, bool enableStreaming, bool keepReasoning = false)
     {
         var messages = new JsonArray();
 
@@ -50,7 +50,15 @@ public static partial class ProxyProtocolBridge
                 if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase))
                 {
                     var openAiMsg = new JsonObject { ["role"] = "assistant" };
-                    var (textContent, toolUseBlocks, imageBlocks) = ParseAnthropicContentBlocks(content);
+                    var (textContent, toolUseBlocks, imageBlocks, reasoningText) = ParseAnthropicContentBlocks(content);
+
+                    // keep_reasoning 规则：deepseek 等上游在 thinking 模式 + 工具调用时，
+                    // 要求把上一轮 assistant 的思维链以 reasoning_content 字段传回，否则返回 400。
+                    // 标准 OpenAI 不认该字段，所以仅在绑定规则时保留。
+                    if (keepReasoning && !string.IsNullOrWhiteSpace(reasoningText))
+                    {
+                        openAiMsg["reasoning_content"] = reasoningText;
+                    }
 
                     if (textContent is not null)
                     {
@@ -117,9 +125,10 @@ public static partial class ProxyProtocolBridge
                                 parts.Add(new JsonObject { ["type"] = "text", ["text"] = userText });
                             }
 
+                            // img 已是 userImageBlocks 的子节点（JsonNode 不允许双父），克隆后加入。
                             foreach (var img in userImageBlocks)
                             {
-                                parts.Add(img);
+                                parts.Add(img?.DeepClone());
                             }
 
                             userMsg["content"] = parts;
@@ -139,9 +148,8 @@ public static partial class ProxyProtocolBridge
                 // 不能原样追加，否则会破坏 OpenAI 的 messages 顺序规范（system 只能在最前）。
                 if (string.Equals(role, "system", StringComparison.OrdinalIgnoreCase))
                 {
-                    var extraSystemText = content is JsonValue sv
-                        ? sv.GetValue<string>()
-                        : content?.GetValue<string>() ?? content?.ToJsonString() ?? string.Empty;
+                    // system 内容可能是文本数组，统一使用安全提取逻辑，避免把 JsonArray 当作 JsonValue 读取。
+                    var extraSystemText = ExtractOpenAiContentAsString(content) ?? string.Empty;
                     if (!string.IsNullOrWhiteSpace(extraSystemText))
                     {
                         if (systemMessage is null)
@@ -220,52 +228,70 @@ public static partial class ProxyProtocolBridge
         }
 
         return payload.ToJsonString();
+    }
 
-        // 从 Anthropic 请求体解析出 OpenAI reasoning_effort 取值。
-        // 返回空字符串表示"不设置"（如显式 disabled）。
-        // output_config.effort 原样透传（max/xhigh 等档位 GLM 均支持，经实测确认）。
-        static string ResolveEffortFromAnthropicThinking(JsonObject rootNode)
+    /// <summary>
+    /// 从 Anthropic 请求体解析出 reasoning effort 取值。
+    /// 返回空字符串表示"不设置"（如显式 disabled）。
+    /// 口径与 cc-switch resolve_reasoning_effort 对齐（由反向推导向量测试锁定）：
+    /// 1) output_config.effort：low/medium/high 原样；max → xhigh（OpenAI xhigh = 最大档）；未知值忽略。
+    /// 2) thinking.type=adaptive → xhigh；enabled+budget：<4000 → low、<16000 → medium、≥16000 → high；
+    ///    enabled 无 budget → high；disabled/缺失 → 不设置。
+    /// </summary>
+    private static string ResolveEffortFromAnthropicThinking(JsonObject rootNode)
+    {
+        // 1) output_config.effort（新版标准，最高优先级）
+        if (rootNode["output_config"] is JsonObject outputConfig &&
+            outputConfig["effort"] is JsonValue effortValue &&
+            effortValue.TryGetValue<string>(out var rawEffort))
         {
-            // 1) output_config.effort（新版标准，最高优先级）
-            if (rootNode["output_config"] is JsonObject outputConfig &&
-                outputConfig["effort"] is JsonValue effortValue &&
-                effortValue.TryGetValue<string>(out var rawEffort))
+            var normalized = rawEffort.Trim().ToLowerInvariant();
+            return normalized switch
             {
-                return rawEffort.Trim().ToLowerInvariant();
-            }
-
-            // 2/3/4) thinking 对象
-            if (rootNode["thinking"] is JsonObject thinkingObj)
-            {
-                var type = thinkingObj["type"]?.GetValue<string>()?.Trim().ToLowerInvariant() ?? string.Empty;
-
-                // 显式关闭：不输出 reasoning_effort
-                if (string.Equals(type, "disabled", StringComparison.OrdinalIgnoreCase))
-                {
-                    return string.Empty;
-                }
-
-                // 自适应模式：默认倾向较强思考
-                if (string.Equals(type, "adaptive", StringComparison.OrdinalIgnoreCase))
-                {
-                    return "high";
-                }
-
-                // 老式 budget_tokens 映射（enabled 或未带 type）
-                var budgetTokens = thinkingObj["budget_tokens"]?.GetValue<int>() ?? 0;
-                if (budgetTokens > 0 || string.Equals(type, "enabled", StringComparison.OrdinalIgnoreCase))
-                {
-                    return budgetTokens switch
-                    {
-                        <= 1280 => "low",
-                        <= 2048 => "medium",
-                        _ => "high"
-                    };
-                }
-            }
-
-            return string.Empty;
+                "low" => "low",
+                "medium" => "medium",
+                "high" => "high",
+                "max" => "xhigh", // OpenAI xhigh = maximum reasoning effort
+                _ => string.Empty // 未知值不注入
+            };
         }
+
+        // 2) thinking 对象
+        if (rootNode["thinking"] is JsonObject thinkingObj)
+        {
+            var type = thinkingObj["type"]?.GetValue<string>()?.Trim().ToLowerInvariant() ?? string.Empty;
+
+            // 显式关闭：不输出 reasoning_effort
+            if (string.Equals(type, "disabled", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            // 自适应模式：最大推理档
+            if (string.Equals(type, "adaptive", StringComparison.OrdinalIgnoreCase))
+            {
+                return "xhigh";
+            }
+
+            // 老式 budget_tokens 映射（enabled 或未带 type）
+            var budgetTokens = thinkingObj["budget_tokens"]?.GetValue<long>() ?? 0;
+            if (budgetTokens > 0)
+            {
+                return budgetTokens switch
+                {
+                    < 4_000 => "low",
+                    < 16_000 => "medium",
+                    _ => "high"
+                };
+            }
+
+            if (string.Equals(type, "enabled", StringComparison.OrdinalIgnoreCase))
+            {
+                return "high"; // enabled 但无 budget——保守取强推理
+            }
+        }
+
+        return string.Empty;
     }
 
     /// <summary>
@@ -438,7 +464,8 @@ public static partial class ProxyProtocolBridge
                 var newMessages = new JsonArray { placeholder };
                 foreach (var m in claudeMessages)
                 {
-                    newMessages.Add(m);
+                    // 节点仍挂在原数组下，必须克隆后才能加入新数组（JsonNode 不允许双父）。
+                    newMessages.Add(m!.DeepClone());
                 }
 
                 claudeMessages = newMessages;
