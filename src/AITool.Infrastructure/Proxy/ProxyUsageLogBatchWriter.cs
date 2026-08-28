@@ -26,7 +26,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     /// </summary>
     private readonly Channel<UsageLogEntry> _channel = Channel.CreateBounded<UsageLogEntry>(new BoundedChannelOptions(4096)
     {
-        FullMode = BoundedChannelFullMode.DropWrite,
+        FullMode = BoundedChannelFullMode.Wait,
         SingleReader = true,
         SingleWriter = false
     });
@@ -68,7 +68,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     }
 
     /// <summary>
-    /// 代理链路只尝试入队，不等待数据库写入完成。同时更新 Site 使用时间映射（零 DB 开销）。
+    /// 代理链路只等待日志进入内存队列，不等待数据库写入完成。同时更新 Site 使用时间映射（零 DB 开销）。
     /// </summary>
     public async ValueTask<bool> EnqueueAsync(UsageLogEntry entry, CancellationToken cancellationToken)
     {
@@ -81,13 +81,17 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             return true;
         }
 
-        if (_channel.Writer.TryWrite(entry))
+        try
         {
+            // 日志不能因为客户端断开而丢失；队列满时只在内存缓冲耗尽期间施加背压。
+            await _channel.Writer.WriteAsync(entry, CancellationToken.None);
             return true;
         }
-
-        _logger.LogWarning("代理日志队列已满，本次日志已让步丢弃");
-        return false;
+        catch (ChannelClosedException ex)
+        {
+            _logger.LogWarning(ex, "代理日志队列已关闭，本次日志未能入队");
+            return false;
+        }
     }
 
     /// <summary>
@@ -95,61 +99,97 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var buffer = new List<UsageLogEntry>(MaxBatchSize);
-
-        while (!stoppingToken.IsCancellationRequested)
+        var pendingBatch = new List<UsageLogEntry>(MaxBatchSize);
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                var hasItem = await _channel.Reader.WaitToReadAsync(stoppingToken);
-                if (!hasItem)
+                if (pendingBatch.Count == 0)
                 {
-                    continue;
-                }
-
-                buffer.Clear();
-                while (buffer.Count < MaxBatchSize && _channel.Reader.TryRead(out var entry))
-                {
-                    buffer.Add(entry);
-                }
-
-                // 给同一批次一个很短的聚合窗口，减少小批量频繁刷盘。
-                var delayTask = Task.Delay(FlushInterval, stoppingToken);
-                while (buffer.Count < MaxBatchSize)
-                {
-                    var readTask = _channel.Reader.WaitToReadAsync(stoppingToken).AsTask();
-                    var completed = await Task.WhenAny(readTask, delayTask);
-                    if (completed == delayTask || !readTask.Result)
+                    var hasItem = await ReadNextBatchAsync(pendingBatch, stoppingToken);
+                    if (!hasItem)
                     {
                         break;
                     }
-
-                    while (buffer.Count < MaxBatchSize && _channel.Reader.TryRead(out var delayedEntry))
-                    {
-                        buffer.Add(delayedEntry);
-                    }
                 }
 
-                await FlushBatchAsync(buffer, stoppingToken);
+                try
+                {
+                    await FlushBatchAsync(pendingBatch, stoppingToken);
+                    pendingBatch.Clear();
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "后台批量写入代理日志失败，将保留当前批次并重试");
+                    try
+                    {
+                        await Task.Delay(FlushInterval, stoppingToken);
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                }
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            await DrainRemainingEntriesAsync(pendingBatch);
+        }
+    }
+
+    /// <summary>
+    /// 读取一批日志，并给同一批次一个短暂的聚合窗口。
+    /// </summary>
+    private async Task<bool> ReadNextBatchAsync(List<UsageLogEntry> batch, CancellationToken cancellationToken)
+    {
+        batch.Clear();
+        if (!await _channel.Reader.WaitToReadAsync(cancellationToken))
+        {
+            return false;
+        }
+
+        while (batch.Count < MaxBatchSize && _channel.Reader.TryRead(out var entry))
+        {
+            batch.Add(entry);
+        }
+
+        using var aggregationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        aggregationCts.CancelAfter(FlushInterval);
+        while (batch.Count < MaxBatchSize)
+        {
+            try
+            {
+                if (!await _channel.Reader.WaitToReadAsync(aggregationCts.Token))
+                {
+                    break;
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 break;
             }
-            catch (Exception ex)
+
+            while (batch.Count < MaxBatchSize && _channel.Reader.TryRead(out var delayedEntry))
             {
-                _logger.LogError(ex, "后台批量写入代理日志失败");
+                batch.Add(delayedEntry);
             }
         }
 
-        // 服务优雅停止时尽量把队列里剩余的记录落盘，降低批量写入导致的数据丢失窗口。
-        await DrainRemainingEntriesAsync();
+        return true;
     }
 
     /// <summary>
     /// 服务优雅停止时尽量把队列里剩余的记录落盘，降低批量写入导致的数据丢失窗口。
     /// </summary>
-    private async Task DrainRemainingEntriesAsync()
+    private async Task DrainRemainingEntriesAsync(List<UsageLogEntry>? pendingBatch = null)
     {
         // Core 宿主没有数据库，无需 drain（事件已通过事件总线发到 Admin）。
         if (!_databaseAvailable)
@@ -157,7 +197,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             return;
         }
 
-        var buffer = new List<UsageLogEntry>(MaxBatchSize);
+        var buffer = pendingBatch ?? new List<UsageLogEntry>(MaxBatchSize);
         try
         {
             while (_channel.Reader.TryRead(out var entry))
@@ -220,6 +260,8 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             IsFinalResult = entry.IsFinalResult,
             FallbackTriggered = entry.FallbackTriggered,
             ErrorMessage = entry.ErrorMessage,
+            HttpStatusCode = entry.HttpStatusCode,
+            ErrorCategory = entry.ErrorCategory ?? UsageLogErrorClassifier.Classify(entry),
             InputTokens = entry.InputTokens,
             CachedTokens = entry.CachedTokens,
             OutputTokens = entry.OutputTokens,

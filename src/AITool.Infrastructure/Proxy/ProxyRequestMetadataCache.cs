@@ -3,10 +3,13 @@ using System.Text;
 using System.Text.Json;
 using AITool.Application.Common;
 using AITool.Application.CoreRuntime;
+using AITool.Application.Proxy;
 using AITool.Domain.Codex;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
+using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,11 +18,16 @@ namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// 代理请求元数据缓存。
-/// 统一由 Infrastructure 层提供，Web/Admin 宿主通过数据库查询获取缓存数据，
-/// Core 宿主通过可选的 <see cref="ICoreRuntimeConfigProvider"/> 从 Admin 下发的配置快照读取。
 /// </summary>
 public sealed partial class ProxyRequestMetadataCache
 {
+    /// <summary>
+    /// 缓存有效时长。
+    /// 所有业务写操作（站点/模型/路由/密钥/兼容规则/运行时设置/Codex 账号等）都有对应的
+    /// Invalidate* 显式失效，TTL 仅作兜底，故从 5s 提高到 30s 以降低管理页面的重复查库压力；
+    /// 显式失效后下一次读取立即重建缓存，配置变更仍即时生效。
+    /// </summary>
+    private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(30);
     /// <summary>
     /// 访问密钥缓存键。
     /// </summary>
@@ -48,6 +56,8 @@ public sealed partial class ProxyRequestMetadataCache
     /// Codex 账号列表缓存键（账号少且低频变更，巡检高频读，适合缓存）。
     /// </summary>
     private const string CodexAccountsCacheKey = "codex-accounts";
+    private const string GoogleAccountsCacheKey = "google-accounts";
+    private const string KimiAccountsCacheKey = "kimi-accounts";
     /// <summary>
     /// 启用站点名称缓存键。
     /// </summary>
@@ -94,21 +104,16 @@ public sealed partial class ProxyRequestMetadataCache
     private readonly IMemoryCache _memoryCache;
     /// <summary>
     /// 服务作用域工厂。
-    /// 在 Web/Admin 宿主中用于创建数据库查询作用域；
-    /// 在纯 Core 宿主中不会被使用，因为数据直接从配置快照读取。
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
     /// <summary>
-    /// 数据库连接字符串（仅 Web/Admin 宿主）。
-    /// 缓存未命中时用 CopyNew() 创建独立连接查库，避免与 SqlSugarScope 单例连接并发竞态。
+    /// 缓存键级别的加载锁，避免冷缓存并发 miss 重复执行全表查询；锁条目在无人使用时自动回收。
     /// </summary>
-    private readonly string? _connectionString;
+    private readonly KeyedAsyncLock _cacheLoadLocks = new();
     /// <summary>
-    /// Core 运行时配置提供者。
-    /// 仅在 Core 宿主中注册，用于从 Admin 下发的配置快照读取代理运行时数据。
-    /// 在 Web/Admin 宿主中为 null，此时回退到数据库查询。
+    /// 每个缓存键的失效代数。构建期间若发生显式失效，旧构建结果不会重新写回缓存。
     /// </summary>
-    private readonly ICoreRuntimeConfigProvider? _configProvider;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _cacheGenerations = new(StringComparer.Ordinal);
     /// <summary>
     /// 正在等待活跃调用结束的路由快照，确保调用中的模型不会被新顺序影响。
     /// </summary>
@@ -117,6 +122,15 @@ public sealed partial class ProxyRequestMetadataCache
     /// 延迟路由快照状态锁。
     /// </summary>
     private readonly object _deferredRouteTargetsLock = new();
+    /// <summary>
+    /// 初始化代理请求元数据缓存。
+    /// </summary>
+    /// <summary>
+    /// Core 运行时配置提供者。
+    /// 仅在 Core 宿主中注册，用于从 Admin 下发的配置快照读取代理运行时数据。
+    /// 在 Web/Admin 宿主中为 null，此时回退到数据库查询。
+    /// </summary>
+    private readonly ICoreRuntimeConfigProvider? _configProvider;
 
     /// <summary>
     /// 初始化代理请求元数据缓存。
@@ -126,36 +140,84 @@ public sealed partial class ProxyRequestMetadataCache
     public ProxyRequestMetadataCache(
         IMemoryCache memoryCache,
         IServiceScopeFactory scopeFactory,
-        ICoreRuntimeConfigProvider? configProvider = null,
-        string? connectionString = null)
+        ICoreRuntimeConfigProvider? configProvider = null)
     {
         _memoryCache = memoryCache;
         _scopeFactory = scopeFactory;
         _configProvider = configProvider;
-        _connectionString = connectionString;
     }
 
     /// <summary>
-    /// 创建一个独立的 SqlSugarClient（有自己的连接），用完即释放。
+    /// 创建独立的 SqlSugarClient（有自己的连接），用完即释放。
     /// 所有缓存未命中时的查库都走这个方法，避免与单例 SqlSugarScope 并发竞态。
-    /// <para>性能说明：缓存为 NeverRemove，仅在首次加载或显式失效时触发查库，
-    /// CopyNew 开销（创建连接 + 查询 + 关闭连接）约 1-3ms，可忽略。</para>
     /// </summary>
     private SqlSugar.ISqlSugarClient CreateIndependentClient()
     {
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        // CopyNew 创建独立连接实例，不共享单例 SqlSugarScope 的连接。
-        // 连接级 PRAGMA（busy_timeout/cache_size）需要手动设置，CopyNew 不会继承单例连接的 PRAGMA。
         var client = dbContext.Client.CopyNew();
+        // 连接级 PRAGMA 不继承单例连接，需手动设置
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         client.Ado.ExecuteCommand("PRAGMA cache_size=-65536;");
         return client;
     }
 
     /// <summary>
-    /// Core 运行时元数据入口。
-    /// 这里聚合的缓存会直接影响访问密钥校验、运行时设置、路由目标选择和兜底行为，当前必须继续保持在代理主链路可直接访问的位置。
+    /// 读取或构建缓存项，并确保同一键在冷缓存期间只执行一次构建委托。
+    /// </summary>
+    private async Task<T?> GetOrCreateCachedAsync<T>(
+        string key,
+        Func<ICacheEntry, Task<T>> factory,
+        CancellationToken cancellationToken)
+    {
+        if (_memoryCache.TryGetValue(key, out T? cached))
+        {
+            return cached;
+        }
+
+        using (await _cacheLoadLocks.WaitAsync(key, cancellationToken))
+        {
+            if (_memoryCache.TryGetValue(key, out cached))
+            {
+                return cached;
+            }
+
+            var generation = GetCacheGeneration(key);
+            using var entry = _memoryCache.CreateEntry(key);
+            var value = await factory(entry);
+            if (generation == GetCacheGeneration(key))
+            {
+                entry.Value = value;
+            }
+
+            return value;
+        }
+    }
+
+    private long GetCacheGeneration(string key)
+    {
+        return _cacheGenerations.TryGetValue(key, out var generation) ? generation : 0;
+    }
+
+    private void InvalidateCacheKey(string key)
+    {
+        _cacheGenerations.AddOrUpdate(
+            key,
+            1,
+            static (_, generation) => generation == long.MaxValue ? 0 : generation + 1);
+        _memoryCache.Remove(key);
+    }
+
+    private void InvalidateCacheKeys(params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            InvalidateCacheKey(key);
+        }
+    }
+
+    /// <summary>
+    /// 校验访问密钥。
     /// </summary>
     public async Task<CachedProxyAccessKey?> ValidateAccessKeyAsync(string accessToken, CancellationToken cancellationToken)
     {
@@ -191,9 +253,8 @@ public sealed partial class ProxyRequestMetadataCache
         }
         catch
         {
-            // JSON 解析失败时 fail-close（拒绝所有路由），而非 fail-open（允许全部）。
-            // 返回空集合表示"只允许列表中的路由"但列表为空 = 全部拒绝。
-            return new HashSet<string>(StringComparer.Ordinal);
+            // JSON 解析失败时降级为允许全部，避免误锁。
+            return null;
         }
     }
 
@@ -208,7 +269,6 @@ public sealed partial class ProxyRequestMetadataCache
 
     /// <summary>
     /// 获取运行时设置缓存。
-    /// Core 宿主中从配置快照的 RuntimeSettings 读取，Web/Admin 宿主中从数据库查询。
     /// </summary>
     public async Task<CachedProxyRuntimeSettings> GetRuntimeSettingsAsync(CancellationToken cancellationToken)
     {
@@ -241,13 +301,12 @@ public sealed partial class ProxyRequestMetadataCache
                 ?? new CachedProxyRuntimeSettings();
         }
 
-        // Web/Admin 宿主：从数据库查询完整的运行时设置（包含检测相关字段）。
-        // 缓存未命中时用独立连接（CopyNew）查库，不碰单例 SqlSugarScope 连接，避免并发竞态。
-        return await _memoryCache.GetOrCreateAsync(
+        // Web/Admin 宿主：从数据库查询完整的运行时设置。
+        return await GetOrCreateCachedAsync(
                 RuntimeSettingsCacheKey,
                 async entry =>
                 {
-                    entry.Priority = CacheItemPriority.NeverRemove;
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
 
                     // 用独立连接查库，避免与单例 SqlSugarScope 并发竞态
                     using var independentClient = CreateIndependentClient();
@@ -260,6 +319,7 @@ public sealed partial class ProxyRequestMetadataCache
                         : new CachedProxyRuntimeSettings
                         {
                             ProxyRequestTimeoutSeconds = settings.ProxyRequestTimeoutSeconds,
+                            ProxyStreamIdleTimeoutSeconds = settings.ProxyStreamIdleTimeoutSeconds,
                             ProxyRetryCount = settings.ProxyRetryCount,
                             DetectionRequestTimeoutSeconds = settings.DetectionRequestTimeoutSeconds,
                             DetectionRetryCount = settings.DetectionRetryCount,
@@ -268,10 +328,8 @@ public sealed partial class ProxyRequestMetadataCache
                             CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
                             UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
                             DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
-                            ConversationLogEnabled = settings.ConversationLogEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
                             ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
-                            ProxyStreamIdleTimeoutSeconds = settings.ProxyStreamIdleTimeoutSeconds,
                             OAuthFeaturesEnabled = settings.OAuthFeaturesEnabled,
                             OAuthInspectionEnabled = settings.OAuthInspectionEnabled,
                             OAuthInspectionIntervalSeconds = settings.OAuthInspectionIntervalSeconds,
@@ -279,7 +337,7 @@ public sealed partial class ProxyRequestMetadataCache
                             OAuthAutoDisableThresholdPercent = settings.OAuthAutoDisableThresholdPercent,
                             OAuthInspectionCacheEnabled = settings.OAuthInspectionCacheEnabled
                         };
-                })
+                }, cancellationToken)
             ?? new CachedProxyRuntimeSettings();
     }
 
@@ -311,6 +369,15 @@ public sealed partial class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 获取所有路由候选（含多 Key 展开后的每条候选），供调试页按 CircuitKey 反查路由/站点/Key 信息。
+    /// 不过滤模型名和可用性，因为熔断状态可能对应任意候选。
+    /// </summary>
+    public async Task<IReadOnlyList<CachedProxyRouteTarget>> GetAllRouteTargetsAsync(CancellationToken cancellationToken)
+    {
+        return await GetRouteTargetsAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// 获取模型对应的路由目标。
     /// </summary>
     public async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsForModelAsync(
@@ -337,9 +404,6 @@ public sealed partial class ProxyRequestMetadataCache
             .ToList();
     }
 
-    // Admin 查询职责已拆分到 ProxyRequestMetadataCache.AdminQueries.cs，
-    // 这里保留运行时路径、共享失效入口和少量共享辅助逻辑，便于后续继续向 Core / Admin 双宿主分层收口。
-
     /// <summary>
     /// 获取已启用模型信息。
     /// </summary>
@@ -363,12 +427,11 @@ public sealed partial class ProxyRequestMetadataCache
     }
 
     /// <summary>
-    /// 共享失效入口。数据变更时清除缓存，下次查询自动从 DB/快照重建并永久缓存。
+    /// 清除访问密钥缓存。
     /// </summary>
     public void InvalidateAccessKeys()
     {
-        _memoryCache.Remove(AccessKeyCacheKey);
-        InvalidateAdminDeveloperMetadata();
+        InvalidateCacheKeys(AccessKeyCacheKey, DeveloperDefaultAccessKeyCacheKey);
     }
 
     /// <summary>
@@ -376,7 +439,26 @@ public sealed partial class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateCodexAccounts()
     {
-        _memoryCache.Remove(CodexAccountsCacheKey);
+        InvalidateCacheKey(CodexAccountsCacheKey);
+    }
+
+    /// <summary>
+    /// 清除 Google 账号列表缓存（含路由目标里的 project 映射，一并失效路由缓存）。
+    /// 账号发生增删改（额度更新/启停/token刷新/管理后台操作）后调用。
+    /// </summary>
+    public void InvalidateGoogleAccounts()
+    {
+        InvalidateCacheKey(GoogleAccountsCacheKey);
+        InvalidateRouteTargets();
+    }
+
+    /// <summary>
+    /// 清除 Kimi 账号列表缓存（一并失效路由缓存）。
+    /// </summary>
+    public void InvalidateKimiAccounts()
+    {
+        InvalidateCacheKey(KimiAccountsCacheKey);
+        InvalidateRouteTargets();
     }
 
     /// <summary>
@@ -390,7 +472,6 @@ public sealed partial class ProxyRequestMetadataCache
     /// <summary>
     /// 获取待巡检的 Codex 账号列表（未被功能总开关禁用，按最近检查时间升序）。
     /// 走缓存，账号变更后需调 <see cref="InvalidateCodexAccounts"/> 失效。
-    /// 注意：仅 Admin 宿主可用（需 AppDbContext）。Core 宿主返回空列表——Core 不持有 Codex 账号实体。
     /// </summary>
     public async Task<List<CodexAccount>> GetCodexAccountsAsync(CancellationToken cancellationToken)
     {
@@ -401,20 +482,86 @@ public sealed partial class ProxyRequestMetadataCache
             return [];
         }
 
-        return await _memoryCache.GetOrCreateAsync(
+        // 返回浅拷贝：调用方（额度巡检/自动禁用等）会原地修改这些实体并回写，
+        // 共享同一实例会污染缓存内容并与其他并发调用方互相踩踏。
+        var cached = await GetOrCreateCachedAsync(
                 CodexAccountsCacheKey,
                 async entry =>
                 {
-                    // 与其他路由/模型缓存一致采用 NeverRemove：账号变更时通过 InvalidateCodexAccounts 显式失效。
-                    entry.Priority = CacheItemPriority.NeverRemove;
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
 
-                    using var independentClient = CreateIndependentClient();
-                    return await independentClient.Queryable<Domain.Codex.CodexAccount>()
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await dbContext.CodexAccounts
                         .Where(a => !a.DisabledByFeatureToggle)
                         .OrderBy(a => a.LastQuotaCheckedAt)
                         .ToListAsync(cancellationToken);
-                })
+                }, cancellationToken)
             ?? [];
+
+        return cached.Select(static a => a.Clone()).ToList();
+    }
+
+    /// <summary>
+    /// 获取待巡检/刷新的 Google 账号列表（未被功能总开关禁用，按最近检查时间升序）。
+    /// 走缓存，账号变更后需调 <see cref="InvalidateGoogleAccounts"/> 失效。
+    /// </summary>
+    public async Task<List<Domain.Google.GoogleAccount>> GetGoogleAccountsAsync(CancellationToken cancellationToken)
+    {
+        // Core 宿主无数据库：OAuth 账号缓存仅 Admin 侧使用，Core 直接返回空列表。
+        if (_configProvider is not null)
+        {
+            return [];
+        }
+
+        // 返回浅拷贝：调用方（额度巡检/后台刷新等）会原地修改这些实体并回写，
+        // 共享同一实例会污染缓存内容并与其他并发调用方互相踩踏。
+        var cached = await GetOrCreateCachedAsync(
+                GoogleAccountsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await dbContext.GoogleAccounts
+                        .Where(a => !a.DisabledByFeatureToggle && !a.DisabledByUpstream)
+                        .OrderBy(a => a.LastQuotaCheckedAt)
+                        .ToListAsync(cancellationToken);
+                }, cancellationToken)
+            ?? [];
+
+        return cached.Select(static a => a.Clone()).ToList();
+    }
+
+    /// <summary>
+    /// 获取待巡检/刷新的 Kimi 账号列表。
+    /// 走缓存，账号变更后需调 <see cref="InvalidateKimiAccounts"/> 失效。
+    /// </summary>
+    public async Task<List<Domain.Kimi.KimiAccount>> GetKimiAccountsAsync(CancellationToken cancellationToken)
+    {
+        // Core 宿主无数据库：OAuth 账号缓存仅 Admin 侧使用，Core 直接返回空列表。
+        if (_configProvider is not null)
+        {
+            return [];
+        }
+
+        var cached = await GetOrCreateCachedAsync(
+                KimiAccountsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await dbContext.KimiAccounts
+                        .Where(a => !a.IsDeleted)
+                        .OrderBy(a => a.CreatedAt)
+                        .ToListAsync(cancellationToken);
+                }, cancellationToken)
+            ?? [];
+
+        return cached.Select(static a => a.Clone()).ToList();
     }
 
     /// <summary>
@@ -422,33 +569,34 @@ public sealed partial class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateRuntimeSettings()
     {
-        _memoryCache.Remove(RuntimeSettingsCacheKey);
+        InvalidateCacheKey(RuntimeSettingsCacheKey);
     }
 
     /// <summary>
     /// 清除路由相关缓存。
-    /// 这里同时命中运行时路由快照和后台页面查询缓存，是当前双宿主拆分里最典型的共享边界入口。
     /// </summary>
     public void InvalidateRouteTargets()
     {
         InvalidateRuntimeRouteTargets();
         InvalidateAdminRouteMetadata();
-        InvalidateAdminChatMetadata();
-        InvalidateAdminDeveloperMetadata();
     }
 
     /// <summary>
     /// 清除运行时代理使用的路由目标缓存。
-    /// 这里只保留会直接影响代理请求选路、并发限制和兜底行为的缓存。
     /// </summary>
     public void InvalidateRuntimeRouteTargets()
     {
-        _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "OpenAI");
-        _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "Anthropic");
-        _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "all");
-        _memoryCache.Remove(ModelConcurrencyLimitsCacheKey);
-        _memoryCache.Remove(FallbackMappingsCacheKey);
-        _memoryCache.Remove(EnabledModelsCacheKey);
+        InvalidateCacheKeys(
+            RouteTargetsCacheKeyPrefix + "OpenAI",
+            RouteTargetsCacheKeyPrefix + "Anthropic",
+            RouteTargetsCacheKeyPrefix + "all",
+            ChatModelsCacheKey,
+            ChatTargetsCacheKey,
+            ModelConcurrencyLimitsCacheKey,
+            EnabledSiteNamesCacheKey,
+            DeveloperDebugModelsCacheKey,
+            FallbackMappingsCacheKey,
+            EnabledModelsCacheKey);
     }
 
     /// <summary>
@@ -456,31 +604,12 @@ public sealed partial class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateAdminRouteMetadata()
     {
-        _memoryCache.Remove(RouteEntriesCacheKey);
-        _memoryCache.Remove(RouteSiteInstancesCacheKey);
-        _memoryCache.Remove(RouteModelsCacheKey);
-        _memoryCache.Remove(RouteDiscoveredSitesCacheKey);
-        _memoryCache.Remove(RouteRulesByEntryCacheKey);
-    }
-
-    /// <summary>
-    /// 清除后台聊天页依赖的管理缓存。
-    /// </summary>
-    public void InvalidateAdminChatMetadata()
-    {
-        _memoryCache.Remove(ChatModelsCacheKey);
-        _memoryCache.Remove(ChatTargetsCacheKey);
-    }
-
-    /// <summary>
-    /// 清除开发者页和站点名称等辅助查询缓存。
-    /// 这部分目前仍与运行时服务同类暴露，但职责已经偏向 Admin 查询层。
-    /// </summary>
-    public void InvalidateAdminDeveloperMetadata()
-    {
-        _memoryCache.Remove(EnabledSiteNamesCacheKey);
-        _memoryCache.Remove(DeveloperDefaultAccessKeyCacheKey);
-        _memoryCache.Remove(DeveloperDebugModelsCacheKey);
+        InvalidateCacheKeys(
+            RouteEntriesCacheKey,
+            RouteSiteInstancesCacheKey,
+            RouteModelsCacheKey,
+            RouteDiscoveredSitesCacheKey,
+            RouteRulesByEntryCacheKey);
     }
 
     /// <summary>
@@ -546,20 +675,23 @@ public sealed partial class ProxyRequestMetadataCache
             return;
         }
 
-        var completedTarget = new RouteTargetIdentity(siteId, siteModelName);
         var shouldInvalidateRuntimeRoutes = false;
         lock (_deferredRouteTargetsLock)
         {
             foreach (var item in _deferredRouteTargetsByModel.ToList())
             {
-                if (!item.Value.PendingActiveSlots.TryGetValue(completedTarget, out var pendingSlots) || !pendingSlots.Remove(activeSlotId))
+                // 找到包含该 slotId 的任何 target 并移除（兼容 siteId 传入 SiteKeyId 或 SiteId 的情况）
+                foreach (var pendingTarget in item.Value.PendingActiveSlots.Keys.ToList())
                 {
-                    continue;
-                }
-
-                if (pendingSlots.Count == 0)
-                {
-                    item.Value.PendingActiveSlots.Remove(completedTarget);
+                    if (string.Equals(pendingTarget.SiteModelName, siteModelName, StringComparison.Ordinal)
+                        && item.Value.PendingActiveSlots.TryGetValue(pendingTarget, out var pendingSlots)
+                        && pendingSlots.Remove(activeSlotId))
+                    {
+                        if (pendingSlots.Count == 0)
+                        {
+                            item.Value.PendingActiveSlots.Remove(pendingTarget);
+                        }
+                    }
                 }
 
                 if (item.Value.PendingActiveSlots.Count == 0)
@@ -647,19 +779,21 @@ public sealed partial class ProxyRequestMetadataCache
     }
 
     /// <summary>
-    /// 清除模型相关缓存。
-    /// 这里同时命中后台聊天页查询结果和运行时模型选择结果，后续可继续拆成更细的 Admin / Core 失效入口。
+    /// 清除模型元数据缓存。
     /// </summary>
     public void InvalidateModelMetadata()
     {
-        InvalidateAdminChatMetadata();
-        _memoryCache.Remove(FallbackMappingsCacheKey);
-        _memoryCache.Remove(EnabledModelsCacheKey);
+        InvalidateCacheKeys(
+            ChatModelsCacheKey,
+            ChatTargetsCacheKey,
+            FallbackMappingsCacheKey,
+            EnabledModelsCacheKey);
+        // 路由入口列表与候选规则都回填了模型显示名称，模型变更（含显示名称编辑）时一并失效。
+        InvalidateCacheKeys(RouteEntriesCacheKey, RouteRulesByEntryCacheKey);
     }
 
     /// <summary>
     /// 加载访问密钥缓存。
-    /// Core 宿主中直接从配置快照读取，Web/Admin 宿主中从数据库查询。
     /// </summary>
     private async Task<Dictionary<string, CachedProxyAccessKey>> GetAccessKeysAsync(CancellationToken cancellationToken)
     {
@@ -692,15 +826,17 @@ public sealed partial class ProxyRequestMetadataCache
                 ?? [];
         }
 
-        // Web/Admin 宿主：从数据库查询
-        return await _memoryCache.GetOrCreateAsync(
+        // Web/Admin 宿主：从数据库查询。
+        return await GetOrCreateCachedAsync(
                 AccessKeyCacheKey,
                 async entry =>
                 {
-                    entry.Priority = CacheItemPriority.NeverRemove;
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
 
-                    using var independentClient = CreateIndependentClient();
-                    var accessKeys = await independentClient.Queryable<Domain.Proxy.ProxyAccessKey>()
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var accessKeys = await dbContext.ProxyAccessKeys
+                        
                         .Where(x => x.IsEnabled)
                         .Select(x => new CachedProxyAccessKey
                         {
@@ -711,13 +847,12 @@ public sealed partial class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
 
                     return accessKeys.ToDictionary(x => x.AccessKeyHash, x => x, StringComparer.Ordinal);
-                })
+                }, cancellationToken)
             ?? [];
     }
 
     /// <summary>
     /// 加载路由目标缓存。
-    /// Core 宿主中从配置快照的 RouteRules 和 Sites 构建路由目标，Web/Admin 宿主中从数据库联表查询。
     /// </summary>
     private async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsAsync(CancellationToken cancellationToken)
     {
@@ -775,9 +910,9 @@ public sealed partial class ProxyRequestMetadataCache
                                     RouteId = rule.Id,
                                     SiteId = site.Id,
                                     SiteKeyId = candidate.SiteKeyId,
-                                    CircuitKey = BuildCircuitKey(rule.Id, candidate.SiteKeyId),
+                                    CircuitKey = BuildCircuitKey(rule.Id, candidate.SiteKeyId, rule.SiteModelName),
                                     SiteName = site.Name,
-                                    ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                                    ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
                                     EndpointPathMode = site.EndpointPathMode,
                                     SupportsOpenAi = site.SupportsOpenAi,
                                     SupportsAnthropic = site.SupportsAnthropic,
@@ -806,42 +941,62 @@ public sealed partial class ProxyRequestMetadataCache
                 ?? [];
         }
 
-        // Web/Admin 宿主：从数据库联表查询
-        return await _memoryCache.GetOrCreateAsync(
+        // Web/Admin 宿主：从数据库查询。
+        return await GetOrCreateCachedAsync(
                 RouteTargetsCacheKeyPrefix + "all",
                 async entry =>
                 {
-                    entry.Priority = CacheItemPriority.NeverRemove;
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
 
-                    using var independentClient = CreateIndependentClient();
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    // SqlSugar 不支持 LINQ query syntax 的多表 join，改为先各自读出再在内存连接。
-                    var routeRows = await independentClient.Queryable<Domain.Proxy.ProxyRouteRule>().ToListAsync(cancellationToken);
-                    var routeSiteRows = await independentClient.Queryable<Domain.Sites.Site>().ToListAsync(cancellationToken);
-                    var models = await independentClient.Queryable<Domain.Models.ModelLibraryItem>().ToListAsync(cancellationToken);
+                    var routes = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var sites = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var models = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    var mappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var mappingsBySiteAndRemote = mappings.GroupBy(m => (m.SiteId, m.RemoteModelName)).ToDictionary(g => g.Key, g => g.First());
+                    var mappingsBySiteAndModelId = mappings.GroupBy(m => (m.SiteId, m.ModelLibraryItemId)).ToDictionary(g => g.Key, g => g.First());
+
                     // 一次性加载所有启用的站点密钥，按 SiteId 分组，供路由目标按 Key 展开为多条候选。
-                    var siteKeyRows = await independentClient.Queryable<Domain.Sites.SiteKey>()
+                    var siteKeys = await dbContext.SiteKeys
                         .Where(k => k.IsEnabled)
                         .ToListAsync(cancellationToken);
-                    var siteKeysBySite = siteKeyRows
+                    var siteKeysBySite = siteKeys
                         .GroupBy(k => k.SiteId)
                         .ToDictionary(g => g.Key, g => g.ToList());
+                    // Google 账号（Gemini 上游）的项目 ID 按 LinkedSiteId 映射，注入路由目标供请求体封套使用。
+                    var googleProjectsBySite = (await dbContext.GoogleAccounts
+                            .ToListAsync(cancellationToken))
+                        .Where(a => !string.IsNullOrWhiteSpace(a.ProjectId))
+                        .GroupBy(a => a.LinkedSiteId)
+                        .ToDictionary(g => g.Key, g => g.First().ProjectId!);
                     // 一次性加载所有启用的兼容规则集，构建 Id→规则列表字典，供路由目标投影时查（避免 N+1）。
-                    var profiles = await independentClient.Queryable<Domain.Proxy.CompatibilityProfile>()
+                    var profiles = await dbContext.CompatibilityProfiles
                         .Where(p => p.IsEnabled)
                         .ToListAsync(cancellationToken);
                     var profileRules = profiles.ToDictionary(
                         p => p.Id,
-                        p => CompatibilityRuleParser.Parse(p.RulesJson));
+                        p => ParseCompatibilityRules(p.RulesJson));
+
+                    var proxyProfiles = await dbContext.ProxyProfiles
+                        .Where(p => p.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var proxyMap = proxyProfiles
+                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var headerProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     // 基础路由投影（每条 route × site × model 一条），不含 Key 维度。
                     var baseRoutes = (
-                            from route in routeRows
-                            join site in routeSiteRows on route.SiteId equals site.Id
+                            from route in routes
+                            join site in sites on route.SiteId equals site.Id
                             join model in models on route.UpstreamModelName equals model.ModelName into modelGroup
                             from model in modelGroup.DefaultIfEmpty()
                             where route.IsEnabled && site.IsEnabled
-                            select new { route, site, model })
+                            select new
+                            {
+                                route, site, model
+                            })
                         .ToList();
 
                     // 按 SiteKey 展开：同一路由的每个启用 Key 各产出一条候选，实现"主备 Key + 各自独立并发计数"。
@@ -854,6 +1009,20 @@ public sealed partial class ProxyRequestMetadataCache
                         var model = item.model;
                         var candidates = ResolveSiteKeyCandidates(site.Id, site.ApiKey, siteKeysBySite);
 
+                        SiteModelMapping? mapping = null;
+                        if (mappingsBySiteAndRemote.TryGetValue((site.Id, route.SiteModelName), out var m1))
+                        {
+                            mapping = m1;
+                        }
+                        else if (model != null && mappingsBySiteAndModelId.TryGetValue((site.Id, model.Id), out var m2))
+                        {
+                            mapping = m2;
+                        }
+
+                        var clientEmulation = ResolveClientEmulation(mapping?.ClientEmulation, model?.ClientEmulation, site.ClientEmulation);
+                        var extraHeaders = BuildEffectiveExtraHeaders(clientEmulation, headerProfileMap, site.ExtraHeadersJson, model?.ExtraHeadersJson, mapping?.ExtraHeadersJson);
+                        var egressProxyUrl = ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap);
+
                         foreach (var candidate in candidates)
                         {
                             expanded.Add(new CachedProxyRouteTarget
@@ -861,23 +1030,32 @@ public sealed partial class ProxyRequestMetadataCache
                                 RouteId = route.Id,
                                 SiteId = site.Id,
                                 SiteKeyId = candidate.SiteKeyId,
-                                CircuitKey = BuildCircuitKey(route.Id, candidate.SiteKeyId),
+                                CircuitKey = BuildCircuitKey(site.Id, candidate.SiteKeyId, route.SiteModelName),
                                 SiteName = site.Name,
-                                ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                                ManagedSource = site.ManagedSource ?? string.Empty,
+                                ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses, site.ProtocolType),
                                 EndpointPathMode = site.EndpointPathMode,
                                 SupportsOpenAi = site.SupportsOpenAi,
                                 SupportsAnthropic = site.SupportsAnthropic,
+                                SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                                    site.SupportsOpenAi,
+                                    site.SupportsAnthropic,
+                                    site.SupportsResponses,
+                                    site.ProtocolType),
                                 ExternalModelName = route.ExternalModelName,
                                 UpstreamModelName = route.UpstreamModelName,
                                 SiteModelName = route.SiteModelName,
                                 BaseUrl = site.BaseUrl,
                                 ApiKey = candidate.ApiKey,
-                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
+                                ExtraHeaders = extraHeaders,
+                                ClientEmulation = clientEmulation,
+                                EgressProxyUrl = egressProxyUrl,
+                                GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var googleProject) ? googleProject : string.Empty,
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
                                 OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
-                                CompatibilityRules = CompatibilityRuleParser.GetRulesForModel(model?.CompatibilityProfileId, profileRules),
+                                CompatibilityRules = GetRulesForModel(model, profileRules),
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             });
@@ -885,13 +1063,12 @@ public sealed partial class ProxyRequestMetadataCache
                     }
 
                     return expanded;
-                })
+                }, cancellationToken)
             ?? [];
     }
 
     /// <summary>
-    /// 加载已启用模型缓存。
-    /// Core 宿主中从配置快照的 Models 列表读取，Web/Admin 宿主中从数据库查询。
+    /// 加载启用的模型缓存。
     /// </summary>
     private async Task<Dictionary<Guid, CachedEnabledModel>> GetEnabledModelsAsync(CancellationToken cancellationToken)
     {
@@ -924,16 +1101,18 @@ public sealed partial class ProxyRequestMetadataCache
                 ?? [];
         }
 
-        // Web/Admin 宿主：从数据库查询
-        return await _memoryCache.GetOrCreateAsync(
+        // Web/Admin 宿主：从数据库查询。
+        return await GetOrCreateCachedAsync(
                 EnabledModelsCacheKey,
                 async entry =>
                 {
-                    entry.Priority = CacheItemPriority.NeverRemove;
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
 
-                    using var independentClient = CreateIndependentClient();
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    var models = await independentClient.Queryable<Domain.Models.ModelLibraryItem>()
+                    var models = await dbContext.ModelLibraryItems
+                        
                         .Where(x => x.IsEnabled)
                         .Select(x => new CachedEnabledModel
                         {
@@ -944,14 +1123,12 @@ public sealed partial class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
 
                     return models.ToDictionary(x => x.ModelId, x => x);
-                })
+                }, cancellationToken)
             ?? [];
     }
 
     /// <summary>
     /// 加载兜底映射缓存。
-    /// Core 宿主中从配置快照的 SiteModelMappings + Sites + Models 构建，
-    /// Web/Admin 宿主中从数据库三表联查。
     /// </summary>
     private async Task<Dictionary<Guid, CachedFallbackTarget>> GetFallbackMappingsAsync(CancellationToken cancellationToken)
     {
@@ -1016,9 +1193,9 @@ public sealed partial class ProxyRequestMetadataCache
                                     ModelName = first.ModelName,
                                     SiteId = first.SiteId,
                                     SiteKeyId = candidate.SiteKeyId,
-                                    CircuitKey = BuildCircuitKey(first.Id, candidate.SiteKeyId),
+                                    CircuitKey = BuildCircuitKey(first.site.Id, candidate.SiteKeyId, first.RemoteModelName),
                                     SiteName = first.site.Name,
-                                    ProtocolType = ResolveSiteProtocolType(first.site.SupportsOpenAi, first.site.SupportsAnthropic),
+                                    ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(first.site.SupportsOpenAi, first.site.SupportsAnthropic),
                                     BaseUrl = first.site.BaseUrl,
                                     EndpointPathMode = first.site.EndpointPathMode,
                                     ApiKey = candidate.ApiKey,
@@ -1036,44 +1213,68 @@ public sealed partial class ProxyRequestMetadataCache
                 ?? [];
         }
 
-        // Web/Admin 宿主：从数据库三表联查
-        return await _memoryCache.GetOrCreateAsync(
+        // Web/Admin 宿主：从数据库查询。
+        return await GetOrCreateCachedAsync(
                 FallbackMappingsCacheKey,
                 async entry =>
                 {
-                    entry.Priority = CacheItemPriority.NeverRemove;
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
 
-                    using var independentClient = CreateIndependentClient();
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    // SqlSugar 不支持 LINQ query syntax 的多表 join，改为先各自读出再在内存连接。
-                    var fbMappings = await independentClient.Queryable<Domain.SiteCatalog.SiteModelMapping>().ToListAsync(cancellationToken);
-                    var fbSites = await independentClient.Queryable<Domain.Sites.Site>().ToListAsync(cancellationToken);
-                    var fbModels = await independentClient.Queryable<Domain.Models.ModelLibraryItem>().ToListAsync(cancellationToken);
-                    var fbSiteKeys = await independentClient.Queryable<Domain.Sites.SiteKey>()
+                    var mappingsData = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var sitesData = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var modelsData = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    var siteKeysData = await dbContext.SiteKeys
                         .Where(k => k.IsEnabled)
                         .ToListAsync(cancellationToken);
-                    var fbSiteKeysBySite = fbSiteKeys
+                    var siteKeysBySite = siteKeysData
                         .GroupBy(k => k.SiteId)
                         .ToDictionary(g => g.Key, g => g.ToList());
+                    // Google 账号（Gemini 上游）的项目 ID 按 LinkedSiteId 映射，注入兜底目标供请求体封套使用。
+                    var googleProjectsBySite = (await dbContext.GoogleAccounts
+                            .ToListAsync(cancellationToken))
+                        .Where(a => !string.IsNullOrWhiteSpace(a.ProjectId))
+                        .GroupBy(a => a.LinkedSiteId)
+                        .ToDictionary(g => g.Key, g => g.First().ProjectId!);
+
+                    var proxyProfiles = await dbContext.ProxyProfiles
+                        .Where(p => p.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var proxyMap = proxyProfiles
+                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var fallbackHeaderProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
+
                     var rawMappings = (
-                            from mapping in fbMappings
-                            join site in fbSites on mapping.SiteId equals site.Id
-                            join model in fbModels on mapping.ModelLibraryItemId equals model.Id
+                            from mapping in mappingsData
+                            join site in sitesData on mapping.SiteId equals site.Id
+                            join model in modelsData on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
                             select new
                             {
                                 ModelId = model.Id,
-                                MappingId = mapping.Id,
                                 model.ModelName,
+                                ModelClientEmulation = model.ClientEmulation,
+                                ModelExtraHeadersJson = model.ExtraHeadersJson,
                                 SiteId = site.Id,
                                 SiteName = site.Name,
+                                site.ManagedSource,
                                 site.SupportsOpenAi,
                                 site.SupportsAnthropic,
+                                site.SupportsResponses,
+                                site.ProtocolType,
                                 site.BaseUrl,
                                 site.EndpointPathMode,
                                 site.ApiKey,
+                                MappingId = mapping.Id,
                                 SiteModelName = mapping.RemoteModelName,
-                                site.ExtraHeadersJson
+                                SiteExtraHeadersJson = site.ExtraHeadersJson,
+                                SiteClientEmulation = site.ClientEmulation,
+                                SiteEgressProxyUrl = site.EgressProxyUrl,
+                                MappingClientEmulation = mapping.ClientEmulation,
+                                MappingExtraHeadersJson = mapping.ExtraHeadersJson,
+                                MappingEgressProxyUrl = mapping.EgressProxyUrl
                             })
                         .ToList();
 
@@ -1087,30 +1288,36 @@ public sealed partial class ProxyRequestMetadataCache
                                 .OrderBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
                                 .First();
 
-                            var candidates = ResolveSiteKeyCandidates(first.SiteId, first.ApiKey, fbSiteKeysBySite);
+                            var candidates = ResolveSiteKeyCandidates(first.SiteId, first.ApiKey, siteKeysBySite);
+                            var fallbackEmulation = ResolveClientEmulation(first.MappingClientEmulation, first.ModelClientEmulation, first.SiteClientEmulation);
                             return candidates.Select(candidate => new CachedFallbackTarget
                             {
                                 ModelId = grouped.Key,
                                 ModelName = first.ModelName,
                                 SiteId = first.SiteId,
                                 SiteKeyId = candidate.SiteKeyId,
-                                CircuitKey = BuildCircuitKey(first.MappingId, candidate.SiteKeyId),
+                                CircuitKey = BuildCircuitKey(first.SiteId, candidate.SiteKeyId, first.SiteModelName),
                                 SiteName = first.SiteName,
-                                ProtocolType = ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic),
+                                ManagedSource = first.ManagedSource ?? string.Empty,
+                                ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic, first.SupportsResponses, first.ProtocolType),
                                 BaseUrl = first.BaseUrl,
                                 EndpointPathMode = first.EndpointPathMode,
                                 ApiKey = candidate.ApiKey,
                                 SiteModelName = first.SiteModelName,
-                                ExtraHeaders = TryParseExtraHeaders(first.ExtraHeadersJson)
+                                ExtraHeaders = BuildEffectiveExtraHeaders(fallbackEmulation, fallbackHeaderProfileMap, first.SiteExtraHeadersJson, first.ModelExtraHeadersJson, first.MappingExtraHeadersJson),
+                                ClientEmulation = fallbackEmulation,
+                                EgressProxyUrl = ResolveEgressProxyUrl(first.MappingEgressProxyUrl, first.SiteEgressProxyUrl, proxyMap),
+                                GoogleProjectId = googleProjectsBySite.TryGetValue(first.SiteId, out var fallbackGoogleProject) ? fallbackGoogleProject : string.Empty
                             });
                         })
                         .ToList();
 
                     // 兜底字典保留每个模型的主 Key 候选（Priority 最小的那个）。
+                    // fallback 语义是"每个模型一个单目标兜底"，多 Key 的主备轮换由主路由 GetRouteTargetsAsync 处理。
                     return mappings
                         .GroupBy(x => x.ModelId)
                         .ToDictionary(g => g.Key, g => g.First());
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -1149,16 +1356,64 @@ public sealed partial class ProxyRequestMetadataCache
     }
 
     /// <summary>
-    /// 根据站点能力推导协议类型。
+    /// 解析规则集的 RulesJson 为规则列表。解析失败返回空列表，不影响转发。
     /// </summary>
-    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    private static IReadOnlyList<CompatibilityRule> ParseCompatibilityRules(string? rulesJson)
     {
-        if (!supportsOpenAi && !supportsAnthropic)
+        if (string.IsNullOrWhiteSpace(rulesJson)) return Array.Empty<CompatibilityRule>();
+        try
         {
-            return "Responses";
+            var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(rulesJson);
+            return rules is null || rules.Count == 0 ? Array.Empty<CompatibilityRule>() : rules;
+        }
+        catch
+        {
+            return Array.Empty<CompatibilityRule>();
+        }
+    }
+
+    /// <summary>
+    /// 取模型关联的兼容规则集（按 CompatibilityProfileId 查字典）。模型或 profileId 为空、或字典里没有则返回空。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> GetRulesForModel(ModelLibraryItem? model, Dictionary<Guid, IReadOnlyList<CompatibilityRule>> profileRules)
+    {
+        var profileId = model?.CompatibilityProfileId;
+        if (profileId is null || profileId == Guid.Empty) return Array.Empty<CompatibilityRule>();
+        return profileRules.TryGetValue(profileId.Value, out var rules) ? rules : Array.Empty<CompatibilityRule>();
+    }
+
+    /// <summary>
+    /// 加载启用的请求头模板方案（Key → 解析后的请求头字典，占位符原样保留、请求时由引擎求值）。
+    /// 从 IHeaderProfileCatalogService 读取本地 client-header-profiles.json。
+    /// 仅在缓存构建期调用；模板增删改由 HeaderProfilesApiController 失效路由缓存触发重建。
+    /// </summary>
+    private static async Task<Dictionary<string, Dictionary<string, string>>> LoadHeaderProfileMapAsync(
+        IServiceProvider serviceProvider,
+        CancellationToken cancellationToken)
+    {
+        var catalogService = serviceProvider.GetService<IHeaderProfileCatalogService>();
+        if (catalogService == null)
+        {
+            return new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         }
 
-        return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
+        var profiles = await catalogService.GetAllAsync(cancellationToken);
+        var map = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles)
+        {
+            if (!profile.IsEnabled || string.IsNullOrWhiteSpace(profile.Key) || string.IsNullOrWhiteSpace(profile.HeadersJson))
+            {
+                continue;
+            }
+
+            var headers = TryParseExtraHeaders(profile.HeadersJson);
+            if (headers.Count > 0)
+            {
+                map.TryAdd(profile.Key.Trim(), headers);
+            }
+        }
+
+        return map;
     }
 
     /// <summary>
@@ -1183,6 +1438,112 @@ public sealed partial class ProxyRequestMetadataCache
         {
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
+    }
+
+    /// <summary>
+    /// 解析客户端特征模拟预设类型（优先级：SiteModelMapping > ModelLibraryItem > Site）。
+    /// 内置预设返回归一化名称；非预设的自定义值按"请求头模板方案 Key"原样透传（运行时经 HeaderProfiles 解析）。
+    /// </summary>
+    internal static string ResolveClientEmulation(string? mappingEmulation, string? modelEmulation, string? siteEmulation)
+    {
+        foreach (var candidate in new[] { mappingEmulation, modelEmulation, siteEmulation })
+        {
+            var trimmed = candidate?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                continue;
+            }
+
+            var normalized = ClientEmulationConstants.Normalize(trimmed);
+            if (string.Equals(normalized, ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return normalized;
+        }
+
+        return ClientEmulationConstants.None;
+    }
+
+    /// <summary>
+    /// 构建最终转发的自定义请求头：HeaderProfile 模板（最底层，可覆盖引擎内置预设硬编码）
+    /// → Site → Model → SiteModelMapping（显式配置逐层覆盖）。占位符由引擎在请求时求值。
+    /// </summary>
+    internal static Dictionary<string, string> BuildEffectiveExtraHeaders(
+        string clientEmulation,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? headerProfileMap,
+        string? siteJson,
+        string? modelJson,
+        string? mappingJson)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (headerProfileMap != null
+            && !string.IsNullOrWhiteSpace(clientEmulation)
+            && headerProfileMap.TryGetValue(clientEmulation.Trim(), out var profileHeaders))
+        {
+            foreach (var (key, value) in profileHeaders)
+            {
+                result[key] = value;
+            }
+        }
+
+        foreach (var json in new[] { siteJson, modelJson, mappingJson })
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                continue;
+            }
+
+            foreach (var (key, value) in TryParseExtraHeaders(json))
+            {
+                result[key] = value;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 解析站点专属出口网络代理（优先级：SiteModelMapping > Site > Direct 直连）。
+    /// </summary>
+    internal static string? ResolveEgressProxyUrl(string? mappingProxy, string? siteProxy, IReadOnlyDictionary<string, string>? proxyMap = null)
+    {
+        var raw = !string.IsNullOrWhiteSpace(mappingProxy)
+            ? mappingProxy.Trim()
+            : (!string.IsNullOrWhiteSpace(siteProxy) ? siteProxy.Trim() : null);
+
+        if (string.IsNullOrWhiteSpace(raw) ||
+            string.Equals(raw, "None", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(raw, "direct", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (proxyMap != null && proxyMap.TryGetValue(raw, out var mappedUrl))
+        {
+            return mappedUrl;
+        }
+
+        return raw;
+    }
+
+    /// <summary>
+    /// 合并多个层级的自定义请求头 JSON（后面的覆盖前面的：Site -> Model -> SiteModelMapping）。
+    /// </summary>
+    internal static Dictionary<string, string> MergeExtraHeaders(params string?[] extraHeadersJsons)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var json in extraHeadersJsons)
+        {
+            if (string.IsNullOrWhiteSpace(json)) continue;
+            var parsed = TryParseExtraHeaders(json);
+            foreach (var kvp in parsed)
+            {
+                result[kvp.Key] = kvp.Value;
+            }
+        }
+        return result;
     }
 
     /// <summary>
@@ -1218,22 +1579,27 @@ public sealed partial class ProxyRequestMetadataCache
     }
 
     /// <summary>
-    /// 合成熔断/并发身份键。多 Key 候选用确定性派生的 Guid，保证同一 (RouteId, SiteKeyId) 组合
-    /// 始终映射到相同的合成键——这样某个 Key 连续失败只熔断它自己，不误伤同站点其他 Key。
-    /// SiteKey 为 null 的兼容候选用 RouteId 本身。
+    /// 合成熔断身份键：按 (SiteId, SiteKeyId, SiteModelName) 维度确定性派生。
+    /// 熔断状态是"该站点该模型"的全局共享状态，不区分路由规则——路由规则的增删/排序
+    /// （保存时规则 Id 会重建）不影响熔断键，同一站点同一模型出现在多个路由时共享熔断。
+    /// SiteKeyId 维度保留：同一站点不同 Key（账号/凭证）各自熔断，不互相误伤。
     /// </summary>
-    internal static Guid BuildCircuitKey(Guid routeId, Guid? siteKeyId)
+    internal static Guid BuildCircuitKey(Guid siteId, Guid? siteKeyId, string siteModelName)
     {
-        if (siteKeyId is null)
+        // 确定性派生：SiteId + SiteKeyId + 模型名的字节拼接后做 SHA256，取前 16 字节为 Guid。
+        // 合成键稳定且与真实 Guid 空间冲突概率可忽略（不同组合必然不同键）。
+        var modelNameBytes = System.Text.Encoding.UTF8.GetBytes(siteModelName ?? string.Empty);
+        Span<byte> buffer = stackalloc byte[32 + modelNameBytes.Length];
+        siteId.TryWriteBytes(buffer[..16]);
+        if (siteKeyId is not null)
         {
-            return routeId;
+            siteKeyId.Value.TryWriteBytes(buffer[16..32]);
         }
-
-        // 确定性派生：把 RouteId 和 SiteKeyId 的字节拼接后做 SHA256，取前 16 字节为 Guid。
-        // 这样合成键稳定且与真实 RouteRule.Id 空间冲突概率可忽略（不同 RouteId 必然不同键）。
-        Span<byte> buffer = stackalloc byte[32];
-        routeId.TryWriteBytes(buffer[..16]);
-        siteKeyId.Value.TryWriteBytes(buffer[16..]);
+        else
+        {
+            buffer[16..32].Clear();
+        }
+        modelNameBytes.CopyTo(buffer[32..]);
         Span<byte> hash = stackalloc byte[32];
         SHA256.HashData(buffer, hash);
         return new Guid(hash[..16]);
@@ -1417,10 +1783,6 @@ public sealed class CachedProxyRuntimeSettings
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
     /// <summary>
-    /// 是否启用对话记录功能（split 分支）。
-    /// </summary>
-    public bool ConversationLogEnabled { get; set; } = true;
-    /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>
     public int ConcurrencyMode { get; set; }
@@ -1452,6 +1814,10 @@ public sealed class CachedProxyRuntimeSettings
     /// OAuth 账号巡检缓存复用开关。关闭时每轮巡检都真实刷新额度；开启时未被使用的账号沿用缓存快照。
     /// </summary>
     public bool OAuthInspectionCacheEnabled { get; set; }
+    /// <summary>
+    /// 是否启用对话记录功能（split 分支：控制对话记录页面显示以及写入）。
+    /// </summary>
+    public bool ConversationLogEnabled { get; set; } = true;
 }
 
 /// <summary>
@@ -1514,6 +1880,10 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public bool SupportsAnthropic { get; set; }
     /// <summary>
+    /// 是否支持 OpenAI Responses 原生接口。
+    /// </summary>
+    public bool SupportsResponses { get; set; }
+    /// <summary>
     /// 对外模型名称。
     /// </summary>
     public string ExternalModelName { get; set; } = string.Empty;
@@ -1542,6 +1912,19 @@ public sealed class CachedProxyRouteTarget
     /// 空字典表示无额外头。Codex 隐藏 Site 用它携带 Originator / Chatgpt-Account-Id / User-Agent。
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom）。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 站点专用出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
+    /// <summary>
+    /// Google 账号（Antigravity 隐藏 Site）的项目 ID，作为 Gemini 上游请求体 project 字段。
+    /// 空表示非 Google 托管站点。
+    /// </summary>
+    public string GoogleProjectId { get; set; } = string.Empty;
     /// <summary>
     /// 模型优先级。
     /// </summary>
@@ -1604,17 +1987,12 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public bool SupportsProtocol(string protocolType)
     {
-        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
-        {
-            return string.Equals(ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
-        }
-
-        if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
-        {
-            return SupportsAnthropic;
-        }
-
-        return SupportsOpenAi;
+        return ProxyProtocolResolver.SupportsProtocol(
+            protocolType,
+            SupportsOpenAi,
+            SupportsAnthropic,
+            SupportsResponses,
+            ProtocolType);
     }
 
     /// <summary>
@@ -1630,24 +2008,13 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public string ResolveProtocolForClient(string clientProtocol)
     {
-        if (SupportsProtocol(clientProtocol))
-        {
-            return clientProtocol;
-        }
-
-        if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase) && SupportsProtocol("Responses"))
-        {
-            return "Responses";
-        }
-
-        if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase) && SupportsProtocol("Responses"))
-        {
-            return "Responses";
-        }
-
-        return string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
-            ? "OpenAI"
-            : "Anthropic";
+        return ProxyProtocolResolver.ResolveProtocolForClient(
+            clientProtocol,
+            ProtocolType,
+            SupportsOpenAi,
+            SupportsAnthropic,
+            SupportsResponses,
+            ProtocolType);
     }
 }
 
@@ -1727,6 +2094,18 @@ public sealed class CachedChatTarget
     /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// 客户端特征模拟预设类型。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 站点专用出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
+    /// <summary>
+    /// Google 账号（Gemini 上游隐藏 Site）的项目 ID，空表示非 Google 托管站点。
+    /// </summary>
+    public string GoogleProjectId { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -1778,6 +2157,10 @@ public sealed class CachedFallbackTarget
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
     /// <summary>
+    /// 站点托管来源，用于识别需要特殊凭证维护的 Google 隐藏站点。
+    /// </summary>
+    public string ManagedSource { get; set; } = string.Empty;
+    /// <summary>
     /// 协议类型。
     /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
@@ -1801,5 +2184,17 @@ public sealed class CachedFallbackTarget
     /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// 客户端特征模拟预设类型。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 站点专用出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
+    /// <summary>
+    /// Google 账号（Gemini 上游隐藏 Site）的项目 ID，空表示非 Google 托管站点。
+    /// </summary>
+    public string GoogleProjectId { get; set; } = string.Empty;
 }
 

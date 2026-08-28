@@ -54,6 +54,12 @@ public sealed class ProxyForwardRequest
     public int RequestTimeoutSeconds { get; set; }
 
     /// <summary>
+    /// 流式转发的空闲超时（秒）：相邻两次读到上游数据的最大间隔，超时判定上游挂起并终止。
+    /// 0 表示不启用（默认）。请求建立阶段的超时仍由 <see cref="RequestTimeoutSeconds"/> 控制。
+    /// </summary>
+    public int StreamIdleTimeoutSeconds { get; set; }
+
+    /// <summary>
     /// 同一路由在内部允许的失败重试次数，不包含首次请求。
     /// </summary>
     public int RetryCount { get; set; }
@@ -69,9 +75,24 @@ public sealed class ProxyForwardRequest
     public Dictionary<string, string> ForwardHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// 站点专用出口网络代理地址（如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808），为空则走服务器默认网络。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
+
+    /// <summary>
     /// 上游返回 401 时刷新特定凭证并返回新 API Key；普通站点不设置此回调。
     /// </summary>
     public Func<string, CancellationToken, Task<string?>>? RefreshTargetApiKeyAsync { get; set; }
+
+    /// <summary>
+    /// 上游返回 403 时禁用特定托管凭证；普通站点不设置此回调。
+    /// </summary>
+    public Func<CancellationToken, Task>? DisableTargetCredentialAsync { get; set; }
+
+    /// <summary>
+    /// 发起上游请求前准备托管凭证或项目配置；参数为当前请求使用的 API Key，普通站点不设置此回调。
+    /// </summary>
+    public Func<string, CancellationToken, Task>? PrepareTargetCredentialAsync { get; set; }
 }
 
 /// <summary>

@@ -16,6 +16,11 @@ namespace AITool.Domain.Codex;
 public sealed class CodexAccount
 {
     /// <summary>
+    /// 浅拷贝当前账号。元数据缓存返回副本，避免调用方原地修改共享实体污染缓存。
+    /// </summary>
+    public CodexAccount Clone() => (CodexAccount)MemberwiseClone();
+
+    /// <summary>
     /// 账号唯一标识。
     /// </summary>
     [SugarColumn(IsPrimaryKey = true, IsIdentity = false, ColumnName = "Id")]
@@ -95,8 +100,9 @@ public sealed class CodexAccount
     public bool DisabledByFeatureToggle { get; set; }
 
     /// <summary>
-    /// 用户手动禁用标记。true=用户手动禁用，巡检不会自动恢复（避免"禁用后被巡检误启用"）。
-    /// 手动重新启用时清除（恢复巡检的自动恢复能力）。
+    /// 标记该账号是否被用户手动禁用（区别于额度阈值自动禁用/总开关禁用/被动冷却）。
+    /// 巡检自动恢复时跳过此标记为 true 的账号，避免「手动禁用后被自动重新启用」违反直觉。
+    /// 用户再次手动启用时清除该标记。
     /// </summary>
     [SugarColumn(IsNullable = false)]
     public bool ManuallyDisabled { get; set; }

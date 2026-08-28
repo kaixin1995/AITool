@@ -67,9 +67,13 @@ public sealed class ConcurrencyAcquireResult : IDisposable
 public sealed record ActiveModelConcurrencyEntry
 {
     /// <summary>
-    /// 站点标识。
+    /// 站点标识（真实 SiteId，用于调试面板展示站点名）。
     /// </summary>
     public Guid SiteId { get; init; }
+    /// <summary>
+    /// 并发隔离键（{SiteKeyId}:{Model} 或回退 {SiteId}:{Model}），用于精确查找对应的运行时 state。
+    /// </summary>
+    public string ConcurrencyKey { get; init; } = string.Empty;
     /// <summary>
     /// 站点模型名称。
     /// </summary>
@@ -153,104 +157,135 @@ public sealed class ModelConcurrencyLimiter
         var maxConcurrency = limits.TryGetValue(key, out var configuredLimit)
             ? configuredLimit
             : 0;
-        var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
-
-        List<QueuedAcquireWaiter>? promotedWaiters = null;
-        LinkedListNode<QueuedAcquireWaiter>? waiterNode = null;
-        QueuedAcquireWaiter? waiter = null;
-        var acquired = false;
-        var activeCount = 0;
-        var activeSlotId = 0L;
-
-        lock (state.SyncRoot)
+        while (true)
         {
-            state.MaxConcurrency = maxConcurrency;
-            promotedWaiters = PromoteQueuedWaitersLocked(state);
+            var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
+            List<QueuedAcquireWaiter>? promotedWaiters = null;
+            LinkedListNode<QueuedAcquireWaiter>? waiterNode = null;
+            QueuedAcquireWaiter? waiter = null;
+            var acquired = false;
+            var activeCount = 0;
+            var notificationActiveCount = 0;
+            var activeSlotId = 0L;
+            var isCurrentState = true;
 
-            if (CanAcquireImmediatelyLocked(state))
+            lock (state.SyncRoot)
             {
-                state.ActiveCount++;
-                activeSlotId = TrackActiveSlotLocked(state);
-                activeCount = state.ActiveCount;
-                acquired = true;
+                // ListRecent 只在 state 空闲时清理它；如果清理与本次取 state 交错，
+                // 这里必须重试，不能在已从字典移除的旧 state 上占槽位。
+                if (!_states.TryGetValue(key, out var currentState)
+                    || !ReferenceEquals(currentState, state))
+                {
+                    isCurrentState = false;
+                }
+                else
+                {
+                    state.MaxConcurrency = maxConcurrency;
+                    promotedWaiters = PromoteQueuedWaitersLocked(state);
+
+                    if (CanAcquireImmediatelyLocked(state))
+                    {
+                        state.ActiveCount++;
+                        activeSlotId = TrackActiveSlotLocked(state);
+                        activeCount = state.ActiveCount;
+                        acquired = true;
+                    }
+                    else if (mode == ConcurrencyAcquireMode.WaitForSlot)
+                    {
+                        waiter = new QueuedAcquireWaiter();
+                        waiterNode = state.Waiters.AddLast(waiter);
+                    }
+
+                    notificationActiveCount = state.ActiveCount;
+                }
             }
-            else if (mode == ConcurrencyAcquireMode.WaitForSlot)
+
+            if (!isCurrentState)
             {
-                waiter = new QueuedAcquireWaiter();
-                waiterNode = state.Waiters.AddLast(waiter);
+                continue;
             }
-        }
 
-        ReleaseQueuedWaiters(promotedWaiters, key, effectiveDisplaySiteId, remoteModelName, state.ActiveCount);
+            ReleaseQueuedWaiters(promotedWaiters ?? [], key, effectiveDisplaySiteId, remoteModelName, notificationActiveCount);
 
-        if (acquired)
-        {
-            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, activeCount);
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, activeSlotId, effectiveDisplaySiteId);
-        }
+            if (acquired)
+            {
+                UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, activeCount);
+                return CreateTrackedAcquireResult(key, siteId, remoteModelName, activeSlotId, effectiveDisplaySiteId);
+            }
 
-        if (mode == ConcurrencyAcquireMode.SkipOnFull)
-        {
+            if (mode == ConcurrencyAcquireMode.SkipOnFull)
+            {
+                return ConcurrencyAcquireResult.NotAcquired;
+            }
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(queueTimeout);
+            var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
+            var completedTask = await Task.WhenAny(waiter!.Completion.Task, cancellationTask);
+
+            if (completedTask == waiter.Completion.Task)
+            {
+                UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
+                return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
+            }
+
+            var grantedDuringCancellation = false;
+            lock (state.SyncRoot)
+            {
+                if (waiter.Granted)
+                {
+                    grantedDuringCancellation = true;
+                }
+                else if (waiterNode?.List is not null)
+                {
+                    state.Waiters.Remove(waiterNode);
+                }
+            }
+
+            if (grantedDuringCancellation)
+            {
+                await waiter.Completion.Task;
+                UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
+                return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
             return ConcurrencyAcquireResult.NotAcquired;
         }
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(queueTimeout);
-        var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
-        var completedTask = await Task.WhenAny(waiter!.Completion.Task, cancellationTask);
-
-        if (completedTask == waiter.Completion.Task)
-        {
-            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
-        }
-
-        var grantedDuringCancellation = false;
-        lock (state.SyncRoot)
-        {
-            if (waiter.Granted)
-            {
-                grantedDuringCancellation = true;
-            }
-            else if (waiterNode?.List is not null)
-            {
-                state.Waiters.Remove(waiterNode);
-            }
-        }
-
-        if (grantedDuringCancellation)
-        {
-            await waiter.Completion.Task;
-            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
-        }
-
-        if (cancellationToken.IsCancellationRequested)
-        {
-            throw new OperationCanceledException(cancellationToken);
-        }
-
-        return ConcurrencyAcquireResult.NotAcquired;
     }
 
     /// <summary>
     /// 配置变更后同步新的最大并发数，并尽快唤醒可立即放行的等待请求。
     /// </summary>
-    public void UpdateLimit(Guid siteId, string remoteModelName, int maxConcurrency)
+    public void UpdateLimit(Guid siteId, string remoteModelName, int maxConcurrency, Guid displaySiteId = default)
     {
+        var effectiveDisplaySiteId = displaySiteId == default ? siteId : displaySiteId;
         var key = BuildKey(siteId, remoteModelName);
-        var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
-        List<QueuedAcquireWaiter>? promotedWaiters;
-        int activeCount;
-
-        lock (state.SyncRoot)
+        while (true)
         {
-            state.MaxConcurrency = Math.Max(0, maxConcurrency);
-            promotedWaiters = PromoteQueuedWaitersLocked(state);
-            activeCount = state.ActiveCount;
-        }
+            var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
+            List<QueuedAcquireWaiter> promotedWaiters;
+            int activeCount;
+            lock (state.SyncRoot)
+            {
+                if (!_states.TryGetValue(key, out var currentState)
+                    || !ReferenceEquals(currentState, state))
+                {
+                    continue;
+                }
 
-        ReleaseQueuedWaiters(promotedWaiters, key, siteId, remoteModelName, activeCount);
+                state.MaxConcurrency = Math.Max(0, maxConcurrency);
+                promotedWaiters = PromoteQueuedWaitersLocked(state);
+                activeCount = state.ActiveCount;
+            }
+
+            ReleaseQueuedWaiters(promotedWaiters, key, effectiveDisplaySiteId, remoteModelName, activeCount);
+            return;
+        }
     }
 
     /// <summary>
@@ -268,6 +303,11 @@ public sealed class ModelConcurrencyLimiter
 
     /// <summary>
     /// 返回最近保留窗口内出现过的模型并发快照，归零后的项也会保留显示。
+    /// <para>
+    /// 同时惰性清理已过期且空闲的并发状态（站点/Key 被删除后不再有请求访问的条目），
+    /// 避免长运行进程因频繁增删站点/Key 导致 _states 无限增长。
+    /// 仅清理 ActiveCount==0 且无排队等待的条目，不会影响正在执行的请求。
+    /// </para>
     /// </summary>
     public IReadOnlyList<ActiveModelConcurrencyEntry> ListRecent(TimeSpan retention)
     {
@@ -278,6 +318,18 @@ public sealed class ModelConcurrencyLimiter
             if (pair.Value.ActiveCount <= 0 && pair.Value.LastSeenAt < cutoff)
             {
                 _activeEntries.TryRemove(pair.Key, out _);
+                // 同步回收空闲的并发状态：仅当该 state 无活跃请求且无排队时移除，
+                // 避免误删正在执行的请求所持有的状态。
+                if (_states.TryGetValue(pair.Key, out var state))
+                {
+                    lock (state.SyncRoot)
+                    {
+                        if (state.ActiveCount == 0 && state.Waiters.Count == 0)
+                        {
+                            _states.TryRemove(pair.Key, out _);
+                        }
+                    }
+                }
             }
         }
 
@@ -315,8 +367,9 @@ public sealed class ModelConcurrencyLimiter
     /// </summary>
     private ActiveModelConcurrencyEntry EnrichWithStateInfo(ActiveModelConcurrencyEntry entry)
     {
-        var key = BuildKey(entry.SiteId, entry.SiteModelName);
-        if (!_states.TryGetValue(key, out var state))
+        // 用 entry 记录的 ConcurrencyKey（隔离身份键）精确查找 state，
+        // 而非用显示 SiteId 重建 key（多 Key 站点的隔离键是 {SiteKeyId}:{Model}，与真实 SiteId 不同）。
+        if (string.IsNullOrEmpty(entry.ConcurrencyKey) || !_states.TryGetValue(entry.ConcurrencyKey, out var state))
         {
             return entry;
         }
@@ -419,6 +472,7 @@ public sealed class ModelConcurrencyLimiter
         _activeEntries[key] = new ActiveModelConcurrencyEntry
         {
             SiteId = siteId,
+            ConcurrencyKey = key,
             SiteModelName = remoteModelName,
             ActiveCount = activeCount,
             LastSeenAt = DateTimeOffset.UtcNow
@@ -427,6 +481,11 @@ public sealed class ModelConcurrencyLimiter
 
     /// <summary>
     /// 如果受影响的模型正在调用中，则在同一把锁内捕获槽位并登记延迟刷新，避免请求刚结束时丢失通知。
+    /// <para>
+    /// 注意：多 Key 站点的并发 state 键是 {SiteKeyId}:{Model}，而本方法入参的 RouteTargetIdentity 用真实 SiteId，
+    /// 精确查不到时会返回 false，调用方据此降级为立即刷新缓存（安全行为，仅丢失"等活跃调用结束再刷新"的优化）。
+    /// 这是可接受的折中——该机制仅在编辑路由规则这一罕见操作时触发，且最坏后果是 5 秒缓存窗口后自动一致。
+    /// </para>
     /// </summary>
     public bool TryDeferRuntimeRouteTargetsRefresh(
         string externalModelName,
@@ -487,15 +546,19 @@ public sealed class ModelConcurrencyLimiter
     public IReadOnlyList<long> ListActiveSlotIds(Guid siteId, string remoteModelName)
     {
         var key = BuildKey(siteId, remoteModelName);
-        if (!_states.TryGetValue(key, out var state))
+        while (_states.TryGetValue(key, out var state))
         {
-            return [];
+            lock (state.SyncRoot)
+            {
+                if (_states.TryGetValue(key, out var currentState)
+                    && ReferenceEquals(currentState, state))
+                {
+                    return state.ActiveSlotIds.ToList();
+                }
+            }
         }
 
-        lock (state.SyncRoot)
-        {
-            return state.ActiveSlotIds.ToList();
-        }
+        return [];
     }
 
     /// <summary>

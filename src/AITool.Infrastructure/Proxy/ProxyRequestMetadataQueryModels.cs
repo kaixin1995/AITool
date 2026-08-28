@@ -38,6 +38,11 @@ public sealed class RouteEntryListItem
     public string EntryName { get; set; } = string.Empty;
 
     /// <summary>
+    /// 模型显示名称（入口名匹配模型库 ModelName 时回填，供展示层优先显示；否则为空）。
+    /// </summary>
+    public string? DisplayName { get; set; }
+
+    /// <summary>
     /// 候选实例数量。
     /// </summary>
     public int CandidateCount { get; set; }
@@ -126,6 +131,11 @@ public sealed class RouteRuleListItem
     public string UpstreamModelName { get; set; } = string.Empty;
 
     /// <summary>
+    /// 上游模型的显示名称（按 UpstreamModelName 匹配模型库取 DisplayName，供展示层优先显示对外名）。
+    /// </summary>
+    public string ModelDisplayName { get; set; } = string.Empty;
+
+    /// <summary>
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
@@ -190,6 +200,11 @@ public sealed class ClientSimulatorModelItemViewModel
     /// 模型是否支持 Anthropic 协议。
     /// </summary>
     public bool SupportsAnthropic { get; set; }
+
+    /// <summary>
+    /// 模型是否支持 OpenAI Responses 原生接口。
+    /// </summary>
+    public bool SupportsResponses { get; set; }
 
     /// <summary>
     /// 当前环境下是否允许通过 OpenAI 协议调用。
