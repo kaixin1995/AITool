@@ -801,3 +801,24 @@ dotnet run
 13. **调试页受密钥保护**：`/debug/runtime` 通过 SHA256 验证访问密钥，不依赖 Admin 认证体系，安全独立。
 14. **DeveloperFeaturesEnabled 仅控制 UI 可见性**：代理控制器始终创建调用追踪（不再受此开关门控），确保 UsageLog 数据通过统一事件正常推送。DeveloperFeaturesEnabled 只控制 Invocations 页面 404 和侧边栏入口隐藏。
 15. **ConversationLog 内存保护**：`FileConversationLogStore.QueryAsync` 最多返回 1000 条，从最新文件倒序流式过滤，避免全量加载 JSONL 文件导致内存线性增长。`ConversationLogService` 复用 `ProxyRequestMetadataCache` 读取开关，不再每次创建 DB scope。
+
+---
+
+## master 同步更新（2026-08-28，本分支已全量合入）
+
+本 split 分支已把 master 2026-08-08 之后的全部功能合入双宿主架构（详见提交 `67ceb0b..HEAD`）：
+
+| master 功能 | split 双宿主落位 |
+|---|---|
+| Google 账号托管（Antigravity，Gemini 协议桥） | Admin：GoogleAccountsApi + 五件套服务；Core：Gemini 端点/流桥 + 快照 AccountCredentials（projectId） |
+| Kimi OAuth（设备码流） | Admin：KimiAccountsApi + 五件套；Core：Kimi 隐藏站点经 OpenAI 兼容转发 |
+| 401 即刷凭证 | Core 无库改造：CoreCredentialRefreshEngine 纯 HTTP 刷新 + 快照即时回写 + credential-refreshed 事件 → Admin 落库回推（闭环） |
+| 客户端特征模拟（Header/Proxy Profiles 三层配置） | Admin：模板库/代理池管理；Core：经快照 HeaderProfiles/ProxyProfiles 段解析生效 |
+| 协议诊断台 + AI 自愈闭环 | Admin：DeveloperInvocations 七 tab；Core：抓包文件与 Admin 共享目录 |
+| SQL 迁移执行页 | Admin：SqlMigrationsApi（密码确认 + 事务 + dry-run），脚本在 `sql-migrations/` |
+| 模型定价 / 货币切换 | Admin：model-pricing.json + UsageLogs/Analytics/Models 计价 |
+| 统一 OAuth 巡检（IAccountQuotaProvider） | Admin：AccountQuotaInspectionService 聚合三家 |
+| Avalonia 桌面客户端 | src/AITool.Desktop（默认连 Admin 5030） |
+| 性能：SSE 子串门控 / 流式空闲超时 / 单飞锁 / 后台查询执行器 | Core 转发链 + Admin 分析页对应落位 |
+
+构建：`build.ps1`（前端 + 双宿主 + 桌面端）；发布：`publish.ps1`（Admin/Core 双目录）。细节文档见 `docs/`（master 版为准，宿主差异以上表为准）。
