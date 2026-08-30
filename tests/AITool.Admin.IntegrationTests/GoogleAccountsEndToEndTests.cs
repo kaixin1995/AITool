@@ -25,7 +25,7 @@ public sealed class GoogleAccountsEndToEndTests
     private static readonly Guid SiteId = Guid.Parse("21212121-2121-2121-2121-212121212121");
     private static readonly Guid GoogleAccountId = Guid.Parse("23232323-2323-2323-2323-232323232323");
 
-        [Fact(Skip = "split双宿主移植待跟进：google-accounts 端到端场景的响应桩适配（额度刷新窗口/模型导入联动的 URL 分流桩），核心逻辑已由 GoogleQuotaMatchingTests 等单测覆盖")]
+        [Fact]
         public async Task Refresh_quota_for_antigravity_account_returns_model_windows()
     {
         // Antigravity 额度链路：refresh-quota → fetchAvailableModels → 每模型剩余比例窗口持久化并在账号列表回显。
@@ -66,7 +66,7 @@ public sealed class GoogleAccountsEndToEndTests
     }
 
 
-        [Fact(Skip = "split双宿主移植待跟进：google-accounts 端到端场景的响应桩适配（额度刷新窗口/模型导入联动的 URL 分流桩），核心逻辑已由 GoogleQuotaMatchingTests 等单测覆盖")]
+        [Fact]
         public async Task Import_selected_antigravity_models_disables_unselected_and_stale_mappings()
     {
         await using var factory = new GeminiProxyWebApplicationFactory(
@@ -184,11 +184,49 @@ public sealed class GoogleAccountsEndToEndTests
                 Id = GoogleAccountId,
                 DisplayName = "E2E Antigravity",
                 AccountKind = "Antigravity",
+                ProjectId = "e2e-project-123",
                 AccessToken = "ya29-upstream-token",
                 RefreshToken = "ref-token",
+                TokenExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
                 LinkedSiteId = SiteId,
                 IsEnabled = true
             });
+            // master 原版种子：额度窗口按「已勾选模型」去重展示（0ef754b），
+            // 必须为额度 JSON 中的模型建映射，否则列表 windows 恒为空。
+            var baseModelId = Guid.Parse("a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1");
+            db.ModelLibraryItems.Add(new ModelLibraryItem
+            {
+                Id = baseModelId,
+                ModelName = "gemini-2.5-pro",
+                DisplayName = "Gemini 2.5 Pro",
+                IsEnabled = true
+            });
+            db.SiteModelMappings.Add(new SiteModelMapping
+            {
+                Id = Guid.Parse("b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2"),
+                SiteId = SiteId,
+                ModelLibraryItemId = baseModelId,
+                RemoteModelName = "gemini-2.5-pro",
+                IsEnabled = true,
+                MaxConcurrency = 0
+            });
+            foreach (var (mid, mname) in new[]
+            {
+                (Guid.Parse("c3c3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3"), "gemini-3-pro-preview"),
+                (Guid.Parse("d4d4d4d4-d4d4-d4d4-d4d4-d4d4d4d4d4d4"), "claude-sonnet-4-6")
+            })
+            {
+                db.ModelLibraryItems.Add(new ModelLibraryItem { Id = mid, ModelName = mname, DisplayName = mname, IsEnabled = true });
+                db.SiteModelMappings.Add(new SiteModelMapping
+                {
+                    Id = Guid.NewGuid(),
+                    SiteId = SiteId,
+                    ModelLibraryItemId = mid,
+                    RemoteModelName = mname,
+                    IsEnabled = true,
+                    MaxConcurrency = 0
+                });
+            }
             // OAuth 总开关默认关闭（OAuthFeatureToggle 会 404），测试需显式开启。
             var settings = await db.SystemRuntimeSettings.FirstAsync(x => x.Id == 1);
             if (settings is null)
