@@ -1457,18 +1457,25 @@ public static partial class ProxyProtocolBridge
         var declarations = new JsonArray();
         foreach (var toolNode in tools)
         {
+            // 防御：type/name/description 可能非标量，GetValueKind 守卫避免 InvalidOperationException。
             if (toolNode is not JsonObject tool
-                || !string.Equals(tool["type"]?.GetValue<string>(), "function", StringComparison.OrdinalIgnoreCase)
+                || tool["type"]?.GetValueKind() != JsonValueKind.String
+                || !string.Equals(tool["type"]!.GetValue<string>(), "function", StringComparison.OrdinalIgnoreCase)
                 || tool["function"] is not JsonObject function
-                || function["name"]?.GetValue<string>() is not { Length: > 0 } name)
+                || function["name"]?.GetValueKind() != JsonValueKind.String
+                || function["name"]!.GetValue<string>() is not { Length: > 0 } name)
             {
                 continue;
             }
 
+            var description = function["description"]?.GetValueKind() == JsonValueKind.String
+                ? function["description"]!.GetValue<string>()
+                : string.Empty;
+
             var declaration = new JsonObject
             {
                 ["name"] = name,
-                ["description"] = function["description"]?.GetValue<string>() ?? string.Empty,
+                ["description"] = description,
             };
 
             if (function["parameters"] is JsonObject schema)
@@ -1530,9 +1537,10 @@ public static partial class ProxyProtocolBridge
         }
 
         // $ref 解析：取被引用对象，保留本地 description/default 覆盖。
+        // 防御：$ref/ref 可能是非标量（嵌套对象等），GetValueKind 守卫避免 InvalidOperationException。
         JsonObject effective = schema;
-        var refName = schema["$ref"]?.GetValue<string>()
-            ?? schema["ref"]?.GetValue<string>();
+        var refName = (schema["$ref"]?.GetValueKind() == JsonValueKind.String ? schema["$ref"]!.GetValue<string>() : null)
+            ?? (schema["ref"]?.GetValueKind() == JsonValueKind.String ? schema["ref"]!.GetValue<string>() : null);
         if (refName?.StartsWith("#/", StringComparison.Ordinal) == true)
         {
             var resolved = ResolveSchemaRef(root, refName);
@@ -1668,7 +1676,10 @@ public static partial class ProxyProtocolBridge
 
             if (string.Equals(key, "description", StringComparison.Ordinal) && validations.Count > 0)
             {
-                var description = value?.GetValue<string>() ?? string.Empty;
+                // 防御：description 可能非字符串（数字/对象），守卫后回退空串。
+                var description = value?.GetValueKind() == JsonValueKind.String
+                    ? value.GetValue<string>()
+                    : value?.ToJsonString() ?? string.Empty;
                 result[key] = $"{description} ({string.Join(", ", validations)})";
                 continue;
             }
@@ -1715,7 +1726,10 @@ public static partial class ProxyProtocolBridge
             var propObj = result["properties"] as JsonObject;
             for (var i = reqArr.Count - 1; i >= 0; i--)
             {
-                var reqPropName = reqArr[i]?.GetValue<string>();
+                // 防御：required 数组项可能非字符串，守卫后视为无效项剔除。
+                var reqPropName = reqArr[i]?.GetValueKind() == JsonValueKind.String
+                    ? reqArr[i]!.GetValue<string>()
+                    : null;
                 if (string.IsNullOrEmpty(reqPropName) || propObj == null || !propObj.ContainsKey(reqPropName))
                 {
                     reqArr.RemoveAt(i);

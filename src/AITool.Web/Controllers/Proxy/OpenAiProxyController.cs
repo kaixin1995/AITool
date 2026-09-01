@@ -603,17 +603,38 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 continue;
             }
 
-            var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
-                "OpenAI",
-                actualProtocolType,
-                preparedClientRequestBody,
-                route.SiteModelName,
-                enableStreaming,
-                route.OverrideReasoningEffort,
-                route.BaseUrl,
-                route.CompatibilityRules,
-                isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase),
-                geminiProjectId: route.GoogleProjectId);
+            // 协议转换阶段防御：PrepareRequestBody 处理任意用户输入的工具 schema，
+            // 畸形结构可能触发异常。此阶段失败视为该路由不可用，continue 到下一路由（与转发失败回退同口径），
+            // 而不是让异常穿透杀死整个请求。
+            string preparedRequestBody;
+            try
+            {
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                    "OpenAI",
+                    actualProtocolType,
+                    preparedClientRequestBody,
+                    route.SiteModelName,
+                    enableStreaming,
+                    route.OverrideReasoningEffort,
+                    route.BaseUrl,
+                    route.CompatibilityRules,
+                    isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase),
+                    geminiProjectId: route.GoogleProjectId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "协议转换失败，跳到下一路由。Route={RouteLabel}, Protocol={Protocol}, Model={Model}",
+                    routeLabel, actualProtocolType, route.SiteModelName);
+                SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
+                lastResult = new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 502,
+                    ErrorMessage = $"协议转换失败: {ex.GetType().Name}: {ex.Message}"
+                };
+                continue;
+            }
             var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, forwardHeaders);
 
