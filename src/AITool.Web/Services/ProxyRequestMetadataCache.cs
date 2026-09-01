@@ -275,6 +275,7 @@ public sealed class ProxyRequestMetadataCache
                             ProxyRequestTimeoutSeconds = settings.ProxyRequestTimeoutSeconds,
                             ProxyStreamIdleTimeoutSeconds = settings.ProxyStreamIdleTimeoutSeconds,
                             ProxyRetryCount = settings.ProxyRetryCount,
+                            RateLimitRetryCount = settings.RateLimitRetryCount,
                             DetectionRequestTimeoutSeconds = settings.DetectionRequestTimeoutSeconds,
                             DetectionRetryCount = settings.DetectionRetryCount,
                             DetectionConcurrency = settings.DetectionConcurrency,
@@ -1422,6 +1423,10 @@ public sealed class ProxyRequestMetadataCache
                         var clientEmulation = ResolveClientEmulation(mapping?.ClientEmulation, model?.ClientEmulation, site.ClientEmulation);
                         var extraHeaders = BuildEffectiveExtraHeaders(clientEmulation, headerProfileMap, site.ExtraHeadersJson, model?.ExtraHeadersJson, mapping?.ExtraHeadersJson);
                         var egressProxyUrl = ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap);
+                        // 思考等级优先级：站点映射 > 模型库 > 透传（均为空则透传客户端原始值）。
+                        var overrideReasoningEffort = !string.IsNullOrWhiteSpace(mapping?.OverrideReasoningEffort)
+                            ? mapping!.OverrideReasoningEffort!.Trim()
+                            : (model?.OverrideReasoningEffort ?? string.Empty);
 
                         foreach (var candidate in candidates)
                         {
@@ -1454,7 +1459,7 @@ public sealed class ProxyRequestMetadataCache
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
-                                OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
+                                OverrideReasoningEffort = overrideReasoningEffort,
                                 CompatibilityRules = GetRulesForModel(model, profileRules),
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
@@ -2042,6 +2047,10 @@ public sealed class CachedProxyRuntimeSettings
     /// 代理重试次数。
     /// </summary>
     public int ProxyRetryCount { get; set; } = 1;
+    /// <summary>
+    /// 上游 429（速率限制）时的连续重试次数，默认 0（一次 429 即失败）。
+    /// </summary>
+    public int RateLimitRetryCount { get; set; }
     /// <summary>
     /// 检测请求超时时间（秒）。
     /// </summary>

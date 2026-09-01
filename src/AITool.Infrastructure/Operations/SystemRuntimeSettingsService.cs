@@ -60,6 +60,8 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         // 空闲超时允许 0（不启用），并做宽松上限钳制避免误填异常值。
         settings.ProxyStreamIdleTimeoutSeconds = Math.Max(0, Math.Min(86400, request.ProxyStreamIdleTimeoutSeconds));
         settings.ProxyRetryCount = Math.Max(0, request.ProxyRetryCount);
+        // 429 连续重试次数：0-10 合理区间，负数归零。
+        settings.RateLimitRetryCount = Math.Max(0, Math.Min(10, request.RateLimitRetryCount));
         settings.DetectionRequestTimeoutSeconds = Math.Max(1, request.DetectionRequestTimeoutSeconds);
         settings.DetectionRetryCount = Math.Max(0, request.DetectionRetryCount);
         settings.DetectionConcurrency = Math.Max(1, request.DetectionConcurrency);

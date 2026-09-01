@@ -51,6 +51,7 @@ const form = reactive<SystemSettings>({
   proxyRequestTimeoutSeconds: 60,
   proxyStreamIdleTimeoutSeconds: 0,
   proxyRetryCount: 1,
+  rateLimitRetryCount: 0,
   detectionRequestTimeoutSeconds: 60,
   detectionRetryCount: 0,
   detectionConcurrency: 1,
@@ -170,6 +171,10 @@ onMounted(loadSettings)
               <NFormItem>
                 <template #label><span class="form-label-tip">代理重试次数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>当前路由失败后允许重新尝试的次数。值越大越有机会切到其他路由。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.proxyRetryCount" :min="0" />
+              </NFormItem>
+              <NFormItem>
+                <template #label><span class="form-label-tip">429 重试次数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>上游返回 429（速率限制）时的连续重试次数，默认 0（一次 429 即失败并切换路由）。设为 3 表示连续 3 次 429 才算该路由失败，期间任一次成功即算成功。重试不消耗「代理重试次数」预算。</NTooltip></span></template>
+                <NInputNumber v-model:value="form.rateLimitRetryCount" :min="0" :max="10" />
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">熔断失败阈值<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>同一路由连续失败多少次后进入熔断。数值越小越敏感。</NTooltip></span></template>

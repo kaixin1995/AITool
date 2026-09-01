@@ -31,6 +31,12 @@ public sealed class SystemRuntimeSettings
     public int ProxyRetryCount { get; set; } = 1;
 
     /// <summary>
+    /// 上游返回 429（速率限制）时的连续重试次数，默认 0（一次 429 即失败并回退下一路由）。
+    /// 设为 N&gt;0 时：同一上游连续 N 次 429 才判定该路由失败；期间任一次成功即算成功。
+    /// </summary>
+    public int RateLimitRetryCount { get; set; }
+
+    /// <summary>
     /// 检测请求超时时间，单位为秒，用于限制健康检测或探测请求的最长执行时长。
     /// </summary>
     public int DetectionRequestTimeoutSeconds { get; set; } = 60;

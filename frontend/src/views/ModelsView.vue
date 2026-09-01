@@ -267,6 +267,12 @@ async function refreshModelDetail(modelId: string): Promise<void> {
     const detail = await modelsApi.getModelDetail(modelId)
     if (requestId === modelDetailRequestId && editingId.value === modelId) {
       modelDetail.value = detail
+      // 后端兼容：旧响应缺 overrideReasoningEffort 时回退空串，避免表格输入绑定 undefined。
+      for (const m of detail.siteMappings) {
+        if (m.overrideReasoningEffort === undefined || m.overrideReasoningEffort === null) {
+          m.overrideReasoningEffort = ''
+        }
+      }
       form.clientEmulation = detail.clientEmulation || 'None'
       form.extraHeadersJson = detail.extraHeadersJson || ''
     }
@@ -479,7 +485,8 @@ async function handleSaveMapping(mapping: modelsApi.ModelSiteMapping): Promise<v
       clientEmulation: mapping.clientEmulation || 'None',
       extraHeadersJson: mapping.extraHeadersJson?.trim() || undefined,
       // Web 端映射编辑器不再提供代理下拉，回传加载时已有的值，避免后端全量写回时把映射级代理清空。
-      egressProxyUrl: mapping.egressProxyUrl?.trim() || undefined
+      egressProxyUrl: mapping.egressProxyUrl?.trim() || undefined,
+      overrideReasoningEffort: mapping.overrideReasoningEffort?.trim() || undefined
     })
     message.success(`站点【${mapping.siteName}】映射配置已保存`)
   } catch (e) {
@@ -788,6 +795,7 @@ onMounted(() => {
                       <span class="col-remote">远端模型名</span>
                       <span class="col-concurrency">最大并发 (0=不限)</span>
                       <span class="col-emulation">客户端特征模拟</span>
+                      <span class="col-effort">强制思考等级<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>站点映射级思考等级，优先级最高：留空跟随模型库设置；模型库也为空时透传客户端原始值。可选 low / medium / high / xhigh / max。</NTooltip></span>
                       <span class="col-status">启用</span>
                       <span class="col-actions">操作</span>
                     </div>
@@ -804,6 +812,9 @@ onMounted(() => {
                         </div>
                         <div class="col-emulation">
                           <NSelect v-model:value="m.clientEmulation" :options="clientEmulationOptions" size="small" />
+                        </div>
+                        <div class="col-effort">
+                          <NInput v-model:value="m.overrideReasoningEffort" size="small" placeholder="留空=跟随模型/透传" />
                         </div>
                         <div class="col-status">
                           <NSwitch v-model:value="m.isEnabled" size="small" />
@@ -1555,7 +1566,7 @@ onMounted(() => {
 .mapping-table-header,
 .mapping-row-item {
   display: grid;
-  grid-template-columns: minmax(160px, 1.2fr) minmax(200px, 1.5fr) 130px minmax(240px, 1.5fr) 50px 110px;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(190px, 1.4fr) 120px minmax(220px, 1.4fr) minmax(150px, 1fr) 50px 110px;
   gap: 12px;
   align-items: center;
 }

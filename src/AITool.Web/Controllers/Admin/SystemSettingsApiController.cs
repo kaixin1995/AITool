@@ -60,6 +60,7 @@ public sealed class SystemSettingsApiController : ControllerBase
         {
             proxyRequestTimeoutSeconds = settings.ProxyRequestTimeoutSeconds,
             proxyRetryCount = settings.ProxyRetryCount,
+            rateLimitRetryCount = settings.RateLimitRetryCount,
             detectionRequestTimeoutSeconds = settings.DetectionRequestTimeoutSeconds,
             detectionRetryCount = settings.DetectionRetryCount,
             detectionConcurrency = settings.DetectionConcurrency,

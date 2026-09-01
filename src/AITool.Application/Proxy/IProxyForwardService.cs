@@ -65,6 +65,12 @@ public sealed class ProxyForwardRequest
     public int RetryCount { get; set; }
 
     /// <summary>
+    /// 上游返回 429（速率限制）时的连续重试次数，默认 0（一次 429 即失败）。
+    /// 设为 N&gt;0 时：连续 N 次 429 才判定该路由失败；期间任一次成功即算成功。
+    /// </summary>
+    public int RateLimitRetryCount { get; set; }
+
+    /// <summary>
     /// 自定义目标路径；未指定时通常按协议使用默认聊天接口。
     /// </summary>
     public string? TargetPath { get; set; }

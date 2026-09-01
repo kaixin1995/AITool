@@ -94,6 +94,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         var attempts = Math.Max(0, request.RetryCount) + 1;
         var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
         var tokenRefreshAttempted = false;
+        var rateLimit429Count = 0;
         var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
@@ -150,6 +151,23 @@ public sealed class ProxyForwardService : IProxyForwardService
                             IsStreaming = isStreaming,
                             ErrorMessage = errorBody
                         };
+                    }
+
+                    // 429 速率限制：连续 RateLimitRetryCount 次 429 才判定该路由失败（默认 0 = 一次即失败）。
+                    // 重试不消耗通用重试预算；连续计数只统计 429，其他结果会返回或走通用分支。
+                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    {
+                        rateLimit429Count++;
+                        // 阈值 = Max(1, N)：N=0/1 都表示一次 429 即失败；N=3 表示连续 3 次 429 才失败。
+                        if (rateLimit429Count < Math.Max(1, request.RateLimitRetryCount))
+                        {
+                            attempt--;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        rateLimit429Count = 0;
                     }
 
                     if (attempt >= attempts - 1)
@@ -324,6 +342,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         var attempts = Math.Max(0, request.RetryCount) + 1;
         var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
         var tokenRefreshAttempted = false;
+        var rateLimit429Count = 0;
         var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
@@ -379,6 +398,22 @@ public sealed class ProxyForwardService : IProxyForwardService
                             IsStreaming = true,
                             ErrorMessage = errorBody
                         };
+                    }
+
+                    // 429 速率限制：连续 RateLimitRetryCount 次 429 才判定该路由失败（默认 0 = 一次即失败）。
+                    if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    {
+                        rateLimit429Count++;
+                        // 阈值 = Max(1, N)：N=0/1 都表示一次 429 即失败；N=3 表示连续 3 次 429 才失败。
+                        if (rateLimit429Count < Math.Max(1, request.RateLimitRetryCount))
+                        {
+                            attempt--;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        rateLimit429Count = 0;
                     }
 
                     if (attempt >= attempts - 1)
