@@ -204,21 +204,96 @@ public sealed class ModelHealthRequestService
     }
 
     /// <summary>
-    /// 生成随机四则运算题，避免固定请求内容过于单一。
+    /// 生成拟真探测提问：多模板随机抽取（四则运算/数列/比较/字符串复述/简单常识），
+    /// 全部为秒回难度的简单问题，且每次内容几乎不重复，避免固定请求特征被上游识别。
     /// </summary>
     private static string BuildRandomMathPrompt()
+    {
+        var template = Random.Shared.Next(0, 5);
+        return template switch
+        {
+            0 => BuildRandomMathQuestion(),
+            1 => BuildRandomSequencePrompt(),
+            2 => BuildRandomComparePrompt(),
+            3 => BuildRandomEchoPrompt(),
+            _ => BuildRandomTriviaPrompt()
+        };
+    }
+
+    /// <summary>随机四则运算题（多问法）。</summary>
+    private static string BuildRandomMathQuestion()
     {
         var left = Random.Shared.Next(1, 100);
         var right = Random.Shared.Next(1, 100);
         var operation = Random.Shared.Next(0, 4);
-
-        return operation switch
+        var style = Random.Shared.Next(0, 3);
+        var ask = style switch
         {
-            0 => $"请直接回答结果，不要解释：{left} + {right} = ?",
-            1 => $"请直接回答结果，不要解释：{left} - {right} = ?",
-            2 => $"请直接回答结果，不要解释：{left} * {right} = ?",
-            _ => $"请直接回答结果，不要解释：{left * right} / {right} = ?"
+            0 => "请直接回答结果，不要解释：",
+            1 => "算一下，只回答案：",
+            _ => $"这两个数运算一下，只告诉答案（第一个 {left}，第二个 {right}）："
         };
+        var expr = operation switch
+        {
+            0 => $"{left} + {right} = ?",
+            1 => $"{left} - {right} = ?",
+            2 => $"{left} * {right} = ?",
+            _ => $"{left * right} / {right} = ?"
+        };
+        return ask + expr;
+    }
+
+    /// <summary>随机等差/翻倍数列下一项。</summary>
+    private static string BuildRandomSequencePrompt()
+    {
+        var start = Random.Shared.Next(1, 20);
+        var step = Random.Shared.Next(2, 9);
+        var isArithmetic = Random.Shared.Next(0, 2) == 0;
+        var items = new List<int> { start };
+        for (var i = 0; i < 3; i++)
+        {
+            items.Add(isArithmetic ? items[^1] + step : items[^1] * 2);
+        }
+
+        return $"请直接回答数列的下一个数字，不要解释：{string.Join(", ", items)}, ?";
+    }
+
+    /// <summary>随机两数比较大小。</summary>
+    private static string BuildRandomComparePrompt()
+    {
+        var left = Random.Shared.Next(1, 999);
+        var right = Random.Shared.Next(1, 999);
+        while (right == left)
+        {
+            right = Random.Shared.Next(1, 999);
+        }
+
+        return $"只回答较大的那个数字，不要其他内容：{left} 和 {right} 哪个大？";
+    }
+
+    /// <summary>随机短代码复述（测基本指令遵循，秒回）。</summary>
+    private static string BuildRandomEchoPrompt()
+    {
+        const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        var code = new string(Enumerable.Range(0, 6).Select(_ => chars[Random.Shared.Next(chars.Length)]).ToArray());
+        return $"请原样输出这串字符，不要加任何其他内容：{code}";
+    }
+
+    /// <summary>简单常识小池子（随机抽取，答案都是常见事实，秒回）。</summary>
+    private static string BuildRandomTriviaPrompt()
+    {
+        string[] pool =
+        [
+            "水的沸点在标准大气压下是多少摄氏度？只回答数字。",
+            "一年有多少个月？只回答数字。",
+            "一周有几天？只回答数字。",
+            "中国的首都是哪座城市？只回答城市名。",
+            "一天有多少个小时？只回答数字。",
+            "彩虹通常有几种颜色？只回答数字。",
+            "太阳从哪个方向升起？只回答方向。",
+            "1、3、5 三个数字哪个最大？只回答数字。"
+        ];
+        return pool[Random.Shared.Next(pool.Length)];
     }
 
     /// <summary>

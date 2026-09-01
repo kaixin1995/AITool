@@ -341,8 +341,10 @@ builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsS
 // 注册 SQL 迁移脚本执行器（调试工具页 SQL 迁移 Tab）：只执行服务器 sql-migrations 目录下已放置的 .sql 文件。
 builder.Services.AddScoped<SqlMigrationRunnerService>();
 
-// 注册 Hangfire 检测调度器。
-builder.Services.AddSingleton<HangfireDetectionScheduler>();
+// 检测任务秒级调度服务（BackgroundService 轮询，最小 10s 间隔 + 随机抖动，替代 Hangfire Cron 分钟级）。
+// 单例 + Hosted 同实例注册：控制器（立即执行端点）与后台循环共用同一实例与内存下次触发时间表。
+builder.Services.AddSingleton<DetectionTaskSchedulerService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DetectionTaskSchedulerService>());
 // 管理后台长任务统一由宿主托管，避免控制器请求结束后遗留不可追踪的 fire-and-forget 任务。
 builder.Services.AddSingleton<AdminBackgroundTaskQueue>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdminBackgroundTaskQueue>());
@@ -370,17 +372,6 @@ using (var scope = app.Services.CreateScope())
     var siteUsageTracker = scope.ServiceProvider.GetRequiredService<SiteUsageTracker>();
     var warmupDbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await siteUsageTracker.WarmupAsync(warmupDbContext);
-
-    var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
-    try
-    {
-        await scheduler.ScheduleAllAsync(default);
-    }
-    catch (Exception ex)
-    {
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        logger.LogWarning(ex, "启动时注册检测任务失败，将在下次启动时重试");
-    }
 
     // 预热代理热路径缓存（运行时设置），避免首个代理请求触发 DB 往返。测试环境跳过。
     var env = scope.ServiceProvider.GetService<IHostEnvironment>();
