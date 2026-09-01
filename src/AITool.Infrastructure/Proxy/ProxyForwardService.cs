@@ -153,8 +153,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                         };
                     }
 
-                    // 429 速率限制：连续 RateLimitRetryCount 次 429 才判定该路由失败（默认 0 = 一次即失败）。
-                    // 重试不消耗通用重试预算；连续计数只统计 429，其他结果会返回或走通用分支。
+                    // 429 速率限制：连续 RateLimitRetryCount 次 429 才判定该候选失败（默认 0/1 = 一次即失败）。
+                    // 重试不消耗通用重试预算；预算耗尽后立即返回失败，由上层立刻顺位到下一个路由候选，
+                    // 避免对同一个已被限流的上游继续消耗通用重试（既浪费又加重封禁风险）。
                     if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                     {
                         rateLimit429Count++;
@@ -164,6 +165,16 @@ public sealed class ProxyForwardService : IProxyForwardService
                             attempt--;
                             continue;
                         }
+
+                        return new ProxyForwardResult
+                        {
+                            Success = false,
+                            StatusCode = (int)response.StatusCode,
+                            ResponseBody = errorBody,
+                            TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                            IsStreaming = isStreaming,
+                            ErrorMessage = errorBody
+                        };
                     }
                     else
                     {
@@ -400,7 +411,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                         };
                     }
 
-                    // 429 速率限制：连续 RateLimitRetryCount 次 429 才判定该路由失败（默认 0 = 一次即失败）。
+                    // 429 速率限制：连续 RateLimitRetryCount 次 429 才判定该候选失败（默认 0/1 = 一次即失败）。
+                    // 预算耗尽后立即返回失败，由上层立刻顺位到下一个路由候选。
                     if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                     {
                         rateLimit429Count++;
@@ -410,6 +422,16 @@ public sealed class ProxyForwardService : IProxyForwardService
                             attempt--;
                             continue;
                         }
+
+                        return new ProxyForwardResult
+                        {
+                            Success = false,
+                            StatusCode = (int)response.StatusCode,
+                            ResponseBody = errorBody,
+                            TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                            IsStreaming = true,
+                            ErrorMessage = errorBody
+                        };
                     }
                     else
                     {

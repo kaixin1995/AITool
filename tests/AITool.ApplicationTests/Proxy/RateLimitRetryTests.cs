@@ -89,8 +89,7 @@ public sealed class RateLimitRetryTests
     [Fact]
     public async Task RateLimitRetryCount_does_not_consume_generic_retry_budget()
     {
-        // 上游恒定 429：RateLimitRetryCount=2（2次429预算）、通用 RetryCount=1（共 2 次尝试）。
-        // 预期调用数 = 2（预算内重试，不耗通用预算）+ 1（第2次429走通用分支，还剩1次尝试）+ 1（最后一次）= 4... 以实际计数为准，关键是大于仅通用预算的 2。
+        // 上游恒定 429：RateLimitRetryCount=2（允许 2 次 429）、通用 RetryCount=1。
         var service = CreateService(_ => Json(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}"), out var handler);
         var request = BasicRequest(2);
         request.RetryCount = 1;
@@ -98,7 +97,7 @@ public sealed class RateLimitRetryTests
         var result = await service.ForwardAsync(request, CancellationToken.None);
 
         result.Success.Should().BeFalse();
-        handler.CallCount.Should().BeGreaterThan(2, "429 重试独立于通用重试预算：若消耗通用预算则总调用只有 2 次");
+        handler.CallCount.Should().Be(2, "429 预算耗尽立即失败顺位下一候选：N=2 恰好 2 次调用，不消耗通用重试预算");
     }
 
     private const string SuccessBody = "{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}";
