@@ -71,7 +71,16 @@ public sealed class AuthApiController : ControllerBase
             {
                 oauthEnabled = settings.OAuthFeaturesEnabled,
                 oauthInspectionEnabled = settings.OAuthInspectionEnabled,
-                developerEnabled = settings.DeveloperFeaturesEnabled
+                developerEnabled = settings.DeveloperFeaturesEnabled,
+                // 调试工具各功能页可用性（总闸开启时可单独禁用）：前端据此隐藏对应 Tab。
+                developerTabs = new
+                {
+                    invocations = settings.DeveloperTraceEnabled,
+                    diagnosticDumps = settings.DeveloperFailureDumpEnabled,
+                    simulator = settings.DeveloperSimulatorEnabled,
+                    protocolDiagnostics = settings.DeveloperProtocolDiagnosticsEnabled,
+                    sqlMigrations = settings.DeveloperSqlMigrationsEnabled
+                }
             }
         };
 

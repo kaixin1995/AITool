@@ -13,6 +13,11 @@ export interface SystemSettings {
   usageLogRetentionDays: number
   usageLogAutoCleanupEnabled: boolean
   developerFeaturesEnabled: boolean
+  developerTraceEnabled: boolean
+  developerFailureDumpEnabled: boolean
+  developerSimulatorEnabled: boolean
+  developerProtocolDiagnosticsEnabled: boolean
+  developerSqlMigrationsEnabled: boolean
   concurrencyMode: number
   concurrencyQueueTimeoutSeconds: number
   oauthFeaturesEnabled: boolean

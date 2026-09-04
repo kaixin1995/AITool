@@ -36,5 +36,13 @@ export interface AuthStatus {
     codexEnabled?: boolean
     codexInspectionEnabled?: boolean
     developerEnabled: boolean
+    /** 调试工具各功能页可用性（总闸开启时可单独禁用）；旧后端无此字段时默认全部可用。 */
+    developerTabs?: {
+      invocations: boolean
+      diagnosticDumps: boolean
+      simulator: boolean
+      protocolDiagnostics: boolean
+      sqlMigrations: boolean
+    }
   }
 }

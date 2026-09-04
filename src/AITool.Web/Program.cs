@@ -11,6 +11,7 @@ using AITool.Application.Proxy;
 using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Codex;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Google;
 using AITool.Infrastructure.Kimi;
 using AITool.Infrastructure.Health;
@@ -22,7 +23,6 @@ using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Scheduling;
 using AITool.Web.Services;
-using Hangfire;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
@@ -32,6 +32,13 @@ using NLog;
 using NLog.Web;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// glibc malloc 调优必须抢在 Kestrel/后台服务产生原生分配之前应用（见 GlibcArenaLimiter 注释）。
+// 全部由 appsettings NativeMemory 节配置，换机器部署不依赖任何环境变量。
+GlibcArenaLimiter.TryApply(
+    builder.Configuration.GetValue("NativeMemory:MallocArenaMax", 2),
+    builder.Configuration.GetValue("NativeMemory:MallocTrimThresholdBytes", 64 * 1024),
+    builder.Configuration.GetValue("NativeMemory:MallocMmapThresholdBytes", 128 * 1024));
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
@@ -264,12 +271,13 @@ builder.Services.AddHttpClient<KimiQuotaService>(c =>
 builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<KimiQuotaService>());
 
 // 注册代理主入口实体配置，配置 SocketsHttpHandler 连接池提高并发能力。
+// 连接池寿命与站点专属代理客户端（ProxyForwardService）对齐为 15 分钟：过短会在持续负载下频繁重建连接。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
     {
         MaxConnectionsPerServer = 200,
-        PooledConnectionLifetime = TimeSpan.FromMinutes(2),
-        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30)
+        PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
     });
     builder.Services.AddScoped<ModelHealthRequestService>();
 // 站点密钥选择器：模型目录拉取、健康检测等站点级操作取用活动密钥。
@@ -348,15 +356,18 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<DetectionTaskSched
 // 管理后台长任务统一由宿主托管，避免控制器请求结束后遗留不可追踪的 fire-and-forget 任务。
 builder.Services.AddSingleton<AdminBackgroundTaskQueue>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdminBackgroundTaskQueue>());
-builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
+// 统计查询执行器配专用限容 MemoryCache（按条目数上限，超限 LRU 淘汰）：
+// 与 AddMemoryCache 的共享实例隔离，避免 SizeLimit 波及其他不带 Size 的缓存使用方。
+builder.Services.AddSingleton(sp => new AnalyticsBackgroundQueryExecutor(
+    new Microsoft.Extensions.Caching.Memory.MemoryCache(
+        new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions
+        {
+            SizeLimit = AnalyticsBackgroundQueryExecutor.MaxCacheEntries
+        })));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AnalyticsBackgroundQueryExecutor>());
 
-// 注册 Hangfire 内存存储与仪表盘。
-builder.Services.AddHangfire(config => config
-    .UseSimpleAssemblyNameTypeSerializer()
-    .UseRecommendedSerializerSettings()
-    .UseInMemoryStorage());
-builder.Services.AddHangfireServer();
+// 日志保留清理调度（每天本地 03:00 后触发一次，替代 Hangfire RecurringJob，见 LogRetentionPruneService 注释）。
+builder.Services.AddHostedService<LogRetentionPruneService>();
 
 var app = builder.Build();
 
@@ -472,9 +483,9 @@ if (swaggerEnabled)
 
 app.Use(async (context, next) =>
 {
-    // SPA 分离后：只有 /api/admin/* 和 /hangfire 需要服务端鉴权拦截。
+    // SPA 分离后：只有 /api/admin/* 需要服务端鉴权拦截。
     // 其余路径（/sites、/login 等前端路由）交给 SPA fallback + 前端 router 处理。
-    if (app.Environment.IsEnvironment("Testing") || (!IsAdminApiRequest(context.Request) && !IsHangfireRequest(context.Request)))
+    if (app.Environment.IsEnvironment("Testing") || !IsAdminApiRequest(context.Request))
     {
         await next();
         return;
@@ -487,40 +498,23 @@ app.Use(async (context, next) =>
     }
 
     // 未认证的后台 API：返回 401 JSON（前端拦截器统一处理）。
-    if (IsAdminApiRequest(context.Request))
+    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+    context.Response.ContentType = "application/json; charset=utf-8";
+    await context.Response.WriteAsJsonAsync(new
     {
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        context.Response.ContentType = "application/json; charset=utf-8";
-        await context.Response.WriteAsJsonAsync(new
-        {
-            success = false,
-            message = "未登录或登录已过期，请重新登录",
-            errorCode = "unauthenticated"
-        });
-        return;
-    }
-
-    // 未认证的 Hangfire 仪表盘：重定向到前端登录页。
-    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-    context.Response.Redirect($"/login?returnUrl={Uri.EscapeDataString(returnUrl)}");
+        success = false,
+        message = "未登录或登录已过期，请重新登录",
+        errorCode = "unauthenticated"
+    });
 });
 
 // 映射健康检查端点，作为集成测试的验证入口。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).WithTags("Health");
 
-// 启用 Hangfire 仪表盘，仅限本地访问。
-app.UseHangfireDashboard("/hangfire");
-
-// 注册日志清理定时任务，每天凌晨 3 点执行。
-RecurringJob.AddOrUpdate<ILogRetentionService>(
-    "log-retention-prune",
-    svc => svc.PruneAsync(CancellationToken.None),
-    "0 3 * * *");
-
 // 映射 API 控制器路由，用于代理转发端点 + 后台管理 API。
 app.MapControllers();
 
-// SPA fallback：非 /api、/v1、/health、/hangfire 的请求全部返回 index.html，
+// SPA fallback：非 /api、/v1、/health 的请求全部返回 index.html，
 // 交给前端 Vue Router 处理（history 模式）。MapFallbackToFile 会自动排除已映射的端点。
 if (!app.Environment.IsEnvironment("Testing"))
 {
@@ -585,12 +579,6 @@ static DateTimeOffset? ReadBuildTimestamp()
 static bool IsAdminApiRequest(HttpRequest request)
 {
     return request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase);
-}
-
-// 判断是否为 Hangfire 请求。
-static bool IsHangfireRequest(HttpRequest request)
-{
-    return request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
 }
 
 // 获取本机 IPv4 地址。

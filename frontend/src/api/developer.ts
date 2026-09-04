@@ -10,6 +10,13 @@ export interface DeveloperInit {
   models: Array<{ modelName: string; routeCount: number; canUseOpenAi: boolean; canUseAnthropic: boolean; supportsOpenAi?: boolean; supportsAnthropic?: boolean; supportsResponses?: boolean }>
   defaultOpenAiModel: string
   defaultAnthropicModel: string
+  tabs?: {
+    invocations: boolean
+    diagnosticDumps: boolean
+    simulator: boolean
+    protocolDiagnostics: boolean
+    sqlMigrations: boolean
+  }
 }
 export interface DeveloperInvocationSummary {
   traceId: string

@@ -25,7 +25,12 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
     private readonly string _catalogPath;
     private readonly string _templateCatalogPath;
     private readonly ILogger<HeaderProfileCatalogService>? _logger;
-    private readonly SemaphoreSlim _fileLock = new(1, 1);
+    /// <summary>
+    /// 文件写入串行锁。必须是 static：同一进程可能存在多个宿主实例（如集成测试的并行
+    /// WebApplicationFactory）共享同一个 catalog 文件，实例级锁无法跨实例互斥，
+    /// 并发写会在 Windows 上抛 IOException。
+    /// </summary>
+    private static readonly SemaphoreSlim _fileLock = new(1, 1);
 
     private List<HeaderProfile>? _memoryCache;
 

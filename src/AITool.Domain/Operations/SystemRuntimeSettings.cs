@@ -77,6 +77,33 @@ public sealed class SystemRuntimeSettings
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
+    /// 调用追踪开关（开发者总闸开启时生效）。关闭后代理请求不再采集追踪数据（省去每请求的
+    /// 报文复制分配），调用追踪相关 API 返回 404。
+    /// </summary>
+    public bool DeveloperTraceEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 诊断抓包开关（开发者总闸开启时生效）。关闭后失败请求不再自动落盘 dump，
+    /// 对比采样与抓包管理 API 返回 404。
+    /// </summary>
+    public bool DeveloperFailureDumpEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 请求模拟器页开关（纯按需功能，无后台开销；关闭仅隐藏入口并禁用其 API）。
+    /// </summary>
+    public bool DeveloperSimulatorEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 协议诊断与 AI 自愈页开关（按需功能；关闭隐藏入口并禁用相关 API）。
+    /// </summary>
+    public bool DeveloperProtocolDiagnosticsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// SQL 迁移页开关（按需功能；关闭隐藏入口并禁用脚本执行 API）。
+    /// </summary>
+    public bool DeveloperSqlMigrationsEnabled { get; set; } = true;
+
+    /// <summary>
     /// 并发打满时的处理策略。
     /// 0 = SkipOnFull：跳到下一顺位模型；
     /// 1 = WaitForSlot：排队等待直到释放或超时。

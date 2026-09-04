@@ -104,13 +104,16 @@ public sealed class DiagnosticConfigDto
 {
     /// <summary>
     /// 诊断抓包允许记录的最大请求/响应正文体积（MB，范围 1 ~ 50）。
+    /// 默认收紧到 1：绝大多数协议调试正文远小于 1MB，超大正文既拖慢落盘又制造多 MB 的
+    /// 临时 JSON 解析对象图（失败风暴时反复分配，加剧 Gen2/LOH 压力）；排查超大报文时可在页面临时调高。
     /// </summary>
-    public int MaxBodyLengthMb { get; set; } = 4;
+    public int MaxBodyLengthMb { get; set; } = 1;
 
     /// <summary>
     /// AI 协议自愈单轮调试允许保留的最大响应体积（MB，范围 1 ~ 20）。
+    /// 默认收紧到 1：轮次响应体在自愈操作期间常驻内存，并发调试会话下叠加占用。
     /// </summary>
-    public int MaxRoundResponseMb { get; set; } = 2;
+    public int MaxRoundResponseMb { get; set; } = 1;
 
     /// <summary>
     /// 历史转储文件保留天数（范围 1 ~ 30）。
@@ -203,8 +206,8 @@ public sealed class ProxyDiagnosticService : IProxyDiagnosticService
     private readonly object _dumpLock = new();
     private readonly LinkedList<ProxyDiagnosticDumpItem> _recentDumps = [];
 
-    private int _maxBodyLengthMb = 4;
-    private int _maxRoundResponseMb = 2;
+    private int _maxBodyLengthMb = 1;
+    private int _maxRoundResponseMb = 1;
     private int _retentionDays = 3;
     private int _maxFailuresPerDay = 50;
 
@@ -605,7 +608,7 @@ public sealed class ProxyDiagnosticService : IProxyDiagnosticService
         try
         {
             var runtime = await _metadataCache.GetRuntimeSettingsAsync(CancellationToken.None);
-            return runtime.DeveloperFeaturesEnabled;
+            return runtime.DeveloperFeaturesEnabled && runtime.DeveloperFailureDumpEnabled;
         }
         catch
         {

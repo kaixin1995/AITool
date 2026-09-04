@@ -130,6 +130,27 @@ export function getCurrentDisplayHeaders(
   return detail.requestHeaders || {}
 }
 
+// 语义比较的体积上限：超过后跳过解析（避免超大报文在渲染路径反复 JSON.parse 卡顿），
+// 回退原文比较（与非 JSON 报文行为一致）。
+const MAX_SEMANTIC_COMPARE_LENGTH = 262144 // 256KB
+
+// 后端为省内存改存原始（压缩）报文：透传时原文可能仅缩进不同（客户端带格式 vs 网关重序列化压缩），
+// 判定"是否转换"需做语义比较（解析后规范化再对比），与旧后端规范化存储时代的判定口径一致。
+function textuallyDifferentButSemanticallyEqual(original: string, prepared: string): boolean {
+  if (original.length > MAX_SEMANTIC_COMPARE_LENGTH || prepared.length > MAX_SEMANTIC_COMPARE_LENGTH) {
+    return false
+  }
+  try {
+    return JSON.stringify(JSON.parse(original)) === JSON.stringify(JSON.parse(prepared))
+  } catch {
+    return false
+  }
+}
+
+function differsBeyondWhitespace(original: string, prepared: string): boolean {
+  return original !== prepared && !textuallyDifferentButSemanticallyEqual(original, prepared)
+}
+
 export function hasConvertedRequestBody(
   detail?: { requestBody?: string },
   attempt?: { preparedRequestBody?: string; forwardingMode?: string }
@@ -138,7 +159,7 @@ export function hasConvertedRequestBody(
   const original = (detail?.requestBody ?? '').trim()
   const prepared = attempt.preparedRequestBody.trim()
   if (!original || !prepared) return false
-  return original !== prepared
+  return differsBeyondWhitespace(original, prepared)
 }
 
 export function getCurrentDisplayRequestBody(
@@ -164,7 +185,7 @@ export function hasConvertedResponseBody(
   const finalResp = (detail?.responseBody ?? '').trim()
   const attemptResp = attempt.responseBody.trim()
   if (!finalResp || !attemptResp) return false
-  return finalResp !== attemptResp
+  return differsBeyondWhitespace(finalResp, attemptResp)
 }
 
 export function getCurrentDisplayResponseBody(

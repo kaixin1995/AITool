@@ -23,11 +23,13 @@ public sealed class ProxyRequestMetadataCache
 {
     /// <summary>
     /// 缓存有效时长。
-    /// 所有业务写操作（站点/模型/路由/密钥/兼容规则/运行时设置/Codex 账号等）都有对应的
-    /// Invalidate* 显式失效，TTL 仅作兜底，故从 5s 提高到 30s 以降低管理页面的重复查库压力；
-    /// 显式失效后下一次读取立即重建缓存，配置变更仍即时生效。
+    /// 所有业务写操作（站点/模型/路由/密钥/兼容规则/运行时设置/Codex/Google/Kimi 账号等，含全部
+    /// 后台服务的 token 刷新/配额巡检写入）都有对应的 Invalidate* 显式失效，变更即时生效；
+    /// TTL 仅作"漏网写入"（绕过应用层的改库、未来新代码漏调失效）的兜底自愈。
+    /// 300 秒在把全表重建的对象图制造量（GC/LOH 压力）降低一个数量级的同时，
+    /// 把极端情况下的脏数据窗口限制在 5 分钟内。
     /// </summary>
-    private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(300);
     /// <summary>
     /// 访问密钥缓存键。
     /// </summary>
@@ -283,6 +285,11 @@ public sealed class ProxyRequestMetadataCache
                             CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
                             UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
                             DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
+                            DeveloperTraceEnabled = settings.DeveloperTraceEnabled,
+                            DeveloperFailureDumpEnabled = settings.DeveloperFailureDumpEnabled,
+                            DeveloperSimulatorEnabled = settings.DeveloperSimulatorEnabled,
+                            DeveloperProtocolDiagnosticsEnabled = settings.DeveloperProtocolDiagnosticsEnabled,
+                            DeveloperSqlMigrationsEnabled = settings.DeveloperSqlMigrationsEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
                             ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
                             OAuthFeaturesEnabled = settings.OAuthFeaturesEnabled,
@@ -2079,6 +2086,26 @@ public sealed class CachedProxyRuntimeSettings
     /// 是否启用开发者功能。
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
+    /// <summary>
+    /// 调用追踪开关（热路径读取：关闭时代理请求跳过追踪采集）。
+    /// </summary>
+    public bool DeveloperTraceEnabled { get; set; } = true;
+    /// <summary>
+    /// 诊断抓包开关（失败请求自动落盘与采样的读取开关）。
+    /// </summary>
+    public bool DeveloperFailureDumpEnabled { get; set; } = true;
+    /// <summary>
+    /// 模拟器页开关。
+    /// </summary>
+    public bool DeveloperSimulatorEnabled { get; set; } = true;
+    /// <summary>
+    /// 协议诊断与 AI 自愈页开关。
+    /// </summary>
+    public bool DeveloperProtocolDiagnosticsEnabled { get; set; } = true;
+    /// <summary>
+    /// SQL 迁移页开关。
+    /// </summary>
+    public bool DeveloperSqlMigrationsEnabled { get; set; } = true;
     /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>

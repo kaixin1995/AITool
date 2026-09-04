@@ -547,6 +547,7 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
                 localCancellation.Token);
             if (!IsCurrentDetailRequest(generation, localCancellation)) return;
 
+            PrettyTraceBodies(detail);
             SelectedDetail = detail;
         }
         catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
@@ -829,7 +830,7 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
         try
         {
             using var document = JsonDocument.Parse(body);
-            body = JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true });
+            body = JsonSerializer.Serialize(document.RootElement, IndentedJsonOptions);
         }
         catch (JsonException)
         {
@@ -838,6 +839,44 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
 
         return $"HTTP {response.StatusCode}{Environment.NewLine}{body}";
     }
+
+    /// <summary>
+    /// 调用追踪详情展示前把报文缩进格式化：后端为省内存改存原始（压缩）报文，
+    /// 桌面端 TextBox 需要缩进才可读。非 JSON 文本（SSE 等）与后端已精简缩进的结果保持原样/幂等。
+    /// </summary>
+    private static void PrettyTraceBodies(DeveloperInvocationDetail detail)
+    {
+        detail.RequestBody = PrettyJsonText(detail.RequestBody);
+        detail.ResponseBody = PrettyJsonText(detail.ResponseBody);
+        foreach (var attempt in detail.Attempts)
+        {
+            attempt.PreparedRequestBody = PrettyJsonText(attempt.PreparedRequestBody);
+            attempt.ResponseBody = PrettyJsonText(attempt.ResponseBody);
+        }
+    }
+
+    private static string PrettyJsonText(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return body;
+        // 超大报文跳过格式化（UI 线程 parse 多 MB JSON 会卡顿），原样展示。
+        if (body.Length > PrettyJsonMaxLength) return body;
+        var trimmed = body.TrimStart();
+        if (trimmed.Length == 0 || (trimmed[0] != '{' && trimmed[0] != '[')) return body;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return JsonSerializer.Serialize(document.RootElement, IndentedJsonOptions);
+        }
+        catch (JsonException)
+        {
+            return body;
+        }
+    }
+
+    private const int PrettyJsonMaxLength = 1024 * 1024;
+
+    /// <summary>展示层缩进序列化共用配置（JsonSerializerOptions 每次新建会重新构建绑定缓存）。</summary>
+    private static readonly JsonSerializerOptions IndentedJsonOptions = new() { WriteIndented = true };
 
     private void UpdateSimulatorExamples()
     {

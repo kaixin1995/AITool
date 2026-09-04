@@ -19,6 +19,12 @@ public sealed class DeveloperInvocationTraceStore
     /// </summary>
     private static readonly TimeSpan EntryRetention = TimeSpan.FromMinutes(20);
     /// <summary>
+    /// 单个报文在跟踪存储中的最大字符数（约 256KB 内存）。
+    /// 大上下文请求可达数 MB，40 条记录 × 多个报文不封顶时是无界内存项；
+    /// 截断仅影响调用追踪页展示，完整报文始终由诊断 dump 落盘兜底。
+    /// </summary>
+    private const int MaxStoredBodyChars = 128 * 1024;
+    /// <summary>
     /// 并发访问锁对象。
     /// </summary>
     private readonly object _gate = new();
@@ -48,7 +54,7 @@ public sealed class DeveloperInvocationTraceStore
             ProtocolType = request.ProtocolType,
             RequestPath = request.RequestPath,
             RequestModel = request.RequestModel,
-            RequestBody = request.RequestBody,
+            RequestBody = CapBody(request.RequestBody),
             RequestHeaders = request.RequestHeaders,
             Status = "pending"
         };
@@ -87,7 +93,7 @@ public sealed class DeveloperInvocationTraceStore
                 TargetSiteId = attempt.TargetSiteId,
                 TargetSiteName = attempt.TargetSiteName,
                 // 格式化转换后请求体，便于在调用追踪页与原始请求体并排对比，定位上游参数错误。
-                PreparedRequestBody = FormatBody(attempt.PreparedRequestBody),
+                PreparedRequestBody = CapBody(FormatBody(attempt.PreparedRequestBody)),
                 PreparedRequestHeaders = attempt.PreparedRequestHeaders != null
                     ? new Dictionary<string, string>(attempt.PreparedRequestHeaders, StringComparer.OrdinalIgnoreCase)
                     : [],
@@ -126,7 +132,7 @@ public sealed class DeveloperInvocationTraceStore
             attempt.Status = result.Status;
             attempt.StatusCode = result.StatusCode;
             attempt.ErrorMessage = result.ErrorMessage;
-            attempt.ResponseBody = result.ResponseBody;
+            attempt.ResponseBody = CapBody(result.ResponseBody);
             attempt.ResponseContentType = result.ResponseContentType;
             attempt.IsStreaming = result.IsStreaming;
             attempt.InputTokens = result.InputTokens;
@@ -142,7 +148,7 @@ public sealed class DeveloperInvocationTraceStore
             node.Value.Status = result.Status;
             node.Value.StatusCode = result.StatusCode;
             node.Value.ErrorMessage = result.ErrorMessage;
-            node.Value.ResponseBody = result.ResponseBody;
+            node.Value.ResponseBody = CapBody(result.ResponseBody);
             node.Value.ResponseContentType = result.ResponseContentType;
             node.Value.IsStreaming = result.IsStreaming;
             node.Value.InputTokens = result.InputTokens;
@@ -292,6 +298,10 @@ public sealed class DeveloperInvocationTraceStore
 
     /// <summary>
     /// 格式化请求或响应内容。
+    /// <para>
+    /// 直接存原始报文：缩进重序列化会让正文膨胀 2-3 倍，40 条跟踪记录常驻内存显著偏高；
+    /// 展示层（调用追踪页 bodyText / JsonDiffView）已按需解析并缩进展示，非 JSON 文本（SSE 等）两侧行为一致。
+    /// </para>
     /// </summary>
     public static string FormatBody(string body)
     {
@@ -300,15 +310,21 @@ public sealed class DeveloperInvocationTraceStore
             return string.Empty;
         }
 
-        try
+        return body;
+    }
+
+    /// <summary>
+    /// 超过 <see cref="MaxStoredBodyChars"/> 的报文截断存储，末尾附标记指向诊断 dump 取完整报文。
+    /// </summary>
+    public static string CapBody(string? body)
+    {
+        if (string.IsNullOrEmpty(body) || body.Length <= MaxStoredBodyChars)
         {
-            using var document = JsonDocument.Parse(body);
-            return JsonSerializer.Serialize(document, JsonSerializerPresets.WriteIndented);
+            return body ?? string.Empty;
         }
-        catch
-        {
-            return body;
-        }
+
+        return body[..MaxStoredBodyChars]
+            + $"\n... [跟踪存储截断：原始 {body.Length} 字符，保留 {MaxStoredBodyChars}；完整报文见诊断 dump 文件]";
     }
 
     /// <summary>
