@@ -14,6 +14,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\AITool.Admin\AITool.Admin.csproj" />
     <ProjectReference Include="..\..\src\AITool.Core\AITool.Core.csproj" />
+    <ProjectReference Include="..\..\src\AITool.AllInOne\AITool.AllInOne.csproj" />
   </ItemGroup>
 
   <ItemGroup>
