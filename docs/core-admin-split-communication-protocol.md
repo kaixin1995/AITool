@@ -57,6 +57,21 @@ Core 与 Admin 间通信分成两层：
 
 # 二、统一约定
 
+## 2.0 跨宿主鉴权（共享密钥）
+
+Admin → Core 的全部管理端点（`/api/core/*`）要求携带共享密钥请求头：
+
+- 请求头：`X-Core-Auth: <SharedSecret>`
+- Core 配置：`CoreAuth:SharedSecret`；Admin 配置：`CoreServer:SharedSecret`（两端必须一致）
+- 校验方式：SHA256 摘要后 FixedTimeEquals 恒时比较（防时序侧信道）
+- 失败响应：`401` + `{"error":{"type":"authentication_error","code":"invalid_core_auth"}}`
+  —— 调用方可用该错误码区分「密钥错误」与「网络不可达」
+- 退化策略（Core 未配置密钥时）：`/api/core/*` 仅允许本机回环访问（远程一律 401），
+  `/v1/*` 与 `/health` 不受本机制影响（`/v1` 仍由 AccessKey 自校验）
+- 测试环境（Testing）：全放行，存量集成测试无需携带密钥
+
+---
+
 ## 2.1 时间格式
 
 统一使用：
@@ -779,3 +794,52 @@ Admin 接收事件后，不逐条同步写库，建议批量处理。
 - DetectionResultEvent
 - RouteFallbackEvent
 - replay-complete 标记事件
+
+---
+
+# 十七、流式韧性协议（3.0+ 新增）
+
+## 17.1 SSE 直通头
+
+所有流式代理响应（OpenAI/Anthropic/Gemini/Responses/聊天）固定携带：
+
+- `X-Accel-Buffering: no`：告知 Nginx 等反代本响应不得缓冲（逐帧直通）
+- `Cache-Control: no-cache`：SSE 长流禁止任何缓存语义
+
+## 17.2 SSE 心跳（默认 15s，可关）
+
+配置 `ProxyForwarding:SseHeartbeatSeconds`（0 = 关闭）。流式响应静默超过阈值时，
+Core/中继向下游注入 SSE 注释帧 `: ping\n\n`（标准客户端忽略），防止中间设备因长空闲回收连接。
+
+## 17.3 可恢复流（Stream Resume）
+
+**目的**：客户端↔Core 段断线后，客户端（或中继）可携带最后已收帧序号重连，Core 重放缺失帧后
+无缝衔接实时流——断线重连不再是“重头再来”。
+
+**协议（均为纯增量，普通客户端零感知）**：
+
+| 头 | 方向 | 语义 |
+|----|------|------|
+| `X-Stream-Request-Id` | 响应头 | 本次流式响应的恢复标识（每次响应唯一，公开给任意客户端） |
+| `X-Stream-Resume: {requestId}:{lastSeq}` | 请求头（可选） | 断线重入：从 lastSeq+1 帧开始重放 |
+
+**重放语义（v1）**：
+1. Core 为每个流式响应在侧缓冲保存 SSE 原始帧（按 `\n\n`/`\r\n\r\n` 切帧，逐字节保留）；
+2. 携带 `X-Stream-Resume` 的新请求：先回放缓冲帧（lastSeq+1 起），再启动新的上游请求实时流；
+3. 新流与旧流内容可能不同（上游重新生成）：**以首个 `[DONE]` 为界截断**——重放段补齐缺失帧，
+   新流只取尾部结束标记，客户端收到的是「无缺失帧序列 + 单结束标记」；
+4. 缓冲不再可用（未知 id / 超时回收 / 超限截断）时自动回退为全新请求，不报错。
+
+**内存护栏**：单请求 2MB / 并发缓冲 50 流 / 完成后保留 5 分钟；超限降级为不可恢复（转发不受影响）。
+配置：`ProxyForwarding:StreamResumeEnabled`（默认 true）、`StreamResumeMaxFrameBytes`、
+`StreamResumeMaxActive`、`StreamResumeRetainMinutes`。
+
+## 17.4 Admin /v1 中继（Relay）
+
+配置 `Relay:Enabled`（默认 false）。开启后 Admin 提供 `/v1/*` 同路径反向代理：
+
+- AccessKey 由 Admin 查库校验（与 Core 同口径，双保险）；
+- Admin↔Core 断线时自动带 `X-Stream-Resume` 重连（最多 `Relay:MaxReconnects` 次，默认 3），
+  客户端连接全程保持；
+- 下行流心跳与 Stream Resume 语义同 17.2/17.3；
+- 未启用时 `/v1/*` 在 Admin 宿主返回 404（不暴露探测面）。

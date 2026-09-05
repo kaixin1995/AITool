@@ -50,11 +50,16 @@ public static class ProxyRuntimeInfrastructureExtensions
     /// Core 宿主传入 true，使缓存方法在配置快照可用时优先从快照读取；
     /// Web 宿主传入 false，使缓存方法始终通过数据库查询获取数据。
     /// </param>
+    /// <param name="enableEventSpooling">
+    /// 是否启用磁盘事件 spool（Core 宿主 true；AllInOne 单进程宿主 false——
+    /// 事件由进程内消费者直接消费，无跨进程拉取，落盘纯属浪费）。
+    /// </param>
     public static IServiceCollection AddProxyRuntimeInfrastructure(
         this IServiceCollection services,
         Microsoft.Extensions.Configuration.IConfiguration proxyForwardingConfigSection,
         string coreEventSpoolRootPath,
-        bool useCoreRuntimeConfigProviderForCache = false)
+        bool useCoreRuntimeConfigProviderForCache = false,
+        bool enableEventSpooling = true)
     {
         // 注册代理转发配置，统一控制单路由超时和失败重试策略。
         services.Configure<ProxyForwardingOptions>(proxyForwardingConfigSection);
@@ -94,11 +99,16 @@ public static class ProxyRuntimeInfrastructureExtensions
         services.AddSingleton<DeveloperInvocationTraceStore>();
 
         // 注册事件序列、事件总线与 spool，支撑 Core -> Admin 可靠事件推送。
+        // AllInOne（单进程）形态跳过磁盘 spool 后台搬移服务：事件由进程内消费者直接消化。
+        // SpoolStore/Options 无条件注册（CoreEventSequenceProvider 依赖其做序号持久化）。
         services.AddSingleton<CoreEventSequenceProvider>();
         services.AddSingleton<CoreAdminEventBus>();
         services.AddSingleton(new CoreEventSpoolOptions { RootPath = coreEventSpoolRootPath });
         services.AddSingleton<CoreEventSpoolStore>();
-        services.AddHostedService<CoreEventSpoolBackgroundService>();
+        if (enableEventSpooling)
+        {
+            services.AddHostedService<CoreEventSpoolBackgroundService>();
+        }
 
         // 注册配置变更事件发布器。
         services.AddSingleton<CoreConfigAppliedEventPublisher>();

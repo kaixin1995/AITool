@@ -279,8 +279,11 @@ public sealed partial class OpenAiProxyController
         {
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "text/event-stream";
-            Response.Headers.CacheControl = "no-cache";
-            Response.Headers.Connection = "keep-alive";
+        Response.Headers.Append("X-Accel-Buffering", "no");
+        Response.Headers.Append("Cache-Control", "no-cache");
+        ArmSseHeartbeat();
+        await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
+
         }
 
         // 先走 Anthropic → OpenAI 的流式转换，收集完整响应后转为 Responses 事件
@@ -491,8 +494,11 @@ public sealed partial class OpenAiProxyController
         {
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "text/event-stream";
-            Response.Headers.CacheControl = "no-cache";
-            Response.Headers.Connection = "keep-alive";
+        Response.Headers.Append("X-Accel-Buffering", "no");
+        Response.Headers.Append("Cache-Control", "no-cache");
+        ArmSseHeartbeat();
+        await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
+
         }
 
         var responseBuilder = new StringBuilder();
@@ -719,8 +725,11 @@ public sealed partial class OpenAiProxyController
         {
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "text/event-stream";
-            Response.Headers.CacheControl = "no-cache";
-            Response.Headers.Connection = "keep-alive";
+        Response.Headers.Append("X-Accel-Buffering", "no");
+        Response.Headers.Append("Cache-Control", "no-cache");
+        ArmSseHeartbeat();
+        await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
+
         }
 
         var responseBuilder = new StringBuilder();
@@ -872,8 +881,11 @@ public sealed partial class OpenAiProxyController
         {
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "text/event-stream";
-            Response.Headers.CacheControl = "no-cache";
-            Response.Headers.Connection = "keep-alive";
+        Response.Headers.Append("X-Accel-Buffering", "no");
+        Response.Headers.Append("Cache-Control", "no-cache");
+        ArmSseHeartbeat();
+        await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
+
         }
 
         var state = new AnthropicToOpenAiStreamState();

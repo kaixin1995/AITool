@@ -1,4 +1,5 @@
 using AITool.Application.Proxy;
+using AITool.Core;
 using AITool.Core.Services;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.CoreRuntime;
@@ -70,6 +71,23 @@ builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
 builder.Services.AddSingleton<CoreRuntimeConfigProvider>();
 builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>(sp => sp.GetRequiredService<CoreRuntimeConfigProvider>());
 
+// SSE 心跳选项：流式响应静默超过阈值秒数注入 `: ping` 注释帧（0 = 关闭，默认 15s）。
+builder.Services.AddSingleton(new SseHeartbeatOptions(
+    builder.Configuration.GetValue("ProxyForwarding:SseHeartbeatSeconds", 15)));
+// 流式响应可恢复缓冲：断线方以 X-Stream-Resume 重入后重放（纯增量，普通客户端零感知）。
+var resumeOptions = new StreamResumeOptions
+{
+    Enabled = builder.Configuration.GetValue("ProxyForwarding:StreamResumeEnabled", true),
+    MaxFrameBytesPerRequest = builder.Configuration.GetValue("ProxyForwarding:StreamResumeMaxFrameBytes", StreamResumeStore.DefaultMaxFrameBytesPerRequest),
+    MaxActiveStreams = builder.Configuration.GetValue("ProxyForwarding:StreamResumeMaxActive", StreamResumeStore.DefaultMaxActiveStreams),
+    RetainMinutes = builder.Configuration.GetValue("ProxyForwarding:StreamResumeRetainMinutes", 5)
+};
+builder.Services.AddSingleton(resumeOptions);
+builder.Services.AddSingleton(new StreamResumeStore(
+    resumeOptions.MaxFrameBytesPerRequest,
+    resumeOptions.MaxActiveStreams,
+    TimeSpan.FromMinutes(resumeOptions.RetainMinutes)));
+
 // 注册代理运行时核心链路服务：代理转发、并发控制、熔断、事件总线、批处理写入器等。
 // Core 宿主传入 useCoreRuntimeConfigProviderForCache: true，使元数据缓存优先从配置快照读取。
 var coreEventSpoolRootPath = builder.Environment.IsEnvironment("Testing")
@@ -81,49 +99,8 @@ builder.Services.AddProxyRuntimeInfrastructure(
     useCoreRuntimeConfigProviderForCache: true);
 
 // 注册并发控制查询服务（Core 独有，用于管理端点查询当前并发状态）。
-builder.Services.AddSingleton<ModelConcurrencyQueryService>();
-
-// —— 托管 OAuth 账号的 Core 侧无库能力（401 即刷 / 403 禁用，split 双宿主）——
-// OAuth 客户端是纯 HTTP 实现（Infrastructure），Core 可直接复用；刷新后经事件总线回传 Admin 落库。
-builder.Services.AddHttpClient<AITool.Application.Codex.ICodexOAuthClient, AITool.Infrastructure.Codex.CodexOAuthClient>(c =>
-{
-    c.Timeout = TimeSpan.FromSeconds(20);
-});
-builder.Services.AddHttpClient<AITool.Application.Google.IGoogleOAuthClient, AITool.Infrastructure.Google.GoogleOAuthClient>(c =>
-{
-    c.Timeout = TimeSpan.FromSeconds(30);
-});
-builder.Services.AddHttpClient<AITool.Application.Kimi.IKimiOAuthClient, AITool.Infrastructure.Kimi.KimiOAuthClient>(c =>
-{
-    c.Timeout = TimeSpan.FromSeconds(30);
-});
-builder.Services.AddScoped<CoreCredentialRefreshEngine>();
-builder.Services.AddScoped<CodexCredentialRefreshService>();
-builder.Services.AddScoped<GoogleCredentialRefreshService>();
-builder.Services.AddScoped<KimiCredentialRefreshService>();
-
-// 代理诊断抓包（文件型转储）。Core 与 Admin 部署为兄弟目录，共享同一抓包目录实现跨宿主可见；
-// Admin 目录不存在（独立部署）时回退 Core 本地目录。
-builder.Services.AddSingleton<IProxyDiagnosticService>(sp =>
-{
-    var logger = sp.GetRequiredService<ILogger<ProxyDiagnosticService>>();
-    var metadataCache = sp.GetService<ProxyRequestMetadataCache>();
-    var sharedRoot = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "AITool.Admin"));
-    var baseDir = Directory.Exists(sharedRoot) ? sharedRoot : AppDomain.CurrentDomain.BaseDirectory;
-    return new ProxyDiagnosticService(logger, metadataCache, baseDir);
-});
-
-// 注册统一代理事件发布器，当追踪完成、熔断触发、路由回退时发布事件到 Core 事件总线（Core 独有）。
-builder.Services.AddSingleton<CoreUnifiedProxyEventPublisher>();
-
-// 注册路由回退事件发布器，当代理请求在路由间回退时发布 route-fallback 事件（Core 独有）。
-builder.Services.AddSingleton<CoreRouteFallbackEventPublisher>();
-
-// 注册熔断状态变更事件发布器，当路由因连续失败达到阈值被首次熔断时发布 circuit-breaker 事件（Core 独有）。
-builder.Services.AddSingleton<CoreCircuitBreakerEventPublisher>();
-
-// LOH 碎片压缩：Core 是代理主链路，每请求产生大字符串碎片，必须定期压缩避免工作集持续升高。
-builder.Services.AddHostedService<AITool.Infrastructure.Hosting.MemoryMaintenanceService>();
+// Core 宿主独有服务注册（抽取至 CoreProgramServices，供 AllInOne 复用）。
+builder.AddCoreProxyHostServices();
 
 var app = builder.Build();
 
@@ -219,6 +196,10 @@ app.UseGlobalExceptionHandler(app.Environment);
 // 启用 CORS，确保 Admin 宿主的前端页面可以跨域调用 Core 代理端点。
 // 必须在 MapControllers 之前注册，否则 CORS 头不会被写入响应。
 app.UseCors("AdminCors");
+
+// 跨宿主共享密钥鉴权：/api/core/* 管理端点要求 X-Core-Auth（Testing 环境放行；
+// 未配置密钥时退化为仅本机回环可访问）。/v1/*、/health 不经过本中间件。
+app.UseMiddleware<AITool.Infrastructure.Security.CoreApiAuthMiddleware>();
 
 // Core 宿主仅映射 API 控制器，不映射 Razor Pages。
 // 代理端点 /v1/* 和 Core 管理端点 /api/core/* 由控制器提供。

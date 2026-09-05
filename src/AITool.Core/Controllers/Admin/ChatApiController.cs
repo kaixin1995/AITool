@@ -329,6 +329,61 @@ public sealed class ChatApiController : ControllerBase
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
     /// <summary>master 同步：聊天转发 Google 托管凭证 403 禁用回调。</summary>
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
+    /// <summary>
+    /// SSE 心跳配置（静默超阈值注入 `: ping` 注释帧防中间设备回收连接；0 = 关闭）。
+    /// </summary>
+    private readonly SseHeartbeatOptions _heartbeat;
+    /// <summary>
+    /// 流式响应可恢复缓冲存储与选项（断线续传；纯增量，普通客户端零感知）。
+    /// </summary>
+    private readonly StreamResumeStore _resumeStore;
+    private readonly StreamResumeOptions _resume;
+
+    /// <summary>
+    /// 流式响应就绪后调用：心跳开启时包裹响应体输出流。
+    /// </summary>
+    private void ArmSseHeartbeat()
+    {
+        if (_heartbeat.Enabled)
+        {
+            Response.Body = new SseHeartbeatStream(Response.Body, _heartbeat.Seconds);
+        }
+    }
+
+    /// <summary>
+    /// 流式响应就绪后调用：可恢复缓冲开启时登记本响应、处理断线续传（X-Stream-Resume 头），
+    /// 并通过 X-Stream-Request-Id 响应头对外公布本响应的恢复标识。
+    /// </summary>
+    private async Task ArmStreamResumeAsync(string? resumeHeader)
+    {
+        if (!_resume.Enabled)
+        {
+            return;
+        }
+
+        var resumeId = Guid.NewGuid().ToString("N");
+
+        // 1. 先登记缓冲并公布恢复标识（响应头必须在任何响应体写入之前设置）。
+        if (_resumeStore.TryBegin(resumeId))
+        {
+            Response.Headers.Append("X-Stream-Request-Id", resumeId);
+            Response.Body = new StreamResumeCaptureStream(Response.Body, _resumeStore, resumeId);
+        }
+
+        // 2. 断线续传重放：旧缓冲的帧在新流开始前补发（重放帧不进入新缓冲）。
+        if (!string.IsNullOrWhiteSpace(resumeHeader))
+        {
+            var parts = resumeHeader.Split(':');
+            if (parts.Length == 2 && int.TryParse(parts[1], out var lastSeq)
+                && _resumeStore.TryResume(parts[0], lastSeq) is { } frames)
+            {
+                foreach (var frame in frames)
+                {
+                    await Response.Body.WriteAsync(frame);
+                }
+            }
+        }
+    }
 
     /// <summary>
     /// 创建调试对话控制器。
@@ -340,7 +395,10 @@ public sealed class ChatApiController : ControllerBase
         AdminQueryMetadataService adminQueryMetadataService,
         IHttpClientFactory httpClientFactory,
         ModelConcurrencyLimiter concurrencyLimiter,
-        GoogleCredentialRefreshService googleCredentialRefreshService)
+        GoogleCredentialRefreshService googleCredentialRefreshService,
+        SseHeartbeatOptions heartbeat,
+        StreamResumeStore resumeStore,
+        StreamResumeOptions resumeOptions)
     {
         _forwardService = forwardService;
         _circuitStore = circuitStore;
@@ -349,6 +407,9 @@ public sealed class ChatApiController : ControllerBase
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
         _googleCredentialRefreshService = googleCredentialRefreshService;
+        _heartbeat = heartbeat;
+        _resumeStore = resumeStore;
+        _resume = resumeOptions;
     }
 
 
@@ -594,8 +655,10 @@ public sealed class ChatApiController : ControllerBase
     {
         Response.StatusCode = 200;
         Response.ContentType = "text/event-stream";
-        Response.Headers.CacheControl = "no-cache";
-        Response.Headers["X-Accel-Buffering"] = "no";
+        Response.Headers.Append("X-Accel-Buffering", "no");
+        Response.Headers.Append("Cache-Control", "no-cache");
+        ArmSseHeartbeat();
+        await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
 
         if (string.IsNullOrWhiteSpace(request.Message))
         {
