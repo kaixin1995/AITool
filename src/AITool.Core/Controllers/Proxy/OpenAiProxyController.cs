@@ -669,17 +669,45 @@ public sealed partial class OpenAiProxyController : ControllerBase
             callContext.RouteId = route.RouteId;
 
             var traceAttemptId = _proxyCallRecorder.BeginTraceAttempt(traceId, callContext);
-            var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
-                "OpenAI",
-                actualProtocolType,
-                preparedClientRequestBody,
-                route.SiteModelName,
-                enableStreaming,
-                route.OverrideReasoningEffort,
-                route.BaseUrl,
-                route.CompatibilityRules,
-                isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase),
-                geminiProjectId: route.GoogleProjectId);
+            // 协议转换阶段防御：PrepareRequestBody 处理任意用户输入的工具 schema，
+            // 畸形结构可能触发异常。此阶段失败视为该路由不可用，continue 到下一路由（与转发失败回退同口径），
+            // 而不是让异常穿透杀死整个请求。
+            string preparedRequestBody;
+            try
+            {
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                    "OpenAI",
+                    actualProtocolType,
+                    preparedClientRequestBody,
+                    route.SiteModelName,
+                    enableStreaming,
+                    route.OverrideReasoningEffort,
+                    route.BaseUrl,
+                    route.CompatibilityRules,
+                    isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase),
+                    geminiProjectId: route.GoogleProjectId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "协议转换失败，跳到下一路由。Route={RouteLabel}, Protocol={Protocol}, Model={Model}",
+                    routeLabel, actualProtocolType, route.SiteModelName);
+                callContext.Success = false;
+                callContext.StatusCode = 502;
+                callContext.ErrorMessage = $"协议转换失败: {ex.GetType().Name}: {ex.Message}";
+                callContext.ResponseContentType = "application/json";
+                _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
+                var prepareFailure = new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 502,
+                    ErrorMessage = callContext.ErrorMessage
+                };
+                SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
+                lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, prepareFailure.ErrorMessage);
+                lastResult = prepareFailure;
+                continue;
+            }
             var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
