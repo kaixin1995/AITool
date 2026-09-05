@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using AITool.Application.Common;
+using AITool.Application.Operations;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
@@ -21,11 +22,25 @@ public class ProxyProfilesApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly ISystemRuntimeSettingsService _settingsService;
 
-    public ProxyProfilesApiController(AppDbContext dbContext, ProxyRequestMetadataCache? metadataCache = null)
+    public ProxyProfilesApiController(
+        AppDbContext dbContext,
+        ISystemRuntimeSettingsService settingsService,
+        ProxyRequestMetadataCache? metadataCache = null)
     {
         _dbContext = dbContext;
+        _settingsService = settingsService;
         _metadataCache = metadataCache;
+    }
+
+    /// <summary>
+    /// 开发者功能总闸或出口网络代理开关关闭时接口整体隐藏（404）。
+    /// </summary>
+    private async Task<bool> IsProxyProfilesEnabledAsync(CancellationToken cancellationToken)
+    {
+        var settings = await _settingsService.GetOrCreateAsync(cancellationToken);
+        return settings is not null && settings.DeveloperFeaturesEnabled && settings.DeveloperProxyProfilesEnabled;
     }
 
     /// <summary>
@@ -34,6 +49,12 @@ public class ProxyProfilesApiController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
     {
+        if (!await IsProxyProfilesEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+
         var profiles = await _dbContext.ProxyProfiles
             .OrderBy(x => x.SortOrder)
             .ThenBy(x => x.Name)
@@ -59,6 +80,12 @@ public class ProxyProfilesApiController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken cancellationToken)
     {
+        if (!await IsProxyProfilesEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+
         var profile = await _dbContext.ProxyProfiles.InSingleAsync(id);
         if (profile is null)
         {
@@ -85,6 +112,12 @@ public class ProxyProfilesApiController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] ProxyProfilePayload payload, CancellationToken cancellationToken)
     {
+        if (!await IsProxyProfilesEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+
         if (string.IsNullOrWhiteSpace(payload?.Key) || string.IsNullOrWhiteSpace(payload.Name) || string.IsNullOrWhiteSpace(payload.ProxyUrl))
         {
             return BadRequest(ApiResponse.Fail("方案标识 Key、名称和代理地址不能为空", "invalid_input"));
@@ -128,6 +161,12 @@ public class ProxyProfilesApiController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] ProxyProfilePayload payload, CancellationToken cancellationToken)
     {
+        if (!await IsProxyProfilesEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+
         if (string.IsNullOrWhiteSpace(payload?.Name) || string.IsNullOrWhiteSpace(payload.ProxyUrl))
         {
             return BadRequest(ApiResponse.Fail("方案名称和代理地址不能为空", "invalid_input"));
@@ -180,6 +219,12 @@ public class ProxyProfilesApiController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
+        if (!await IsProxyProfilesEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+
         var profile = await _dbContext.ProxyProfiles.InSingleAsync(id);
         if (profile is null)
         {
@@ -199,6 +244,12 @@ public class ProxyProfilesApiController : ControllerBase
     [HttpPost("test")]
     public async Task<IActionResult> TestConnectivity([FromBody] TestProxyRequest request, CancellationToken cancellationToken)
     {
+        if (!await IsProxyProfilesEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+
         if (string.IsNullOrWhiteSpace(request?.ProxyUrl))
         {
             return BadRequest(ApiResponse.Fail("代理地址不能为空", "invalid_proxy_url"));

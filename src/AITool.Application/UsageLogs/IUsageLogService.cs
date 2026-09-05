@@ -67,6 +67,11 @@ public sealed class UsageLogEntry
     public int RetryCount { get; set; }
 
     /// <summary>
+    /// 本次转发内部因 429 速率限制实际重试的次数。
+    /// </summary>
+    public int RateLimitRetries { get; set; }
+
+    /// <summary>
     /// 标记当前是该请求链路中的第几次实际尝试。
     /// </summary>
     public int AttemptIndex { get; set; }

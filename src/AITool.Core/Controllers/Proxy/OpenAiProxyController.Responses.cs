@@ -316,6 +316,7 @@ public sealed partial class OpenAiProxyController
                 callContext.StreamDurationMs = streamResult.StreamDurationMs;
                 callContext.TotalDurationMs = streamResult.TotalDurationMs;
                 callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
+                callContext.RateLimitRetries = streamResult.RateLimitRetryCount;
                 callContext.IsFinalResult = streamResult.Success || !streamCanFallback;
                 callContext.FallbackTriggered = !streamResult.Success && streamCanFallback;
                 await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
@@ -387,6 +388,7 @@ public sealed partial class OpenAiProxyController
             callContext.StreamDurationMs = result.StreamDurationMs;
             callContext.TotalDurationMs = result.TotalDurationMs;
             callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
+            callContext.RateLimitRetries = result.RateLimitRetryCount;
             callContext.IsFinalResult = result.Success || !canFallback;
             callContext.FallbackTriggered = !result.Success && canFallback;
             await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);
@@ -643,6 +645,7 @@ public sealed partial class OpenAiProxyController
             callContext.StreamDurationMs = streamResult.StreamDurationMs;
             callContext.TotalDurationMs = streamResult.TotalDurationMs;
             callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
+            callContext.RateLimitRetries = streamResult.RateLimitRetryCount;
             callContext.IsFinalResult = streamResult.Success || !canFallback;
             callContext.FallbackTriggered = !streamResult.Success && canFallback;
             await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);

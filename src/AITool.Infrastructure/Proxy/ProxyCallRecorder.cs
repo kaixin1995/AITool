@@ -168,6 +168,7 @@ public sealed class ProxyCallRecorder : IProxyCallRecorder
                 Status = context.Success ? "success" : "fail",
                 Source = context.Source,
                 RetryCount = context.RetryCount,
+                RateLimitRetries = context.RateLimitRetries,
                 AttemptIndex = context.AttemptIndex,
                 IsFinalResult = context.IsFinalResult,
                 FallbackTriggered = context.FallbackTriggered,

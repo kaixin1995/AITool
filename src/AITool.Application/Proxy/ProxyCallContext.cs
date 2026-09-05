@@ -203,6 +203,11 @@ public sealed class ProxyCallContext
     public int RetryCount { get; set; }
 
     /// <summary>
+    /// 429 速率限制重试次数（本路由候选内按退避间隔连续重发的次数）。
+    /// </summary>
+    public int RateLimitRetries { get; set; }
+
+    /// <summary>
     /// 是否为最终结果（成功时 true）。
     /// </summary>
     public bool IsFinalResult { get; set; }

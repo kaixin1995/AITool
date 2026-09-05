@@ -85,6 +85,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.DeveloperSimulatorEnabled = request.DeveloperSimulatorEnabled ?? settings.DeveloperSimulatorEnabled;
         settings.DeveloperProtocolDiagnosticsEnabled = request.DeveloperProtocolDiagnosticsEnabled ?? settings.DeveloperProtocolDiagnosticsEnabled;
         settings.DeveloperSqlMigrationsEnabled = request.DeveloperSqlMigrationsEnabled ?? settings.DeveloperSqlMigrationsEnabled;
+        settings.DeveloperProxyProfilesEnabled = request.DeveloperProxyProfilesEnabled ?? settings.DeveloperProxyProfilesEnabled;
         settings.ConversationLogEnabled = request.ConversationLogEnabled;
         settings.ConcurrencyMode = Math.Max(0, Math.Min(1, request.ConcurrencyMode));
         settings.ConcurrencyQueueTimeoutSeconds = Math.Max(1, request.ConcurrencyQueueTimeoutSeconds);

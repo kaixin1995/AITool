@@ -43,6 +43,7 @@ export interface AuthStatus {
       simulator: boolean
       protocolDiagnostics: boolean
       sqlMigrations: boolean
+      proxyProfiles?: boolean
     }
   }
 }

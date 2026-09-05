@@ -478,6 +478,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 callContext.TotalDurationMs = streamResult.TotalDurationMs;
                 callContext.HasStartedStreaming = streamResult.HasStartedStreaming;
                 callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
+                callContext.RateLimitRetries = streamResult.RateLimitRetryCount;
                 callContext.IsFinalResult = streamResult.Success || !streamCanFallback;
                 callContext.FallbackTriggered = !streamResult.Success && streamCanFallback;
                 await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
@@ -556,6 +557,7 @@ public sealed class AnthropicProxyController : ControllerBase
             callContext.TotalDurationMs = result.TotalDurationMs;
             callContext.HasStartedStreaming = result.HasStartedStreaming;
             callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
+            callContext.RateLimitRetries = result.RateLimitRetryCount;
             callContext.IsFinalResult = result.Success || !canFallback;
             callContext.FallbackTriggered = !result.Success && canFallback;
             await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);

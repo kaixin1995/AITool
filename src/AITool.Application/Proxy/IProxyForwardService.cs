@@ -152,6 +152,12 @@ public sealed class ProxyForwardResult
     public bool IsStreamInterrupted { get; set; }
 
     /// <summary>
+    /// 本次转发实际执行的 429 速率限制重试次数（连续 429 后退避重发的次数）。
+    /// 供 usage 日志链路展示，验证 RateLimitRetryCount 配置是否真的生效。
+    /// </summary>
+    public int RateLimitRetryCount { get; set; }
+
+    /// <summary>
     /// 标记本次调用是否因客户端主动取消而结束；取消不应触发后续路由回退。
     /// </summary>
     public bool IsCanceled { get; set; }

@@ -96,6 +96,38 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
+    /// 429 重试的默认退避间隔与上限。
+    /// </summary>
+    private static readonly TimeSpan RateLimitRetryDefaultDelay = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan RateLimitRetryMaxDelay = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// 解析 429 重试的退避间隔：优先尊重上游 Retry-After 响应头（秒数或日期，封顶 10 秒），
+    /// 头缺失或非法时回退固定 1.5 秒。零延迟重击已被限流的上游只会继续吃 429 并加重封禁风险。
+    /// </summary>
+    internal static TimeSpan Resolve429RetryDelay(HttpResponseMessage? response)
+    {
+        var retryAfter = response?.Headers?.RetryAfter;
+        if (retryAfter is null)
+        {
+            return RateLimitRetryDefaultDelay;
+        }
+
+        TimeSpan? suggested = retryAfter.Delta;
+        if (suggested is null && retryAfter.Date is { } retryAt)
+        {
+            suggested = retryAt - DateTimeOffset.UtcNow;
+        }
+
+        if (suggested is { } value && value > TimeSpan.Zero)
+        {
+            return value > RateLimitRetryMaxDelay ? RateLimitRetryMaxDelay : value;
+        }
+
+        return RateLimitRetryDefaultDelay;
+    }
+
+    /// <summary>
     /// 构建走指定出口代理的 Handler（连接池参数与主客户端口径一致）。
     /// </summary>
     private static SocketsHttpHandler CreateProxyHandler(string url)
@@ -183,6 +215,8 @@ public sealed class ProxyForwardService : IProxyForwardService
         var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
         var tokenRefreshAttempted = false;
         var rateLimit429Count = 0;
+        // 实际执行的 429 重试次数（不随连续计数归零），用于结果上报与 usage 链路展示。
+        var rateLimit429Retries = 0;
         var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
@@ -250,7 +284,15 @@ public sealed class ProxyForwardService : IProxyForwardService
                         // 阈值 = Max(1, N)：N=0/1 都表示一次 429 即失败；N=3 表示连续 3 次 429 才失败。
                         if (rateLimit429Count < Math.Max(1, request.RateLimitRetryCount))
                         {
+                            rateLimit429Retries++;
                             attempt--;
+                            // 429 退避：零延迟重击已被限流的上游只会继续吃 429 并加重封禁风险。
+                            // 优先尊重上游 Retry-After（封顶 10s），否则固定 1.5s。
+                            var backoff = Resolve429RetryDelay(response);
+                            if (backoff > TimeSpan.Zero)
+                            {
+                                await Task.Delay(backoff, cancellationToken);
+                            }
                             continue;
                         }
 
@@ -261,7 +303,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
-                            ErrorMessage = errorBody
+                            ErrorMessage = errorBody,
+                            RateLimitRetryCount = rateLimit429Retries
                         };
                     }
                     else
@@ -278,7 +321,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
-                            ErrorMessage = errorBody
+                            ErrorMessage = errorBody,
+                            RateLimitRetryCount = rateLimit429Retries
                         };
                     }
                     continue;
@@ -299,6 +343,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                         || streamingResult.HasStartedStreaming
                         || attempt >= attempts - 1)
                     {
+                        streamingResult.RateLimitRetryCount = rateLimit429Retries;
                         return streamingResult;
                     }
 
@@ -338,7 +383,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                         CachedTokens = usage.CachedTokens,
                         OutputTokens = usage.OutputTokens,
                         IsStreaming = false,
-                        TotalDurationMs = totalDurationMs
+                        TotalDurationMs = totalDurationMs,
+                        RateLimitRetryCount = rateLimit429Retries
                     };
                 }
 
@@ -354,7 +400,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                         OutputTokens = usage.OutputTokens,
                         IsStreaming = false,
                         TotalDurationMs = totalDurationMs,
-                        ErrorMessage = BuildFailureMessage(responseBody, request.ProtocolType)
+                        ErrorMessage = BuildFailureMessage(responseBody, request.ProtocolType),
+                        RateLimitRetryCount = rateLimit429Retries
                     };
                 }
             }
@@ -442,6 +489,8 @@ public sealed class ProxyForwardService : IProxyForwardService
         var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
         var tokenRefreshAttempted = false;
         var rateLimit429Count = 0;
+        // 实际执行的 429 重试次数（不随连续计数归零），用于结果上报与 usage 链路展示。
+        var rateLimit429Retries = 0;
         var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
@@ -507,7 +556,15 @@ public sealed class ProxyForwardService : IProxyForwardService
                         // 阈值 = Max(1, N)：N=0/1 都表示一次 429 即失败；N=3 表示连续 3 次 429 才失败。
                         if (rateLimit429Count < Math.Max(1, request.RateLimitRetryCount))
                         {
+                            rateLimit429Retries++;
                             attempt--;
+                            // 429 退避：零延迟重击已被限流的上游只会继续吃 429 并加重封禁风险。
+                            // 优先尊重上游 Retry-After（封顶 10s），否则固定 1.5s。
+                            var backoff = Resolve429RetryDelay(response);
+                            if (backoff > TimeSpan.Zero)
+                            {
+                                await Task.Delay(backoff, cancellationToken);
+                            }
                             continue;
                         }
 
@@ -518,7 +575,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
-                            ErrorMessage = errorBody
+                            ErrorMessage = errorBody,
+                            RateLimitRetryCount = rateLimit429Retries
                         };
                     }
                     else
@@ -535,7 +593,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
-                            ErrorMessage = errorBody
+                            ErrorMessage = errorBody,
+                            RateLimitRetryCount = rateLimit429Retries
                         };
                     }
 
@@ -555,6 +614,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                     || streamingResult.HasStartedStreaming
                     || attempt >= attempts - 1)
                 {
+                    streamingResult.RateLimitRetryCount = rateLimit429Retries;
                     return streamingResult;
                 }
 

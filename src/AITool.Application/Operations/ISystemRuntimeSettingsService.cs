@@ -120,6 +120,11 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool? DeveloperSqlMigrationsEnabled { get; set; }
 
     /// <summary>
+    /// 出口网络代理功能开关（默认关闭；关闭时全链路直连并隐藏代理管理入口）。可空语义同上。
+    /// </summary>
+    public bool? DeveloperProxyProfilesEnabled { get; set; }
+
+    /// <summary>
     /// 控制对话记录页面及记录写入功能是否启用（split 分支）。
     /// </summary>
     public bool ConversationLogEnabled { get; set; }

@@ -131,6 +131,10 @@ public sealed class UsageLogListItemDto
     /// </summary>
     public int RetryCount { get; set; }
     /// <summary>
+    /// 429 速率限制重试次数。
+    /// </summary>
+    public int RateLimitRetries { get; set; }
+    /// <summary>
     /// 尝试序号。
     /// </summary>
     public int AttemptIndex { get; set; }
@@ -201,6 +205,10 @@ public sealed class UsageLogAttemptDto
     /// 尝试序号。
     /// </summary>
     public int AttemptIndex { get; set; }
+    /// <summary>
+    /// 本次尝试内部因 429 速率限制实际重试的次数。
+    /// </summary>
+    public int RateLimitRetries { get; set; }
     /// <summary>
     /// 尝试调用的模型名称。
     /// </summary>
@@ -452,6 +460,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 SiteName = sites.TryGetValue(x.TargetSiteId, out var siteName) ? siteName : "-",
                 AccessKeyName = accessKeyNames.TryGetValue(x.AccessKeyId, out var keyName) ? keyName : "-",
                 RetryCount = x.RetryCount,
+                RateLimitRetries = x.RateLimitRetries,
                 AttemptIndex = x.AttemptIndex,
                 IsFinalResult = x.IsFinalResult,
                 FallbackTriggered = x.FallbackTriggered,
@@ -537,6 +546,7 @@ public sealed class UsageLogsApiController : ControllerBase
                     StreamDurationMs = x.StreamDurationMs,
                     TotalDurationMs = x.TotalDurationMs,
                     ReasoningEffort = x.ReasoningEffort,
+                    RateLimitRetries = x.RateLimitRetries,
                     RequestedAt = x.RequestedAt
                 })
                 .ToList()

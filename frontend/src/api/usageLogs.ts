@@ -18,6 +18,8 @@ export interface UsageLogItem {
   siteName: string
   accessKeyName: string
   retryCount: number
+  /** 本次转发内部因 429 速率限制实际重试的次数 */
+  rateLimitRetries: number
   attemptIndex: number
   isFinalResult: boolean
   fallbackTriggered: boolean

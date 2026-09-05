@@ -553,6 +553,11 @@ public sealed class CoreRuntimeSettings
     /// SQL 迁移页开关。
     /// </summary>
     public bool DeveloperSqlMigrationsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 出口网络代理功能开关（关闭时 Core 转发一律直连，不解析代理池与站点代理字段）。
+    /// </summary>
+    public bool DeveloperProxyProfilesEnabled { get; set; }
 }
 
 /// <summary>

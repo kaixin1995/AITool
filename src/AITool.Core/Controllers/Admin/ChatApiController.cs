@@ -542,6 +542,7 @@ public sealed class ChatApiController : ControllerBase
                     Success = forwardResult.Success,
                     ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
                     RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
+                    RateLimitRetries = forwardResult.RateLimitRetryCount,
                     AttemptIndex = attemptIndex,
                     IsFinalResult = forwardResult.Success,
                     FallbackTriggered = !forwardResult.Success,

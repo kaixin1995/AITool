@@ -65,6 +65,7 @@ const form = reactive<SystemSettings>({
   developerSimulatorEnabled: true,
   developerProtocolDiagnosticsEnabled: true,
   developerSqlMigrationsEnabled: true,
+  developerProxyProfilesEnabled: false,
   concurrencyMode: 0,
   concurrencyQueueTimeoutSeconds: 120,
   oauthFeaturesEnabled: false,
@@ -237,6 +238,7 @@ onMounted(loadSettings)
               <label class="switch-line"><NSwitch v-model:value="form.developerSimulatorEnabled" /><span class="form-label-tip">请求模拟器<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能，无后台开销；关闭仅隐藏入口。</NTooltip></span></label>
               <label class="switch-line"><NSwitch v-model:value="form.developerProtocolDiagnosticsEnabled" /><span class="form-label-tip">协议诊断与 AI 自愈<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能；关闭隐藏入口并禁用相关 API。</NTooltip></span></label>
               <label class="switch-line"><NSwitch v-model:value="form.developerSqlMigrationsEnabled" /><span class="form-label-tip">SQL 迁移<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能；关闭隐藏入口并禁用脚本执行，减少常开的管理面。</NTooltip></span></label>
+              <label class="settings-switch-inline"><NSwitch v-model:value="form.developerProxyProfilesEnabled" /><span class="form-label-tip">网络代理池<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>默认关闭。开启后显示出口代理池管理，并可在站点/映射中绑定出口代理；关闭时全链路直连（已有代理数据保留，重新开启即恢复）。</NTooltip></span></label>
             </div>
             <label class="switch-line"><NSwitch v-model:value="form.oauthFeaturesEnabled" /><span class="form-label-tip">启用 OAuth 账号功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>总开关，控制 OAuth 账号、凭证导入、额度与巡检功能。</NTooltip></span></label>
           </div>

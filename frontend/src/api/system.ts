@@ -18,6 +18,7 @@ export interface SystemSettings {
   developerSimulatorEnabled: boolean
   developerProtocolDiagnosticsEnabled: boolean
   developerSqlMigrationsEnabled: boolean
+  developerProxyProfilesEnabled: boolean
   concurrencyMode: number
   concurrencyQueueTimeoutSeconds: number
   oauthFeaturesEnabled: boolean

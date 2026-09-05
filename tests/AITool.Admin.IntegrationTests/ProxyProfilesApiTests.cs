@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using AITool.Domain.Operations;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
@@ -147,6 +148,22 @@ file sealed class ProxyProfilesWebApplicationFactory : WebApplicationFactory<AIT
             });
             services.AddSingleton<SemaphoreSlim>(_ => new SemaphoreSlim(1, 1));
             services.AddScoped<AppDbContext>();
+        });
+    }
+
+    protected override void ConfigureClient(HttpClient client)
+    {
+        base.ConfigureClient(client);
+        // 网络代理池默认关闭：本组测试聚焦 API 行为本身，需显式开启。
+        using var scope = Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        SqlSugarSetup.InitializeDatabase(db.Client);
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
+        db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        {
+            Id = 1,
+            DeveloperFeaturesEnabled = true,
+            DeveloperProxyProfilesEnabled = true
         });
     }
 

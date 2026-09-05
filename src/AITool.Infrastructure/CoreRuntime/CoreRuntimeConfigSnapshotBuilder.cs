@@ -223,7 +223,8 @@ public static class CoreRuntimeConfigSnapshotBuilder
                 DeveloperFailureDumpEnabled = runtimeSettings.DeveloperFailureDumpEnabled,
                 DeveloperSimulatorEnabled = runtimeSettings.DeveloperSimulatorEnabled,
                 DeveloperProtocolDiagnosticsEnabled = runtimeSettings.DeveloperProtocolDiagnosticsEnabled,
-                DeveloperSqlMigrationsEnabled = runtimeSettings.DeveloperSqlMigrationsEnabled
+                DeveloperSqlMigrationsEnabled = runtimeSettings.DeveloperSqlMigrationsEnabled,
+                DeveloperProxyProfilesEnabled = runtimeSettings.DeveloperProxyProfilesEnabled
             }
         };
 

@@ -303,7 +303,8 @@ public sealed partial class ProxyRequestMetadataCache
                                 DeveloperFailureDumpEnabled = s.DeveloperFailureDumpEnabled,
                                 DeveloperSimulatorEnabled = s.DeveloperSimulatorEnabled,
                                 DeveloperProtocolDiagnosticsEnabled = s.DeveloperProtocolDiagnosticsEnabled,
-                                DeveloperSqlMigrationsEnabled = s.DeveloperSqlMigrationsEnabled
+                                DeveloperSqlMigrationsEnabled = s.DeveloperSqlMigrationsEnabled,
+                                DeveloperProxyProfilesEnabled = s.DeveloperProxyProfilesEnabled
                             });
                     })
                 ?? new CachedProxyRuntimeSettings();
@@ -342,6 +343,7 @@ public sealed partial class ProxyRequestMetadataCache
                             DeveloperSimulatorEnabled = settings.DeveloperSimulatorEnabled,
                             DeveloperProtocolDiagnosticsEnabled = settings.DeveloperProtocolDiagnosticsEnabled,
                             DeveloperSqlMigrationsEnabled = settings.DeveloperSqlMigrationsEnabled,
+                            DeveloperProxyProfilesEnabled = settings.DeveloperProxyProfilesEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
                             ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
                             OAuthFeaturesEnabled = settings.OAuthFeaturesEnabled,
@@ -914,9 +916,12 @@ public sealed partial class ProxyRequestMetadataCache
                         var headerProfileMap = (IReadOnlyDictionary<string, Dictionary<string, string>>?)(snapshot.HeaderProfiles ?? [])
                             .GroupBy(h => h.Key, StringComparer.OrdinalIgnoreCase)
                             .ToDictionary(g => g.Key, g => TryParseExtraHeaders(g.First().HeadersJson), StringComparer.OrdinalIgnoreCase);
-                        var proxyMap = (snapshot.ProxyProfiles ?? [])
-                            .GroupBy(pp => pp.Key, StringComparer.OrdinalIgnoreCase)
-                            .ToDictionary(g => g.Key, g => g.First().ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                        var proxyFeatureEnabled = snapshot.RuntimeSettings?.DeveloperProxyProfilesEnabled ?? true;
+                        var proxyMap = proxyFeatureEnabled
+                            ? (snapshot.ProxyProfiles ?? [])
+                                .GroupBy(pp => pp.Key, StringComparer.OrdinalIgnoreCase)
+                                .ToDictionary(g => g.Key, g => g.First().ProxyUrl, StringComparer.OrdinalIgnoreCase)
+                            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                         var googleProjectsBySite = (snapshot.AccountCredentials ?? [])
                             .Where(a => string.Equals(a.Provider, "Google", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(a.ProjectId))
                             .GroupBy(a => a.LinkedSiteId)
@@ -961,7 +966,9 @@ public sealed partial class ProxyRequestMetadataCache
                             snapshotModelsByName.TryGetValue(rule.UpstreamModelName, out var modelForEmulation);
                             var clientEmulation = ResolveClientEmulation(mapping?.ClientEmulation, modelForEmulation?.ClientEmulation, site.ClientEmulation);
                             var extraHeaders = BuildEffectiveExtraHeaders(clientEmulation, headerProfileMap, site.ExtraHeadersJson, modelForEmulation?.ExtraHeadersJson, mapping?.ExtraHeadersJson);
-                            var egressProxyUrl = ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap);
+                            var egressProxyUrl = proxyFeatureEnabled
+                                ? ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap)
+                                : null;
 
                             foreach (var candidate in candidates)
                             {
@@ -1050,11 +1057,15 @@ public sealed partial class ProxyRequestMetadataCache
                         p => p.Id,
                         p => ParseCompatibilityRules(p.RulesJson));
 
-                    var proxyProfiles = await dbContext.ProxyProfiles
-                        .Where(p => p.IsEnabled)
-                        .ToListAsync(cancellationToken);
-                    var proxyMap = proxyProfiles
-                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var proxyFeatureEnabled = (await GetRuntimeSettingsAsync(cancellationToken)).DeveloperProxyProfilesEnabled;
+                    var proxyProfiles = proxyFeatureEnabled
+                        ? await dbContext.ProxyProfiles
+                            .Where(p => p.IsEnabled)
+                            .ToListAsync(cancellationToken)
+                        : [];
+                    var proxyMap = proxyFeatureEnabled
+                        ? proxyProfiles.ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase)
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var headerProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     // 基础路由投影（每条 route × site × model 一条），不含 Key 维度。
@@ -1092,7 +1103,9 @@ public sealed partial class ProxyRequestMetadataCache
 
                         var clientEmulation = ResolveClientEmulation(mapping?.ClientEmulation, model?.ClientEmulation, site.ClientEmulation);
                         var extraHeaders = BuildEffectiveExtraHeaders(clientEmulation, headerProfileMap, site.ExtraHeadersJson, model?.ExtraHeadersJson, mapping?.ExtraHeadersJson);
-                        var egressProxyUrl = ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap);
+                        var egressProxyUrl = proxyFeatureEnabled
+                            ? ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap)
+                            : null;
                         // 思考等级优先级：站点映射 > 模型库 > 透传（均为空则透传客户端原始值）。
                         var overrideReasoningEffort = !string.IsNullOrWhiteSpace(mapping?.OverrideReasoningEffort)
                             ? mapping!.OverrideReasoningEffort!.Trim()
@@ -1282,15 +1295,20 @@ public sealed partial class ProxyRequestMetadataCache
                                 var fallbackHeaderProfileMap = (IReadOnlyDictionary<string, Dictionary<string, string>>?)(snapshot.HeaderProfiles ?? [])
                                     .GroupBy(h => h.Key, StringComparer.OrdinalIgnoreCase)
                                     .ToDictionary(g => g.Key, g => TryParseExtraHeaders(g.First().HeadersJson), StringComparer.OrdinalIgnoreCase);
-                                var fallbackProxyMap = (snapshot.ProxyProfiles ?? [])
-                                    .GroupBy(pp => pp.Key, StringComparer.OrdinalIgnoreCase)
-                                    .ToDictionary(g => g.Key, g => g.First().ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                                var fallbackProxyFeatureEnabled = snapshot.RuntimeSettings?.DeveloperProxyProfilesEnabled ?? true;
+                                var fallbackProxyMap = fallbackProxyFeatureEnabled
+                                    ? (snapshot.ProxyProfiles ?? [])
+                                        .GroupBy(pp => pp.Key, StringComparer.OrdinalIgnoreCase)
+                                        .ToDictionary(g => g.Key, g => g.First().ProxyUrl, StringComparer.OrdinalIgnoreCase)
+                                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                                 var fallbackGoogleProjects = (snapshot.AccountCredentials ?? [])
                                     .Where(a => string.Equals(a.Provider, "Google", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(a.ProjectId))
                                     .GroupBy(a => a.LinkedSiteId)
                                     .ToDictionary(g => g.Key, g => g.First().ProjectId!);
                                 var fallbackHeaders = BuildEffectiveExtraHeaders(fallbackEmulation, fallbackHeaderProfileMap, first.site.ExtraHeadersJson, first.ModelExtraHeadersJson, first.ExtraHeadersJson);
-                                var fallbackEgressProxy = ResolveEgressProxyUrl(first.EgressProxyUrl, first.site.EgressProxyUrl, fallbackProxyMap);
+                                var fallbackEgressProxy = fallbackProxyFeatureEnabled
+                                    ? ResolveEgressProxyUrl(first.EgressProxyUrl, first.site.EgressProxyUrl, fallbackProxyMap)
+                                    : null;
                                 return candidates.Select(candidate => new CachedFallbackTarget
                                 {
                                     ModelId = grouped.Key,
@@ -1348,11 +1366,15 @@ public sealed partial class ProxyRequestMetadataCache
                         .GroupBy(a => a.LinkedSiteId)
                         .ToDictionary(g => g.Key, g => g.First().ProjectId!);
 
-                    var proxyProfiles = await dbContext.ProxyProfiles
-                        .Where(p => p.IsEnabled)
-                        .ToListAsync(cancellationToken);
-                    var proxyMap = proxyProfiles
-                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var proxyFeatureEnabled = (await GetRuntimeSettingsAsync(cancellationToken)).DeveloperProxyProfilesEnabled;
+                    var proxyProfiles = proxyFeatureEnabled
+                        ? await dbContext.ProxyProfiles
+                            .Where(p => p.IsEnabled)
+                            .ToListAsync(cancellationToken)
+                        : [];
+                    var proxyMap = proxyFeatureEnabled
+                        ? proxyProfiles.ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase)
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var fallbackHeaderProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     var rawMappings = (
@@ -1415,7 +1437,9 @@ public sealed partial class ProxyRequestMetadataCache
                                 SiteModelName = first.SiteModelName,
                                 ExtraHeaders = BuildEffectiveExtraHeaders(fallbackEmulation, fallbackHeaderProfileMap, first.SiteExtraHeadersJson, first.ModelExtraHeadersJson, first.MappingExtraHeadersJson),
                                 ClientEmulation = fallbackEmulation,
-                                EgressProxyUrl = ResolveEgressProxyUrl(first.MappingEgressProxyUrl, first.SiteEgressProxyUrl, proxyMap),
+                                EgressProxyUrl = proxyFeatureEnabled
+                                    ? ResolveEgressProxyUrl(first.MappingEgressProxyUrl, first.SiteEgressProxyUrl, proxyMap)
+                                    : null,
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(first.SiteId, out var fallbackGoogleProject) ? fallbackGoogleProject : string.Empty
                             });
                         })
@@ -1915,6 +1939,10 @@ public sealed class CachedProxyRuntimeSettings
     /// SQL 迁移页开关。
     /// </summary>
     public bool DeveloperSqlMigrationsEnabled { get; set; } = true;
+    /// <summary>
+    /// 出口网络代理功能开关（热路径读取：关闭时转发一律直连，不解析代理池与站点代理字段）。
+    /// </summary>
+    public bool DeveloperProxyProfilesEnabled { get; set; }
     /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>

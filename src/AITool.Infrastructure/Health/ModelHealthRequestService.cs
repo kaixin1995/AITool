@@ -145,6 +145,7 @@ public sealed class ModelHealthRequestService
             Status = status,
             Source = source,
             RetryCount = 0,
+            RateLimitRetries = forwardResult.RateLimitRetryCount,
             AttemptIndex = 1,
             IsFinalResult = true,
             FallbackTriggered = false,
