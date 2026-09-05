@@ -398,3 +398,4 @@ FodyWeavers.xsd
 /src/AITool.Web/wwwroot/assets/
 /src/AITool.Web/wwwroot/index.html
 src/AITool.Admin/wwwroot/
+.zcode/tmp/
