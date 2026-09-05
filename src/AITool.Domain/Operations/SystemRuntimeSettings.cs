@@ -104,6 +104,14 @@ public sealed class SystemRuntimeSettings
     public bool DeveloperSqlMigrationsEnabled { get; set; } = true;
 
     /// <summary>
+    /// 出口网络代理功能开关。默认关闭（不使用代理池时全链路直连）。
+    /// 关闭后：网络代理池页与站点/映射的出口代理字段隐藏、相关 API 返回 404，
+    /// 转发链路一律直连（不加载、不解析、不创建代理客户端）；
+    /// 已有代理配置数据保留，重新开启即恢复。
+    /// </summary>
+    public bool DeveloperProxyProfilesEnabled { get; set; }
+
+    /// <summary>
     /// 并发打满时的处理策略。
     /// 0 = SkipOnFull：跳到下一顺位模型；
     /// 1 = WaitForSlot：排队等待直到释放或超时。

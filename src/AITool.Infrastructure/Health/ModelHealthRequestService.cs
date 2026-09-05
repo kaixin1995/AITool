@@ -118,15 +118,20 @@ public sealed class ModelHealthRequestService
         MergeHeadersJson(extraHeaders, model.ExtraHeadersJson);
         MergeHeadersJson(extraHeaders, mapping.ExtraHeadersJson);
 
-        var effectiveProxyRaw = !string.IsNullOrWhiteSpace(mapping.EgressProxyUrl) ? mapping.EgressProxyUrl.Trim() : site.EgressProxyUrl;
-        string? effectiveProxyUrl = null;
-        if (!string.IsNullOrWhiteSpace(effectiveProxyRaw) &&
-            !string.Equals(effectiveProxyRaw, "None", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(effectiveProxyRaw, "direct", StringComparison.OrdinalIgnoreCase))
-        {
-            var profile = await _dbContext.ProxyProfiles.FirstAsync(p => p.Key == effectiveProxyRaw && p.IsEnabled, cancellationToken);
-            effectiveProxyUrl = profile != null ? profile.ProxyUrl : effectiveProxyRaw;
-        }
+        // 出口网络代理功能关闭时检测探测同样直连（与转发热路径同口径）：
+// 不解析站点/映射的代理字段，不查代理池，不创建代理客户端。
+string? effectiveProxyUrl = null;
+if (runtimeSettings.DeveloperProxyProfilesEnabled)
+{
+    var effectiveProxyRaw = !string.IsNullOrWhiteSpace(mapping.EgressProxyUrl) ? mapping.EgressProxyUrl.Trim() : site.EgressProxyUrl;
+    if (!string.IsNullOrWhiteSpace(effectiveProxyRaw) &&
+        !string.Equals(effectiveProxyRaw, "None", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(effectiveProxyRaw, "direct", StringComparison.OrdinalIgnoreCase))
+    {
+        var profile = await _dbContext.ProxyProfiles.FirstAsync(p => p.Key == effectiveProxyRaw && p.IsEnabled, cancellationToken);
+        effectiveProxyUrl = profile != null ? profile.ProxyUrl : effectiveProxyRaw;
+    }
+}
 
         var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
             effectiveEmulation,
@@ -176,6 +181,7 @@ public sealed class ModelHealthRequestService
             Status = status,
             Source = source,
             RetryCount = 0,
+            RateLimitRetries = forwardResult.RateLimitRetryCount,
             AttemptIndex = 1,
             IsFinalResult = true,
             FallbackTriggered = false,

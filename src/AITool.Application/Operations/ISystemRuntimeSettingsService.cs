@@ -89,29 +89,34 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
-    /// 调用追踪开关（开发者总闸开启时生效）。
+    /// 调用追踪开关（开发者总闸开启时生效）。可空：请求中缺失（如旧客户端部分回写）表示保持现值。
     /// </summary>
-    public bool DeveloperTraceEnabled { get; set; } = true;
+    public bool? DeveloperTraceEnabled { get; set; }
 
     /// <summary>
-    /// 诊断抓包开关（开发者总闸开启时生效）。
+    /// 诊断抓包开关（开发者总闸开启时生效）。可空语义同上。
     /// </summary>
-    public bool DeveloperFailureDumpEnabled { get; set; } = true;
+    public bool? DeveloperFailureDumpEnabled { get; set; }
 
     /// <summary>
-    /// 请求模拟器页开关。
+    /// 请求模拟器页开关。可空语义同上。
     /// </summary>
-    public bool DeveloperSimulatorEnabled { get; set; } = true;
+    public bool? DeveloperSimulatorEnabled { get; set; }
 
     /// <summary>
-    /// 协议诊断与 AI 自愈页开关。
+    /// 协议诊断与 AI 自愈页开关。可空语义同上。
     /// </summary>
-    public bool DeveloperProtocolDiagnosticsEnabled { get; set; } = true;
+    public bool? DeveloperProtocolDiagnosticsEnabled { get; set; }
 
     /// <summary>
-    /// SQL 迁移页开关。
+    /// SQL 迁移页开关。可空语义同上。
     /// </summary>
-    public bool DeveloperSqlMigrationsEnabled { get; set; } = true;
+    public bool? DeveloperSqlMigrationsEnabled { get; set; }
+
+    /// <summary>
+    /// 出口网络代理功能开关（默认关闭；关闭时全链路直连并隐藏代理管理入口）。可空语义同上。
+    /// </summary>
+    public bool? DeveloperProxyProfilesEnabled { get; set; }
 
     /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。

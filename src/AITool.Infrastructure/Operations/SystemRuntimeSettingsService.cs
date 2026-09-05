@@ -70,11 +70,14 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.UsageLogRetentionDays = Math.Max(1, request.UsageLogRetentionDays);
         settings.UsageLogAutoCleanupEnabled = request.UsageLogAutoCleanupEnabled;
         settings.DeveloperFeaturesEnabled = request.DeveloperFeaturesEnabled;
-        settings.DeveloperTraceEnabled = request.DeveloperTraceEnabled;
-        settings.DeveloperFailureDumpEnabled = request.DeveloperFailureDumpEnabled;
-        settings.DeveloperSimulatorEnabled = request.DeveloperSimulatorEnabled;
-        settings.DeveloperProtocolDiagnosticsEnabled = request.DeveloperProtocolDiagnosticsEnabled;
-        settings.DeveloperSqlMigrationsEnabled = request.DeveloperSqlMigrationsEnabled;
+        // 分页开关用可空语义：请求缺失（旧客户端部分回写，如桌面端模型未含新字段）时保持现值，
+        // 避免保存动作意外把用户已关闭的功能重置为默认开。
+        settings.DeveloperTraceEnabled = request.DeveloperTraceEnabled ?? settings.DeveloperTraceEnabled;
+        settings.DeveloperFailureDumpEnabled = request.DeveloperFailureDumpEnabled ?? settings.DeveloperFailureDumpEnabled;
+        settings.DeveloperSimulatorEnabled = request.DeveloperSimulatorEnabled ?? settings.DeveloperSimulatorEnabled;
+        settings.DeveloperProtocolDiagnosticsEnabled = request.DeveloperProtocolDiagnosticsEnabled ?? settings.DeveloperProtocolDiagnosticsEnabled;
+        settings.DeveloperSqlMigrationsEnabled = request.DeveloperSqlMigrationsEnabled ?? settings.DeveloperSqlMigrationsEnabled;
+        settings.DeveloperProxyProfilesEnabled = request.DeveloperProxyProfilesEnabled ?? settings.DeveloperProxyProfilesEnabled;
         settings.ConcurrencyMode = Math.Max(0, Math.Min(1, request.ConcurrencyMode));
         settings.ConcurrencyQueueTimeoutSeconds = Math.Max(1, request.ConcurrencyQueueTimeoutSeconds);
 

@@ -225,6 +225,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             Status = entry.Status,
             Source = entry.Source,
             RetryCount = entry.RetryCount,
+            RateLimitRetries = entry.RateLimitRetries,
             AttemptIndex = entry.AttemptIndex,
             IsFinalResult = entry.IsFinalResult,
             FallbackTriggered = entry.FallbackTriggered,

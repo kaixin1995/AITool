@@ -79,7 +79,8 @@ public sealed class AuthApiController : ControllerBase
                     diagnosticDumps = settings.DeveloperFailureDumpEnabled,
                     simulator = settings.DeveloperSimulatorEnabled,
                     protocolDiagnostics = settings.DeveloperProtocolDiagnosticsEnabled,
-                    sqlMigrations = settings.DeveloperSqlMigrationsEnabled
+                    sqlMigrations = settings.DeveloperSqlMigrationsEnabled,
+                    proxyProfiles = settings.DeveloperProxyProfilesEnabled
                 }
             }
         };

@@ -5,12 +5,13 @@ import {
   NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput,
   NSwitch, NPopconfirm, NSelect, NCheckbox, NProgress, NInputNumber, NDropdown, NTooltip,
   NTabs, NTabPane, NBadge,
-  useMessage, useDialog, type DataTableColumns
+  useMessage, useDialog, type DataTableColumn, type DataTableColumns
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as sitesApi from '@/api/sites'
 import type { ModelSelectionItem, SiteFetchResult, SiteListItem, SitePayload } from '@/api/sites'
 import { getProxyProfiles, type ProxyProfile } from '@/api/proxyProfiles'
+import { useAuthStore } from '@/stores/auth'
 import {
   buildSelectedSitesExportJson,
   parseSitesImportText,
@@ -22,12 +23,16 @@ import {
 const message = useMessage()
 const dialog = useDialog()
 const route = useRoute()
+const auth = useAuthStore()
+// 网络代理功能开关（登录态接口 features.developerTabs.proxyProfiles；旧后端无此字段时视为开启）。
+const proxyFeatureEnabled = computed(() => auth.status?.features?.developerTabs?.proxyProfiles ?? true)
 const loading = ref(false)
 const sites = ref<SiteListItem[]>([])
 const checkedRowKeys = ref<Array<string | number>>([])
 const proxyProfiles = ref<ProxyProfile[]>([])
 
 async function loadProxyProfiles(): Promise<void> {
+  if (!proxyFeatureEnabled.value) return
   try {
     proxyProfiles.value = await getProxyProfiles()
   } catch {}
@@ -751,6 +756,27 @@ function formatDateTime(value: string): string {
   return `${year}/${month}/${day} ${hours}:${minutes}`
 }
 
+// 网络代理功能关闭时不渲染出口代理列。
+const proxyColumn: DataTableColumn<SiteListItem> = {
+  title: '出口代理',
+  key: 'egressProxyUrl',
+  width: 90,
+  align: 'center',
+  render: (row) => {
+    if (row.egressProxyUrl) {
+      return h(
+        NTooltip,
+        null,
+        {
+          trigger: () => h(NTag, { size: 'small', type: 'info', bordered: false }, () => '🛡️ 代理'),
+          default: () => `出口代理: ${row.egressProxyUrl}`
+        }
+      )
+    }
+    return h('span', { style: 'color: var(--text-tertiary)' }, '-')
+  }
+}
+
 const columns = computed<DataTableColumns<SiteListItem>>(() => [
   { type: 'selection', width: 40 },
   { title: '名称', key: 'name', width: 120, ellipsis: { tooltip: true }, render: (row) => h('strong', row.name) },
@@ -843,25 +869,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
       return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => items)
     }
   },
-  {
-    title: '出口代理',
-    key: 'egressProxyUrl',
-    width: 90,
-    align: 'center',
-    render: (row) => {
-      if (row.egressProxyUrl) {
-        return h(
-          NTooltip,
-          null,
-          {
-            trigger: () => h(NTag, { size: 'small', type: 'info', bordered: false }, () => '🛡️ 代理'),
-            default: () => `出口代理: ${row.egressProxyUrl}`
-          }
-        )
-      }
-      return h('span', { style: 'color: var(--text-tertiary)' }, '-')
-    }
-  },
+  ...(proxyFeatureEnabled.value ? [proxyColumn] : []),
   {
     title: '状态',
     key: 'isEnabled',
@@ -1019,7 +1027,7 @@ onBeforeUnmount(handleCatalogClosed)
 
 
 
-        <NFormItem>
+        <NFormItem v-if="proxyFeatureEnabled">
           <template #label>
             <NSpace align="center" :size="4">
               <span>站点出口网络代理 (Egress Proxy)</span>

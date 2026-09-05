@@ -609,6 +609,9 @@ onUnmounted(() => {
               <div class="detail-line">时间：{{ formatDateTime(attempt.requestedAt) }}</div>
               <div class="detail-line">思考等级：{{ attempt.reasoningEffort || '-' }}</div>
               <div class="detail-line">Tokens：{{ formatNumber(attempt.totalTokens) }}</div>
+              <div v-if="attempt.rateLimitRetries > 0" class="detail-line" style="color: var(--warning-color, #e6a700);">
+                429 重试：{{ attempt.rateLimitRetries }} 次（已按退避间隔重发）
+              </div>
               <div class="detail-line">错误：{{ attempt.errorMessage || '-' }}</div>
             </NCard>
           </div>

@@ -544,6 +544,7 @@ public sealed class ChatApiController : ControllerBase
                     Status = forwardResult.Success ? "success" : "fail",
                     Source = "chat",
                     RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
+                    RateLimitRetries = forwardResult.RateLimitRetryCount,
                     AttemptIndex = attemptIndex,
                     IsFinalResult = forwardResult.Success || !canFallback,
                     FallbackTriggered = canFallback,

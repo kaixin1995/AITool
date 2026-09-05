@@ -290,6 +290,7 @@ public sealed class ProxyRequestMetadataCache
                             DeveloperSimulatorEnabled = settings.DeveloperSimulatorEnabled,
                             DeveloperProtocolDiagnosticsEnabled = settings.DeveloperProtocolDiagnosticsEnabled,
                             DeveloperSqlMigrationsEnabled = settings.DeveloperSqlMigrationsEnabled,
+                            DeveloperProxyProfilesEnabled = settings.DeveloperProxyProfilesEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
                             ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
                             OAuthFeaturesEnabled = settings.OAuthFeaturesEnabled,
@@ -433,11 +434,15 @@ public sealed class ProxyRequestMetadataCache
                         .GroupBy(a => a.LinkedSiteId)
                         .ToDictionary(g => g.Key, g => g.First().ProjectId!);
 
-                    var proxyProfiles = await dbContext.ProxyProfiles
-                        .Where(p => p.IsEnabled)
-                        .ToListAsync(cancellationToken);
-                    var proxyMap = proxyProfiles
-                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var proxyFeatureEnabled = (await GetRuntimeSettingsAsync(cancellationToken)).DeveloperProxyProfilesEnabled;
+                    var proxyProfiles = proxyFeatureEnabled
+                        ? await dbContext.ProxyProfiles
+                            .Where(p => p.IsEnabled)
+                            .ToListAsync(cancellationToken)
+                        : [];
+                    var proxyMap = proxyFeatureEnabled
+                        ? proxyProfiles.ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase)
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var headerProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     var baseChatTargets = (
@@ -479,7 +484,9 @@ public sealed class ProxyRequestMetadataCache
                                 SiteModelName = mapping.RemoteModelName,
                                 ExtraHeaders = BuildEffectiveExtraHeaders(chatEmulation, headerProfileMap, site.ExtraHeadersJson, model.ExtraHeadersJson, mapping.ExtraHeadersJson),
                                 ClientEmulation = chatEmulation,
-                                EgressProxyUrl = ResolveEgressProxyUrl(mapping.EgressProxyUrl, site.EgressProxyUrl, proxyMap),
+                                EgressProxyUrl = proxyFeatureEnabled
+                                    ? ResolveEgressProxyUrl(mapping.EgressProxyUrl, site.EgressProxyUrl, proxyMap)
+                                    : null,
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var chatGoogleProject) ? chatGoogleProject : string.Empty
                             });
                         }
@@ -1387,11 +1394,15 @@ public sealed class ProxyRequestMetadataCache
                         p => p.Id,
                         p => ParseCompatibilityRules(p.RulesJson));
 
-                    var proxyProfiles = await dbContext.ProxyProfiles
-                        .Where(p => p.IsEnabled)
-                        .ToListAsync(cancellationToken);
-                    var proxyMap = proxyProfiles
-                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var proxyFeatureEnabled = (await GetRuntimeSettingsAsync(cancellationToken)).DeveloperProxyProfilesEnabled;
+                    var proxyProfiles = proxyFeatureEnabled
+                        ? await dbContext.ProxyProfiles
+                            .Where(p => p.IsEnabled)
+                            .ToListAsync(cancellationToken)
+                        : [];
+                    var proxyMap = proxyFeatureEnabled
+                        ? proxyProfiles.ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase)
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var headerProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     // 基础路由投影（每条 route × site × model 一条），不含 Key 维度。
@@ -1429,7 +1440,9 @@ public sealed class ProxyRequestMetadataCache
 
                         var clientEmulation = ResolveClientEmulation(mapping?.ClientEmulation, model?.ClientEmulation, site.ClientEmulation);
                         var extraHeaders = BuildEffectiveExtraHeaders(clientEmulation, headerProfileMap, site.ExtraHeadersJson, model?.ExtraHeadersJson, mapping?.ExtraHeadersJson);
-                        var egressProxyUrl = ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap);
+                        var egressProxyUrl = proxyFeatureEnabled
+                            ? ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap)
+                            : null;
                         // 思考等级优先级：站点映射 > 模型库 > 透传（均为空则透传客户端原始值）。
                         var overrideReasoningEffort = !string.IsNullOrWhiteSpace(mapping?.OverrideReasoningEffort)
                             ? mapping!.OverrideReasoningEffort!.Trim()
@@ -1539,11 +1552,15 @@ public sealed class ProxyRequestMetadataCache
                         .GroupBy(a => a.LinkedSiteId)
                         .ToDictionary(g => g.Key, g => g.First().ProjectId!);
 
-                    var proxyProfiles = await dbContext.ProxyProfiles
-                        .Where(p => p.IsEnabled)
-                        .ToListAsync(cancellationToken);
-                    var proxyMap = proxyProfiles
-                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var proxyFeatureEnabled = (await GetRuntimeSettingsAsync(cancellationToken)).DeveloperProxyProfilesEnabled;
+                    var proxyProfiles = proxyFeatureEnabled
+                        ? await dbContext.ProxyProfiles
+                            .Where(p => p.IsEnabled)
+                            .ToListAsync(cancellationToken)
+                        : [];
+                    var proxyMap = proxyFeatureEnabled
+                        ? proxyProfiles.ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase)
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var fallbackHeaderProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     var rawMappings = (
@@ -1606,7 +1623,9 @@ public sealed class ProxyRequestMetadataCache
                                 SiteModelName = first.SiteModelName,
                                 ExtraHeaders = BuildEffectiveExtraHeaders(fallbackEmulation, fallbackHeaderProfileMap, first.SiteExtraHeadersJson, first.ModelExtraHeadersJson, first.MappingExtraHeadersJson),
                                 ClientEmulation = fallbackEmulation,
-                                EgressProxyUrl = ResolveEgressProxyUrl(first.MappingEgressProxyUrl, first.SiteEgressProxyUrl, proxyMap),
+                                EgressProxyUrl = proxyFeatureEnabled
+                                    ? ResolveEgressProxyUrl(first.MappingEgressProxyUrl, first.SiteEgressProxyUrl, proxyMap)
+                                    : null,
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(first.SiteId, out var fallbackGoogleProject) ? fallbackGoogleProject : string.Empty
                             });
                         })
@@ -2106,6 +2125,10 @@ public sealed class CachedProxyRuntimeSettings
     /// SQL 迁移页开关。
     /// </summary>
     public bool DeveloperSqlMigrationsEnabled { get; set; } = true;
+    /// <summary>
+    /// 出口网络代理功能开关（热路径读取：关闭时转发一律直连，不解析代理池与站点代理字段）。
+    /// </summary>
+    public bool DeveloperProxyProfilesEnabled { get; set; }
     /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>

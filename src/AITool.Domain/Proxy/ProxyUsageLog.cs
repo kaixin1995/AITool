@@ -76,6 +76,12 @@ public sealed class ProxyUsageLog
     public int RetryCount { get; set; }
 
     /// <summary>
+    /// 本次转发内部因 429 速率限制实际重试的次数（退避后重发的次数），
+    /// 是 RateLimitRetryCount 配置是否生效的直观证据。
+    /// </summary>
+    public int RateLimitRetries { get; set; }
+
+    /// <summary>
     /// 当前记录对应第几次尝试，用于还原重试顺序和排查链路过程。
     /// </summary>
     public int AttemptIndex { get; set; }

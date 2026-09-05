@@ -100,6 +100,75 @@ public sealed class RateLimitRetryTests
         handler.CallCount.Should().Be(2, "429 预算耗尽立即失败顺位下一候选：N=2 恰好 2 次调用，不消耗通用重试预算");
     }
 
+    [Fact]
+    public async Task RateLimit_retry_waits_backoff_delay_between_attempts()
+    {
+        // Retry-After: 1 → 每次重试前等待 1 秒；两次 429 重试后成功，总耗时至少 ~2 秒。
+        var service = CreateService(Seq(
+            _ => WithRetryAfter(Json(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}"), 1),
+            _ => WithRetryAfter(Json(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}"), 1),
+            _ => Json(HttpStatusCode.OK, SuccessBody)), out _);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = await service.ForwardAsync(BasicRequest(3), CancellationToken.None);
+        stopwatch.Stop();
+
+        result.Success.Should().BeTrue();
+        stopwatch.ElapsedMilliseconds.Should().BeGreaterThanOrEqualTo(1900, "两次重试各等待 Retry-After=1s，不允许零延迟重击");
+    }
+
+    [Fact]
+    public async Task RateLimit_retry_count_is_reported_on_result()
+    {
+        // 前 2 次 429、第 3 次成功：结果应上报实际重试 2 次（usage 链路据此展示）。
+        var service = CreateService(Seq(
+            _ => WithRetryAfter(Json(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}"), 0),
+            _ => WithRetryAfter(Json(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}"), 0),
+            _ => Json(HttpStatusCode.OK, SuccessBody)), out _);
+
+        var result = await service.ForwardAsync(BasicRequest(3), CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        result.RateLimitRetryCount.Should().Be(2, "两次 429 各触发一次重试");
+    }
+
+    [Fact]
+    public async Task RateLimit_retry_count_reported_when_budget_exhausted()
+    {
+        // N=3 恒定 429：第 3 次 429 判定失败，此前执行了 2 次重试。
+        var service = CreateService(_ => WithRetryAfter(Json(HttpStatusCode.TooManyRequests, "{\"error\":\"rate limited\"}"), 0), out _);
+
+        var result = await service.ForwardAsync(BasicRequest(3), CancellationToken.None);
+
+        result.Success.Should().BeFalse();
+        result.RateLimitRetryCount.Should().Be(2, "第 3 次 429 耗尽预算，前两次为重试");
+    }
+
+    [Fact]
+    public void Resolve429RetryDelay_honors_header_delta_and_caps()
+    {
+        var withDelta = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        withDelta.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(3));
+        ProxyForwardService.Resolve429RetryDelay(withDelta).Should().Be(TimeSpan.FromSeconds(3));
+
+        var huge = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        huge.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(120));
+        ProxyForwardService.Resolve429RetryDelay(huge).Should().Be(TimeSpan.FromSeconds(10), "Retry-After 封顶 10 秒");
+
+        var past = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        past.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.Zero);
+        ProxyForwardService.Resolve429RetryDelay(past).Should().Be(TimeSpan.FromMilliseconds(1500), "非法/零值回退默认 1.5s");
+
+        ProxyForwardService.Resolve429RetryDelay(new HttpResponseMessage(HttpStatusCode.TooManyRequests))
+            .Should().Be(TimeSpan.FromMilliseconds(1500), "无头回退默认 1.5s");
+    }
+
+    private static HttpResponseMessage WithRetryAfter(HttpResponseMessage response, int seconds)
+    {
+        response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(seconds));
+        return response;
+    }
+
     private const string SuccessBody = "{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}";
 
     private static HttpResponseMessage Json(HttpStatusCode code, string body) => new(code)

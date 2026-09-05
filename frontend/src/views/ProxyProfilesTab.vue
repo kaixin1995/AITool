@@ -14,6 +14,7 @@ import {
   NInputNumber,
   NModal,
   NPopconfirm,
+  NSelect,
   NSpace,
   NSpin,
   NSwitch,
@@ -44,6 +45,45 @@ const isEditing = ref(false)
 const currentId = ref<string | null>(null)
 const modalSubmitting = ref(false)
 
+const proxyScheme = ref('http')
+const proxyHost = ref('127.0.0.1')
+const proxyPort = ref<number | null>(7890)
+const proxySchemeOptions = [
+  { label: 'HTTP', value: 'http' },
+  { label: 'HTTPS', value: 'https' },
+  { label: 'SOCKS5', value: 'socks5' },
+  { label: 'SOCKS4', value: 'socks4' },
+  { label: 'SOCKS4A', value: 'socks4a' }
+]
+
+function splitProxyUrl(proxyUrl: string): { scheme: string; host: string; port: number | null } {
+  let rest = proxyUrl.trim()
+  let scheme = 'http'
+  const schemeMatch = rest.match(/^([a-z][a-z\d+.-]*):\/\/(.+)$/i)
+  if (schemeMatch) {
+    scheme = schemeMatch[1].toLowerCase()
+    rest = schemeMatch[2].trim()
+  }
+  // 尾部 :端口（IPv6 除外：多个冒号视为原始主机地址不作端口切分）
+  const portMatch = rest.match(/^(.+):(\d{1,5})$/)
+  if (portMatch && rest.split(':').length === 2) {
+    const port = Number(portMatch[2])
+    return { scheme, host: portMatch[1].trim(), port: port >= 1 && port <= 65535 ? port : null }
+  }
+  return { scheme, host: rest, port: null }
+}
+
+function buildProxyUrl(): string {
+  const host = proxyHost.value.trim().replace(/^\/\/+/, '')
+  if (!host) return ''
+  // IPv6 字面量需要方括号包裹才能组成合法 URL
+  const hostPart = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  if (proxyPort.value == null || proxyPort.value <= 0 || proxyPort.value > 65535) {
+    return `${proxyScheme.value}://${hostPart}`
+  }
+  return `${proxyScheme.value}://${hostPart}:${proxyPort.value}`
+}
+
 const formModel = ref<ProxyProfilePayload>({
   key: '',
   name: '',
@@ -71,10 +111,13 @@ function openCreateModal() {
   isEditing.value = false
   currentId.value = null
   modalTestResult.value = null
+  proxyScheme.value = 'http'
+  proxyHost.value = '127.0.0.1'
+  proxyPort.value = 7890
   formModel.value = {
     key: '',
     name: '',
-    proxyUrl: 'http://127.0.0.1:7890',
+    proxyUrl: buildProxyUrl(),
     description: '',
     isEnabled: true,
     sortOrder: (profiles.value.length + 1) * 10
@@ -86,10 +129,14 @@ function openEditModal(profile: ProxyProfile) {
   isEditing.value = true
   currentId.value = profile.id
   modalTestResult.value = null
+  const parsedProxy = splitProxyUrl(profile.proxyUrl)
+  proxyScheme.value = parsedProxy.scheme
+  proxyHost.value = parsedProxy.host
+  proxyPort.value = parsedProxy.port
   formModel.value = {
     key: profile.key,
     name: profile.name,
-    proxyUrl: profile.proxyUrl,
+    proxyUrl: buildProxyUrl(),
     description: profile.description || '',
     isEnabled: profile.isEnabled,
     sortOrder: profile.sortOrder
@@ -116,14 +163,16 @@ async function handleTestNode(proxyUrl: string) {
 }
 
 async function handleTestInModal() {
-  if (!formModel.value.proxyUrl) {
-    message.warning('请先输入代理地址')
+  const proxyUrl = buildProxyUrl()
+  if (!proxyUrl) {
+    message.warning('请先输入代理 IP/域名和端口')
     return
   }
+  formModel.value.proxyUrl = proxyUrl
   modalTesting.value = true
   modalTestResult.value = null
   try {
-    const res = await testProxyProfile({ proxyUrl: formModel.value.proxyUrl })
+    const res = await testProxyProfile({ proxyUrl })
     modalTestResult.value = {
       isSuccess: res.isSuccess,
       latencyMs: res.latencyMs,
@@ -148,12 +197,17 @@ async function handleTestInModal() {
 async function handleSave() {
   const key = formModel.value.key.trim()
   const name = formModel.value.name.trim()
-  const proxyUrl = formModel.value.proxyUrl.trim()
+  const proxyUrl = buildProxyUrl()
 
-  if (!key || !name || !proxyUrl) {
-    message.warning('请填写必填项（方案Key、名称、代理地址）')
+  if (!key || !name || !proxyHost.value.trim()) {
+    message.warning('请填写必填项（方案Key、名称、代理 IP/域名）')
     return
   }
+  if (proxyPort.value == null || proxyPort.value < 1 || proxyPort.value > 65535) {
+    message.warning('请输入有效端口（1-65535）')
+    return
+  }
+  formModel.value.proxyUrl = proxyUrl
 
   const payload: ProxyProfilePayload = {
     key,
@@ -368,15 +422,29 @@ onMounted(loadProfiles)
         </NFormItem>
 
         <NFormItem label="代理地址" required>
-          <div style="width: 100%; display: flex; gap: 8px;">
+          <div class="proxy-address-input">
+            <NSelect
+              v-model:value="proxyScheme"
+              :options="proxySchemeOptions"
+              class="proxy-scheme-select"
+              :consistent-menu-width="false"
+            />
             <NInput
-              v-model:value="formModel.proxyUrl"
-              placeholder="如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808"
+              v-model:value="proxyHost"
+              placeholder="IP 或域名，如 127.0.0.1"
+            />
+            <NInputNumber
+              v-model:value="proxyPort"
+              :min="1"
+              :max="65535"
+              placeholder="端口"
+              style="width: 110px;"
             />
             <NButton secondary size="small" :loading="modalTesting" @click="handleTestInModal">
               测试
             </NButton>
           </div>
+          <div class="proxy-url-preview">完整地址：{{ buildProxyUrl() || `${proxyScheme}://IP:端口` }}</div>
         </NFormItem>
 
         <!-- 弹窗内测速结果提示 -->
@@ -530,6 +598,25 @@ onMounted(loadProfiles)
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.proxy-address-input {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+}
+
+.proxy-scheme-select {
+  width: 112px;
+  flex: 0 0 112px;
+}
+
+.proxy-url-preview {
+  width: 100%;
+  margin-top: 6px;
+  color: var(--n-text-color-3);
+  font-family: monospace;
+  font-size: 11px;
 }
 
 .modal-footer-actions {

@@ -74,6 +74,7 @@ public sealed class SystemSettingsApiController : ControllerBase
             developerSimulatorEnabled = settings.DeveloperSimulatorEnabled,
             developerProtocolDiagnosticsEnabled = settings.DeveloperProtocolDiagnosticsEnabled,
             developerSqlMigrationsEnabled = settings.DeveloperSqlMigrationsEnabled,
+            developerProxyProfilesEnabled = settings.DeveloperProxyProfilesEnabled,
             concurrencyMode = settings.ConcurrencyMode,
             concurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
             oauthFeaturesEnabled = settings.OAuthFeaturesEnabled,

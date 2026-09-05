@@ -102,7 +102,7 @@ const auth = useAuthStore()
 const activeTab = ref<DeveloperToolTab>(developerTabFromHash(route.hash))
 
 // 调试工具各功能页可用性（来自登录态接口 features.developerTabs，旧后端无此字段时全部可用）；
-// header-presets / proxy-profiles 属于转发配置页，不受调试分开关控制。
+// header-presets 属转发配置页，不受调试分开关控制；proxy-profiles 受网络代理池开关控制。
 const developerTabs = computed(() => auth.status?.features?.developerTabs)
 function tabVisible(tab: DeveloperToolTab): boolean {
   const tabs = developerTabs.value
@@ -113,6 +113,7 @@ function tabVisible(tab: DeveloperToolTab): boolean {
     case 'simulator': return tabs.simulator
     case 'protocol-diagnostics': return tabs.protocolDiagnostics
     case 'sql-migrations': return tabs.sqlMigrations
+    case 'proxy-profiles': return tabs.proxyProfiles ?? true
     default: return true
   }
 }
