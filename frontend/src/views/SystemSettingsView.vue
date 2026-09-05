@@ -446,13 +446,12 @@ onMounted(loadSettings)
   gap: 14px;
 }
 
-/* 开发者分页开关：横排自适应换行，窄屏自动折行不溢出。 */
+/* 开发者分页开关：与上下总开关同一左基线，横排自适应换行。 */
 .developer-tab-switch-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 22px;
-  padding-left: 8px;
+  gap: 4px 24px;
 }
 
 .danger-title {
