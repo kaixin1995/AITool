@@ -545,6 +545,9 @@ watch(() => route.hash, (hash) => {
 })
 
 onMounted(() => {
+  // 直接深链进入本页时刷新登录态快照，避免按过期的分页开关状态渲染 Tab
+  // （设置刚改过但本页仍是旧 store 时，会出现 Tab 可见而 API 404 的不一致）。
+  void auth.fetchStatus()
   if (activeTab.value === 'invocations') void loadInvocations()
   configureAutoRefresh()
   document.addEventListener('visibilitychange', handleVisibilityChange)

@@ -8,10 +8,12 @@ import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
 import type { SystemSettings } from '@/api/system'
 import { validateSystemSettingsNumbers } from './systemSettingsState'
+import { useAuthStore } from '@/stores/auth'
 import { useCurrency } from '@/composables/useCurrency'
 import type { SelectOption } from 'naive-ui'
 
 const message = useMessage()
+const auth = useAuthStore()
 const { currency, setCurrencyDisplay } = useCurrency()
 
 const currencyOptions: SelectOption[] = [
@@ -100,6 +102,9 @@ async function handleSave(): Promise<void> {
   saving.value = true
   try {
     await systemApi.updateSystemSettings(form)
+    // 立即刷新登录态里的功能开关快照（含调试工具分页可用性），
+    // 否则导航回调试工具时仍按旧状态渲染，出现"Tab 可见但 API 404"的不一致。
+    await auth.fetchStatus()
     message.success('设置已保存')
   } finally {
     saving.value = false
