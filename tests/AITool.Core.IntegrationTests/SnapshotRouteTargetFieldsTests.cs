@@ -23,6 +23,8 @@ public sealed class SnapshotRouteTargetFieldsTests
         return new CoreRuntimeConfigSnapshot
         {
             ConfigVersion = 1,
+            // 本测试验证代理池字段的快照贯通：显式开启出口网络代理开关（新开关默认关闭）。
+            RuntimeSettings = new CoreRuntimeSettings { DeveloperProxyProfilesEnabled = true },
             Sites =
             [
                 new CoreRuntimeSite
