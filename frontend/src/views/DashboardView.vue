@@ -33,6 +33,10 @@ const statCards = computed<StatCard[]>(() => {
   ]
 })
 
+// Core 宿主运行状态：离线文案时变红，供分离部署巡检。
+const coreOnline = computed<boolean>(() => !(stats.value?.coreStatusText ?? '').includes('离线'))
+const coreStatusStyle = computed(() => coreOnline.value ? 'color:#22c55e' : 'color:#ef4444')
+
 interface QuickAction {
   label: string
   desc: string
@@ -120,6 +124,10 @@ onMounted(loadStats)
                 <button class="hero-btn primary" @click="go('chat')">💬 对话测试</button>
                 <button class="hero-btn secondary" @click="go('developer-invocations')">🛠️ 调试追踪</button>
                 <button class="hero-btn secondary" @click="go('analytics')">🛰️ 用量分析</button>
+              </div>
+              <div v-if="stats" class="hero-core-status" :style="coreStatusStyle">
+                <span class="core-status-dot"></span>
+                {{ stats.coreStatusText }} · {{ stats.coreSyncStatusText }}
               </div>
             </div>
             <div class="hero-right-deco">
