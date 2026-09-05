@@ -314,6 +314,12 @@ public sealed class CoreRuntimeSiteModelMapping
     public string RemoteModelName { get; set; } = string.Empty;
 
     /// <summary>
+    /// 站点模型级的强制思考等级（如 low / medium / high / xhigh / max）。
+    /// 优先级最高：非空时覆盖模型库级设置与客户端透传值；为空时回退模型库级，均为空则透传。
+    /// </summary>
+    public string? OverrideReasoningEffort { get; set; }
+
+    /// <summary>
     /// 最近状态。
     /// </summary>
     public string LastStatus { get; set; } = string.Empty;
@@ -486,6 +492,12 @@ public sealed class CoreRuntimeSettings
     /// 代理重试次数。
     /// </summary>
     public int ProxyRetryCount { get; set; } = 1;
+
+    /// <summary>
+    /// 上游返回 429（速率限制）时的连续重试次数，默认 0（一次 429 即失败并回退下一路由）。
+    /// 设为 N&gt;0 时：同一上游连续 N 次 429 才判定该路由失败；期间任一次成功即算成功。
+    /// </summary>
+    public int RateLimitRetryCount { get; set; }
 
     /// <summary>
     /// 熔断失败阈值。

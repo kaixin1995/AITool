@@ -117,6 +117,7 @@ export interface ModelSiteMapping {
   clientEmulation?: string
   extraHeadersJson?: string
   egressProxyUrl?: string
+  overrideReasoningEffort?: string
 }
 export interface UpdateMappingPayload {
   remoteModelName?: string
@@ -125,6 +126,7 @@ export interface UpdateMappingPayload {
   clientEmulation?: string
   extraHeadersJson?: string
   egressProxyUrl?: string
+  overrideReasoningEffort?: string
 }
 export interface ModelDetail {
   id: string

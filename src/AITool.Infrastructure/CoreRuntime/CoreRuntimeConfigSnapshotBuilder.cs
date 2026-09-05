@@ -54,6 +54,10 @@ public static class CoreRuntimeConfigSnapshotBuilder
         var modelByName = modelList
             .GroupBy(m => m.ModelName, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        // 预建映射查找字典：按 (SiteId, RemoteModelName) 关联（route.SiteId+SiteModelName → mapping），左外联。
+        var mappingsBySiteAndRemote = siteModelMappings
+            .GroupBy(m => (m.SiteId, m.RemoteModelName))
+            .ToDictionary(g => g.Key, g => g.First());
 
         var snapshot = new CoreRuntimeConfigSnapshot
         {
@@ -144,7 +148,8 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     MaxConcurrency = x.MaxConcurrency,
                     ClientEmulation = x.ClientEmulation,
                     ExtraHeadersJson = x.ExtraHeadersJson,
-                    EgressProxyUrl = x.EgressProxyUrl
+                    EgressProxyUrl = x.EgressProxyUrl,
+                    OverrideReasoningEffort = x.OverrideReasoningEffort
                 })
                 .ToList(),
             RouteEntries = routeEntries
@@ -165,6 +170,12 @@ public static class CoreRuntimeConfigSnapshotBuilder
                 {
                     // 按上游模型名关联 model，左外联：model 不存在（如规则指向已删除模型）时按空规则处理。
                     modelByName.TryGetValue(x.UpstreamModelName ?? string.Empty, out var model);
+                    // 按站点+远端模型名关联映射，用于映射级思考等级覆盖。
+                    mappingsBySiteAndRemote.TryGetValue((x.SiteId, x.SiteModelName ?? string.Empty), out var routeMapping);
+                    // 思考等级优先级：站点映射 > 模型库 > 透传（与 Admin 端 DB 路径同口径）。
+                    var overrideReasoningEffort = !string.IsNullOrWhiteSpace(routeMapping?.OverrideReasoningEffort)
+                        ? routeMapping!.OverrideReasoningEffort!.Trim()
+                        : (model?.OverrideReasoningEffort ?? string.Empty);
                     return new CoreRuntimeRouteRule
                     {
                         Id = x.Id,
@@ -179,7 +190,7 @@ public static class CoreRuntimeConfigSnapshotBuilder
                         AvailabilityMode = x.AvailabilityMode,
                         TimeRangesJson = x.TimeRangesJson,
                         // 派生字段：由 Admin 端预解析，Core 直接透传，避免 Core 重复实现解析+关联逻辑。
-                        OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
+                        OverrideReasoningEffort = overrideReasoningEffort,
                         CompatibilityRules = CompatibilityRuleParser.GetRulesForModel(model?.CompatibilityProfileId, profileRules)
                     };
                 })
@@ -201,6 +212,7 @@ public static class CoreRuntimeConfigSnapshotBuilder
             {
                 ProxyRequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 ProxyRetryCount = runtimeSettings.ProxyRetryCount,
+                RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
                 CircuitBreakerFailureThreshold = runtimeSettings.CircuitBreakerFailureThreshold,
                 CircuitBreakerRecoveryMinutes = runtimeSettings.CircuitBreakerRecoveryMinutes,
                 ConcurrencyMode = runtimeSettings.ConcurrencyMode,

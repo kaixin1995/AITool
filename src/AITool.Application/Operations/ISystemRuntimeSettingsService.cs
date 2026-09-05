@@ -50,6 +50,11 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public int ProxyRetryCount { get; set; }
 
     /// <summary>
+    /// 上游返回 429（速率限制）时的连续重试次数，默认 0（一次 429 即失败）。
+    /// </summary>
+    public int RateLimitRetryCount { get; set; }
+
+    /// <summary>
     /// 控制模型检测请求的超时时间，单位为秒。
     /// </summary>
     public int DetectionRequestTimeoutSeconds { get; set; }

@@ -729,6 +729,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
+                RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
                 ForwardHeaders = forwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),

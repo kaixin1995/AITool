@@ -4,6 +4,7 @@ export interface SystemSettings {
   proxyRequestTimeoutSeconds: number
   proxyStreamIdleTimeoutSeconds: number
   proxyRetryCount: number
+  rateLimitRetryCount: number
   detectionRequestTimeoutSeconds: number
   detectionRetryCount: number
   detectionConcurrency: number

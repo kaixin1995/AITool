@@ -67,6 +67,13 @@ public sealed class SiteModelMapping
     public string? EgressProxyUrl { get; set; }
 
     /// <summary>
+    /// 站点模型级的强制思考等级（如 low / medium / high / xhigh / max）。
+    /// 优先级最高：非空时覆盖模型库级设置与客户端透传值；为空时回退模型库级，均为空则透传。
+    /// </summary>
+    [SugarColumn(Length = 20, IsNullable = true)]
+    public string? OverrideReasoningEffort { get; set; }
+
+    /// <summary>
     /// 最近一次健康检查的时间，用于记录该映射对应模型的上次检测时刻。
     /// </summary>
     [SugarColumn(IsNullable = true)]

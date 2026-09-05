@@ -151,6 +151,7 @@ public sealed class ModelsApiController : ControllerBase
         mapping.ClientEmulation = ClientEmulationConstants.Normalize(request.ClientEmulation);
         mapping.ExtraHeadersJson = string.IsNullOrWhiteSpace(request.ExtraHeadersJson) ? null : request.ExtraHeadersJson.Trim();
         mapping.EgressProxyUrl = string.IsNullOrWhiteSpace(request.EgressProxyUrl) ? null : request.EgressProxyUrl.Trim();
+        mapping.OverrideReasoningEffort = string.IsNullOrWhiteSpace(request.OverrideReasoningEffort) ? null : request.OverrideReasoningEffort.Trim().ToLowerInvariant();
 
         await _dbContext.UpdateAsync(mapping, cancellationToken);
 
@@ -189,7 +190,8 @@ public sealed class ModelsApiController : ControllerBase
             maxConcurrency = mapping.MaxConcurrency,
             clientEmulation = mapping.ClientEmulation,
             extraHeadersJson = mapping.ExtraHeadersJson,
-            egressProxyUrl = mapping.EgressProxyUrl
+            egressProxyUrl = mapping.EgressProxyUrl,
+            overrideReasoningEffort = mapping.OverrideReasoningEffort
         }, "站点模型映射已更新"));
     }
 
@@ -372,7 +374,8 @@ public sealed class ModelsApiController : ControllerBase
                     maxConcurrency = mapping.MaxConcurrency,
                     clientEmulation = mapping.ClientEmulation,
                     extraHeadersJson = mapping.ExtraHeadersJson,
-                    egressProxyUrl = mapping.EgressProxyUrl
+                    egressProxyUrl = mapping.EgressProxyUrl,
+                    overrideReasoningEffort = mapping.OverrideReasoningEffort
                 })
             .ToList();
 
@@ -765,6 +768,10 @@ public sealed class UpdateMappingRequest
     /// 专属出口网络代理地址。
     /// </summary>
     public string? EgressProxyUrl { get; set; }
+    /// <summary>
+    /// 站点模型级强制思考等级（low / medium / high / xhigh / max），留空表示跟随模型库设置或透传。
+    /// </summary>
+    public string? OverrideReasoningEffort { get; set; }
 }
 
 /// <summary>
