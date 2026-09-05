@@ -541,6 +541,8 @@ watch(activeTab, (tab) => {
 
 watch(() => route.hash, (hash) => {
   const tab = developerTabFromHash(hash)
+  // 深链指向已禁用的分页时不选中（保持当前页），避免渲染出无数据且报 404 的隐藏功能。
+  if (!tabVisible(tab)) return
   if (activeTab.value !== tab) activeTab.value = tab
 })
 
@@ -921,7 +923,7 @@ onUnmounted(() => {
           <HeaderProfilesTab />
         </NTabPane>
 
-        <NTabPane name="proxy-profiles" tab="网络代理池">
+        <NTabPane v-if="tabVisible('proxy-profiles')" name="proxy-profiles" tab="网络代理池">
           <ProxyProfilesTab />
         </NTabPane>
 
