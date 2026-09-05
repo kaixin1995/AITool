@@ -390,3 +390,6 @@ FodyWeavers.xsd
 # 前端构建产物（由 vite build 生成，不跟踪）
 src/AITool.Admin/wwwroot/
 src/AITool.Web/
+
+# ZCode 工具临时脚本目录
+.zcode/tmp/

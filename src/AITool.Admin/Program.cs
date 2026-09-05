@@ -439,6 +439,13 @@ app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = ctx =>
     {
+        // index.html 必须协商缓存（no-cache）：入口文件引用带内容哈希的 js/css，
+        // 若被浏览器强缓存，发布新版本后用户会长时间停留在旧前端（已两次踩坑）。
+        if (string.Equals(ctx.File.Name, "index.html", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Context.Response.Headers["Cache-Control"] = "no-cache";
+            return;
+        }
         // 静态文件带文件指纹（版本号）时缓存 1 天；无指纹时浏览器仍会条件请求。
         ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=86400";
     }
@@ -453,7 +460,16 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 app.MapControllers();
 // SPA fallback：非 /api、非 /v1 的请求统一返回前端 index.html，由 Vue Router 接管路由。
 // wwwroot 静态文件由上方的 UseStaticFiles 提供（Vite 构建产物输出到 Admin/wwwroot）。
-app.MapFallbackToFile("index.html");
+// index.html 必须协商缓存（no-cache）：入口文件引用带内容哈希的 js/css，
+// 若被浏览器启发式缓存，发布新版本后用户会长时间停留在旧前端（已两次踩坑）。
+// 哈希命中的 assets 本身保持默认强缓存语义，不受影响。
+app.MapFallbackToFile("index.html", new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        ctx.Context.Response.Headers.CacheControl = "no-cache";
+    }
+});
 app.Run();
 
 // 版本号优先从程序集元数据（AssemblyInformationalVersion / AssemblyFileVersion / AssemblyVersion）读取（由 csproj 配置）。

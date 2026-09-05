@@ -8,10 +8,12 @@ import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
 import type { SystemSettings } from '@/api/system'
 import { validateSystemSettingsNumbers } from './systemSettingsState'
+import { useAuthStore } from '@/stores/auth'
 import { useCurrency } from '@/composables/useCurrency'
 import type { SelectOption } from 'naive-ui'
 
 const message = useMessage()
+const auth = useAuthStore()
 const { currency, setCurrencyDisplay } = useCurrency()
 
 const currencyOptions: SelectOption[] = [
@@ -100,6 +102,9 @@ async function handleSave(): Promise<void> {
   saving.value = true
   try {
     await systemApi.updateSystemSettings(form)
+    // 立即刷新登录态里的功能开关快照（含调试工具分页可用性），
+    // 否则导航回调试工具时仍按旧状态渲染，出现"Tab 可见但 API 404"的不一致。
+    await auth.fetchStatus()
     message.success('设置已保存')
   } finally {
     saving.value = false
@@ -232,12 +237,12 @@ onMounted(loadSettings)
           <h5 class="settings-card-title">开发者功能</h5>
           <div class="switch-stack">
             <label class="switch-line"><NSwitch v-model:value="form.developerFeaturesEnabled" /><span class="form-label-tip">启用开发者功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后显示调试工具入口，并保留最近 100 条调用轨迹。</NTooltip></span></label>
-            <div v-if="form.developerFeaturesEnabled" class="switch-stack developer-tab-switches">
-              <label class="switch-line"><NSwitch v-model:value="form.developerTraceEnabled" /><span class="form-label-tip">调用追踪<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后每个代理请求都会采集请求/响应报文用于调试（有内存与分配开销）；排查问题时再开。</NTooltip></span></label>
-              <label class="switch-line"><NSwitch v-model:value="form.developerFailureDumpEnabled" /><span class="form-label-tip">诊断抓包<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后失败请求自动落盘完整报文 dump；关闭可省去失败时的 dump 构建开销。</NTooltip></span></label>
-              <label class="switch-line"><NSwitch v-model:value="form.developerSimulatorEnabled" /><span class="form-label-tip">请求模拟器<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能，无后台开销；关闭仅隐藏入口。</NTooltip></span></label>
-              <label class="switch-line"><NSwitch v-model:value="form.developerProtocolDiagnosticsEnabled" /><span class="form-label-tip">协议诊断与 AI 自愈<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能；关闭隐藏入口并禁用相关 API。</NTooltip></span></label>
-              <label class="switch-line"><NSwitch v-model:value="form.developerSqlMigrationsEnabled" /><span class="form-label-tip">SQL 迁移<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能；关闭隐藏入口并禁用脚本执行，减少常开的管理面。</NTooltip></span></label>
+            <div v-if="form.developerFeaturesEnabled" class="developer-tab-switch-row">
+              <label class="settings-switch-inline"><NSwitch v-model:value="form.developerTraceEnabled" /><span class="form-label-tip">调用追踪<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后每个代理请求都会采集请求/响应报文用于调试（有内存与分配开销）；排查问题时再开。</NTooltip></span></label>
+              <label class="settings-switch-inline"><NSwitch v-model:value="form.developerFailureDumpEnabled" /><span class="form-label-tip">诊断抓包<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后失败请求自动落盘完整报文 dump；关闭可省去失败时的 dump 构建开销。</NTooltip></span></label>
+              <label class="settings-switch-inline"><NSwitch v-model:value="form.developerSimulatorEnabled" /><span class="form-label-tip">请求模拟器<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能，无后台开销；关闭仅隐藏入口。</NTooltip></span></label>
+              <label class="settings-switch-inline"><NSwitch v-model:value="form.developerProtocolDiagnosticsEnabled" /><span class="form-label-tip">协议诊断与 AI 自愈<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能；关闭隐藏入口并禁用相关 API。</NTooltip></span></label>
+              <label class="settings-switch-inline"><NSwitch v-model:value="form.developerSqlMigrationsEnabled" /><span class="form-label-tip">SQL 迁移<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按需功能；关闭隐藏入口并禁用脚本执行，减少常开的管理面。</NTooltip></span></label>
               <label class="settings-switch-inline"><NSwitch v-model:value="form.developerProxyProfilesEnabled" /><span class="form-label-tip">网络代理池<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>默认关闭。开启后显示出口代理池管理，并可在站点/映射中绑定出口代理；关闭时全链路直连（已有代理数据保留，重新开启即恢复）。</NTooltip></span></label>
             </div>
             <label class="switch-line"><NSwitch v-model:value="form.oauthFeaturesEnabled" /><span class="form-label-tip">启用 OAuth 账号功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>总开关，控制 OAuth 账号、凭证导入、额度与巡检功能。</NTooltip></span></label>
@@ -439,6 +444,14 @@ onMounted(loadSettings)
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* 开发者分页开关：与上下总开关同一左基线，横排自适应换行。 */
+.developer-tab-switch-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 24px;
 }
 
 .danger-title {

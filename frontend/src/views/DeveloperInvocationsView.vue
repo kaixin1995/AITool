@@ -541,10 +541,15 @@ watch(activeTab, (tab) => {
 
 watch(() => route.hash, (hash) => {
   const tab = developerTabFromHash(hash)
+  // 深链指向已禁用的分页时不选中（保持当前页），避免渲染出无数据且报 404 的隐藏功能。
+  if (!tabVisible(tab)) return
   if (activeTab.value !== tab) activeTab.value = tab
 })
 
 onMounted(() => {
+  // 直接深链进入本页时刷新登录态快照，避免按过期的分页开关状态渲染 Tab
+  // （设置刚改过但本页仍是旧 store 时，会出现 Tab 可见而 API 404 的不一致）。
+  void auth.fetchStatus()
   if (activeTab.value === 'invocations') void loadInvocations()
   configureAutoRefresh()
   document.addEventListener('visibilitychange', handleVisibilityChange)
@@ -918,7 +923,7 @@ onUnmounted(() => {
           <HeaderProfilesTab />
         </NTabPane>
 
-        <NTabPane name="proxy-profiles" tab="网络代理池">
+        <NTabPane v-if="tabVisible('proxy-profiles')" name="proxy-profiles" tab="网络代理池">
           <ProxyProfilesTab />
         </NTabPane>
 
