@@ -518,7 +518,16 @@ app.MapControllers();
 // 交给前端 Vue Router 处理（history 模式）。MapFallbackToFile 会自动排除已映射的端点。
 if (!app.Environment.IsEnvironment("Testing"))
 {
-    app.MapFallbackToFile("index.html");
+    // index.html 必须协商缓存（no-cache）：入口文件引用带内容哈希的 js/css，
+    // 若被浏览器启发式缓存，发布新版本后用户会长时间停留在旧前端（已两次踩坑）。
+    // 哈希命中的 assets 本身保持默认强缓存语义，不受影响。
+    app.MapFallbackToFile("index.html", new StaticFileOptions
+    {
+        OnPrepareResponse = ctx =>
+        {
+            ctx.Context.Response.Headers.CacheControl = "no-cache";
+        }
+    });
 }
 
 app.Run();
