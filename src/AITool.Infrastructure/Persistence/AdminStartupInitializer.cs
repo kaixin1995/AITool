@@ -39,18 +39,6 @@ public static class AdminStartupInitializer
         var sqlSugar = scope.ServiceProvider.GetRequiredService<ISqlSugarClient>();
         SqlSugarSetup.InitializeDatabase(sqlSugar);
 
-        // 注册所有已启用的定时检测任务到 Hangfire 调度器。
-        // 如果注册失败（如任务配置异常），仅记录警告，不阻止启动。
-        var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
-        try
-        {
-            await scheduler.ScheduleAllAsync(default);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "启动时注册定时检测任务失败，将在下次启动时重试");
-        }
-
         // 预热代理热路径缓存，避免首个代理请求触发运行时设置的 DB 往返。
         // 注意：测试环境跳过预热，因为测试工厂的种子数据在预热后才插入。
         // 只预热 RuntimeSettings（即使预热到空数据，数据变更时会被 Invalidate 重建）；

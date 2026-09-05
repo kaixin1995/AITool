@@ -65,7 +65,10 @@ public static class AdminInfrastructureExtensions
             .UseRecommendedSerializerSettings()
             .UseInMemoryStorage());
         services.AddHangfireServer();
-        services.AddSingleton<HangfireDetectionScheduler>();
+        // 检测任务秒级调度服务（BackgroundService 轮询，最小 10s 间隔 + 随机抖动，替代 Hangfire Cron 分钟级）。
+        // 单例 + Hosted 同实例注册：控制器（立即执行端点）与后台循环共用同一实例与内存下次触发时间表。
+        services.AddSingleton<DetectionTaskSchedulerService>();
+        services.AddHostedService(sp => sp.GetRequiredService<DetectionTaskSchedulerService>());
 
         // 注册模型检测所需的转发与日志写入链路。
         // ProxyForwardService 是无状态 HttpClient 转发器（不依赖 Core 运行时配置快照、并发、熔断），

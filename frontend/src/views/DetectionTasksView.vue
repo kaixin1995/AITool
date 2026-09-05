@@ -1,18 +1,22 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { NCard, NButton, NSpace, NTag, NForm, NFormItem, NInput, NSelect, NPopconfirm, NEmpty, useMessage, type SelectOption } from 'naive-ui'
+import { NCard, NButton, NSpace, NTag, NForm, NFormItem, NInput, NInputNumber, NSelect, NPopconfirm, NEmpty, NTooltip, useMessage, type SelectOption } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/detectionTasks'
 import type { DetectionTaskItem } from '@/api/detectionTasks'
+import * as chatApi from '@/api/chat'
+import type { DetectionTargetOption } from '@/api/detectionTasks'
 import { formatDetectionDateTime } from './detectionState'
-import { ALL_MODELS_VALUE, normalizeDetectionTaskModelId } from './detectionTasksState'
+
+/** 「全部站点模型」哨兵值。 */
+const ALL_TARGETS_VALUE = '__all__'
 
 const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 const message = useMessage()
 const loading = ref(false)
 const tasks = ref<DetectionTaskItem[]>([])
-const availableModels = ref<{ id: string; displayName: string }[]>([])
-const form = reactive({ name: '', cronExpression: '*/30 * * * *', modelLibraryItemId: ALL_MODELS_VALUE })
+const availableTargets = ref<DetectionTargetOption[]>([])
+const form = reactive({ name: '', intervalSeconds: 60, targetMappingId: ALL_TARGETS_VALUE })
 const executing = ref<string | null>(null)
 
 async function load(): Promise<void> {
@@ -20,25 +24,39 @@ async function load(): Promise<void> {
   try {
     const resp = await api.listDetectionTasks()
     tasks.value = resp.tasks
-    availableModels.value = resp.availableModels
+    availableTargets.value = resp.availableTargets
   } finally { loading.value = false }
 }
 
-const modelOptions = computed<SelectOption[]>(() => [
-  { label: '全部模型', value: ALL_MODELS_VALUE },
-  ...availableModels.value.map((m) => ({ label: m.displayName, value: m.id }))
+/** 站点模型目标下拉（对齐 chat 页）：显示「站点 / 远端模型名」，可搜索。 */
+const targetOptions = computed<SelectOption[]>(() => [
+  { label: '全部站点模型', value: ALL_TARGETS_VALUE },
+  ...availableTargets.value.map((t) => ({ label: `${t.siteName} / ${t.remoteModelName}`, value: t.mappingId }))
 ])
 
+/** 把「全部」哨兵转换为 null（后端语义：null = 检测全部）。 */
+function normalizeTargetId(value: string): string | null {
+  return value === ALL_TARGETS_VALUE ? null : value
+}
+
 async function handleCreate(): Promise<void> {
-  if (!form.name.trim() || !form.cronExpression.trim()) { message.warning('名称和 Cron 不能为空'); return }
+  if (!form.name.trim()) { message.warning('任务名称不能为空'); return }
+  if (!Number.isInteger(form.intervalSeconds) || form.intervalSeconds < 10) { message.warning('执行间隔最小 10 秒'); return }
   await api.createDetectionTask({
     name: form.name,
-    cronExpression: form.cronExpression,
-    modelLibraryItemId: normalizeDetectionTaskModelId(form.modelLibraryItemId)
+    intervalSeconds: form.intervalSeconds,
+    siteModelMappingId: normalizeTargetId(form.targetMappingId)
   })
-  message.success('任务已创建')
-  Object.assign(form, { name: '', cronExpression: '*/30 * * * *', modelLibraryItemId: ALL_MODELS_VALUE })
+  message.success(`任务已创建，每 ${form.intervalSeconds} 秒执行一次（含随机抖动）`)
+  Object.assign(form, { name: '', intervalSeconds: 60, targetMappingId: ALL_TARGETS_VALUE })
   await load()
+}
+
+/** 任务的目标展示文案。 */
+function targetLabel(task: DetectionTaskItem): string {
+  if (task.siteName && task.remoteModelName) return `${task.siteName} / ${task.remoteModelName}`
+  if (task.modelName) return `${task.modelName}（按模型，旧任务）`
+  return '全部站点模型'
 }
 
 async function handleToggle(row: DetectionTaskItem): Promise<void> {
@@ -81,9 +99,29 @@ onMounted(load)
     <NCard class="create-task-card">
       <NForm label-placement="top">
         <div class="task-form-grid">
-          <NFormItem label="任务名称"><NInput v-model:value="form.name" placeholder="如：全量模型半小时检测" /></NFormItem>
-          <NFormItem label="Cron 表达式"><NInput v-model:value="form.cronExpression" placeholder="*/30 * * * *" /></NFormItem>
-          <NFormItem label="检测模型"><NSelect v-model:value="form.modelLibraryItemId" :options="modelOptions" /></NFormItem>
+          <NFormItem label="任务名称"><NInput v-model:value="form.name" placeholder="如：全量站点模型检测" /></NFormItem>
+          <NFormItem>
+            <template #label>
+              <span class="interval-label">执行间隔（秒）
+                <NTooltip trigger="hover">
+                  <template #trigger><span class="tip-icon">?</span></template>
+                  最小 10 秒。调度时自动附加 ±20% 随机抖动（至少 ±3 秒），避免固定周期请求特征被上游识别。
+                </NTooltip>
+              </span>
+            </template>
+            <NInputNumber v-model:value="form.intervalSeconds" :min="10" :max="86400" :precision="0" placeholder="60" />
+          </NFormItem>
+          <NFormItem>
+            <template #label>
+              <span class="interval-label">检测目标
+                <NTooltip trigger="hover">
+                  <template #trigger><span class="tip-icon">?</span></template>
+                  与聊天页同源：每个选项是一个站点上的模型（站点 / 模型名），可输入关键字搜索。选「全部」则检测所有站点模型。
+                </NTooltip>
+              </span>
+            </template>
+            <NSelect v-model:value="form.targetMappingId" :options="targetOptions" filterable placeholder="搜索站点 / 模型名" />
+          </NFormItem>
           <NFormItem label="操作"><NButton type="primary" @click="handleCreate">创建任务</NButton></NFormItem>
         </div>
       </NForm>
@@ -97,8 +135,8 @@ onMounted(load)
             <div>
               <strong>{{ task.name }}</strong>
               <div class="task-meta">
-                <NTag size="tiny" :bordered="false">Cron：{{ task.cronExpression }}</NTag>
-                <NTag size="tiny" :bordered="false">模型：{{ task.modelName || '全部' }}</NTag>
+                <NTag size="tiny" :bordered="false">每 {{ task.intervalSeconds }}s（含随机抖动）</NTag>
+                <NTag size="tiny" :bordered="false">目标：{{ targetLabel(task) }}</NTag>
               </div>
             </div>
             <NSpace :wrap="false">
@@ -134,7 +172,9 @@ onMounted(load)
 .detection-tasks-page { min-width: 0; }
 .create-task-card { margin-bottom: 16px; }
 .create-task-card :deep(.n-card__content) { padding: 16px; }
-.task-form-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: 12px; align-items: end; }
+.task-form-grid { display: grid; grid-template-columns: 1.2fr 1fr 1.4fr auto; gap: 12px; align-items: end; }
+.interval-label { display: inline-flex; align-items: center; gap: 4px; }
+.tip-icon { cursor: help; color: var(--text-color-secondary); }
 .task-card-list { display: grid; gap: 12px; }
 .task-card { min-width: 0; }
 .task-card :deep(.n-card__content) { min-width: 0; }
