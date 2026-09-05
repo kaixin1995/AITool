@@ -1,3 +1,5 @@
+### 阶段记录 — 2026-09-05 增强里程碑全部完成（共享密钥 / 流式韧性 / AllInOne / 运维配套；详见 dev-plan-dualhost-enhancement.md 附录 B 与 deployment-guide.md）。当前文档以下条目均为早期双进程拆分过程记录。
+
 
 
 ## 阶段记录 — 2026-06-14 修复 Detection 页面点击无响应（Admin 宿主缺失检测服务链注册）

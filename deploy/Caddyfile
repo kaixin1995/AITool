@@ -1,0 +1,31 @@
+# AI-Tool Core 宿主反代模板（Caddy）
+#
+# 用法：
+#   1. 域名 A 记录指向 VPS（如 core.example.com）
+#   2. 安装 Caddy；将本文件放 /etc/caddy/Caddyfile
+#   3. systemctl enable --now caddy   （自动申请/续期 Let's Encrypt 证书）
+#
+# 说明：
+#   - Core 只监听回环 127.0.0.1:5029（改 Caddy 上游地址与 Core 启动参数对应）
+#   - SSE 流式直通：Caddy 默认不缓冲响应，长流无需额外配置
+#   - WebSocket（/v1/responses 的 WS 模式）Caddy 自动升级，无需配置
+
+core.example.com {
+    encode zstd gzip
+
+    reverse_proxy 127.0.0.1:5029 {
+        # 保持上游长连接，减少握手开销
+        transport http {
+            keepalive 30s
+        }
+    }
+
+    # 可选：限制请求体（一般无需，代理转发大上下文/图片时需放宽）
+    # request_body {
+    #     max_size 64MB
+    # }
+
+    log {
+        output file /var/log/caddy/aitool-core.log
+    }
+}

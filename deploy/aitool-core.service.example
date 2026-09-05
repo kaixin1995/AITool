@@ -1,0 +1,34 @@
+# AI-Tool Core 宿主 systemd 单元（VPS 部署）
+# 放置：/etc/systemd/system/aitool-core.service
+# 启用：systemctl daemon-reload && systemctl enable --now aitool-core
+#
+# 说明：
+#   - 发布产物解压到 /opt/aitool-core（见 publish.ps1 的 AITool.Core-linux-x64 输出，含 dll + runtimeconfig）
+#   - 默认监听 5029；如需 HTTPS 由 Caddy/Nginx 反代（见同目录模板），Core 保持回环可改为 --CoreServer:Port=5029
+#   - Restart=always：崩溃/断电自动拉起；/health 探活由反代或监控轮询
+
+[Unit]
+Description=AI-Tool Core Proxy Host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/aitool-core
+ExecStart=/usr/bin/dotnet /opt/aitool-core/AITool.Core.dll
+Restart=always
+RestartSec=3
+# 敏感文件权限收紧：仅服务账户可读
+User=aitool
+Group=aitool
+UMask=0077
+# 内存保护：与 runtimeconfig 的 GC 堆上限同向；个人部署 512MB 起
+MemoryMax=512M
+# 日志交给 journald
+StandardOutput=journal
+StandardError=journal
+# 健康探活（可选）：卸载注释后由 systemd 在异常时重启
+# ExecStartPost=/bin/sh -c 'for i in $(seq 1 30); do curl -sf http://127.0.0.1:5029/health >/dev/null && exit 0; sleep 1; done; exit 1'
+
+[Install]
+WantedBy=multi-user.target

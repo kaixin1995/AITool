@@ -1,0 +1,44 @@
+# AI-Tool Core 宿主 Nginx 反代参考配置（SSE 流式安全参数已调优）
+#
+# 三个必须项（缺一不可，否则长对话流会被 Nginx 缓冲或掐断）：
+#   1. proxy_buffering off         —— SSE 不缓冲，逐帧直通
+#   2. proxy_read_timeout 600s     —— 长流不被 60s 默认值掐断
+#   3. proxy_http_version 1.1      —— 上游 keep-alive，WebSocket 升级前置
+#
+# 仅示例：证书由 certbot 管理（listen 443 ssl 时配置 ssl_certificate 等）。
+
+upstream aitool_core {
+    server 127.0.0.1:5029 keepalive 32;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name core.example.com;
+
+    # ssl_certificate     /etc/letsencrypt/live/core.example.com/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/core.example.com/privkey.pem;
+
+    client_max_body_size 100m;              # 大上下文/图片请求体
+
+    location / {
+        proxy_pass http://aitool_core;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # —— 以下三条保护 SSE 长流 ——
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+
+        # WebSocket 升级（/v1/responses WS 模式）
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}

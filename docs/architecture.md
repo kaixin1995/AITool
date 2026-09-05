@@ -1,6 +1,12 @@
 # 架构与启动流程（函数级）
 
-> 本文是 [README.md](../README.md) 的架构细节篇，覆盖：项目分层、依赖关系、`Program.cs` 启动流程、依赖注入全表、配置节、数据库与实体全量字段、后台服务。
+> ⚠️ **历史文档声明**：本文档描述的是**早期单宿主（master 形态，AITool.Web + Hangfire + Razor 时代）**的架构快照，
+> 仅供回溯阅读。当前 split 分支为 **Admin/Core 双宿主 + 可选 AllInOne 单进程**架构（SqlSugar、无 Hangfire、Vue3 SPA），
+> 请以 [README.md](../README.md)、[core-admin-split-design.md](core-admin-split-design.md)、
+> [core-admin-split-communication-protocol.md](core-admin-split-communication-protocol.md)、
+> [deployment-guide.md](deployment-guide.md) 为准；本文中的 AITool.Web / Hangfire / Razor Pages /
+> HangfireDetectionScheduler 等表述均已失效，不再适用于现分支。
+>
 > 代理请求转发链路的函数级细节见 [proxy-pipeline.md](proxy-pipeline.md)；协议转换见 [protocol-bridge.md](protocol-bridge.md)。
 
 ---

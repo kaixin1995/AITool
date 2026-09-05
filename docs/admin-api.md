@@ -131,8 +131,8 @@
 | POST | `/detection/probe-all` | 全量探测（异步） |
 | GET | `/detection/progress/{taskId}` | 增量进度（LastReportedCount） |
 | GET | `/detection-tasks` | 定时任务列表（含执行历史） |
-| POST | `/detection-tasks` | 创建（名称 + Cron + 可选模型） |
-| POST | `/detection-tasks/{id}/toggle` | 启停（重注册 Hangfire） |
+| POST | `/detection-tasks` | 创建（名称 + 间隔秒数 + 可选站点映射） |
+| POST | `/detection-tasks/{id}/toggle` | 启停（秒级调度器下一 tick 生效） |
 | POST | `/detection-tasks/{id}/execute` | 立即执行 |
 | DELETE | `/detection-tasks/{id}` | 删除 |
 
@@ -228,6 +228,10 @@
 
 > Codex 体系详见 [codex.md](codex.md)。
 
-## 19. Hangfire 仪表盘
+## 19. Core 宿主运行状态（仪表盘联动）
 
-`/hangfire` — Hangfire Dashboard（InMemory 存储），未登录由中间件重定向 `/login?returnUrl=...`。
+仪表盘 `/api/admin/dashboard/stats` 返回 `coreStatusText` / `coreSyncStatusText` / `coreSyncDetailText`：
+服务端带共享密钥调用 Core 握手端点实时探测（结果内存缓存 8s，离线时不阻塞 stats）；
+Core 不可达时文案降级为「Core 离线（异常类型）」，前端以红色标识。
+
+> 注：早期版本的 Hangfire 仪表盘 `/hangfire` 已随内存治理移除；检测任务调度改由秒级轮询服务承担。

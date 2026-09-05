@@ -30,9 +30,9 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 | 层级 | 技术 |
 |------|------|
 | 运行时 | .NET 8.0 (ASP.NET Core) |
-| 数据库 | SQLite (EF Core, EnsureCreated 模式，无 Migration) |
-| 前端 | Razor Pages + Bootstrap 5.3.3 + 原生 CSS |
-| 交互方式 | 管理页面全部使用 AJAX（fetch API），无整页刷新 |
+| 数据库 | SQLite (SqlSugar ORM，CodeFirst 自动建列，无 Migration) |
+| 前端 | Vue 3 + Vite + Tailwind（独立前端工程，构建产物进 Admin/wwwroot） |
+| 交互方式 | SPA + REST API（fetch/axios），无整页刷新 |
 | 日志 | NLog |
 | 测试 | xUnit + FluentAssertions + 隔离 SQLite 数据库 |
 
@@ -45,9 +45,11 @@ AI-Tool/
 ├── src/
 │   ├── AITool.Domain/            # 领域实体（纯 POCO，零依赖，sealed 类）
 │   ├── AITool.Application/       # 应用层接口和 DTO（纯接口定义，不含实现）
-│   ├── AITool.Infrastructure/    # 基础设施实现（EF Core、HttpClient、代理运行时）
-│   ├── AITool.Admin/             # Admin 宿主（Razor Pages + 管理 API、DB 读写、配置下发）
-│   └── AITool.Core/              # Core 宿主（代理端点 + 运行时查询 API、内存状态持有）
+│   ├── AITool.Infrastructure/    # 基础设施实现（SqlSugar、HttpClient、代理运行时）
+│   ├── AITool.Admin/             # Admin 宿主（管理 API + Vue 前端、DB 读写、配置下发）
+│   ├── AITool.Core/              # Core 宿主（代理端点 /v1、内存状态快照、无数据库）
+│   ├── AITool.AllInOne/          # 单进程宿主（管理面 + 代理面合体，可选部署形态）
+│   └── AITool.Desktop/           # Avalonia 桌面客户端
 ├── tests/
 │   ├── AITool.ApplicationTests/         # 单元测试
 │   ├── AITool.Admin.IntegrationTests/   # Admin 集成测试
@@ -64,6 +66,23 @@ AI-Tool/
 - `Infrastructure`：引用 `Application` 和 `Domain`，实现所有接口，含 Core-Admin 事件总线
 - `Admin`：引用所有项目，管理后台宿主（端口 5030），持有 SQLite 数据库
 - `Core`：引用 Infrastructure，代理运行时宿主（端口 5029），不直接访问数据库
+- `AllInOne`：可选单进程形态（管理面 + 代理面合体，端口 5030），供单机/懒人部署
+
+---
+
+## 流式韧性与跨机能力（3.0+）
+
+- **跨宿主共享密钥**：Admin→Core 的 `/api/core/*` 全部要求 `X-Core-Auth`（SHA256 恒时比较；
+  未配置时管理端点仅允许本机回环访问，代理端点不受影响）——跨机部署前两端配置一致密钥。
+- **SSE 直通头 + 心跳**：所有流式响应带 `X-Accel-Buffering: no`；静默超 15s 注入 `: ping` 注释帧
+  （`ProxyForwarding:SseHeartbeatSeconds` 可关），防中间设备回收长连接。
+- **可恢复流**：Core 为流式响应维护 SSE 帧缓冲，断线方携带 `X-Stream-Resume: {id}:{seq}` 重连后
+  重放缺失帧并衔接实时流（普通客户端零感知；护栏：2MB/流、50 并发、5 分钟保留）。
+- **Admin /v1 中继**：`Relay:Enabled` 开启后客户端可就近连 Admin，Admin↔Core 断线自动续传
+  （最多 3 次重连），跨境链路集中在一条可信连接上。
+- **仪表盘 Core 状态面板**：首页实时显示 Core 在线/离线、配置版本、最近配置同步时间。
+- 部署与运维手册见 [docs/deployment-guide.md](docs/deployment-guide.md)；协议细节见
+  [docs/core-admin-split-communication-protocol.md](docs/core-admin-split-communication-protocol.md)。
 
 ---
 
@@ -74,7 +93,7 @@ AI-Tool/
 ```
 ┌─ Admin 宿主机 (端口 5030) ───────────────────────────────────────────┐
 │                                                                       │
-│  Razor Pages + 管理 API 控制器                                        │
+│  管理 API 控制器 + Vue 前端（SPA）                                        │
 │  SQLite 数据库 (aitool.db) — 唯一写入口                               │
 │  配置下发: CoreConfigSyncHostedService (全量) + AdminCacheInvalidationService (增量) │
 │  事件拉取: CoreEventPullHostedService → CoreEventPullService         │
@@ -149,7 +168,7 @@ Admin: CoreEventPullService.PullAndProcessAsync() ← SSE + 10s 轮询
 
 ### AITool.Domain — 领域实体
 
-纯 POCO 类，无外部依赖。所有实体使用 `Guid` 主键，均为 `sealed` 类，没有基类或共享接口。实体之间**没有 EF Core 导航属性**，关系通过 ID 手动关联。
+纯 POCO 类，无外部依赖。所有实体使用 `Guid` 主键，均为 `sealed` 类，没有基类或共享接口。实体之间**没有 ORM 导航属性**，关系通过 ID 手动关联。
 
 **实体总览（12 个实体，5 个命名空间）：**
 
@@ -790,7 +809,7 @@ dotnet run
 2. **配置快照**：`CoreRuntimeConfigSnapshot` 是 Admin→Core 配置传递的唯一载体，包含路由规则（已按优先级预排序）、站点（含 ApiKey）、密钥、运行时设置。Core 从内存读取，不经 DB。
 3. **事件总线 + 磁盘 Spool**：使用日志、对话记录、开发者追踪事件通过 Core 事件总线 → 磁盘 JSONL 文件 → Admin 定时拉取 + 幂等写入的模式，保证 Admin 离线时数据不丢失（最多 30 天磁盘缓冲）。
 4. **不用 Migration**：使用 `EnsureCreated()` 自动建库 + Schema 补丁机制添加新列，适合快速迭代。
-5. **无导航属性**：实体间通过 ID 关联，避免 EF Core 复杂查询翻译问题（SQLite 对 DateTimeOffset 等类型支持有限）。
+5. **无导航属性**：实体间通过 ID 关联，避免 ORM 复杂查询翻译问题（SQLite 对 DateTimeOffset 等类型支持有限）。
 6. **内存熔断**：`RouteCircuitStateStore` 是 Singleton，重启后状态丢失。渐进式熔断：连续失败达阈值才触发。
 7. **路由规则删除重建**：保存路由规则时先删除旧的后按新顺序创建，保证优先级精确。
 8. **每次尝试记录日志**：代理请求为每次路由尝试记录一条日志，最终结果标记 `IsFinalResult = true`。
