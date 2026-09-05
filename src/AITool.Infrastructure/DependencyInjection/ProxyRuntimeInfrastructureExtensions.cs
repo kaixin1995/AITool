@@ -61,12 +61,13 @@ public static class ProxyRuntimeInfrastructureExtensions
 
         // 注册代理主入口实体配置。
         // 配置 SocketsHttpHandler 连接池：提高每服务器并发连接上限，定期回收空闲连接刷新 DNS。
+        // 连接池寿命与站点专属代理客户端（ProxyForwardService）对齐为 15 分钟：过短会在持续负载下频繁重建连接。
         services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
                 MaxConnectionsPerServer = 200,
-                PooledConnectionLifetime = TimeSpan.FromMinutes(2),
-                PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30)
+                PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
             });
 
         // 注册代理请求元数据缓存，缓存路由、密钥、并发限制等运行时数据。

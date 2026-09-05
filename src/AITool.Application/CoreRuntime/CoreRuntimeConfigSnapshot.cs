@@ -528,6 +528,31 @@ public sealed class CoreRuntimeSettings
     /// 是否启用开发者功能。
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
+
+    /// <summary>
+    /// 调用追踪开关（开发者总闸开启时生效）。关闭后 Core 侧跳过追踪采集分配。
+    /// </summary>
+    public bool DeveloperTraceEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 诊断抓包开关（开发者总闸开启时生效）。
+    /// </summary>
+    public bool DeveloperFailureDumpEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 请求模拟器页开关。
+    /// </summary>
+    public bool DeveloperSimulatorEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 协议诊断与 AI 自愈页开关。
+    /// </summary>
+    public bool DeveloperProtocolDiagnosticsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// SQL 迁移页开关。
+    /// </summary>
+    public bool DeveloperSqlMigrationsEnabled { get; set; } = true;
 }
 
 /// <summary>

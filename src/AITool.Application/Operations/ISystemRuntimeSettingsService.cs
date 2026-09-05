@@ -95,6 +95,31 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
+    /// 调用追踪开关（开发者总闸开启时生效）。可空：请求中缺失（如旧客户端部分回写）表示保持现值。
+    /// </summary>
+    public bool? DeveloperTraceEnabled { get; set; }
+
+    /// <summary>
+    /// 诊断抓包开关（开发者总闸开启时生效）。可空语义同上。
+    /// </summary>
+    public bool? DeveloperFailureDumpEnabled { get; set; }
+
+    /// <summary>
+    /// 请求模拟器页开关。可空语义同上。
+    /// </summary>
+    public bool? DeveloperSimulatorEnabled { get; set; }
+
+    /// <summary>
+    /// 协议诊断与 AI 自愈页开关。可空语义同上。
+    /// </summary>
+    public bool? DeveloperProtocolDiagnosticsEnabled { get; set; }
+
+    /// <summary>
+    /// SQL 迁移页开关。可空语义同上。
+    /// </summary>
+    public bool? DeveloperSqlMigrationsEnabled { get; set; }
+
+    /// <summary>
     /// 控制对话记录页面及记录写入功能是否启用（split 分支）。
     /// </summary>
     public bool ConversationLogEnabled { get; set; }

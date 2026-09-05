@@ -29,7 +29,25 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// <summary>
     /// 站点专属出口网络代理客户端缓存（Key: 代理 URL，如 http://127.0.0.1:7890）
     /// </summary>
-    private readonly ConcurrentDictionary<string, HttpClient> _proxyClients = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ProxyClientEntry> _proxyClients = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// 已从缓存淘汰、等待延迟销毁的客户端（含淘汰时间），由 <see cref="_retireLock"/> 保护
+    /// </summary>
+    private readonly List<RetiredProxyClient> _retiredClients = [];
+    private readonly object _retireLock = new();
+
+    /// <summary>
+    /// 出口代理客户端缓存上限：每个客户端独享一套 SocketsHttpHandler + 连接池，
+    /// 无上限时异常配置（如映射里误填变量拼出的 URL）会让缓存无限增长。16 覆盖所有合理配置规模。
+    /// </summary>
+    private const int MaxProxyClients = 16;
+
+    /// <summary>
+    /// 淘汰客户端的延迟销毁宽限期：保证淘汰瞬间仍在途的请求（拿到旧客户端引用的转发）
+    /// 能自然完成，之后才真正 Dispose 连接池。取 30 分钟以覆盖超长流式响应
+    /// （流式空闲超时只在无数据时触发，持续输出的流可远超请求级超时）。
+    /// </summary>
+    private static readonly TimeSpan RetiredClientDisposeDelay = TimeSpan.FromMinutes(30);
 
     /// <summary>
     /// 注入 HTTP 客户端和日志记录器
@@ -61,22 +79,14 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         try
         {
-            return _proxyClients.GetOrAdd(proxyUrl, url =>
-            {
-                var handler = new SocketsHttpHandler
-                {
-                    Proxy = new WebProxy(new Uri(url)),
-                    UseProxy = true,
-                    PooledConnectionLifetime = TimeSpan.FromMinutes(15),
-                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
-                    KeepAlivePingDelay = TimeSpan.FromSeconds(30),
-                    KeepAlivePingTimeout = TimeSpan.FromSeconds(5)
-                };
-                return new HttpClient(handler, disposeHandler: true)
+            var entry = _proxyClients.GetOrAdd(proxyUrl, url => new ProxyClientEntry(
+                new HttpClient(CreateProxyHandler(url), disposeHandler: true)
                 {
                     Timeout = global::System.Threading.Timeout.InfiniteTimeSpan
-                };
-            });
+                }));
+            entry.LastUsedUtc = DateTime.UtcNow;
+            EvictStaleClients();
+            return entry.Client;
         }
         catch (Exception ex)
         {
@@ -84,6 +94,84 @@ public sealed class ProxyForwardService : IProxyForwardService
             return _httpClient;
         }
     }
+
+    /// <summary>
+    /// 构建走指定出口代理的 Handler（连接池参数与主客户端口径一致）。
+    /// </summary>
+    private static SocketsHttpHandler CreateProxyHandler(string url)
+    {
+        return new SocketsHttpHandler
+        {
+            Proxy = new WebProxy(new Uri(url)),
+            UseProxy = true,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+            KeepAlivePingDelay = TimeSpan.FromSeconds(30),
+            KeepAlivePingTimeout = TimeSpan.FromSeconds(5)
+        };
+    }
+
+    /// <summary>
+    /// 超过 <see cref="MaxProxyClients"/> 时淘汰最久未使用的客户端，并顺带销毁宽限期已过的退役客户端。
+    /// 并发窗口内可能误淘汰"刚被使用"的条目——后果只是下次请求重建客户端，无正确性影响。
+    /// </summary>
+    private void EvictStaleClients()
+    {
+        while (_proxyClients.Count > MaxProxyClients)
+        {
+            var victim = _proxyClients.OrderBy(kvp => kvp.Value.LastUsedUtc).FirstOrDefault();
+            if (victim.Value is null)
+            {
+                break;
+            }
+
+            if (_proxyClients.TryRemove(victim.Key, out var removed))
+            {
+                lock (_retireLock)
+                {
+                    _retiredClients.Add(new RetiredProxyClient(removed.Client, DateTime.UtcNow));
+                }
+                _logger.LogInformation("出口代理客户端缓存超过 {Limit}，已淘汰最久未使用的 {ProxyUrl}", MaxProxyClients, victim.Key);
+            }
+        }
+
+        // 退役宽限期已过的客户端可以安全销毁：引用它的在途请求早已完成。
+        List<RetiredProxyClient>? expired = null;
+        lock (_retireLock)
+        {
+            var cutoff = DateTime.UtcNow - RetiredClientDisposeDelay;
+            for (var i = _retiredClients.Count - 1; i >= 0; i--)
+            {
+                if (_retiredClients[i].RetiredAtUtc <= cutoff)
+                {
+                    (expired ??= []).Add(_retiredClients[i]);
+                    _retiredClients.RemoveAt(i);
+                }
+            }
+        }
+
+        if (expired is not null)
+        {
+            foreach (var retired in expired)
+            {
+                retired.Client.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 代理客户端缓存条目（LRU 用）。
+    /// </summary>
+    private sealed class ProxyClientEntry(HttpClient client)
+    {
+        public HttpClient Client { get; } = client;
+        public DateTime LastUsedUtc { get; set; } = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// 已淘汰待延迟销毁的客户端。
+    /// </summary>
+    private sealed record RetiredProxyClient(HttpClient Client, DateTime RetiredAtUtc);
 
     /// <summary>
     /// 将请求转发到目标站点并解析响应中的 Token 用量。

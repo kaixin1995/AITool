@@ -20,6 +20,7 @@ import {
 import * as api from '@/api/developer'
 import type { DeveloperInvocationSummary } from '@/api/developer'
 import { isRequestCanceled } from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 import PageHeader from '@/components/PageHeader.vue'
 import ClientSimulator from './ClientSimulator.vue'
 import ProtocolDiagnosticsTab from './ProtocolDiagnosticsTab.vue'
@@ -97,7 +98,28 @@ interface DeveloperInvocationDetail {
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const activeTab = ref<DeveloperToolTab>(developerTabFromHash(route.hash))
+
+// 调试工具各功能页可用性（来自登录态接口 features.developerTabs，旧后端无此字段时全部可用）；
+// header-presets / proxy-profiles 属于转发配置页，不受调试分开关控制。
+const developerTabs = computed(() => auth.status?.features?.developerTabs)
+function tabVisible(tab: DeveloperToolTab): boolean {
+  const tabs = developerTabs.value
+  if (!tabs) return true
+  switch (tab) {
+    case 'invocations': return tabs.invocations
+    case 'diagnostic-dumps': return tabs.diagnosticDumps
+    case 'simulator': return tabs.simulator
+    case 'protocol-diagnostics': return tabs.protocolDiagnostics
+    case 'sql-migrations': return tabs.sqlMigrations
+    default: return true
+  }
+}
+// 分开关关闭后：当前激活 Tab 若被隐藏则回落到始终可用的请求头模板页。
+watch(developerTabs, () => {
+  if (!tabVisible(activeTab.value)) activeTab.value = 'header-presets'
+}, { immediate: true })
 const prefillSignal = ref(0)
 provide('protocol-diagnostics-prefill', prefillSignal)
 const loading = ref(false)
@@ -190,8 +212,24 @@ function formatForwardingMode(value: string): string {
 
 function bodyText(value: unknown): string {
   if (value === null || value === undefined || value === '') return '无'
-  if (typeof value === 'string') return value
+  if (typeof value === 'string') return prettyJsonText(value)
   return JSON.stringify(value, null, 2)
+}
+
+// 后端跟踪存储改为存原始（压缩）报文以省内存，展示时再按需缩进：
+// 仅对 { / [ 开头的文本尝试解析，SSE 等非 JSON 文本保持原样。
+// 超大报文跳过格式化（渲染路径反复 parse 多 MB JSON 会卡界面），原样展示。
+const PRETTY_JSON_MAX_LENGTH = 1024 * 1024
+
+function prettyJsonText(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.length > PRETTY_JSON_MAX_LENGTH) return text
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return text
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2)
+  } catch {
+    return text
+  }
 }
 
 function headersText(headers: Record<string, string> | null | undefined): string {
@@ -525,7 +563,7 @@ onUnmounted(() => {
 
     <NCard class="developer-tools-card" :content-style="{ padding: '16px' }">
       <NTabs v-model:value="activeTab" type="line" animated>
-        <NTabPane name="invocations" tab="调用调试">
+        <NTabPane v-if="tabVisible('invocations')" name="invocations" tab="调用调试">
           <div class="trace-page-header">
             <div>
               <h2 class="pane-title">调用调试</h2>
@@ -863,15 +901,15 @@ onUnmounted(() => {
           </div>
         </NTabPane>
 
-        <NTabPane name="diagnostic-dumps" tab="诊断抓包与样本">
+        <NTabPane v-if="tabVisible('diagnostic-dumps')" name="diagnostic-dumps" tab="诊断抓包与样本">
           <DiagnosticDumpsTab />
         </NTabPane>
 
-        <NTabPane name="protocol-diagnostics" tab="协议自愈">
+        <NTabPane v-if="tabVisible('protocol-diagnostics')" name="protocol-diagnostics" tab="协议自愈">
           <ProtocolDiagnosticsTab />
         </NTabPane>
 
-        <NTabPane name="simulator" tab="客户端模拟">
+        <NTabPane v-if="tabVisible('simulator')" name="simulator" tab="客户端模拟">
           <ClientSimulator />
         </NTabPane>
 
@@ -883,7 +921,7 @@ onUnmounted(() => {
           <ProxyProfilesTab />
         </NTabPane>
 
-        <NTabPane name="sql-migrations" tab="SQL 迁移">
+        <NTabPane v-if="tabVisible('sql-migrations')" name="sql-migrations" tab="SQL 迁移">
           <SqlMigrationsTab />
         </NTabPane>
       </NTabs>

@@ -9,7 +9,6 @@ using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Scheduling;
-using Hangfire;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -59,23 +58,25 @@ public static class AdminInfrastructureExtensions
         // 转发链路在缓存层按 Key 展开，走另一套逻辑；此选择器只在站点级单次调用场景使用。
         services.AddScoped<AITool.Infrastructure.Sites.SiteKeySelector>();
 
-        // 注册 Hangfire 内存存储与调度器。
-        services.AddHangfire(config => config
-            .UseSimpleAssemblyNameTypeSerializer()
-            .UseRecommendedSerializerSettings()
-            .UseInMemoryStorage());
-        services.AddHangfireServer();
         // 检测任务秒级调度服务（BackgroundService 轮询，最小 10s 间隔 + 随机抖动，替代 Hangfire Cron 分钟级）。
         // 单例 + Hosted 同实例注册：控制器（立即执行端点）与后台循环共用同一实例与内存下次触发时间表。
         services.AddSingleton<DetectionTaskSchedulerService>();
         services.AddHostedService(sp => sp.GetRequiredService<DetectionTaskSchedulerService>());
+        // 日志保留清理调度（每天本地 03:00 后触发一次，替代 Hangfire RecurringJob，见 LogRetentionPruneService 注释）。
+        services.AddHostedService<LogRetentionPruneService>();
 
         // 注册模型检测所需的转发与日志写入链路。
         // ProxyForwardService 是无状态 HttpClient 转发器（不依赖 Core 运行时配置快照、并发、熔断），
         // 可在管理后台宿主独立工作。UsageLog 通过批量写入器直接落库到 Admin 本地 SQLite。
         // 这同时修复了 Detection 页面点击无响应的问题：此前 ModelHealthRequestService 及其依赖均未注册，
         // GetRequiredService 抛出异常导致 /api/admin/detection/probe/* 全部返回 500。
-        services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+        // 连接池寿命与站点专属代理客户端（ProxyForwardService）对齐为 15 分钟：过短会在持续负载下频繁重建连接。
+        services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2)
+            });
         // SiteUsageTracker 被 ProxyUsageLogBatchWriter 依赖（Codex 巡检读它判断账号活跃度）。
         services.AddSingleton<SiteUsageTracker>();
         services.AddSingleton<ProxyUsageLogBatchWriter>();

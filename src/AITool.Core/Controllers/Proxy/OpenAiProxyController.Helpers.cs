@@ -920,7 +920,7 @@ public sealed partial class OpenAiProxyController
     /// </summary>
     private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
     {
-        if (!runtimeSettings.DeveloperFeaturesEnabled)
+        if (!runtimeSettings.DeveloperFeaturesEnabled || !runtimeSettings.DeveloperTraceEnabled)
         {
             return null;
         }

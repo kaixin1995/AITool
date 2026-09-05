@@ -1,5 +1,6 @@
 using AITool.Application.Proxy;
 using AITool.Core.Services;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Hosting;
@@ -8,6 +9,13 @@ using NLog;
 using NLog.Web;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// glibc malloc 调优必须抢在 Kestrel/后台服务产生原生分配之前应用（见 GlibcArenaLimiter 注释）。
+// 全部由 appsettings NativeMemory 节配置，换机器部署不依赖任何环境变量。
+GlibcArenaLimiter.TryApply(
+    builder.Configuration.GetValue("NativeMemory:MallocArenaMax", 2),
+    builder.Configuration.GetValue("NativeMemory:MallocTrimThresholdBytes", 64 * 1024),
+    builder.Configuration.GetValue("NativeMemory:MallocMmapThresholdBytes", 128 * 1024));
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();

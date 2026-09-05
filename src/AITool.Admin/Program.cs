@@ -17,7 +17,8 @@ using AITool.Infrastructure.Pricing;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Admin.Services;
-using Hangfire;
+using AITool.Infrastructure.Common;
+using AITool.Infrastructure.Scheduling;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
@@ -26,6 +27,13 @@ using NLog.Web;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// glibc malloc 调优必须抢在 Kestrel/后台服务产生原生分配之前应用（见 GlibcArenaLimiter 注释）。
+// 全部由 appsettings NativeMemory 节配置，换机器部署不依赖任何环境变量。
+GlibcArenaLimiter.TryApply(
+    builder.Configuration.GetValue("NativeMemory:MallocArenaMax", 2),
+    builder.Configuration.GetValue("NativeMemory:MallocTrimThresholdBytes", 64 * 1024),
+    builder.Configuration.GetValue("NativeMemory:MallocMmapThresholdBytes", 128 * 1024));
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
@@ -341,8 +349,17 @@ builder.Services.AddSingleton<IModelPricingService, ModelPricingService>();
 builder.Services.AddSingleton<AdminBackgroundTaskQueue>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AdminBackgroundTaskQueue>());
 // 可视化分析后台查询执行器（有界 Channel 单消费者 + 版本化结果缓存，避免并发长查询打爆 SQLite）。
-builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
+// 统计查询执行器配专用限容 MemoryCache（按条目数上限，超限 LRU 淘汰）：
+// 与 AddMemoryCache 的共享实例隔离，避免 SizeLimit 波及其他不带 Size 的缓存使用方。
+builder.Services.AddSingleton(sp => new AnalyticsBackgroundQueryExecutor(
+    new Microsoft.Extensions.Caching.Memory.MemoryCache(
+        new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions
+        {
+            SizeLimit = AnalyticsBackgroundQueryExecutor.MaxCacheEntries
+        })));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AnalyticsBackgroundQueryExecutor>());
+// 日志保留清理调度（每天本地 03:00 后触发一次，替代 Hangfire RecurringJob，见 LogRetentionPruneService 注释）。
+builder.Services.AddHostedService<LogRetentionPruneService>();
 
 // Admin 通过最小 Core 客户端与核心宿主通信。当前阶段先提供握手、full-sync、ack、replay 这几项最关键能力。
 var coreBaseUrl = builder.Configuration["CoreServer:BaseUrl"] ?? $"http://127.0.0.1:{builder.Configuration.GetValue<int?>("CoreServer:Port") ?? 5029}/";
@@ -432,19 +449,6 @@ app.UseAuthorization();
 // 映射健康检查端点，作为集成测试的验证入口。
 // 健康检查端点必须允许匿名访问（负载均衡/k8s 探针不带 JWT），否则 FallbackPolicy 会返回 401。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
-
-// 启用 Hangfire 仪表盘。鉴权策略：本地/开发/测试环境放行；远程生产环境要求已认证用户。
-// JWT 存 localStorage 无法自动带到 /hangfire 页面，远程访问走前端管理界面或被拒绝。
-app.UseHangfireDashboard("/hangfire", new DashboardOptions
-{
-    Authorization = [new AITool.Admin.HangfireDashboardAuthFilter(app.Environment)]
-});
-
-// 注册日志清理定时任务，每天凌晨 3 点执行。
-RecurringJob.AddOrUpdate<ILogRetentionService>(
-    "log-retention-prune",
-    svc => svc.PruneAsync(CancellationToken.None),
-    "0 3 * * *");
 
 app.MapControllers();
 // SPA fallback：非 /api、非 /v1 的请求统一返回前端 index.html，由 Vue Router 接管路由。

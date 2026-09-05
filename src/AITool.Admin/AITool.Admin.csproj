@@ -4,6 +4,16 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Workstation GC（覆盖 Web SDK 的 Server GC 默认值）：小内存部署（2核4G）实测
+         托管堆仅 ~62MB 而 RSS 460MB，Server GC 每核一堆、已提交内存不主动归还是大头；
+         本服务 CPU 利用率 <1%，远达不到 Server GC 有吞吐优势的量级（8核+/持续数百MB/s分配率）。
+         若未来迁移到多核大内存机器且 CPU 成为瓶颈，改回 true 即可。 -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <!-- GC 堆硬上限见 runtimeconfig.template.json（SDK 不透传 GCHeapHardLimit 的 MSBuild 属性，
+         模板内容会合并进构建产物 runtimeconfig.json——随程序走、换机器不依赖环境变量）：
+         实测托管堆活对象 31-62MB，256MB 是 4-8 倍余量；逼近上限时 GC 会积极完整回收并
+         decommit 段内存，把"分配历史留下的水位"压回来。单机如需临时覆盖可用
+         DOTNET_GCHeapHardLimit 环境变量。 -->
     <!-- 只生成 zh-Hans 的语言资源 -->
     <SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
     <Version>1.0.1.17</Version>
@@ -29,8 +39,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Hangfire.AspNetCore" Version="1.8.23" />
-    <PackageReference Include="Hangfire.InMemory" Version="1.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.8" />
     <PackageReference Include="NLog.Web.AspNetCore" Version="6.0.5" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.7.3" />

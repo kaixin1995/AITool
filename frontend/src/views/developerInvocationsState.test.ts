@@ -145,6 +145,20 @@ describe('Developer Invocations 请求体与响应体转换切换与提取', () 
     expect(getCurrentDisplayRequestBody(detail, attempt, 'prepared')).toBe(detail.requestBody)
   })
 
+  it('透传时仅缩进/空白不同（客户端带格式 vs 网关压缩重序列化）判定为无转换', () => {
+    const detail = { requestBody: '{\n  "model": "gpt-4",\n  "stream": false\n}' }
+    const attempt = { preparedRequestBody: '{"model":"gpt-4","stream":false}' }
+
+    expect(hasConvertedRequestBody(detail, attempt)).toBe(false)
+  })
+
+  it('透传时空白不同且模型名被改写则判定为已转换', () => {
+    const detail = { requestBody: '{\n  "model": "gpt-4"\n}' }
+    const attempt = { preparedRequestBody: '{"model":"site-model-x"}' }
+
+    expect(hasConvertedRequestBody(detail, attempt)).toBe(true)
+  })
+
   it('当响应体发生协议转换时识别并正确切换', () => {
     const detail = { responseBody: '{"id":"chatcmpl-1","choices":[{"message":{"content":"hello"}}]}' }
     const attempt = { responseBody: '{"response":{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}}' }

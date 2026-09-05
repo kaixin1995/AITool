@@ -52,6 +52,13 @@ public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
     private const string CacheKeyPrefix = "analytics-dashboard:";
 
     /// <summary>
+    /// 统计结果缓存的最大条目数（配合 20 秒 TTL 的额外保险：以条目为单位设上限，
+    /// 看板结果是聚合 DTO，条数封顶即可约束总占用；超限时 MemoryCache 自动按 LRU 压缩淘汰）。
+    /// 生产注册使用带 SizeLimit 的专用 MemoryCache 实例（见 Program.cs），不影响共享缓存的其他使用方。
+    /// </summary>
+    public const int MaxCacheEntries = 64;
+
+    /// <summary>
     /// 内存缓存，用于短时间复用统计结果。
     /// </summary>
     private readonly IMemoryCache _memoryCache;
@@ -178,7 +185,12 @@ public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
             try
             {
                 var result = await job.State.Worker!(stoppingToken);
-                _memoryCache.Set(job.CacheKey, result, TimeSpan.FromSeconds(20));
+                // Size=1：专用缓存按条目数限制总量；对未设 SizeLimit 的缓存（如测试直构）该值被忽略，无副作用。
+                _memoryCache.Set(job.CacheKey, result, new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(20),
+                    Size = 1
+                });
                 job.State.Completion.TrySetResult(result);
             }
             catch (Exception ex)

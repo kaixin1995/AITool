@@ -112,12 +112,12 @@ public sealed class SqlMigrationsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 开发者功能关闭时接口整体隐藏。
+    /// 开发者功能关闭或 SQL 迁移页单独禁用时接口整体隐藏。
     /// </summary>
     private async Task<bool> IsDeveloperEnabledAsync(CancellationToken cancellationToken)
     {
         var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
-        return settings is not null && settings.DeveloperFeaturesEnabled;
+        return settings is not null && settings.DeveloperFeaturesEnabled && settings.DeveloperSqlMigrationsEnabled;
     }
 }
 

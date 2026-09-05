@@ -218,7 +218,12 @@ public static class CoreRuntimeConfigSnapshotBuilder
                 ConcurrencyMode = runtimeSettings.ConcurrencyMode,
                 ConcurrencyQueueTimeoutSeconds = runtimeSettings.ConcurrencyQueueTimeoutSeconds,
                 ConversationLogEnabled = runtimeSettings.ConversationLogEnabled,
-                DeveloperFeaturesEnabled = runtimeSettings.DeveloperFeaturesEnabled
+                DeveloperFeaturesEnabled = runtimeSettings.DeveloperFeaturesEnabled,
+                DeveloperTraceEnabled = runtimeSettings.DeveloperTraceEnabled,
+                DeveloperFailureDumpEnabled = runtimeSettings.DeveloperFailureDumpEnabled,
+                DeveloperSimulatorEnabled = runtimeSettings.DeveloperSimulatorEnabled,
+                DeveloperProtocolDiagnosticsEnabled = runtimeSettings.DeveloperProtocolDiagnosticsEnabled,
+                DeveloperSqlMigrationsEnabled = runtimeSettings.DeveloperSqlMigrationsEnabled
             }
         };
 

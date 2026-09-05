@@ -59,7 +59,8 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpGet("init")]
     public async Task<IActionResult> GetInit(CancellationToken cancellationToken)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
+        if (settings is null || !settings.DeveloperFeaturesEnabled)
         {
             return NotFound();
         }
@@ -77,7 +78,16 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             defaultAccessKey,
             models = routeModels,
             defaultOpenAiModel = routeModels.FirstOrDefault(x => x.CanUseOpenAi)?.ModelName ?? string.Empty,
-            defaultAnthropicModel = routeModels.FirstOrDefault(x => x.CanUseAnthropic)?.ModelName ?? string.Empty
+            defaultAnthropicModel = routeModels.FirstOrDefault(x => x.CanUseAnthropic)?.ModelName ?? string.Empty,
+            // 各功能页可用性（总闸开启时仍可单独禁用某页）：前端据此隐藏对应 Tab。
+            tabs = new
+            {
+                invocations = settings.DeveloperTraceEnabled,
+                diagnosticDumps = settings.DeveloperFailureDumpEnabled,
+                simulator = settings.DeveloperSimulatorEnabled,
+                protocolDiagnostics = settings.DeveloperProtocolDiagnosticsEnabled,
+                sqlMigrations = settings.DeveloperSqlMigrationsEnabled
+            }
         }));
     }
 
@@ -91,7 +101,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     {
         var settings = await _dbContext.SystemRuntimeSettings
             .FirstAsync(x => x.Id == 1, cancellationToken);
-        if (settings is null || !settings.DeveloperFeaturesEnabled)
+        if (settings is null || !settings.DeveloperFeaturesEnabled || !settings.DeveloperProtocolDiagnosticsEnabled)
         {
             return NotFound();
         }
@@ -163,7 +173,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     {
         var settings = await _dbContext.SystemRuntimeSettings
             .FirstAsync(x => x.Id == 1, cancellationToken);
-        if (settings is null || !settings.DeveloperFeaturesEnabled)
+        if (settings is null || !settings.DeveloperFeaturesEnabled || !settings.DeveloperProtocolDiagnosticsEnabled)
         {
             return NotFound();
         }
@@ -351,7 +361,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         [FromBody] DeveloperAutoDiagnoseLoopRequest request,
         CancellationToken cancellationToken)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperProtocolDiagnosticsEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1252,7 +1262,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpGet("list")]
     public async Task<IActionResult> GetList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperTraceEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1302,7 +1312,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpGet("{traceId:guid}")]
     public async Task<IActionResult> GetDetail(Guid traceId, [FromQuery] bool summarize = false, CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperTraceEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1371,7 +1381,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpGet("concurrency")]
     public async Task<IActionResult> GetConcurrency(CancellationToken cancellationToken)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperTraceEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1415,7 +1425,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpGet("circuit-breaker")]
     public async Task<IActionResult> GetCircuitBreakerStates(CancellationToken cancellationToken)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperTraceEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1491,7 +1501,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpPost("circuit-breaker/{circuitKey}/reset")]
     public async Task<IActionResult> ResetCircuitBreaker(Guid circuitKey, CancellationToken cancellationToken)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperTraceEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1506,7 +1516,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpPost("circuit-breaker/reset-all")]
     public async Task<IActionResult> ResetAllCircuitBreakers(CancellationToken cancellationToken)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperTraceEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1521,7 +1531,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpGet("diagnostic-sampling")]
     public async Task<IActionResult> GetDiagnosticSamplingStatus(CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperFailureDumpEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1538,7 +1548,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         [FromQuery] int durationMinutes = 10,
         CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperFailureDumpEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1553,7 +1563,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpPost("diagnostic-sampling/disable")]
     public async Task<IActionResult> DisableDiagnosticSampling(CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperFailureDumpEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1568,7 +1578,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     [HttpGet("diagnostic-config")]
     public async Task<IActionResult> GetDiagnosticConfig(CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperFailureDumpEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1585,7 +1595,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         [FromBody] DiagnosticConfigDto request,
         CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperFailureDumpEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1602,7 +1612,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         [FromQuery] int limit = 50,
         CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperFailureDumpEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1619,7 +1629,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         string fileName,
         CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperFailureDumpEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -1641,7 +1651,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         [FromQuery] int? retentionDays = null,
         CancellationToken cancellationToken = default)
     {
-        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperFailureDumpEnabled, cancellationToken))
         {
             return NotFound();
         }
@@ -2746,6 +2756,15 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     {
         var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
         return settings.DeveloperFeaturesEnabled;
+    }
+
+    /// <summary>
+    /// 检查开发者某个功能页是否可用（总闸 + 对应分开关同时开启）。
+    /// </summary>
+    private async Task<bool> IsDeveloperTabEnabledAsync(Func<AITool.Domain.Operations.SystemRuntimeSettings, bool> tabFlag, CancellationToken cancellationToken)
+    {
+        var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
+        return settings.DeveloperFeaturesEnabled && tabFlag(settings);
     }
 
     private static bool IsSuccess(string? status)
