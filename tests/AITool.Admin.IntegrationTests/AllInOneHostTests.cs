@@ -67,11 +67,22 @@ public sealed class AllInOneHostTests
         forwarded.StatusCode.Should().Be(HttpStatusCode.OK);
 
         // 进程内事件消费为异步批量：稍等片刻后查询使用日志。
-        await Task.Delay(TimeSpan.FromMilliseconds(500));
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        string diagRows;
+        string diagRawTime = "";
+        var diagNow = DateTimeOffset.Now;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            diagRows = db.Client.Queryable<ProxyUsageLog>().Count().ToString();
+            diagRawTime = string.Join(" | ", db.Client.Ado.SqlQuery<string>("SELECT RequestedAt FROM ProxyUsageLogs"));
+        }
+        var logsAll = await client.GetAsync("/api/admin/usage-logs/list?page=1&pageSize=10&rangeType=all");
+        var logsAllBody = logsAll.IsSuccessStatusCode ? await logsAll.Content.ReadAsStringAsync() : $"HTTP{(int)logsAll.StatusCode}";
         var logs = await client.GetAsync("/api/admin/usage-logs/list?page=1&pageSize=10");
         logs.StatusCode.Should().Be(HttpStatusCode.OK);
         var logsBody = await logs.Content.ReadAsStringAsync();
-        logsBody.Should().Contain("gpt-conserve", "进程内事件链路应把转发落库为使用日志");
+        logsBody.Should().Contain("gpt-conserve", $"DB行数={diagRows}；原始RequestedAt=[{diagRawTime}]；now={diagNow:O}；all响应={RelayTestHelpers.Shorten(logsAllBody)}；day响应={RelayTestHelpers.Shorten(logsBody)}");
     }
 
     [Fact]

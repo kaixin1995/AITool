@@ -52,9 +52,12 @@ builder.Services.AddControllers()
     .ConfigureApplicationPartManager(manager => manager.FeatureProviders.Add(new AllInOneControllerFilter()));
 
 // Admin 管理面：认证、数据库、后台服务、OAuth 全家桶（与 Admin 宿主同一注册段）。
+// enableCrossHostServices=false：单进程无跨宿主，跳过配置下发/事件拉取 HostedService
+// （代理事件经进程内总线由 InProcessCoreEventConsumerHostedService 直接入库），
+// 仪表盘状态使用本地模式实现（恒在线文案，不探测 Core）。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
-builder.AddAdminHostServices(connectionString);
+builder.AddAdminHostServices(connectionString, enableCrossHostServices: false);
 
 // Core 代理面：转发/并发/熔断/追踪/事件总线；DB 配置模式（无配置快照），
 // 事件不经磁盘 spool（进程内消费者直接消化）。
@@ -72,6 +75,8 @@ builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigP
 builder.Services.AddHostedService<InProcessCoreEventConsumerHostedService>();
 
 var app = builder.Build();
+
+// 代理事件接线：追踪完成/熔断事件 → Core 事件总线（AllInOne 由进程内消费者入库）。
 
 // ===================== 管道 =====================
 // 全局异常处理：捕获未处理异常并记录详细日志，返回统一 JSON 错误响应。

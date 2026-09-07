@@ -1,6 +1,6 @@
 using System.Net.Http.Headers;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+
 
 namespace AITool.Infrastructure.Security;
 
@@ -12,12 +12,10 @@ namespace AITool.Infrastructure.Security;
 public sealed class CoreAuthHeaderHandler : DelegatingHandler
 {
     private readonly string _sharedSecret;
-    private readonly ILogger<CoreAuthHeaderHandler> _logger;
 
-    public CoreAuthHeaderHandler(IConfiguration configuration, ILogger<CoreAuthHeaderHandler> logger)
+    public CoreAuthHeaderHandler(IConfiguration configuration)
     {
         _sharedSecret = configuration["CoreServer:SharedSecret"] ?? string.Empty;
-        _logger = logger;
     }
 
     protected override Task<HttpResponseMessage> SendAsync(

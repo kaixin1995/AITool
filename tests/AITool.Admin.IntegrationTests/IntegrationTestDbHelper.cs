@@ -39,6 +39,25 @@ public static class IntegrationTestDbHelper
             DbType = SqlSugar.DbType.Sqlite,
             IsAutoCloseConnection = true
         });
+
+        // 与生产 AppDbContext 的时区 AOP 对齐：查询参数（DateTimeOffset）统一转本地时钟，
+        // 保证"写本地时钟 + 按本地窗口查询"在测试环境与生产行为一致。
+        sqlSugar.Aop.OnExecutingChangeSql = (sql, pars) =>
+        {
+            if (pars is { Length: > 0 })
+            {
+                foreach (var parameter in pars)
+                {
+                    if (parameter?.Value is DateTimeOffset dto)
+                    {
+                        parameter.Value = dto.ToLocalTime();
+                    }
+                }
+            }
+
+            return new KeyValuePair<string, SugarParameter[]>(sql, pars);
+        };
+
         services.AddSingleton<ISqlSugarClient>(sqlSugar);
         services.AddSingleton<System.Threading.SemaphoreSlim>(_ => new System.Threading.SemaphoreSlim(1, 1));
         services.AddScoped<AppDbContext>();

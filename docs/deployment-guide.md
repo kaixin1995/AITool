@@ -73,6 +73,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now aitool-core
 ```
 
 - 单端口同时服务 `/v1` 代理面 + 管理面 + 前端，无配对、无共享密钥（无跨宿主）。
+- 事件与 OAuth 凭证刷新均为进程内直连：代理事件经内存总线直接入库（消费失败自动重试一次），
+  凭证刷新经 DB-backed 配置提供器直写 SQLite。
 - 数据库文件 `aitool.db` 落在程序目录，备份手册见第 5 节。
 
 ---

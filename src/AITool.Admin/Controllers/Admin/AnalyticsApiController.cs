@@ -772,10 +772,8 @@ public sealed class AnalyticsApiController : ControllerBase
             if (earliestRow is not null)
             {
                 var earliest = earliestRow.RequestedAt;
-                if (earliest.Offset != TimeSpan.Zero)
-                {
-                    earliest = new DateTimeOffset(earliest.DateTime, TimeSpan.Zero);
-                }
+                // 保留原始 offset（存储为本地时钟 +08:00，瞬时时刻正确）；
+                // 若强制改 offset=Zero 而时钟值不变，会把窗口起点错误前移 8 小时。
 
                 startTime = earliest;
             }

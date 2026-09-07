@@ -75,7 +75,7 @@ var coreBaseUrl = builder.Configuration["CoreServer:BaseUrl"] ?? $"http://127.0.
 
 var app = builder.Build();
 
-// 执行管理后台启动初始化：数据库创建、Schema 迁移、Hangfire 调度注册。
+// 执行管理后台启动初始化：数据库创建、Schema 迁移。
 var initLogger = app.Services.GetRequiredService<ILogger<Program>>();
 await AdminStartupInitializer.InitializeAsync(app.Services, initLogger);
 

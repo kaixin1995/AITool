@@ -329,7 +329,7 @@ internal sealed class RelayMockUpstream : IDisposable
 
             _ = Task.Run(() => RespondAsync(ctx));
             _ = Interlocked.Increment(ref _responseIndex);
-            Paths.Enqueue(ctx.Request.Url.AbsolutePath + ctx.Request.Url.Query);
+            Paths.Enqueue((ctx.Request.Url?.AbsolutePath ?? "?") + (ctx.Request.Url?.Query ?? ""));
         }
     }
 

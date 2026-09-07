@@ -1,3 +1,4 @@
+using AITool.Admin;
 using AITool.Admin.Controllers.Proxy;
 using AITool.Admin.Services;
 using AITool.Application.Accounts;
@@ -36,7 +37,9 @@ namespace AITool.Admin;
 /// </summary>
 public static class AdminProgramServices
 {
-    public static void AddAdminHostServices(this WebApplicationBuilder builder, string connectionString)
+    /// <param name="enableCrossHostServices">是否启用跨宿主服务（配置下发/事件拉取）。
+    /// Admin 宿主 true；AllInOne 单进程形态 false（无跨宿主，跳过相关 HostedService 与状态探测）。</param>
+    public static void AddAdminHostServices(this WebApplicationBuilder builder, string connectionString, bool enableCrossHostServices = true)
     {
 builder.Services.AddCommonInfrastructure();
 
@@ -199,6 +202,15 @@ builder.Services.AddScoped<AdminCredentialEventIngestor>();
 
 // Admin 侧缓存失效门面，通过 CoreAdminClient 向 Core 下发全量配置快照以刷新运行时缓存。
 builder.Services.AddSingleton<CoreSyncStatusStore>();
+// Core 状态探测器（仪表盘真实握手 + 8s 内存缓存）。
+if (enableCrossHostServices)
+{
+    builder.Services.AddSingleton<AITool.Admin.Services.ICoreStatusProvider, CoreStatusProbe>();
+}
+else
+{
+    builder.Services.AddSingleton<AITool.Admin.Services.ICoreStatusProvider, AITool.Admin.Services.LocalModeStatusProbe>();
+}
 builder.Services.AddSingleton<ProxyRequestMetadataCache>(sp =>
 {
     var memoryCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>();
@@ -369,8 +381,13 @@ builder.Services.AddHttpClient("RelayCoreClient", client =>
 
 // Admin 启动后自动将数据库配置同步到 Core 宿主。
 // 如果 Core 尚未就绪，会按指数退避重试，最多 5 次。
-builder.Services.AddHostedService<CoreConfigSyncHostedService>();
-
 // Admin 定时从 Core 拉取事件（replay）、消费入库（ingest）、提交确认（ack）。
+// 构成完整的事件消费闭环：Core 产生事件 → spool 兜底 → Admin 拉取 → 入库 → 确认。
+// AllInOne 单进程形态（enableCrossHostServices=false）两者均无跨宿主语义，不注册。
+if (enableCrossHostServices)
+{
+    builder.Services.AddHostedService<CoreConfigSyncHostedService>();
+    builder.Services.AddHostedService<CoreEventPullHostedService>();
+}
     }
 }

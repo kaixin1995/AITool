@@ -467,6 +467,22 @@ onMounted(loadStats)
   line-height: 1.6;
 }
 
+.hero-core-status {
+  margin: -12px 0 16px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hero-core-status .core-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+}
+
 .hero-quick-buttons {
   display: flex;
   gap: 12px;

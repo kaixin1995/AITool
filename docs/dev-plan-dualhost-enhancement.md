@@ -245,3 +245,14 @@ CoreConfigController(status)、CoreConfigHandshakeController(handshake)、CoreCo
 - 凭证刷新回写 → `DbBackedRuntimeConfigProvider`（AllInOne 专用，满足 CoreCredentialRefreshEngine 的快照读写面）
 
 **验证**：AllInOneHostTests 4 例（健康/管理面、/v1 回合、事件进程内落库可见、聊天转发）全绿。
+
+---
+
+## 附录 C：M5 补充执行记录
+
+- 探测逻辑抽取：`CoreStatusProbe`（握手 + 8s 内存缓存，TTL 内复用结果不发请求），
+  DashboardApiController 仅做委托；配 `CoreStatusProbeTests`（缓存命中/离线降级 2 例）
+- Admin 集成测试的进程型用例（真实 Core 子进程 + 本地端口）纳入串行集合，
+  消除端口探测释放后的并行抢占竞态（RelaySerialized）
+- 最终回归：Admin 153 / Core 291 / 单元 328 / 前端 118 全绿；
+  性能门 2 例（100 次转发均值 <100ms、连续流式后宿主健康）通过

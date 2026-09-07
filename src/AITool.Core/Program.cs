@@ -43,8 +43,9 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Limits.MaxRequestBodySize = null;
 });
 
-// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器。
-builder.Services.AddCommonInfrastructure();
+// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器、
+// 流式增强默认配置（传入配置使 SseHeartbeatSeconds/StreamResume* 键生效）。
+builder.Services.AddCommonInfrastructure(builder.Configuration);
 
 // 注册 CORS 策略，允许 Admin 宿主（5030）的前端 JavaScript 跨域调用 Core 代理端点。
 // 双宿主部署时 Admin 页面和 Core API 分属不同端口，浏览器需要 CORS 头才能正常通信。
@@ -71,22 +72,8 @@ builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
 builder.Services.AddSingleton<CoreRuntimeConfigProvider>();
 builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>(sp => sp.GetRequiredService<CoreRuntimeConfigProvider>());
 
-// SSE 心跳选项：流式响应静默超过阈值秒数注入 `: ping` 注释帧（0 = 关闭，默认 15s）。
-builder.Services.AddSingleton(new SseHeartbeatOptions(
-    builder.Configuration.GetValue("ProxyForwarding:SseHeartbeatSeconds", 15)));
-// 流式响应可恢复缓冲：断线方以 X-Stream-Resume 重入后重放（纯增量，普通客户端零感知）。
-var resumeOptions = new StreamResumeOptions
-{
-    Enabled = builder.Configuration.GetValue("ProxyForwarding:StreamResumeEnabled", true),
-    MaxFrameBytesPerRequest = builder.Configuration.GetValue("ProxyForwarding:StreamResumeMaxFrameBytes", StreamResumeStore.DefaultMaxFrameBytesPerRequest),
-    MaxActiveStreams = builder.Configuration.GetValue("ProxyForwarding:StreamResumeMaxActive", StreamResumeStore.DefaultMaxActiveStreams),
-    RetainMinutes = builder.Configuration.GetValue("ProxyForwarding:StreamResumeRetainMinutes", 5)
-};
-builder.Services.AddSingleton(resumeOptions);
-builder.Services.AddSingleton(new StreamResumeStore(
-    resumeOptions.MaxFrameBytesPerRequest,
-    resumeOptions.MaxActiveStreams,
-    TimeSpan.FromMinutes(resumeOptions.RetainMinutes)));
+// SSE 心跳与可恢复缓冲选项由 AddCommonInfrastructure(builder.Configuration) 注册
+// （读取 ProxyForwarding:SseHeartbeatSeconds / StreamResume* 配置键）。
 
 // 注册代理运行时核心链路服务：代理转发、并发控制、熔断、事件总线、批处理写入器等。
 // Core 宿主传入 useCoreRuntimeConfigProviderForCache: true，使元数据缓存优先从配置快照读取。
@@ -104,55 +91,8 @@ builder.AddCoreProxyHostServices();
 
 var app = builder.Build();
 
-// 将开发者追踪存储的完成事件连接到事件发布器。
-// Store 的 OnTraceCompleted 事件在追踪记录完成时触发，
-// Publisher 接收后异步发布 developer-trace 事件到 Core 事件总线。
-// 使用 fire-and-forget 模式，发布失败不影响代理主流程。
-{
-    var traceStore = app.Services.GetRequiredService<DeveloperInvocationTraceStore>();
-    var tracePublisher = app.Services.GetRequiredService<CoreUnifiedProxyEventPublisher>();
-    var tracePublishLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CoreUnifiedProxyEventPublish");
-    traceStore.OnTraceCompleted += entry =>
-    {
-        // fire-and-forget：追踪事件发布是辅助链路，不应阻塞代理主流程
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await tracePublisher.PublishAsync(entry);
-            }
-            catch (Exception ex)
-            {
-                tracePublishLogger.LogWarning(ex, "发布开发者追踪事件失败，不影响代理主流程。TraceId={TraceId}", entry.TraceId);
-            }
-        });
-    };
-}
-
-// 将熔断状态存储的首次熔断事件连接到事件发布器。
-// RouteCircuitStateStore 的 OnCircuitOpened 事件在路由首次触发熔断时触发，
-// Publisher 接收后异步发布 circuit-breaker 事件到 Core 事件总线。
-// 使用 fire-and-forget 模式，发布失败不影响代理主流程。
-{
-    var circuitStore = app.Services.GetRequiredService<RouteCircuitStateStore>();
-    var circuitPublisher = app.Services.GetRequiredService<CoreCircuitBreakerEventPublisher>();
-    var circuitPublishLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CoreCircuitBreakerEventPublish");
-    circuitStore.OnCircuitOpened += (sender, args) =>
-    {
-        // fire-and-forget：熔断事件发布是辅助链路，不应阻塞代理主流程
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await circuitPublisher.PublishAsync(args);
-            }
-            catch (Exception ex)
-            {
-                circuitPublishLogger.LogWarning(ex, "发布熔断状态变更事件失败，不影响代理主流程。RouteId={RouteId}", args.RouteId);
-            }
-        });
-    };
-}
+// 代理事件接线（追踪完成/熔断/路由回退 → Core 事件总线），抽取至 CoreProxyEventWiring。
+AITool.Core.CoreProxyEventWiring.WireProxyEvents(app.Services);
 
 // Core 宿主启动时尝试从本地文件恢复上次的配置快照。
 // 如果没有可恢复配置，保持 not-ready 状态，等待 Admin 下发首个完整快照。

@@ -34,37 +34,44 @@ public sealed class InProcessCoreEventConsumerHostedService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var batch = new List<CoreAdminEventEnvelope>(MaxBatchSize);
-        var sw = Stopwatch.StartNew();
-
+        // 逐条即时消费：AllInOne 为低频单进程形态，保证事件零滞留；
+        // 失败由 FlushAsync 内部重试一次，再失败丢弃并告警。
         await foreach (var envelope in _eventBus.Reader.ReadAllAsync(stoppingToken))
         {
-            batch.Add(envelope);
-            if (batch.Count >= MaxBatchSize || sw.Elapsed >= MaxBatchWindow)
-            {
-                await FlushAsync(batch, stoppingToken);
-                batch.Clear();
-                sw.Restart();
-            }
-        }
-
-        if (batch.Count > 0)
-        {
-            await FlushAsync(batch, stoppingToken);
+            await FlushAsync([envelope], stoppingToken);
         }
     }
 
-    private async Task FlushAsync(List<CoreAdminEventEnvelope> batch, CancellationToken cancellationToken)
+    private async Task FlushAsync(IReadOnlyList<CoreAdminEventEnvelope> batch, CancellationToken cancellationToken)
     {
-        try
+        // 失败重试一次（瞬时故障容错）；再失败才丢弃（AllInOne 无 spool 兜底，日志注明）。
+        for (var attempt = 1; attempt <= 2; attempt++)
         {
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var pullService = scope.ServiceProvider.GetRequiredService<CoreEventPullService>();
-            await pullService.ProcessEnvelopesAsync(batch, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "进程内事件消费失败，本批次 {Count} 条将被丢弃（AllInOne 形态无磁盘 spool 兜底）。", batch.Count);
+            try
+            {
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var pullService = scope.ServiceProvider.GetRequiredService<CoreEventPullService>();
+                await pullService.ProcessEnvelopesAsync(batch, cancellationToken);
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (attempt >= 2)
+                {
+                    _logger.LogError(ex, "进程内事件消费失败（已重试），本批次 {Count} 条将被丢弃。", batch.Count);
+                    return;
+                }
+
+                _logger.LogWarning(ex, "进程内事件消费失败，500ms 后重试（批次 {Count} 条）。", batch.Count);
+                try
+                {
+                    await Task.Delay(500, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
         }
     }
 }

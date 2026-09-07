@@ -125,10 +125,28 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
         return _client.Insertable(entity).ExecuteCommandAsync(cancellationToken);
     }
 
-    /// <summary>批量插入（替代 EF AddRange + SaveChanges）。</summary>
+    /// <summary>批量插入（替代 EF AddRange + SaveChanges）。
+    /// 注意：Insertable(list) 列集合路径不触发 Aop.DataExecuting 单实体钩子，
+    /// 因此这里显式把 DateTimeOffset 属性规范化为本地时钟（与写入侧语义一致，
+    /// SQLite 存储无 offset 字符串，写 UTC 时钟会使"当天"窗口错位 8 小时）。</summary>
     public Task<int> InsertRangeAsync<T>(IEnumerable<T> entities, CancellationToken cancellationToken = default) where T : class, new()
     {
-        return _client.Insertable(entities.ToList()).ExecuteCommandAsync(cancellationToken);
+        var list = entities.ToList();
+        var dateProps = typeof(T).GetProperties()
+            .Where(p => p.CanRead && p.CanWrite && p.PropertyType == typeof(DateTimeOffset))
+            .ToArray();
+        foreach (var entity in list)
+        {
+            foreach (var prop in dateProps)
+            {
+                if (prop.GetValue(entity) is DateTimeOffset dto)
+                {
+                    prop.SetValue(entity, dto.ToLocalTime());
+                }
+            }
+        }
+
+        return _client.Insertable(list).ExecuteCommandAsync(cancellationToken);
     }
 
     /// <summary>更新单条实体。</summary>

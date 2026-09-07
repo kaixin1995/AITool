@@ -19,6 +19,8 @@ public sealed class SseHeartbeatStream : Stream
     private readonly Stream _inner;
     private readonly TimeSpan _interval;
     private readonly CancellationTokenSource _cts = new();
+    // 写串行化：心跳泵与转发数据写共享内层流，必须互斥，避免帧交错。
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
     private long _lastWriteTicks = Environment.TickCount64;
 
     public SseHeartbeatStream(Stream inner, int intervalSeconds)
@@ -41,9 +43,17 @@ public sealed class SseHeartbeatStream : Stream
                     continue;
                 }
 
-                // 静默超阈值：注入注释帧并冲刷到网络。
-                await _inner.WriteAsync(PingFrame, _cts.Token).ConfigureAwait(false);
-                await _inner.FlushAsync(_cts.Token).ConfigureAwait(false);
+                // 静默超阈值：注入注释帧并冲刷到网络（与数据写互斥，防帧交错）。
+                await _writeGate.WaitAsync(_cts.Token).ConfigureAwait(false);
+                try
+                {
+                    await _inner.WriteAsync(PingFrame, _cts.Token).ConfigureAwait(false);
+                    await _inner.FlushAsync(_cts.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _writeGate.Release();
+                }
             }
         }
         catch (OperationCanceledException)
@@ -67,25 +77,57 @@ public sealed class SseHeartbeatStream : Stream
     public override void Write(byte[] buffer, int offset, int count)
     {
         MarkWrite(count);
-        _inner.Write(buffer, offset, count);
+        _writeGate.Wait();
+        try
+        {
+            _inner.Write(buffer, offset, count);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public override void Write(ReadOnlySpan<byte> buffer)
     {
         MarkWrite(buffer.Length);
-        _inner.Write(buffer);
+        _writeGate.Wait();
+        try
+        {
+            _inner.Write(buffer);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
-    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
         MarkWrite(buffer.Length);
-        return _inner.WriteAsync(buffer, cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
-    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
         MarkWrite(count);
-        return _inner.WriteAsync(buffer, offset, count, cancellationToken);
+        await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _inner.WriteAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
     }
 
     public override void Flush() => _inner.Flush();

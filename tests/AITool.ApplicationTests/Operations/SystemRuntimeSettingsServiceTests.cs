@@ -202,7 +202,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         // 固定基准时间，便于清晰构造筛选窗口。
         var baseTime = new DateTimeOffset(2026, 05, 07, 12, 00, 00, TimeSpan.Zero);
 
-        await _dbContext.InsertRangeAsync(new[]
+        _dbContext.Client.Insertable(new[]
         {
             new AITool.Domain.Proxy.ProxyUsageLog
             {
@@ -246,7 +246,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
                 ReasoningEffort = string.Empty,
                 RequestedAt = baseTime.AddHours(-2)
             }
-        });
+        }).ExecuteCommand();
 
         var deletedCount = await _service.ClearUsageLogsAsync(new ClearUsageLogsRequest
         {
