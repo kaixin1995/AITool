@@ -4,6 +4,7 @@ using AITool.Application.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Proxy;
 using AITool.Web.Contracts;
+using Microsoft.Extensions.Logging;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -18,13 +19,22 @@ public class HeaderProfilesApiController : ControllerBase
 {
     private readonly IHeaderProfileCatalogService _catalogService;
     private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly AiAssistantService? _aiAssistant;
+    private readonly ClientReleaseFeedService? _releaseFeed;
+    private readonly ILogger<HeaderProfilesApiController>? _logger;
 
     public HeaderProfilesApiController(
         IHeaderProfileCatalogService catalogService,
-        ProxyRequestMetadataCache? metadataCache = null)
+        ProxyRequestMetadataCache? metadataCache = null,
+        AiAssistantService? aiAssistant = null,
+        ClientReleaseFeedService? releaseFeed = null,
+        ILogger<HeaderProfilesApiController>? logger = null)
     {
         _catalogService = catalogService;
         _metadataCache = metadataCache;
+        _aiAssistant = aiAssistant;
+        _releaseFeed = releaseFeed;
+        _logger = logger;
     }
 
     /// <summary>
@@ -256,6 +266,212 @@ public class HeaderProfilesApiController : ControllerBase
         {
             previewHeaders = resolved,
             evaluatedCount = resolved.Count
+        }));
+    }
+
+    /// <summary>
+    /// AI 查询该方案客户端的最新版本。只做查询与对比，不写库——
+    /// 返回当前/最新版本及替换版本号后的 HeadersJson，前端展示对比后由用户确认，
+    /// 确认后走既有 PUT 更新。
+    /// </summary>
+    [HttpPost("{id:guid}/ai-latest-version")]
+    public async Task<IActionResult> AiLatestVersion(Guid id, CancellationToken cancellationToken)
+    {
+        var profile = await _catalogService.GetByIdAsync(id, cancellationToken);
+        if (profile is null)
+        {
+            return NotFound(ApiResponse.Fail("请求头方案不存在", "profile_not_found"));
+        }
+
+        if (_aiAssistant is null)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "AI 助手服务不可用" }));
+        }
+
+        Dictionary<string, string> headers;
+        if (string.IsNullOrWhiteSpace(profile.HeadersJson))
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "该方案没有配置任何请求头，无法识别版本" }));
+        }
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(profile.HeadersJson);
+            if (parsed is null || parsed.Count == 0)
+            {
+                return Ok(ApiResponse.Ok(new { success = false, error = "该方案没有配置任何请求头，无法识别版本" }));
+            }
+            headers = new Dictionary<string, string>(parsed, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = $"Headers JSON 解析失败: {ex.Message}" }));
+        }
+
+        if (!headers.TryGetValue("User-Agent", out var userAgent) || string.IsNullOrWhiteSpace(userAgent))
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "该方案未配置 User-Agent 请求头，无法识别版本" }));
+        }
+
+        var currentVersion = ClientVersionText.ExtractVersion(userAgent);
+        if (string.IsNullOrWhiteSpace(currentVersion))
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = $"无法从 User-Agent 中识别版本号：{userAgent}" }));
+        }
+
+        // 先拉官方发布源（GitHub Releases / npm）拿确定性数据，AI 只负责归纳；
+        // 没有公开源的档案（如 ZCode / Antigravity）回落 AI 自身知识。
+        var feed = _releaseFeed is null
+            ? new ClientReleaseFeedService.ReleaseFeedResult(false, string.Empty, string.Empty)
+            : await _releaseFeed.LookupAsync(profile.Key, cancellationToken);
+        string prompt;
+        if (feed.Success)
+        {
+            prompt = $@"下面是客户端「{profile.Name}」（标识：{profile.Key}）的官方发布数据，来自 {feed.SourceLabels}：
+
+{feed.Facts}
+
+当前 User-Agent：{userAgent}
+当前使用的版本：{currentVersion}
+
+请只根据上面的发布数据归纳：
+1. version 填数据中的最新「正式版」版本号（去掉 v / rust-v 等 tag 前缀，只留版本号本身；数据里没有比当前版本更新的正式版时，填当前版本号）。
+2. 数据中没有比当前版本更新的正式版（只有预发布或无更新）时，视为已是最新，known 填 true。
+3. note 用一句话说明依据（来源与版本发布日期）。数据缺失或互相矛盾导致无法判断时 known 填 false。
+4. 只输出一个 JSON 对象：{{""version"":""x.y.z"",""known"":true,""note"":""一句话说明""}}。不要输出其他任何文字或代码块围栏。";
+        }
+        else
+        {
+            prompt = $@"请告诉我以下软件客户端当前官方最新发布的稳定版本号。
+
+客户端名称：{profile.Name}（标识：{profile.Key}）
+当前 User-Agent：{userAgent}
+当前使用的版本：{currentVersion}
+
+要求：
+1. version 只填版本号本身（例如 1.2.3，不要 v 前缀，不要整段 User-Agent）。
+2. 如果你确定该客户端的最新稳定版本，known 填 true；不确定或不知道该客户端时 known 填 false，此时 version 可留空。
+3. 只输出一个 JSON 对象，格式：{{""version"":""x.y.z"",""known"":true,""note"":""一句话说明""}}。不要输出其他任何文字或代码块围栏。";
+        }
+
+        var aiResult = await _aiAssistant.CompleteAsync(prompt, cancellationToken);
+        if (!aiResult.Success)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = aiResult.Error }));
+        }
+
+        string? latestVersion = null;
+        string? note = null;
+        var known = false;
+        try
+        {
+            var json = AiAssistantService.ExtractJsonBlock(aiResult.Content!);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            // known 兼容布尔与字符串两种形态（模型常把 true 输出成 "true"）。
+            if (root.TryGetProperty("known", out var knownEl))
+            {
+                known = knownEl.ValueKind == JsonValueKind.True
+                    || (knownEl.ValueKind == JsonValueKind.String
+                        && bool.TryParse(knownEl.GetString(), out var knownBool) && knownBool);
+            }
+            if (root.TryGetProperty("version", out var versionEl)
+                && (versionEl.ValueKind == JsonValueKind.String || versionEl.ValueKind == JsonValueKind.Number))
+            {
+                latestVersion = versionEl.ValueKind == JsonValueKind.String
+                    ? versionEl.GetString()?.Trim()
+                    : versionEl.GetDecimal().ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            if (root.TryGetProperty("note", out var noteEl) && noteEl.ValueKind == JsonValueKind.String)
+            {
+                note = noteEl.GetString();
+            }
+        }
+        catch
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "AI 返回内容无法解析为版本信息，请重试或手动更新" }));
+        }
+
+        var sourceNote = feed.Success ? $"数据来源：{feed.SourceLabels}" : null;
+
+        // 是否采信 latestVersion：发布数据在手时做确定性校验（版本号须出现在事实清单或等于当前版本），
+        // 不依赖模型正确设置 known 标志——实测模型常把 known 误填为 false；
+        // 无发布源的纯 AI 模式仍以 known 为准（没有事实可校验，只能靠模型自报置信度）。
+        var useVersion = false;
+        if (!string.IsNullOrWhiteSpace(latestVersion))
+        {
+            latestVersion = latestVersion.TrimStart('v', 'V');
+            if (feed.Success)
+            {
+                useVersion = string.Equals(latestVersion, currentVersion, StringComparison.OrdinalIgnoreCase)
+                             || feed.Facts.Contains(latestVersion, StringComparison.Ordinal);
+            }
+            else
+            {
+                useVersion = known;
+            }
+        }
+
+        if (!useVersion || string.IsNullOrWhiteSpace(latestVersion))
+        {
+            // 归纳结果缺少可用的版本号：记录 AI 原始输出，便于定位新的输出形态。
+            if (_logger is not null)
+            {
+                _logger.LogWarning(
+                    "AI latest-version parse yielded no usable version (profile {Key}): raw={Raw}",
+                    profile.Key, aiResult.Content is null ? string.Empty : aiResult.Content.Length <= 500 ? aiResult.Content : aiResult.Content[..500]);
+            }
+            return Ok(ApiResponse.Ok(new
+            {
+                success = true,
+                upToDate = true,
+                changed = false,
+                currentVersion,
+                latestVersion = (string?)null,
+                note = note ?? "AI 表示无法确定该客户端的最新版本，请手动核实",
+                sourceNote,
+                currentHeadersJson = profile.HeadersJson,
+                proposedHeadersJson = profile.HeadersJson
+            }));
+        }
+
+        var comparison = ClientVersionText.CompareVersions(latestVersion, currentVersion);
+        var upToDate = comparison <= 0;
+        string proposedHeadersJson;
+        if (upToDate)
+        {
+            proposedHeadersJson = profile.HeadersJson!;
+        }
+        else
+        {
+            var proposed = new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase);
+            foreach (var key in proposed.Keys.ToList())
+            {
+                if (string.Equals(key, "User-Agent", StringComparison.OrdinalIgnoreCase))
+                {
+                    // UA 里只替换第一个版本段（产品版本），后面的依赖库版本保持原样。
+                    proposed[key] = ClientVersionText.ReplaceVersion(userAgent, latestVersion);
+                }
+                else if (string.Equals(proposed[key]?.Trim(), currentVersion, StringComparison.OrdinalIgnoreCase))
+                {
+                    // 其他头的值整体就是当前版本号（如 x-zcode-app-version / X-Msh-Version）→ 同步替换，
+                    // 避免更新后 UA 与版本头不一致造成指纹矛盾。
+                    proposed[key] = latestVersion;
+                }
+            }
+            proposedHeadersJson = JsonSerializer.Serialize(proposed);
+        }
+
+        return Ok(ApiResponse.Ok(new
+        {
+            success = true,
+            upToDate,
+            changed = !upToDate,
+            currentVersion,
+            latestVersion,
+            note,
+            sourceNote,
+            currentHeadersJson = profile.HeadersJson,
+            proposedHeadersJson
         }));
     }
 

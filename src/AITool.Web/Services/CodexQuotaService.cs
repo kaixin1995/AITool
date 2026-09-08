@@ -22,7 +22,6 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 {
     // wham/usage 端点（codex-patrol 同款）
     private const string UsageUrl = "https://chatgpt.com/backend-api/wham/usage";
-    private const string UserAgent = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
 
     /// <summary>结果缓存 TTL（防抖）。</summary>
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);
@@ -32,6 +31,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IMemoryCache _resultCache;
     private readonly CodexCredentialRefreshService _credentialRefreshService;
+    private readonly ICodexClientVersionResolver _versionResolver;
     private readonly ILogger<CodexQuotaService> _logger;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。KeyedAsyncLock 会在账号不再使用时回收锁条目。</summary>
@@ -43,6 +43,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         ProxyRequestMetadataCache metadataCache,
         IMemoryCache resultCache,
         CodexCredentialRefreshService credentialRefreshService,
+        ICodexClientVersionResolver versionResolver,
         ILogger<CodexQuotaService> logger)
     {
         _httpClient = httpClient;
@@ -50,6 +51,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         _metadataCache = metadataCache;
         _resultCache = resultCache;
         _credentialRefreshService = credentialRefreshService;
+        _versionResolver = versionResolver;
         _logger = logger;
     }
 
@@ -261,10 +263,11 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
         try
         {
+            var versionInfo = await _versionResolver.ResolveAsync(ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, UsageUrl);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", account.AccessToken);
-            request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+            request.Headers.TryAddWithoutValidation("User-Agent", versionInfo.UserAgent);
             request.Headers.TryAddWithoutValidation("Originator", "codex_cli_rs");
             if (!string.IsNullOrEmpty(account.AccountId))
             {

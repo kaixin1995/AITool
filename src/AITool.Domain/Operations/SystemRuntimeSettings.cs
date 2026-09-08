@@ -177,4 +177,12 @@ public sealed class SystemRuntimeSettings
     /// </summary>
     [SugarColumn(ColumnName = "CodexInspectionCacheEnabled")]
     public bool OAuthInspectionCacheEnabled { get; set; }
+
+    /// <summary>
+    /// AI 助手功能（请求头模板「AI 查最新版」、模型价格「AI 查价格」等）使用的默认
+    /// 站点/模型，值为聊天目标（SiteModelMapping）的 MappingId。null 表示未配置，
+    /// 相关功能会提示先到设置页选择。
+    /// </summary>
+    [SugarColumn(IsNullable = true)]
+    public Guid? DefaultAiTargetMappingId { get; set; }
 }

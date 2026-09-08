@@ -39,14 +39,14 @@ export async function getHeaderProfiles(): Promise<HeaderProfile[]> {
   return await httpGet<HeaderProfile[]>('/api/admin/developer/header-profiles')
 }
 
+// httpGet/httpPost 已解包 ApiResponse.data 外层，直接声明载荷类型即可；
+// 再取 res.data 会拿到 undefined（双重解包）。
 export async function getHeaderProfile(id: string): Promise<HeaderProfile> {
-  const res = await httpGet<{ data: HeaderProfile }>(`/api/admin/developer/header-profiles/${id}`)
-  return res.data
+  return await httpGet<HeaderProfile>(`/api/admin/developer/header-profiles/${id}`)
 }
 
 export async function createHeaderProfile(payload: HeaderProfilePayload): Promise<{ id: string; key: string }> {
-  const res = await httpPost<{ data: { id: string; key: string } }>('/api/admin/developer/header-profiles', payload)
-  return res.data
+  return await httpPost<{ id: string; key: string }>('/api/admin/developer/header-profiles', payload)
 }
 
 export async function updateHeaderProfile(id: string, payload: HeaderProfilePayload): Promise<void> {
@@ -58,6 +58,29 @@ export async function deleteHeaderProfile(id: string): Promise<void> {
 }
 
 export async function previewHeaders(request: PreviewHeadersRequest): Promise<PreviewHeadersResponse> {
-  const res = await httpPost<{ data: PreviewHeadersResponse }>('/api/admin/developer/header-profiles/preview', request)
-  return res.data
+  return await httpPost<PreviewHeadersResponse>('/api/admin/developer/header-profiles/preview', request)
+}
+
+export interface AiLatestVersionResponse {
+  success: boolean
+  error?: string | null
+  upToDate: boolean
+  changed: boolean
+  currentVersion: string
+  latestVersion?: string | null
+  note?: string | null
+  /** 数据来源说明（如「数据来源：GitHub Releases: openai/codex」）；无公开源时为 null。 */
+  sourceNote?: string | null
+  currentHeadersJson?: string | null
+  proposedHeadersJson?: string | null
+}
+
+// AI 查询该方案客户端的最新版本（耗时较长，单独放宽超时）。
+// httpPost 已解包 ApiResponse 外层，直接返回载荷（载荷自带 success 字段表示业务成败）。
+export async function aiFetchLatestVersion(id: string): Promise<AiLatestVersionResponse> {
+  return await httpPost<AiLatestVersionResponse>(
+    `/api/admin/developer/header-profiles/${id}/ai-latest-version`,
+    {},
+    { timeout: 120000 }
+  )
 }

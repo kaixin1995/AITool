@@ -101,7 +101,7 @@ public static partial class ClientEmulationEngine
 
             case ClientEmulationConstants.CodexCli:
                 // OpenAI Codex Desktop 官方客户端特征 (默认 Codex 方案)
-                headers["User-Agent"] = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
+                headers["User-Agent"] = "Codex Desktop/0.153.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
                 headers["Originator"] = "Codex Desktop";
                 headers["Session-Id"] = "${guid}";
                 headers["Thread-Id"] = "${guid}";

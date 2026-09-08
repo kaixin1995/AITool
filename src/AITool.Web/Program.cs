@@ -215,8 +215,16 @@ builder.Services.AddHttpClient<ICodexOAuthClient, CodexOAuthClient>(c =>
     c.Timeout = TimeSpan.FromSeconds(20);
 });
 
-// 注册 Codex 静态模型目录（进程内只读）。
-builder.Services.AddSingleton<ICodexModelCatalog, CodexModelCatalog>();
+// 注册 Codex 模型目录（进程内可按需从 router-for-me/models 刷新，内置分层兜底）。
+builder.Services.AddHttpClient<ICodexModelCatalog, CodexModelCatalog>(c =>
+{
+    // 小体积静态 JSON，10s 足够；两个回退 URL 串行最坏 20s，需低于「拉取模型」前端 30s 请求超时。
+    c.Timeout = TimeSpan.FromSeconds(10);
+});
+
+// 注册 Codex 客户端版本解析器（优先请求头模板库 CodexCli 档案，配置兜底），
+// 拉模型/查额度的 client_version 与 User-Agent 均从此解析，与转发链路版本保持一致。
+builder.Services.AddSingleton<ICodexClientVersionResolver, CodexClientVersionResolver>();
 
 // 注册 Codex 动态模型拉取客户端（chatgpt.com/backend-api/codex/models）。
 builder.Services.AddHttpClient<ICodexModelFetcher, CodexModelFetcher>(c =>
@@ -325,6 +333,14 @@ builder.Services.AddScoped<CodexCredentialRefreshService>();
 builder.Services.AddScoped<GoogleCredentialRefreshService>();
 // 实时代理命中 Kimi 上游 401 时立即刷新凭证并同步隐藏站点。
 builder.Services.AddScoped<KimiCredentialRefreshService>();
+// AI 助手：请求头模板查最新版本、模型价格 AI 查价等后台功能的统一 AI 调用通道。
+builder.Services.AddScoped<AiAssistantService>();
+// 客户端官方发布源（GitHub Releases / npm）：AI 查最新版先拉确定性数据，AI 只做归纳。
+builder.Services.AddHttpClient("ReleaseFeed", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddSingleton<ClientReleaseFeedService>();
+// 公开模型价格源（models.dev / LiteLLM）：模型价格首选查询方式，AI 仅作未收录模型的补漏。
+builder.Services.AddHttpClient("ModelPriceSource", c => c.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddSingleton<ModelPriceSourceService>();
 // Codex 额度被动冷却与重置服务。
 builder.Services.AddScoped<ICodexQuotaCooldownService, CodexQuotaCooldownService>();
 // Codex 手动重置 credits 服务（查询剩余次数/过期时间 + 消耗一张 credit 执行真实重置）。

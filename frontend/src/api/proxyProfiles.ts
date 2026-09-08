@@ -38,14 +38,13 @@ export async function getProxyProfiles(): Promise<ProxyProfile[]> {
   return await httpGet<ProxyProfile[]>('/api/admin/developer/proxy-profiles')
 }
 
+// httpGet/httpPost 已解包 ApiResponse.data 外层，直接声明载荷类型（避免双重解包拿 undefined）。
 export async function getProxyProfile(id: string): Promise<ProxyProfile> {
-  const res = await httpGet<{ data: ProxyProfile }>(`/api/admin/developer/proxy-profiles/${id}`)
-  return res.data
+  return await httpGet<ProxyProfile>(`/api/admin/developer/proxy-profiles/${id}`)
 }
 
 export async function createProxyProfile(payload: ProxyProfilePayload): Promise<{ id: string; key: string }> {
-  const res = await httpPost<{ data: { id: string; key: string } }>('/api/admin/developer/proxy-profiles', payload)
-  return res.data
+  return await httpPost<{ id: string; key: string }>('/api/admin/developer/proxy-profiles', payload)
 }
 
 export async function updateProxyProfile(id: string, payload: ProxyProfilePayload): Promise<void> {
@@ -57,6 +56,5 @@ export async function deleteProxyProfile(id: string): Promise<void> {
 }
 
 export async function testProxyProfile(request: TestProxyRequest): Promise<TestProxyResponse> {
-  const res = await httpPost<{ data: TestProxyResponse }>('/api/admin/developer/proxy-profiles/test', request)
-  return res.data
+  return await httpPost<TestProxyResponse>('/api/admin/developer/proxy-profiles/test', request)
 }

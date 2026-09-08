@@ -21,7 +21,6 @@ public sealed class CodexAccountProvisioner
 {
     private const string CodexManagedSource = "Codex";
     private const string CodexBaseUrl = "https://chatgpt.com/backend-api/codex";
-    private const string CodexUserAgent = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
 
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;

@@ -47,7 +47,8 @@ export interface DeveloperConcurrencyItem {
 }
 
 export interface DeveloperAiDiagnosePayload {
-  modelId: string
+  /** 诊断用 AI 模型；缺省时后端使用「设置 → AI 助手」配置的默认站点/模型。 */
+  modelId?: string
   mappingId?: string
   enableReasoning?: boolean
   reasoningEffort?: string
@@ -89,7 +90,8 @@ export interface AutoDiagnoseRoundItem {
 }
 
 export interface AutoDiagnoseLoopPayload {
-  diagnosticModelId: string
+  /** 诊断用 AI 模型；缺省时后端使用「设置 → AI 助手」配置的默认站点/模型。 */
+  diagnosticModelId?: string
   diagnosticMappingId?: string
   enableReasoning?: boolean
   reasoningEffort?: string

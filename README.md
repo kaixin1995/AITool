@@ -21,9 +21,13 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 使用日志（Token 级用量追踪：**输入/缓存/输出三段口径**、重试次数、流中断、首字延迟；来源识别 claude-code / codex / open-code / zcode / deepseek-harness；**行级消耗金额**，USD/CNY 动态切换）
 - 统计分析（用量趋势、模型分布、缓存命中率、延迟分位数等可视化仪表盘；**总消耗金额 + 成本趋势 + 模型成本分布**，查询时按价格表动态计价，历史数据自动兼容）
 - 模型价格（**本地 JSON 价格表**（`model-pricing.json`，不入数据库），内置主流模型 USD 单价 seed；模型页可编辑、保存即生效；支持 **DeepSeek 类峰谷分档计价**；匹配自动归一化 namespace/日期/effort 后缀）
-- 开发者调试（进程内环形调用追踪 + 客户端模拟器 + 并发/熔断监控 + **离线协议诊断台**（转换链路可视化/字段级对比/规则试运行/一键保存规则） + **SQL 迁移执行**（密码确认+事务+试运行+全量审计））
+- **查价格**（模型页一键查询：**公开价格源优先**——models.dev 与 LiteLLM 双源拉取、本地匹配（单位统一换算为 USD/百万 tokens、第一方厂商优先、聚合前缀/思考后缀容错）、进程内缓存 6 小时、秒级返回；未收录模型可 **AI 补漏**（分批查询 + 实时进度 + 可停止，单批失败不中断）；结果新旧对比、确认后应用，保留峰谷配置）
+- **AI 助手**（设置页选定默认站点/模型，供「查版本 / 查价格 / AI 诊断」全系统共用；`AiAssistantService` 复用代理转发链路，支持 OpenAI/Anthropic/Responses/Gemini 四协议目标；响应提取兼容字符串/数组 content 等形态，思考型模型空正文自动重试）
+- 开发者调试（进程内环形调用追踪 + 客户端模拟器 + 并发/熔断监控 + **离线协议诊断台**（转换链路可视化/字段级对比/规则试运行/一键保存规则）+ **SQL 迁移执行**（密码确认+事务+试运行+全量审计）+ **请求头模板库**（命名档案 + 动态占位符引擎 + **AI 查最新版**：先抓官方发布源（GitHub Releases / npm / 官网 changelog）确定性数据、AI 只做归纳、版本号须出现在事实清单才采信；UA 与独立版本头（如 `x-zcode-app-version`）同步替换）+ **网络代理池**（出口代理方案管理/测速））
+- 客户端特征模拟（`ClientEmulationEngine`：请求头模板库命名档案 + `guid/nanoid/timestamp/model` 动态占位符；站点/模型库/映射三层配置，模板最底层注入、显式配置覆盖；出口代理按站点生效）
 - OpenAI Responses API 代理（HTTP、WebSocket、Compact 三种模式）
-- OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；内置 Codex 与 Google（GeminiCLI/Antigravity）提供程序）
+- OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；内置 Codex、Google（GeminiCLI/Antigravity）与 Kimi 提供程序）
+- **Codex 客户端版本单源化**（版本号唯一来源为请求头模板库 CodexCli 档案 User-Agent，转发伪装/拉模型/查额度三路一致，配置兜底；**远端模型目录**按需从 router-for-me/models 刷新（双 URL 回退 + 校验 + 原子替换），新账号默认映射无需发版即可跟上上游新模型）
 
 ---
 
@@ -232,7 +236,7 @@ flowchart TD
 | `admin/dashboard` | `stats` |
 | `admin/sites` | CRUD / toggle / bulk-delete / **export / import** / `/{id}/keys...`（多 Key CRUD） |
 | `admin/site-catalog` | fetch-models / fetch-all-models / fetch-all-progress / import-selected |
-| `admin/models` | CRUD / toggle / clear-all / **vendor-catalog 读写** / `/{id}/mappings` / mappings concurrency |
+| `admin/models` | CRUD / toggle / clear-all / **vendor-catalog 读写** / `/{id}/mappings` / mappings concurrency / **pricing 价格表读写** / **pricing/ai-plan · ai-query（AI 查价格计划与分批补漏）** / **pricing/source-fetch（公开价格源匹配）** |
 | `admin/route-rules` | entries CRUD / site-instances / models / discover-sites / list / save / toggle / delete |
 | `admin/compatibility-profiles` | CRUD / toggle |
 | `admin/access-keys` | list / `/{id}/plain`（复制完整密钥）/ create / toggle / delete / update-routes |
@@ -244,7 +248,9 @@ flowchart TD
 | `admin/usage-logs` | filters / list / request-detail / summary |
 | `admin/analytics` | options / dashboard（重查询后台队列，Pending 返回 202 语义） |
 | `admin/system` | settings 读写 / **clear-usage-logs** |
-| `admin/developer/invocations` | init / list / `{traceId}` / concurrency / **circuit-breaker（查询/单条解除/全部解除）** / **protocol-diagnostics（离线协议诊断）** |
+| `admin/developer/invocations` | init / list / `{traceId}` / concurrency / **circuit-breaker（查询/单条解除/全部解除）** / **protocol-diagnostics（离线协议诊断）** / **ai-diagnose · auto-diagnose-loop（AI 智能诊断与多轮协议自愈，未显式选模型时回落设置页默认 AI 目标）** |
+| `admin/developer/header-profiles` | CRUD / preview（占位符实时求值）/ `{id}/ai-latest-version`（官方发布源 + AI 归纳查最新版，只读不落库） |
+| `admin/developer/proxy-profiles` | CRUD / test（出口代理连通性测速） |
 | `admin/sql-migrations` | 列表 / `{fileName}/execute`（密码确认 + 事务 + 试运行 + 审计） |
 | `admin/oauth` | OAuth / 凭证导入导出 / 账号 CRUD / 额度 / 模型 / 通用巡检 / reset-credits（详见 [docs/codex.md](docs/codex.md)；旧 `admin/codex` 仅兼容保留） |
 | `/hangfire` | Hangfire 仪表盘（未登录重定向登录页） |
@@ -267,7 +273,7 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 
 🔒 仅 `OAuthFeaturesEnabled` 开启时显示；🛠️ 仅 `DeveloperFeaturesEnabled` 开启时显示。侧边栏左下角显示当前版本号与编译时间（读自后端程序集元数据）。
 
-**调试工具六页签**（`/developer/invocations`，hash 深链）：调用调试（环形追踪 40 条/20 分钟，含每段尝试的转换后请求体）· 客户端模拟器（8 个端点）· 当前模型并发数检测 · 熔断监控（站点+模型维度，可手动解除）· 协议诊断（离线转换 + 链路可视化 + 字段对比 + 规则试运行 + 一键保存规则）· SQL 迁移（详见 [docs/debug-tools.md](docs/debug-tools.md)）。
+**调试工具七页签**（`/developer/invocations`，hash 深链，按功能开关联动显隐）：调用调试（环形追踪 40 条/20 分钟，含每段尝试的转换后请求体）· 诊断抓包与样本 · 协议自愈（离线转换 + 链路可视化 + 字段对比 + 规则试运行 + AI 智能诊断/多轮自愈）· 客户端模拟（8 个端点）· 请求头模板库（命名档案管理 + 实时求值 + AI 查最新版）· 网络代理池（出口代理方案/测速）· SQL 迁移（详见 [docs/debug-tools.md](docs/debug-tools.md)）。
 
 **页面要点**：
 - **站点管理**：多 Key 管理（优先级/启停/备注）、JSON/TSV 导入导出、远端模型拉取（单站/全站异步）
@@ -275,7 +281,8 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 - **路由管理**：候选实例队列拖拽排序、改动即存、时间规则草稿确认保存、兼容规则集页签（strip/rename/default/keep_reasoning × scope）
 - **使用日志**：来源品牌图标（含 DeepSeek Harness）、模型列显示「路由入口名 -> 对外模型」、输入/缓存/输出三段 token、查看链路抽屉（同 RequestId 全部尝试）、5s 增量刷新
 - **OAuth 管理**：账号额度 + 通用巡检两页签（额度窗口进度条、token 过期预警、缓存命中统计）
-- **系统设置**：检测/代理（超时重试熔断并发）/日志/开发者功能/账号额度巡检分组卡；按来源/时间清空日志
+- **系统设置**：检测/代理（超时重试熔断并发）/日志/开发者功能/**AI 助手（默认站点/模型，查版本、查价格、AI 诊断共用）**/账号额度巡检分组卡；按来源/时间清空日志
+- **模型库「模型价格」页签**：本地价格表编辑 + 「查价格」（公开价格源匹配 → 弹窗内新旧对比 / 未收录 AI 补漏 / 确认应用）
 
 ---
 
@@ -292,6 +299,9 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 | `AnalyticsBackgroundQueryExecutor` | 统计重查询单消费者队列（容量 4 + 20s 结果缓存 + 版本失效）；看板按批聚合请求链，避免重试日志全量驻留内存 |
 | `AdminBackgroundTaskQueue` | 管理后台长任务单消费者队列（容量 8；站点模型抓取最多 4 个并发、手动模型探测；宿主停止时统一取消） |
 | `ModelVendorCatalogService` | 厂商图标/匹配规则目录（`model-vendor-catalog.json`，运行文件可编辑） |
+| `AiAssistantService` | AI 助手统一调用通道：按设置页默认站点/模型发起单轮非流式补全（复用 `IProxyForwardService`，四协议响应提取 + 空正文自动重试） |
+| `ModelPriceSourceService` | 公开模型价格源（models.dev + LiteLLM）：拉取/解析/单位换算 + 进程内缓存 6 小时，配合 `ModelPriceSourceMatcher`（Application 层纯静态）做 ID 匹配 |
+| `ClientReleaseFeedService` | 客户端官方发布源（GitHub Releases / npm dist-tag / 官网 changelog）：按档案 Key 拉确定性版本事实，缓存 30 分钟 |
 | `AdminAuthService` | 管理密码（PBKDF2，兼容旧 MD5 透明升级，写回 appsettings.json） |
 | `JwtTokenService` | access/refresh 签发与轮换吊销（RefreshTokenRecord 表）；进程内串行消费 refresh token，过期清理按 5 分钟节流 |
 | `LoginRateLimitService` | IP 登录失败计数 + 锁定 |
@@ -309,12 +319,12 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 
 ```
 1. 构建 WebApplication
-   ├─ NLog + AppVersionInfo(1.0.1.8 + 构建期编译时间戳)
+   ├─ NLog + AppVersionInfo(自动递增版本号 + 构建期编译时间戳)
    ├─ Kestrel：默认 15029，MaxConcurrentConnections=500，请求体上限 100MB
    ├─ 响应压缩 / 控制器 + 异常过滤器 / MemoryCache
    ├─ JWT Bearer（/api/*）+ AdminAuthService + 登录限流
    ├─ Swagger（Testing 关闭；排除代理控制器）
-   ├─ SqlSugar + AppDbContext；6 个 Typed HttpClient（含转发 SocketsHttpHandler 连接池 200）
+   ├─ SqlSugar + AppDbContext；15 个 HttpClient 注册（上游转发连接池 200、各 OAuth/额度/模型目录客户端、价格源与发布源）
    ├─ 业务服务 + 后台服务 + Hangfire(InMemory)
 2. 启动初始化（scope）
    ├─ InitializeDatabase：CodeFirst 建表/补列 + PRAGMA(WAL) + MigrateLegacySiteKeys
@@ -374,6 +384,7 @@ Hangfire 仪表盘 `/hangfire`（未登录重定向登录页）。
 14. **离线协议诊断**：只调内存桥接，不触发转发/不用密钥/不写记录；试运行规则与真实链路语义一致；可一键把缺失字段修复保存为规则集
 15. **SQL 迁移安全执行**：只执行服务器 sql-migrations 目录脚本（不接收 SQL 文本）、密码确认、事务回滚、试运行、全量审计（SqlMigrationExecution 表）
 16. **OAuth 账号托管**：账号⇆隐藏站点复用全链路；额度提供程序可插拔；通用巡检支持多个额度窗口；多种禁用状态（总开关/手动/自动/冷却）相互区分避免误启用；401 实时刷凭证重发
+17. **公开数据优先、AI 只做归纳**：查价格首选 models.dev/LiteLLM 公开价格源本地匹配；查最新版先抓 GitHub Releases/npm/官网 changelog 的确定性数据再让 AI 归纳，且版本号必须出现在事实清单中才采信（不信任模型自报置信标志）；AI 仅兜底未收录模型。Codex 客户端版本单一事实源为请求头模板库档案，三路（转发/拉模型/查额度）一致
 
 ---
 
@@ -425,9 +436,9 @@ cd frontend && npm run test              # 前端 vitest
 cd frontend && npm run type-check        # vue-tsc 类型检查
 ```
 
-- **单元测试**（`AITool.ApplicationTests`，19 个测试文件，120 个执行用例）：业务服务 + 反射测转发私有方法，临时 SQLite 隔离
-- **集成测试**（`AITool.IntegrationTests`，31 个测试文件，314 个执行用例）：`WebApplicationFactory<Program>` 完整宿主 + Fake 转发服务 + 每工厂独立临时库；覆盖代理端到端、跨协议桥接、故障转移、并发、OAuth 刷新、额度巡检、鉴权、SQL 迁移、协议诊断、后台任务队列、DateTimeOffset 时区一致性等
-- **前端测试**（20 个 Vitest 文件，98 个执行用例）：API 契约、OAuth/账号巡检、路由/模型/日志/设置状态和工具函数
+- **单元测试**（`AITool.ApplicationTests`，32 个测试文件，256 个执行用例）：业务服务 + 反射测转发私有方法，临时 SQLite 隔离
+- **集成测试**（`AITool.IntegrationTests`，44 个测试文件，391 个执行用例）：`WebApplicationFactory<Program>` 完整宿主 + Fake 转发服务 + 每工厂独立临时库；覆盖代理端到端、跨协议桥接、故障转移、并发、OAuth 刷新、额度巡检、鉴权、SQL 迁移、协议诊断、后台任务队列、DateTimeOffset 时区一致性、AI 助手响应提取等
+- **前端测试**（24 个 Vitest 文件，123 个执行用例）：API 契约（含解包契约回归）、OAuth/账号巡检、路由/模型/日志/设置状态和工具函数
 - **usage 断言口径**（重要）：Input=不含缓存新输入；转回 OpenAI 时 prompt_tokens 必须含缓存；流式累计覆盖语义。详见 [docs/testing.md](docs/testing.md#4-usage-token-断言口径重要对应-2026-08-的两次语义修复)
 
 用例级清单见 [docs/testing.md](docs/testing.md)。
@@ -463,6 +474,12 @@ cd frontend && npm run type-check        # vue-tsc 类型检查
 
 ### 定时检测模型可用性
 检测任务页创建 Cron 任务（可限定模型）→ 自动探测回写状态 → 模型健康页看成功率时间线 → 使用日志看探测记录（Source="detection-task"）
+
+### 模型定价一键查询
+模型库「模型价格」页签点「查价格」→ 公开价格源（models.dev/LiteLLM）秒级匹配出全量结果（弹窗内新旧对比）→ 未收录模型点「AI 补漏」走默认 AI 目标分批查询 → 确认「应用到价格表」（保留峰谷配置）。设置页「AI 助手」先选定默认站点/模型。
+
+### 客户端伪装版本跟进
+调试工具「请求头模板库」→ 对内置档案点「AI 查最新版」→ 系统抓官方发布源（GitHub Releases / npm / 官网 changelog）交给 AI 归纳 → 弹窗展示版本对比与请求头 diff → 确认应用（UA 版本段 + 独立版本头同步替换）。Codex 转发/拉模型/查额度的版本号与该档案联动。
 
 ### 用量分析和监控
 使用日志页（三段 token、来源图标、链路详情）→ 统计分析页（趋势/分布/缓存命中/分位数/下钻）→ 系统设置调整超时/重试/熔断/并发/日志保留 → 调试工具追踪全链路
