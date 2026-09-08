@@ -162,7 +162,8 @@ export interface SourceFetchResponse {
   sources: string[]
 }
 export async function sourceFetchPricing(ids: string[]): Promise<SourceFetchResponse> {
-  // 每次现拉双源（models.dev 4.5MB + LiteLLM 2.3MB，服务端零缓存零常驻），最坏 2×30s 加解析，留足余量。
+  // 每次现拉双源（models.dev 4.5MB + LiteLLM 2.3MB，服务端零缓存零常驻、双源并行、单源 15s 超时），
+  // 最坏约 15s 加解析，留足余量。
   return httpPost<SourceFetchResponse>('/api/admin/models/pricing/source-fetch', { ids }, { timeout: 90000 })
 }
 
