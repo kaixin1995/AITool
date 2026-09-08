@@ -555,7 +555,7 @@ onMounted(() => {
 
         <div v-else class="vendor-groups">
         <section v-for="group in filteredVendorGroups" :key="group.vendorName" class="vendor-group">
-          <div class="vendor-group-header" :style="{ background: group.headerBackground || undefined }">
+          <div class="vendor-group-header" :style="{ '--vendor-header-bg': group.headerBackground || undefined }">
             <div class="vendor-group-title-wrap">
               <div class="vendor-group-icon" :class="{ 'vendor-group-icon-fallback': !group.iconSvgBody }">
                 <span v-if="group.iconSvgBody" v-html="buildVendorIconMarkup(group.iconSvgBody)" />
@@ -625,7 +625,7 @@ onMounted(() => {
             </div>
             <div v-else class="vendor-definition-list">
               <section v-for="entry in filteredVendors" :key="`${entry.vendor.vendorName}-${entry.index}`" class="vendor-summary-card">
-                <div class="vendor-summary-header" :style="{ background: entry.vendor.headerBackground || undefined }">
+                <div class="vendor-summary-header" :style="{ '--vendor-header-bg': entry.vendor.headerBackground || undefined }">
                   <div class="vendor-summary-title-wrap">
                     <div class="vendor-group-icon" :class="{ 'vendor-group-icon-fallback': !entry.vendor.iconSvgBody }">
                       <span v-if="entry.vendor.iconSvgBody" v-html="buildVendorIconMarkup(entry.vendor.iconSvgBody)" />
@@ -998,7 +998,9 @@ onMounted(() => {
   padding: 0 12px;
 }
 
-.models-tab-pane {
+/* pane-class 挂在 naive-ui 内部渲染的包裹元素上，scoped 样式不带 data-v 匹配不到，
+   必须 :deep() 才能让内边距真正生效（否则工具栏/厂商分组头会贴满卡片边框）。 */
+.models-tabs :deep(.models-tab-pane) {
   padding: 16px;
 }
 
@@ -1045,8 +1047,35 @@ onMounted(() => {
   justify-content: space-between;
   gap: 16px;
   padding: 18px 22px;
+  /* 厂商目录的浅色背景经 CSS 变量注入，仅亮色主题使用；暗色主题由下方 [data-theme] 规则整体覆盖 */
+  background: var(--vendor-header-bg, linear-gradient(135deg, rgba(99, 148, 255, 0.10), rgba(99, 148, 255, 0.03)));
   color: #1f2937;
   border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+/* 暗色主题：忽略厂商目录的浅色 headerBackground（刺眼白块），统一用暗色渐变 */
+[data-theme='dark'] .vendor-group-header {
+  color: var(--text-primary);
+  background: linear-gradient(135deg, rgba(99, 148, 255, 0.16), rgba(99, 148, 255, 0.05));
+  border-bottom-color: var(--border-color-global);
+}
+
+[data-theme='dark'] .vendor-group-header .vendor-group-title {
+  color: var(--text-primary);
+}
+
+[data-theme='dark'] .vendor-group-header .vendor-group-subtitle {
+  color: var(--text-color-secondary);
+}
+
+[data-theme='dark'] .vendor-group-header .vendor-group-icon {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-color-global);
+}
+
+[data-theme='dark'] .vendor-group-header .vendor-group-icon :deep(svg),
+[data-theme='dark'] .vendor-group-header .vendor-group-icon-fallback {
+  color: var(--text-primary);
 }
 
 .vendor-group-title-wrap {
@@ -1218,7 +1247,29 @@ onMounted(() => {
   padding: 14px 18px;
   align-items: center;
   color: #1f2937;
+  background: var(--vendor-header-bg, linear-gradient(135deg, rgba(99, 148, 255, 0.10), rgba(99, 148, 255, 0.03)));
   border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+[data-theme='dark'] .vendor-summary-card .vendor-summary-header {
+  color: var(--text-primary);
+  background: linear-gradient(135deg, rgba(99, 148, 255, 0.16), rgba(99, 148, 255, 0.05));
+  border-bottom-color: var(--border-color-global);
+}
+
+[data-theme='dark'] .vendor-summary-card .vendor-summary-name,
+[data-theme='dark'] .vendor-summary-card .vendor-group-icon :deep(svg),
+[data-theme='dark'] .vendor-summary-card .vendor-group-icon-fallback {
+  color: var(--text-primary);
+}
+
+[data-theme='dark'] .vendor-summary-card .vendor-summary-meta {
+  color: var(--text-color-secondary);
+}
+
+[data-theme='dark'] .vendor-summary-card .vendor-group-icon {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-color-global);
 }
 
 .vendor-summary-actions {

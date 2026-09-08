@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import {
   NButton,
+  NCheckbox,
   NInput,
   NInputNumber,
   NModal,
@@ -536,6 +537,8 @@ function formatPriceChange(before: number | undefined, after: number): string {
 // —— 清理无效条目（价格表有、本地模型库没有的模型）——
 const showCleanupModal = ref(false)
 const cleanupPreview = ref<ModelPriceEntry[]>([])
+/** 本轮确认弹窗中勾选待删的模型 ID（小写）。默认全选，可逐行取消。 */
+const cleanupSelectedIds = ref<Set<string>>(new Set())
 const cleaning = ref(false)
 
 /** 价格表中不在本地模型库（含禁用）的条目。 */
@@ -546,21 +549,30 @@ const orphanedEntries = computed(() =>
   })
 )
 
+const cleanupSelectedCount = computed(() => cleanupSelectedIds.value.size)
+
+function toggleCleanupSelected(id: string, checked: boolean): void {
+  const next = new Set(cleanupSelectedIds.value)
+  if (checked) next.add(id.toLowerCase())
+  else next.delete(id.toLowerCase())
+  cleanupSelectedIds.value = next
+}
+
 function openCleanupModal(): void {
   cleanupPreview.value = [...orphanedEntries.value]
+  cleanupSelectedIds.value = new Set(cleanupPreview.value.map((e) => e.id.trim().toLowerCase()))
   showCleanupModal.value = true
 }
 
 async function handleCleanupConfirm(): Promise<void> {
-  if (!cleanupPreview.value.length) return
-  const removeIds = new Set(cleanupPreview.value.map((e) => e.id.trim().toLowerCase()))
-  entries.value = entries.value.filter((e) => !removeIds.has(e.id.trim().toLowerCase()))
+  if (!cleanupSelectedIds.value.size) return
+  entries.value = entries.value.filter((e) => !cleanupSelectedIds.value.has(e.id.trim().toLowerCase()))
 
   cleaning.value = true
   try {
     const saved = await handleSave(true)
     if (saved) {
-      message.success(`已清理 ${removeIds.size} 条无效价格条目并保存`)
+      message.success(`已清理 ${cleanupSelectedIds.value.size} 条无效价格条目并保存`)
       showCleanupModal.value = false
     } else {
       await load()
@@ -766,12 +778,13 @@ onMounted(load)
     >
       <p class="cleanup-help">
         以下 {{ cleanupPreview.length }} 个条目在本地模型库中不存在（gpt-4o 等早已不用的老模型），
-        清理后价格表更聚焦。<b>注意：这些模型的历史使用日志消耗金额将按 0 统计</b>（后续重新导入模型可再查价格补回）。
+        已默认全选，<b>可取消勾选保留想留的模型</b>；清理后这些模型的历史使用日志消耗金额将按 0 统计（后续重新导入模型可再查价格补回）。
       </p>
       <div class="ai-pricing-table-wrap">
         <table class="table ai-pricing-table">
           <thead>
             <tr>
+              <th style="width: 40px"></th>
               <th>模型 ID</th>
               <th>显示名</th>
               <th>输入 $/M</th>
@@ -780,13 +793,19 @@ onMounted(load)
           </thead>
           <tbody>
             <tr v-for="entry in cleanupPreview.slice(0, 60)" :key="entry.id">
+              <td>
+                <NCheckbox
+                  :checked="cleanupSelectedIds.has(entry.id.trim().toLowerCase())"
+                  @update:checked="(checked: boolean) => toggleCleanupSelected(entry.id, checked)"
+                />
+              </td>
               <td><span class="ai-pricing-id">{{ entry.id }}</span></td>
               <td>{{ entry.displayName || '—' }}</td>
               <td>{{ entry.input }}</td>
               <td>{{ entry.output }}</td>
             </tr>
             <tr v-if="cleanupPreview.length > 60">
-              <td colspan="4" class="ai-pricing-empty">…等共 {{ cleanupPreview.length }} 个</td>
+              <td colspan="5" class="ai-pricing-empty">…等共 {{ cleanupPreview.length }} 个</td>
             </tr>
           </tbody>
         </table>
@@ -794,8 +813,13 @@ onMounted(load)
       <template #footer>
         <NSpace justify="end" class="ai-pricing-actions">
           <NButton @click="showCleanupModal = false">取消</NButton>
-          <NButton type="error" :loading="cleaning" @click="handleCleanupConfirm">
-            清理 {{ cleanupPreview.length }} 条并保存
+          <NButton
+            type="error"
+            :loading="cleaning"
+            :disabled="cleanupSelectedCount === 0"
+            @click="handleCleanupConfirm"
+          >
+            清理 {{ cleanupSelectedCount }} 条并保存
           </NButton>
         </NSpace>
       </template>
