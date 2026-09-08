@@ -14,9 +14,9 @@
          实测托管堆活对象 31-62MB，256MB 是 4-8 倍余量；逼近上限时 GC 会积极完整回收并
          decommit 段内存，把"分配历史留下的水位"压回来。单机如需临时覆盖可用
          DOTNET_GCHeapHardLimit 环境变量。 -->
-    <Version>1.0.1.25</Version>
-    <AssemblyVersion>1.0.1.25</AssemblyVersion>
-    <FileVersion>1.0.1.25</FileVersion>
+    <Version>1.0.1.26</Version>
+    <AssemblyVersion>1.0.1.26</AssemblyVersion>
+    <FileVersion>1.0.1.26</FileVersion>
     <!-- 只生成 zh-Hans 的语言资源 -->
     <SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
     <!-- 生成 XML 文档，供 Swagger UI 展示接口注释 -->
