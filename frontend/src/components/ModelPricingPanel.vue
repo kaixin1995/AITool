@@ -45,6 +45,8 @@ const usdToCny = ref(6.74)
 const entries = ref<ModelPriceEntry[]>([])
 /** 未在价格表中的模型库模型名（提示补录）。 */
 const unpricedModelNames = ref<string[]>([])
+/** 本地模型库全部模型名（小写，含禁用；供「清理无效条目」判据使用）。 */
+const libraryModelNames = ref<Set<string>>(new Set())
 
 /** 当前厂商筛选；null = 全部。 */
 const activeVendor = ref<string | null>(null)
@@ -172,9 +174,14 @@ async function load(): Promise<void> {
     entries.value = catalog.models.map((entry) => normalizeEntry(entry))
     if (models) {
       const known = new Set(entries.value.map((e) => e.id.toLowerCase()))
+      const allNames = new Set<string>()
       unpricedModelNames.value = (models.vendorGroups ?? [])
         .flatMap((g) => g.models.map((m) => m.modelName))
-        .filter((name) => !known.has(name.toLowerCase()))
+        .filter((name) => {
+          allNames.add(name.toLowerCase())
+          return !known.has(name.toLowerCase())
+        })
+      libraryModelNames.value = allNames
     }
     page.value = 1
   } catch (error) {
@@ -526,6 +533,43 @@ function formatPriceChange(before: number | undefined, after: number): string {
   return `${before} → ${after}`
 }
 
+// —— 清理无效条目（价格表有、本地模型库没有的模型）——
+const showCleanupModal = ref(false)
+const cleanupPreview = ref<ModelPriceEntry[]>([])
+const cleaning = ref(false)
+
+/** 价格表中不在本地模型库（含禁用）的条目。 */
+const orphanedEntries = computed(() =>
+  entries.value.filter((e) => {
+    const id = e.id.trim()
+    return id.length > 0 && !libraryModelNames.value.has(id.toLowerCase())
+  })
+)
+
+function openCleanupModal(): void {
+  cleanupPreview.value = [...orphanedEntries.value]
+  showCleanupModal.value = true
+}
+
+async function handleCleanupConfirm(): Promise<void> {
+  if (!cleanupPreview.value.length) return
+  const removeIds = new Set(cleanupPreview.value.map((e) => e.id.trim().toLowerCase()))
+  entries.value = entries.value.filter((e) => !removeIds.has(e.id.trim().toLowerCase()))
+
+  cleaning.value = true
+  try {
+    const saved = await handleSave(true)
+    if (saved) {
+      message.success(`已清理 ${removeIds.size} 条无效价格条目并保存`)
+      showCleanupModal.value = false
+    } else {
+      await load()
+    }
+  } finally {
+    cleaning.value = false
+  }
+}
+
 function peakWindowCount(entry: { peakWindows?: string[] | null }): number {
   return entry.peakWindows?.length ?? 0
 }
@@ -588,6 +632,12 @@ onMounted(load)
           :disabled="aiLoading"
           style="width: 120px"
         />
+        <NTooltip trigger="hover" placement="bottom-start" style="max-width: 360px">
+          <template #trigger>
+            <NButton size="small" secondary :disabled="loading" @click="() => openCleanupModal()">清理无效条目</NButton>
+          </template>
+          删除价格表中不在本地模型库（含已禁用）的模型条目，如 gpt-4o 等早已不用的老模型；清理后这些模型的历史用量金额将按 0 统计。
+        </NTooltip>
         <NButton size="small" type="primary" :loading="saving" @click="() => handleSave()">保存价格表</NButton>
       </div>
     </div>
@@ -704,6 +754,51 @@ onMounted(load)
           <NButton size="small" type="primary" @click="applyPeakEditor">确定</NButton>
         </div>
       </div>
+    </NModal>
+
+    <!-- 清理无效条目确认弹窗 -->
+    <NModal
+      v-model:show="showCleanupModal"
+      title="清理无效价格条目"
+      preset="card"
+      style="width: min(640px, 94vw)"
+      :mask-closable="false"
+    >
+      <p class="cleanup-help">
+        以下 {{ cleanupPreview.length }} 个条目在本地模型库中不存在（gpt-4o 等早已不用的老模型），
+        清理后价格表更聚焦。<b>注意：这些模型的历史使用日志消耗金额将按 0 统计</b>（后续重新导入模型可再查价格补回）。
+      </p>
+      <div class="ai-pricing-table-wrap">
+        <table class="table ai-pricing-table">
+          <thead>
+            <tr>
+              <th>模型 ID</th>
+              <th>显示名</th>
+              <th>输入 $/M</th>
+              <th>输出 $/M</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="entry in cleanupPreview.slice(0, 60)" :key="entry.id">
+              <td><span class="ai-pricing-id">{{ entry.id }}</span></td>
+              <td>{{ entry.displayName || '—' }}</td>
+              <td>{{ entry.input }}</td>
+              <td>{{ entry.output }}</td>
+            </tr>
+            <tr v-if="cleanupPreview.length > 60">
+              <td colspan="4" class="ai-pricing-empty">…等共 {{ cleanupPreview.length }} 个</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <template #footer>
+        <NSpace justify="end" class="ai-pricing-actions">
+          <NButton @click="showCleanupModal = false">取消</NButton>
+          <NButton type="error" :loading="cleaning" @click="handleCleanupConfirm">
+            清理 {{ cleanupPreview.length }} 条并保存
+          </NButton>
+        </NSpace>
+      </template>
     </NModal>
 
     <!-- AI 查价格：分批查询弹窗（进度实时刷新，失败行常驻展示，可随时停止） -->
@@ -1090,5 +1185,11 @@ export default { name: 'ModelPricingPanel' }
 
 .ai-pricing-actions {
   margin-top: 12px;
+}
+
+.cleanup-help {
+  margin: 0 0 10px;
+  font-size: 12px;
+  opacity: 0.85;
 }
 </style>

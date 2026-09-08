@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using AITool.Application.Pricing;
 
@@ -9,7 +8,9 @@ namespace AITool.Web.Services;
 /// 本地匹配模型 ID。一次查询零 AI 调用、秒级返回。
 /// <para>
 /// 两个源的单位不同（models.dev 已是 USD/百万 tokens；LiteLLM 是 USD/单 token），解析时统一换算。
-/// 原始响应进程级缓存 6 小时，解析后的索引在缓存体未变化时复用。
+/// 内存策略：原始响应体（约 4.5MB + 2.3MB）只在拉取-解析期间短暂存在，解析完成即交给 GC；
+/// 进程级只常驻解析后的索引快照（约 1-2MB，1.2 万键），TTL 6 小时。双源全断时不缓存空索引，
+/// 并在存在旧快照时沿用过期数据降级。
 /// </para>
 /// </summary>
 public sealed class ModelPriceSourceService
@@ -19,13 +20,14 @@ public sealed class ModelPriceSourceService
 
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(6);
 
-    /// <summary>进程级原始响应缓存。static：服务为单例，但与集成测试多宿主共享目录时也保持一致语义。</summary>
-    private static readonly ConcurrentDictionary<string, (DateTimeOffset FetchedAt, string Body)> BodyCache = new();
+    /// <summary>解析后的索引快照（进程级，static 与服务单例语义一致）。只保留索引不保留原始响应体。</summary>
+    private sealed record SourceIndexSnapshot(
+        IReadOnlyDictionary<string, List<ModelPriceSourceEntry>> Index,
+        DateTimeOffset FetchedAt,
+        string SourceNames);
 
     private static readonly object IndexLock = new();
-    private static IReadOnlyDictionary<string, List<ModelPriceSourceEntry>>? _index;
-    private static DateTimeOffset _indexBuiltAt;
-    private static string _indexSourceNames = string.Empty;
+    private static SourceIndexSnapshot? _snapshot;
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ModelPriceSourceService> _logger;
@@ -73,27 +75,29 @@ public sealed class ModelPriceSourceService
 
     private async Task<IReadOnlyDictionary<string, List<ModelPriceSourceEntry>>> GetIndexAsync(CancellationToken cancellationToken)
     {
-        var bodies = new List<(string Name, string Body)>();
-        var refreshed = false;
+        // 快路径：快照未过期直接用（无锁读不可变引用）。
+        var current = _snapshot;
+        if (current is not null && DateTimeOffset.UtcNow - current.FetchedAt < CacheTtl)
+        {
+            return current.Index;
+        }
 
+        var fetchedNames = new List<string>();
+        var fetchedEntries = new List<IEnumerable<KeyValuePair<string, ModelPriceSourceEntry>>>();
         foreach (var (name, url) in new[] { ("models.dev", ModelsDevUrl), ("LiteLLM", LiteLlmUrl) })
         {
-            if (BodyCache.TryGetValue(url, out var cached)
-                && DateTimeOffset.UtcNow - cached.FetchedAt < CacheTtl)
-            {
-                bodies.Add((name, cached.Body));
-                continue;
-            }
-
             try
             {
                 var client = _httpClientFactory.CreateClient("ModelPriceSource");
                 using var response = await client.GetAsync(url, cancellationToken);
                 response.EnsureSuccessStatusCode();
+                // 响应体只作局部变量：解析完成后出作用域即可被 GC 回收，不进程级常驻。
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);
-                BodyCache[url] = (DateTimeOffset.UtcNow, body);
-                bodies.Add((name, body));
-                refreshed = true;
+                var entries = name == "models.dev"
+                    ? ParseModelsDev(body)
+                    : ParseLiteLlm(body);
+                fetchedNames.Add(name);
+                fetchedEntries.Add(entries);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -108,50 +112,47 @@ public sealed class ModelPriceSourceService
 
         lock (IndexLock)
         {
-            if (_index is not null && !refreshed && _indexSourceNames == SourceKey(bodies))
+            // 并发兜底：等待锁期间别的请求可能已完成刷新。
+            var latest = _snapshot;
+            if (ReferenceEquals(latest, current) && latest is not null && fetchedNames.Count == 0)
             {
-                return _index;
+                // 双源均失败：不缓存空索引；有旧快照时沿用过期数据降级，否则返回空。
+                return latest.Index;
             }
 
             var index = new Dictionary<string, List<ModelPriceSourceEntry>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (name, body) in bodies)
+            foreach (var entries in fetchedEntries)
             {
-                try
+                foreach (var (key, entry) in entries)
                 {
-                    var entries = name == "models.dev"
-                        ? ParseModelsDev(body)
-                        : ParseLiteLlm(body);
-                    foreach (var (key, entry) in entries)
+                    if (!index.TryGetValue(key, out var list))
                     {
-                        if (!index.TryGetValue(key, out var list))
-                        {
-                            list = [];
-                            index[key] = list;
-                        }
-                        list.Add(entry);
+                        list = [];
+                        index[key] = list;
                     }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Parse model price source failed: {Source}", name);
+                    list.Add(entry);
                 }
             }
 
-            _index = index;
-            _indexBuiltAt = DateTimeOffset.UtcNow;
-            _indexSourceNames = SourceKey(bodies);
+            if (index.Count > 0)
+            {
+                _snapshot = new SourceIndexSnapshot(index, DateTimeOffset.UtcNow, string.Join("|", fetchedNames));
+            }
+            else if (_snapshot is not null)
+            {
+                // 解析全部失败（双源返回坏数据）：同样沿用旧快照，不缓存空索引。
+                return _snapshot.Index;
+            }
+
             return index;
         }
     }
-
-    private static string SourceKey(List<(string Name, string Body)> bodies)
-        => string.Join("|", bodies.Select(b => b.Name));
 
     private static IReadOnlyList<string> LoadedSourceNames()
     {
         lock (IndexLock)
         {
-            return _indexSourceNames.Split('|', StringSplitOptions.RemoveEmptyEntries);
+            return _snapshot?.SourceNames.Split('|', StringSplitOptions.RemoveEmptyEntries) ?? [];
         }
     }
 
