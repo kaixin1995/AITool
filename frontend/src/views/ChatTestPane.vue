@@ -866,6 +866,23 @@ onUnmounted(() => {
   color: var(--text-color-secondary, rgba(255, 255, 255, 0.6));
 }
 
+/* 暗色补齐：尝试卡片标题/元信息为硬编码深色文字，黑卡片上不可见 */
+[data-theme='dark'] .chat-attempt-title {
+  color: var(--text-primary);
+}
+
+[data-theme='dark'] .chat-attempt-meta {
+  color: var(--text-color-secondary, rgba(255, 255, 255, 0.6));
+}
+
+[data-theme='dark'] .chat-bubble-ai .chat-bubble-meta {
+  color: rgba(148, 163, 184, 0.95);
+}
+
+[data-theme='dark'] .chat-bubble-error .chat-bubble-meta {
+  color: rgba(253, 164, 175, 0.85);
+}
+
 @media (max-width: 1400px) {
   .chat-admin-page {
     grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
