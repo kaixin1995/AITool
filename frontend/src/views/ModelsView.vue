@@ -1108,6 +1108,10 @@ onMounted(() => {
   color: #111827;
 }
 
+[data-theme='dark'] .vendor-group-header .vendor-group-icon-fallback span {
+  color: var(--text-primary);
+}
+
 .vendor-group-title {
   margin: 0;
   font-size: 20px;
@@ -1413,6 +1417,24 @@ onMounted(() => {
 .vendor-preview-name {
   color: #1f2937;
   font-weight: 600;
+}
+
+/* 暗色主题：厂商编辑弹窗内的实时预览（模型分组头部示例）同样切换为暗色形态 */
+[data-theme='dark'] .vendor-preview-icon {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-color-global);
+}
+
+[data-theme='dark'] .vendor-preview-icon :deep(svg) {
+  color: var(--text-primary);
+}
+
+[data-theme='dark'] .vendor-preview-name {
+  color: var(--text-primary);
+}
+
+[data-theme='dark'] .vendor-preview-subtitle {
+  color: var(--text-color-secondary);
 }
 
 .vendor-rule-section {

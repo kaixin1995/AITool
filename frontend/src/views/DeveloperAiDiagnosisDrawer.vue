@@ -474,7 +474,7 @@ async function handleConfirmApply(): Promise<void> {
 
 .snapshot-label {
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-color-secondary, #64748b);
 }
 
 .snapshot-error {
@@ -565,7 +565,8 @@ async function handleConfirmApply(): Promise<void> {
 .section-content {
   font-size: 12px;
   line-height: 1.6;
-  color: var(--text-color, #475569);
+  /* --text-color 变量并不存在（恒走回退值），改用主题感知的主文字色 */
+  color: var(--text-primary, #475569);
 }
 
 .rules-section {
