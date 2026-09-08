@@ -5,29 +5,18 @@ namespace AITool.Web.Services;
 
 /// <summary>
 /// 公开模型价格源查询服务：从 models.dev 与 LiteLLM 的公开 JSON 拉取全量价格表，
-/// 本地匹配模型 ID。一次查询零 AI 调用、秒级返回。
+/// 本地匹配模型 ID。一次查询零 AI 调用。
 /// <para>
 /// 两个源的单位不同（models.dev 已是 USD/百万 tokens；LiteLLM 是 USD/单 token），解析时统一换算。
-/// 内存策略：原始响应体（约 4.5MB + 2.3MB）只在拉取-解析期间短暂存在，解析完成即交给 GC；
-/// 进程级只常驻解析后的索引快照（约 1-2MB，1.2 万键），TTL 6 小时。双源全断时不缓存空索引，
-/// 并在存在旧快照时沿用过期数据降级。
+/// 内存策略（手动低频按钮，内存优先）：<strong>完全无状态、零常驻</strong>——每次查询现拉现解析，
+/// 原始响应体与解析后的索引都是请求内局部对象，请求结束即整条引用链交给 GC 回收，
+/// 进程内不留任何缓存（单源失败容忍另一源）。
 /// </para>
 /// </summary>
 public sealed class ModelPriceSourceService
 {
     private const string ModelsDevUrl = "https://models.dev/api.json";
     private const string LiteLlmUrl = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
-
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(6);
-
-    /// <summary>解析后的索引快照（进程级，static 与服务单例语义一致）。只保留索引不保留原始响应体。</summary>
-    private sealed record SourceIndexSnapshot(
-        IReadOnlyDictionary<string, List<ModelPriceSourceEntry>> Index,
-        DateTimeOffset FetchedAt,
-        string SourceNames);
-
-    private static readonly object IndexLock = new();
-    private static SourceIndexSnapshot? _snapshot;
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ModelPriceSourceService> _logger;
@@ -46,10 +35,10 @@ public sealed class ModelPriceSourceService
         IReadOnlyDictionary<string, ModelPriceSourceEntry> Matched,
         IReadOnlyList<string> Unmatched);
 
-    /// <summary>按模型 ID 清单匹配公开价格源。单源失败不影响另一源；双源均失败才返回失败。</summary>
+    /// <summary>按模型 ID 清单匹配公开价格源。每次现拉现解析，无缓存；单源失败不影响另一源。</summary>
     public async Task<SourceLookupResult> LookupAsync(IReadOnlyCollection<string> modelIds, CancellationToken cancellationToken)
     {
-        var index = await GetIndexAsync(cancellationToken);
+        var (index, sourceNames) = await BuildIndexAsync(cancellationToken);
         if (index.Count == 0)
         {
             return new SourceLookupResult(false, "公开价格源不可达（models.dev 与 LiteLLM 均拉取失败），请稍后重试或改用 AI 查询", [], new Dictionary<string, ModelPriceSourceEntry>(), []);
@@ -70,20 +59,15 @@ public sealed class ModelPriceSourceService
             }
         }
 
-        return new SourceLookupResult(true, null, LoadedSourceNames(), matched, unmatched);
+        return new SourceLookupResult(true, null, sourceNames, matched, unmatched);
     }
 
-    private async Task<IReadOnlyDictionary<string, List<ModelPriceSourceEntry>>> GetIndexAsync(CancellationToken cancellationToken)
+    /// <summary>拉取并解析两个价格源为本次请求专用的匹配索引（局部对象，不落任何静态字段）。</summary>
+    private async Task<(IReadOnlyDictionary<string, List<ModelPriceSourceEntry>> Index, IReadOnlyList<string> SourceNames)> BuildIndexAsync(CancellationToken cancellationToken)
     {
-        // 快路径：快照未过期直接用（无锁读不可变引用）。
-        var current = _snapshot;
-        if (current is not null && DateTimeOffset.UtcNow - current.FetchedAt < CacheTtl)
-        {
-            return current.Index;
-        }
+        var sourceNames = new List<string>();
+        var index = new Dictionary<string, List<ModelPriceSourceEntry>>(StringComparer.OrdinalIgnoreCase);
 
-        var fetchedNames = new List<string>();
-        var fetchedEntries = new List<IEnumerable<KeyValuePair<string, ModelPriceSourceEntry>>>();
         foreach (var (name, url) in new[] { ("models.dev", ModelsDevUrl), ("LiteLLM", LiteLlmUrl) })
         {
             try
@@ -96,8 +80,19 @@ public sealed class ModelPriceSourceService
                 var entries = name == "models.dev"
                     ? ParseModelsDev(body)
                     : ParseLiteLlm(body);
-                fetchedNames.Add(name);
-                fetchedEntries.Add(entries);
+                foreach (var (key, entry) in entries)
+                {
+                    if (!index.TryGetValue(key, out var list))
+                    {
+                        list = [];
+                        index[key] = list;
+                    }
+                    list.Add(entry);
+                }
+                if (entries.Any())
+                {
+                    sourceNames.Add(name);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -110,50 +105,7 @@ public sealed class ModelPriceSourceService
             }
         }
 
-        lock (IndexLock)
-        {
-            // 并发兜底：等待锁期间别的请求可能已完成刷新。
-            var latest = _snapshot;
-            if (ReferenceEquals(latest, current) && latest is not null && fetchedNames.Count == 0)
-            {
-                // 双源均失败：不缓存空索引；有旧快照时沿用过期数据降级，否则返回空。
-                return latest.Index;
-            }
-
-            var index = new Dictionary<string, List<ModelPriceSourceEntry>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entries in fetchedEntries)
-            {
-                foreach (var (key, entry) in entries)
-                {
-                    if (!index.TryGetValue(key, out var list))
-                    {
-                        list = [];
-                        index[key] = list;
-                    }
-                    list.Add(entry);
-                }
-            }
-
-            if (index.Count > 0)
-            {
-                _snapshot = new SourceIndexSnapshot(index, DateTimeOffset.UtcNow, string.Join("|", fetchedNames));
-            }
-            else if (_snapshot is not null)
-            {
-                // 解析全部失败（双源返回坏数据）：同样沿用旧快照，不缓存空索引。
-                return _snapshot.Index;
-            }
-
-            return index;
-        }
-    }
-
-    private static IReadOnlyList<string> LoadedSourceNames()
-    {
-        lock (IndexLock)
-        {
-            return _snapshot?.SourceNames.Split('|', StringSplitOptions.RemoveEmptyEntries) ?? [];
-        }
+        return (index, sourceNames);
     }
 
     /// <summary>解析 models.dev：按厂商分组，cost 单位已是 USD/百万 tokens，直接取用。</summary>

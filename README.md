@@ -21,7 +21,7 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 使用日志（Token 级用量追踪：**输入/缓存/输出三段口径**、重试次数、流中断、首字延迟；来源识别 claude-code / codex / open-code / zcode / deepseek-harness；**行级消耗金额**，USD/CNY 动态切换）
 - 统计分析（用量趋势、模型分布、缓存命中率、延迟分位数等可视化仪表盘；**总消耗金额 + 成本趋势 + 模型成本分布**，查询时按价格表动态计价，历史数据自动兼容）
 - 模型价格（**本地 JSON 价格表**（`model-pricing.json`，不入数据库），内置主流模型 USD 单价 seed；模型页可编辑、保存即生效；支持 **DeepSeek 类峰谷分档计价**；匹配自动归一化 namespace/日期/effort 后缀）
-- **查价格**（模型页一键查询：**公开价格源优先**——models.dev 与 LiteLLM 双源拉取、本地匹配（单位统一换算为 USD/百万 tokens、第一方厂商优先、聚合前缀/思考后缀容错）、进程内缓存 6 小时、秒级返回；未收录模型可 **AI 补漏**（分批查询 + 实时进度 + 可停止，单批失败不中断）；结果新旧对比、确认后应用，保留峰谷配置）
+- **查价格**（模型页一键查询：**公开价格源优先**——models.dev 与 LiteLLM 双源拉取、本地匹配（单位统一换算为 USD/百万 tokens、第一方厂商优先、聚合前缀/思考后缀容错）；服务**完全无状态零常驻**（每次现拉现解析，内存优先，代价是每次查询数秒~数十秒）；未收录模型可 **AI 补漏**（分批查询 + 实时进度 + 可停止，单批失败不中断）；另有**一键清理**价格表中不在本地模型库的条目；结果新旧对比、确认后应用，保留峰谷配置）
 - **AI 助手**（设置页选定默认站点/模型，供「查版本 / 查价格 / AI 诊断」全系统共用；`AiAssistantService` 复用代理转发链路，支持 OpenAI/Anthropic/Responses/Gemini 四协议目标；响应提取兼容字符串/数组 content 等形态，思考型模型空正文自动重试）
 - 开发者调试（进程内环形调用追踪 + 客户端模拟器 + 并发/熔断监控 + **离线协议诊断台**（转换链路可视化/字段级对比/规则试运行/一键保存规则）+ **SQL 迁移执行**（密码确认+事务+试运行+全量审计）+ **请求头模板库**（命名档案 + 动态占位符引擎 + **AI 查最新版**：先抓官方发布源（GitHub Releases / npm / 官网 changelog）确定性数据、AI 只做归纳、版本号须出现在事实清单才采信；UA 与独立版本头（如 `x-zcode-app-version`）同步替换）+ **网络代理池**（出口代理方案管理/测速））
 - 客户端特征模拟（`ClientEmulationEngine`：请求头模板库命名档案 + `guid/nanoid/timestamp/model` 动态占位符；站点/模型库/映射三层配置，模板最底层注入、显式配置覆盖；出口代理按站点生效）
@@ -300,7 +300,7 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 | `AdminBackgroundTaskQueue` | 管理后台长任务单消费者队列（容量 8；站点模型抓取最多 4 个并发、手动模型探测；宿主停止时统一取消） |
 | `ModelVendorCatalogService` | 厂商图标/匹配规则目录（`model-vendor-catalog.json`，运行文件可编辑） |
 | `AiAssistantService` | AI 助手统一调用通道：按设置页默认站点/模型发起单轮非流式补全（复用 `IProxyForwardService`，四协议响应提取 + 空正文自动重试） |
-| `ModelPriceSourceService` | 公开模型价格源（models.dev + LiteLLM）：拉取/解析/单位换算 + 进程内缓存 6 小时，配合 `ModelPriceSourceMatcher`（Application 层纯静态）做 ID 匹配 |
+| `ModelPriceSourceService` | 公开模型价格源（models.dev + LiteLLM）：拉取/解析/单位换算（完全无状态，请求内局部对象用完即释放），配合 `ModelPriceSourceMatcher`（Application 层纯静态）做 ID 匹配 |
 | `ClientReleaseFeedService` | 客户端官方发布源（GitHub Releases / npm dist-tag / 官网 changelog）：按档案 Key 拉确定性版本事实，缓存 30 分钟 |
 | `AdminAuthService` | 管理密码（PBKDF2，兼容旧 MD5 透明升级，写回 appsettings.json） |
 | `JwtTokenService` | access/refresh 签发与轮换吊销（RefreshTokenRecord 表）；进程内串行消费 refresh token，过期清理按 5 分钟节流 |
