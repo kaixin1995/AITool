@@ -52,88 +52,40 @@ public sealed class ClientReleaseFeedServiceTests
     }
 
     [Fact]
-    public void Changelog_html_extracts_version_date_pairs()
+    public void Changelog_digest_keeps_short_fact_lines_and_strips_noise()
     {
-        // 取自 zcode.z.ai/en/changelog 真实结构：版本号行 + Released 日期行 + Release 链接文字。
+        // 结构无关的降噪契约：script/style 块整体移除；标签剥成文本行；
+        // 短行（版本号/日期/板块标题/功能标题）保留，长段落丢弃——版本识别交给 AI。
         const string html = """
-        <html><head><script>var x=1;</script><style>a{}</style></head><body>
-        <h2>3.11.2</h2><p>Released Sep 4, 2026</p><a href="/dl">Download</a><a>Release v3.11.2</a>
-        <ul><li>New Features</li><li>Support for uploading PDF files</li></ul>
-        <h2>3.10.0</h2><p>Released Aug 28, 2026</p><a>Release v3.10.0</a>
-        <h2>3.9.1</h2><p>Released Aug 12, 2026</p><a>Release v3.9.1</a>
+        <html><head><script>var tracking=1;</script><style>.a{color:red}</style></head><body>
+        <nav>Antigravity CLI</nav>
+        <h2>1.1.25</h2><span>September 3, 2026</span>
+        <p>Adds an opt-in workspace-grouped view to the resume picker with toggling, adds Gemini 3.8 Flash to the model catalog for enterprise users, updates Markdown-defined custom agents to inherit ambient skills, rules, and subagents by default.</p>
+        <h2>1.1.24</h2><span>September 2, 2026</span>
         </body></html>
         """;
-        var lines = ClientReleaseFeedService.ParseChangelogHtml(html);
+        var digest = ClientReleaseFeedService.ExtractChangelogDigest(html);
 
-        lines.Should().HaveCount(3);
-        lines[0].Should().Be("- 3.11.2（发布于 Sep 4, 2026，正式版）");
-        lines[1].Should().Contain("3.10.0").And.Contain("Aug 28, 2026");
-        lines[2].Should().Contain("3.9.1");
+        digest.Should().Contain("1.1.25").And.Contain("September 3, 2026").And.Contain("1.1.24");
+        digest.Should().Contain("Antigravity CLI", "板块标题应保留，供 AI 判断版本归属");
+        digest.Should().NotContain("workspace-grouped view to the resume picker", "长段落应被丢弃");
+        digest.Should().NotContain("tracking", "script 内容应被移除");
     }
 
     [Fact]
-    public void Changelog_html_ignores_version_like_numbers_without_release_line()
+    public void Changelog_digest_respects_character_budget()
     {
-        // 正文里的普通数字（如 "10.0.17763"）后不跟 Released 行，不应被当作版本条目。
-        const string html = """
-        <html><body><h2>3.11.2</h2><p>Released Sep 4, 2026</p>
-        <p>x-os-version 10.0.17763 win32-x64</p><p>runtime node 24</p>
-        </body></html>
-        """;
-        ClientReleaseFeedService.ParseChangelogHtml(html)
-            .Should().ContainSingle().Which.Should().Contain("3.11.2");
+        var manyVersions = string.Concat(Enumerable.Range(0, 500)
+            .Select(i => $"<div>9.9.{i}</div><span>January 1, 2026</span>"));
+        var digest = ClientReleaseFeedService.ExtractChangelogDigest($"<html><body>{manyVersions}</body></html>", maxChars: 800);
+
+        digest.Length.Should().BeLessThanOrEqualTo(820);
     }
 
     [Fact]
-    public void Changelog_html_handles_malformed_body()
+    public void Changelog_digest_handles_malformed_body()
     {
-        ClientReleaseFeedService.ParseChangelogHtml("").Should().BeEmpty();
-        ClientReleaseFeedService.ParseChangelogHtml("no versions here").Should().BeEmpty();
-    }
-
-    [Fact]
-    public void Sectioned_changelog_extracts_only_requested_panel()
-    {
-        // 取自 antigravity.google/changelog 真实结构：四个产品面板（hub/cli/ide/sdk），
-        // 每个面板内版本号在 version-link 锚点、日期紧跟其后的 <br>。
-        const string html = """
-        <html><body>
-        <div data-list-panel="hub" style="display: none;">
-          <div class="version"><a class="version-link x" href="/d" title="View release 2.12.2">2.12.2</a><br class="x">September 3, 2026</div>
-        </div>
-        <div data-list-panel="cli" style="display: none;">
-          <div class="version"><a class="version-link x" href="/d" title="View release 1.1.25">1.1.25</a><br class="x">September 3, 2026</div>
-          <div class="version"><a class="version-link x" href="/d" title="View release 1.1.24">1.1.24</a><br class="x">September 2, 2026</div>
-          <div class="version"><a class="version-link x" href="/d" title="View release 1.0.0">1.0.0</a><br class="x">January 1, 2026</div>
-        </div>
-        <div data-list-panel="ide" style="display: none;">
-          <div class="version"><a class="version-link x" href="/d" title="View release 2.5.5">2.5.5</a><br class="x">August 13, 2026</div>
-        </div>
-        </body></html>
-        """;
-        var lines = ClientReleaseFeedService.ParseSectionedChangelogHtml(html, "cli");
-
-        lines.Should().HaveCount(3);
-        lines[0].Should().Be("- 1.1.25（发布于 September 3, 2026，正式版）");
-        lines[1].Should().Contain("1.1.24");
-        lines.Should().NotContain(l => l.Contains("2.12.2") || l.Contains("2.5.5"), "不得混入其他产品板块的版本");
-    }
-
-    [Fact]
-    public void Sectioned_changelog_falls_back_to_line_pairing_when_panel_missing()
-    {
-        // 无 data-list-panel 结构（如 ZCode 式页面）时回退通用行配对。
-        const string html = """
-        <html><body><h2>3.11.2</h2><p>Released Sep 4, 2026</p></body></html>
-        """;
-        ClientReleaseFeedService.ParseSectionedChangelogHtml(html, "cli")
-            .Should().ContainSingle().Which.Should().Contain("3.11.2");
-    }
-
-    [Fact]
-    public void Sectioned_changelog_handles_malformed_body()
-    {
-        ClientReleaseFeedService.ParseSectionedChangelogHtml("", "cli").Should().BeEmpty();
-        ClientReleaseFeedService.ParseSectionedChangelogHtml("broken <div data-list-panel=\"cli\"", "cli").Should().BeEmpty();
+        ClientReleaseFeedService.ExtractChangelogDigest("").Should().BeEmpty();
+        ClientReleaseFeedService.ExtractChangelogDigest("plain text no tags").Should().Be("plain text no tags");
     }
 }

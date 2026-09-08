@@ -326,17 +326,18 @@ public class HeaderProfilesApiController : ControllerBase
         string prompt;
         if (feed.Success)
         {
-            prompt = $@"下面是客户端「{profile.Name}」（标识：{profile.Key}）的官方发布数据，来自 {feed.SourceLabels}：
+            prompt = $@"下面是从客户端「{profile.Name}」（标识：{profile.Key}）官方更新页提取的文本摘要（来自 {feed.SourceLabels}）。
+摘要可能包含页面导航等噪声，也可能包含同一产品多个系列（如 CLI / IDE / SDK）的版本；请结合客户端身份（当前 User-Agent 中的产品与版本形态）找到对应的版本序列。
 
 {feed.Facts}
 
 当前 User-Agent：{userAgent}
 当前使用的版本：{currentVersion}
 
-请只根据上面的发布数据归纳：
-1. version 填数据中的最新「正式版」版本号（去掉 v / rust-v 等 tag 前缀，只留版本号本身；数据里没有比当前版本更新的正式版时，填当前版本号）。
-2. 数据中没有比当前版本更新的正式版（只有预发布或无更新）时，视为已是最新，known 填 true。
-3. note 用一句话说明依据（来源与版本发布日期）。数据缺失或互相矛盾导致无法判断时 known 填 false。
+请只根据上面的摘要归纳：
+1. version 填该客户端最新「正式版」的版本号（去掉 v / rust-v 等 tag 前缀，只留版本号本身；没有比当前版本更新的正式版时，填当前版本号）。
+2. 没有比当前版本更新的正式版（只有预发布或无更新）时，视为已是最新，known 填 true。
+3. note 用一句话说明依据（来源与版本发布日期）。摘要中找不到可判断的内容时 known 填 false。
 4. 只输出一个 JSON 对象：{{""version"":""x.y.z"",""known"":true,""note"":""一句话说明""}}。不要输出其他任何文字或代码块围栏。";
         }
         else

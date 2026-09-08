@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -13,7 +14,7 @@ namespace AITool.Web.Services;
 /// 查询结果按档案 Key 进程级缓存 30 分钟（GitHub 未认证配额 60 次/小时，手动低频按钮足够）。
 /// </para>
 /// </summary>
-public sealed class ClientReleaseFeedService
+public sealed partial class ClientReleaseFeedService
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
 
@@ -49,8 +50,8 @@ public sealed class ClientReleaseFeedService
         ],
         ["antigravity"] =
         [
-            // antigravity.google/changelog 按产品分四个板块（hub/cli/ide/sdk），CLI 版本在 data-list-panel="cli" 面板内。
-            new ReleaseSource("changelog", "官方更新页: antigravity.google/changelog（Antigravity CLI 板块）", "https://antigravity.google/changelog", Section: "cli")
+            // antigravity.google/changelog 含多个产品板块（2.0/CLI/SDK/IDE），摘要整体交给 AI 按客户端身份识别 CLI 板块。
+            new ReleaseSource("changelog", "官方更新页: antigravity.google/changelog", "https://antigravity.google/changelog")
         ]
     };
 
@@ -68,7 +69,7 @@ public sealed class ClientReleaseFeedService
     /// <summary>一个档案的发布源查询结果。Success=false 表示没有已知源或全部拉取失败。</summary>
     public sealed record ReleaseFeedResult(bool Success, string Facts, string SourceLabels);
 
-    private sealed record ReleaseSource(string Kind, string Label, string Url, string? Section = null);
+    private sealed record ReleaseSource(string Kind, string Label, string Url);
 
     public Task<ReleaseFeedResult> LookupAsync(string profileKey, CancellationToken cancellationToken)
     {
@@ -112,9 +113,8 @@ public sealed class ClientReleaseFeedService
                     var lines = source.Kind switch
                     {
                         "npm" => ParseNpmLatest(body),
-                        "changelog" => string.IsNullOrEmpty(source.Section)
-                            ? ParseChangelogHtml(body)
-                            : ParseSectionedChangelogHtml(body, source.Section),
+                        // changelog 网页只做降噪摘要，版本识别交给 AI（页面结构随时可能改版，不做硬编码解析）。
+                        "changelog" => WrapDigestAsFacts(ExtractChangelogDigest(body)),
                         _ => ParseGitHubReleases(body)
                     };
                     if (lines.Count > 0)
@@ -141,45 +141,9 @@ public sealed class ClientReleaseFeedService
         return result;
     }
 
-    /// <summary>
-    /// 解析带产品板块的 changelog 页面（如 antigravity.google/changelog）：页面按产品把更新表
-    /// 放进 <c>&lt;div data-list-panel="cli"&gt;</c> 等面板容器（tab 切换显示），先用 Section 键切片出
-    /// 目标面板，再提取「version-link 锚点 + 紧随其后的日期文本」配对。面板结构缺失时回退整页行配对。
-    /// </summary>
-    public static List<string> ParseSectionedChangelogHtml(string html, string section)
-    {
-        try
-        {
-            var marker = $"data-list-panel=\"{section}\"";
-            var start = html.IndexOf(marker, StringComparison.Ordinal);
-            if (start < 0) return ParseChangelogHtml(html);
-            start = html.IndexOf('>', start) + 1;
-            var next = html.IndexOf("data-list-panel=", start, StringComparison.Ordinal);
-            var pane = next > start ? html[start..next] : html[start..];
-
-            var lines = new List<string>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var pairRegex = new Regex(
-                """class="version-link[^"]*"[^>]*>(?<version>[^<]+)</a>\s*<br[^>]*>\s*(?<date>[^<\r\n]+)""",
-                RegexOptions.IgnoreCase | RegexOptions.Compiled);
-            foreach (Match match in pairRegex.Matches(pane))
-            {
-                var version = match.Groups["version"].Value.Trim();
-                var date = match.Groups["date"].Value.Trim();
-                if (version.Length == 0 || date.Length == 0 || !seen.Add(version)) continue;
-                lines.Add($"- {version}（发布于 {date}，正式版）");
-                if (lines.Count >= 12) break;
-            }
-            if (lines.Count > 0) return lines;
-
-            // 结构化配对失败：对切片内容退回通用行配对。
-            return ParseChangelogHtml(pane);
-        }
-        catch
-        {
-            return [];
-        }
-    }
+    /// <summary>把摘要文本包装成事实清单（空摘要返回空清单表示该源无数据）。</summary>
+    private static List<string> WrapDigestAsFacts(string digest)
+        => string.IsNullOrWhiteSpace(digest) ? [] : [digest];
 
     /// <summary>解析 npm /latest 响应为事实行。解析失败返回空清单。</summary>
     public static List<string> ParseNpmLatest(string body)
@@ -203,55 +167,51 @@ public sealed class ClientReleaseFeedService
     }
 
     /// <summary>
-    /// 解析官网 changelog 页面（如 zcode.z.ai/changelog 的 Next.js SSR HTML）为事实行：
-    /// 剥掉 script/style 与标签后按「版本号行 + Released 日期行」配对提取，取前 12 个版本。
+    /// 从 changelog 网页提取「AI 可读摘要」：剥掉 script/style/标签得到文本行，
+    /// 只保留短行（版本号、日期、板块标题、功能标题），丢弃长段落与 JS/CSS 残留，
+    /// 并限制总字符预算（适配 AI 上下文）。
+    /// <para>
+    /// 刻意<strong>不硬编码页面结构</strong>（选择器/配对规则随时可能被官网改版破坏）：
+    /// 这里只负责压噪降噪，具体哪一行是版本号、属于哪个产品板块，由 AI 结合客户端身份灵活判断。
+    /// </para>
     /// </summary>
-    public static List<string> ParseChangelogHtml(string html)
+    public static string ExtractChangelogDigest(string html, int maxChars = 64000)
     {
-        var lines = new List<string>();
         try
         {
-            var text = html
-                .Replace("\r", "\n", StringComparison.Ordinal)
-                .Replace("<script", "\n<script", StringComparison.OrdinalIgnoreCase)
-                .Replace("</script>", "</script>\n", StringComparison.OrdinalIgnoreCase)
-                .Replace("<style", "\n<style", StringComparison.OrdinalIgnoreCase)
-                .Replace("</style>", "</style>\n", StringComparison.OrdinalIgnoreCase);
-            var stripped = System.Text.RegularExpressions.Regex.Replace(text, "<[^>]+>", "\n");
-            stripped = stripped
-                .Replace("&amp;", "&", StringComparison.Ordinal)
-                .Replace("&quot;", "\"", StringComparison.Ordinal)
-                .Replace("&#x27;", "'", StringComparison.Ordinal)
-                .Replace("&#39;", "'", StringComparison.Ordinal)
-                .Replace("&lt;", "<", StringComparison.Ordinal)
-                .Replace("&gt;", ">", StringComparison.Ordinal)
-                .Replace("&nbsp;", " ", StringComparison.Ordinal);
+            // script/style 块整体移除（内容对版本识别无意义且极占预算）。
+            var cleaned = RegexScriptBlocks().Replace(html, " ");
+            cleaned = RegexStyleBlocks().Replace(cleaned, " ");
+            // 剥标签成文本行 + 解码常见实体。
+            var stripped = RegexTags().Replace(cleaned, "\n");
+            stripped = System.Net.WebUtility.HtmlDecode(stripped);
 
-            var rawLines = stripped.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (var i = 0; i < rawLines.Count && lines.Count < 12; i++)
+            var sb = new StringBuilder();
+            var total = 0;
+            foreach (var rawLine in stripped.Split('\n'))
             {
-                var candidate = rawLines[i];
-                if (!IsBareVersionLine(candidate)) continue;
-                if (i + 1 >= rawLines.Count || !rawLines[i + 1].StartsWith("Released", StringComparison.OrdinalIgnoreCase)) continue;
-
-                var dateText = rawLines[i + 1]["Released".Length..].Trim().TrimEnd('.');
-                if (!seen.Add(candidate)) continue;
-                lines.Add($"- {candidate}（发布于 {dateText}，正式版）");
+                var line = rawLine.Trim();
+                if (line.Length == 0 || line.Length > 140) continue;
+                if (total + line.Length + 1 > maxChars) break;
+                sb.Append(line).Append('\n');
+                total += line.Length + 1;
             }
+            return sb.ToString().TrimEnd();
         }
         catch
         {
-            return [];
+            return string.Empty;
         }
-        return lines;
-
-        static bool IsBareVersionLine(string line)
-            => line.Length is >= 3 and <= 20
-               && char.IsAsciiDigit(line[0])
-               && line.Count(c => c == '.') is 1 or 2
-               && line.All(c => char.IsAsciiDigit(c) || c == '.');
     }
+
+    [GeneratedRegex(@"<script\b[^>]*>[\s\S]*?</script>", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    private static partial Regex RegexScriptBlocks();
+
+    [GeneratedRegex(@"<style\b[^>]*>[\s\S]*?</style>", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    private static partial Regex RegexStyleBlocks();
+
+    [GeneratedRegex(@"<[^>]+>", RegexOptions.Compiled)]
+    private static partial Regex RegexTags();
 
     /// <summary>解析 GitHub Releases 清单为事实行（版本 + 日期 + 是否预发布）。解析失败返回空清单。</summary>
     public static List<string> ParseGitHubReleases(string body)    {
