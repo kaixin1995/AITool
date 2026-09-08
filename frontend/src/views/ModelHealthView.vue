@@ -636,6 +636,17 @@ onMounted(load)
   background: rgba(255, 255, 255, 0.05);
 }
 
+/* 暗色补齐：软色徽章（成功/危险浅底）在暗色下改用半透明色底 + 亮色文字 */
+[data-theme='dark'] .health-badge.success-soft {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86EFAC;
+}
+
+[data-theme='dark'] .health-badge.danger-soft {
+  background: rgba(239, 68, 68, 0.20);
+  color: #FCA5A5;
+}
+
 @media (max-width: 768px) {
   .add-monitor-row,
   .filter-row {

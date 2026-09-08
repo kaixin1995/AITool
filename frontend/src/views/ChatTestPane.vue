@@ -827,6 +827,45 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
+/* 暗色补齐：尝试卡片内嵌的请求体/响应体 pre、徽章、错误块等
+   （此前只覆盖了卡片本身，内嵌元素仍是亮色白块，暗色下无法阅读） */
+[data-theme='dark'] .chat-attempt-detail-pre,
+[data-theme='dark'] .chat-side-pre {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-color-global);
+  color: var(--text-primary);
+}
+
+[data-theme='dark'] .chat-attempt-card {
+  border-color: var(--border-color-global);
+}
+
+[data-theme='dark'] .chat-attempt-token-chip {
+  background: rgba(255, 255, 255, 0.10);
+  color: var(--text-color-secondary, rgba(255, 255, 255, 0.72));
+}
+
+[data-theme='dark'] .chat-attempt-status-success {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86EFAC;
+}
+
+[data-theme='dark'] .chat-attempt-status-fail {
+  background: rgba(239, 68, 68, 0.20);
+  color: #FCA5A5;
+}
+
+[data-theme='dark'] .chat-attempt-error,
+[data-theme='dark'] .chat-bubble-error {
+  background: rgba(190, 18, 60, 0.16);
+  color: #FDA4AF;
+  border-color: rgba(254, 205, 211, 0.25);
+}
+
+[data-theme='dark'] .chat-attempt-detail-title {
+  color: var(--text-color-secondary, rgba(255, 255, 255, 0.6));
+}
+
 @media (max-width: 1400px) {
   .chat-admin-page {
     grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);

@@ -574,7 +574,8 @@ async function handleConfirmApply(): Promise<void> {
   border-radius: 6px;
 }
 
-:global(.dark) .rules-section {
+/* 应用以 data-theme 属性切换暗色（html 上无 .dark 类），:global(.dark) 选择器永不命中 */
+[data-theme='dark'] .rules-section {
   background: #1e293b;
 }
 
@@ -613,9 +614,13 @@ async function handleConfirmApply(): Promise<void> {
   font-size: 12px;
 }
 
-:global(.dark) .rule-chip {
+[data-theme='dark'] .rule-chip {
   background: #0f172a;
   border-color: #334155;
+}
+
+[data-theme='dark'] .rule-detail code {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .rule-detail {
