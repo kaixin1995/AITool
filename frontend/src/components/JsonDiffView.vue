@@ -4,7 +4,9 @@ import { NButton } from 'naive-ui'
 import {
   countJsonDiffs,
   diffJson,
-  type JsonDiffNode
+  diffStringSegments,
+  type JsonDiffNode,
+  type StringSegmentDiff
 } from '@/utils/jsonDiff'
 
 const props = defineProps<{
@@ -73,6 +75,56 @@ function renderValue(value: unknown): string {
   if (typeof value === 'object') return '{…}'
   return String(value)
 }
+
+// —— 字符串值内部分段展示：未变上下文截断，只高亮中间变化片段 ——
+
+/** 变化片段两侧保留的未变上下文长度（超过则省略号截断）。 */
+const SEGMENT_CONTEXT = 46
+/** 变化片段本身超长时的截断上限（整段重写时避免撑爆一行）。 */
+const SEGMENT_MAX = 120
+
+interface SegmentSpan {
+  type: 'context' | 'removed' | 'added'
+  text: string
+  /** 完整内容（截断时供 hover 提示）。 */
+  full: string
+}
+
+interface SegmentView {
+  spans: SegmentSpan[]
+  beforeFull: string
+  afterFull: string
+}
+
+function clip(text: string, max: number, head: boolean): { text: string; clipped: boolean } {
+  if (text.length <= max) return { text, clipped: false }
+  return head
+    ? { text: text.slice(0, max) + '…', clipped: true }
+    : { text: '…' + text.slice(-max), clipped: true }
+}
+
+/** 字符串对字符串的 changed 节点 → 分段视图；其余类型返回 null 走整值对比。 */
+function stringSegmentView(node: JsonDiffNode): SegmentView | null {
+  if (node.kind !== 'changed') return null
+  if (typeof node.before !== 'string' || typeof node.after !== 'string') return null
+
+  const segments = diffStringSegments(node.before, node.after)
+  if (!segments) return null
+
+  const spans: SegmentSpan[] = []
+  const head = clip(segments.prefix, SEGMENT_CONTEXT, false)
+  if (head.text) spans.push({ type: 'context', text: head.text, full: segments.prefix })
+
+  const removedClip = clip(segments.removed, SEGMENT_MAX, true)
+  spans.push({ type: 'removed', text: removedClip.text, full: segments.removed })
+  const addedClip = clip(segments.added, SEGMENT_MAX, true)
+  spans.push({ type: 'added', text: addedClip.text, full: segments.added })
+
+  const tail = clip(segments.suffix, SEGMENT_CONTEXT, true)
+  if (tail.text) spans.push({ type: 'context', text: tail.text, full: segments.suffix })
+
+  return { spans, beforeFull: node.before, afterFull: node.after }
+}
 </script>
 
 <template>
@@ -120,10 +172,27 @@ function renderValue(value: unknown): string {
           class="json-diff-line json-diff-changed"
           :style="{ paddingLeft: (row.depth * 16 + 8) + 'px' }"
         >
-          <span class="json-diff-marker">~</span>
-          <span class="json-diff-key">{{ row.node.key }}</span>
-          <span class="json-diff-value">{{ renderValue(row.node.before) }} → {{ renderValue(row.node.after) }}</span>
-          <span class="json-diff-tag">值变化</span>
+          <template v-if="stringSegmentView(row.node)">
+            <span class="json-diff-marker">~</span>
+            <span class="json-diff-key">{{ row.node.key }}</span>
+            <span
+              class="json-diff-value json-diff-segments"
+              :title="`旧：${stringSegmentView(row.node)!.beforeFull}\n新：${stringSegmentView(row.node)!.afterFull}`"
+            >
+              <template v-for="(span, si) in stringSegmentView(row.node)!.spans" :key="si">
+                <span v-if="span.type === 'context'" class="json-diff-seg-context">{{ span.text }}</span>
+                <span v-else-if="span.type === 'removed'" class="json-diff-seg-removed" :title="span.full">{{ span.text }}</span>
+                <span v-else class="json-diff-seg-added" :title="span.full">{{ span.text }}</span>
+              </template>
+            </span>
+            <span class="json-diff-tag">值变化</span>
+          </template>
+          <template v-else>
+            <span class="json-diff-marker">~</span>
+            <span class="json-diff-key">{{ row.node.key }}</span>
+            <span class="json-diff-value">{{ renderValue(row.node.before) }} → {{ renderValue(row.node.after) }}</span>
+            <span class="json-diff-tag">值变化</span>
+          </template>
         </div>
         <div
           v-else-if="row.node.kind === 'object'"
@@ -201,6 +270,27 @@ function renderValue(value: unknown): string {
 .json-diff-changed .json-diff-marker,
 .json-diff-changed .json-diff-key { color: #B45309; }
 .json-diff-changed .json-diff-tag { background: rgba(217, 119, 6, 0.12); color: #B45309; }
+
+/* 字符串值内部分段：未变上下文弱化，旧片段删除线红色、新片段绿色加粗 */
+.json-diff-segments { white-space: pre; }
+.json-diff-seg-context { color: var(--text-color-secondary); opacity: 0.75; }
+.json-diff-seg-removed {
+  color: #B91C1C;
+  background: rgba(220, 38, 38, 0.14);
+  text-decoration: line-through;
+  font-weight: 600;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.json-diff-seg-added {
+  color: #166534;
+  background: rgba(22, 163, 74, 0.16);
+  font-weight: 700;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+[data-theme='dark'] .json-diff-seg-removed { color: #FCA5A5; }
+[data-theme='dark'] .json-diff-seg-added { color: #86EFAC; }
 [data-theme='dark'] .json-diff-added .json-diff-marker,
 [data-theme='dark'] .json-diff-added .json-diff-key { color: #86EFAC; }
 [data-theme='dark'] .json-diff-removed .json-diff-marker,
