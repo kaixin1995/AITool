@@ -65,47 +65,60 @@ public sealed class ModelPriceSourceService
     /// <summary>拉取并解析两个价格源为本次请求专用的匹配索引（局部对象，不落任何静态字段）。</summary>
     private async Task<(IReadOnlyDictionary<string, List<ModelPriceSourceEntry>> Index, IReadOnlyList<string> SourceNames)> BuildIndexAsync(CancellationToken cancellationToken)
     {
-        var sourceNames = new List<string>();
         var index = new Dictionary<string, List<ModelPriceSourceEntry>>(StringComparer.OrdinalIgnoreCase);
+        var sourceNames = new List<string>();
 
-        foreach (var (name, url) in new[] { ("models.dev", ModelsDevUrl), ("LiteLLM", LiteLlmUrl) })
+        // 两源并行拉取解析：总耗时取决于最慢单源（LiteLLM 的 GitHub 源在部分网络下要等满超时）。
+        var results = await Task.WhenAll(
+            FetchSourceEntriesAsync("models.dev", ModelsDevUrl, cancellationToken),
+            FetchSourceEntriesAsync("LiteLLM", LiteLlmUrl, cancellationToken));
+
+        foreach (var (name, entries) in results)
         {
-            try
+            if (entries is null || entries.Count == 0) continue;
+            sourceNames.Add(name);
+            foreach (var (key, entry) in entries)
             {
-                var client = _httpClientFactory.CreateClient("ModelPriceSource");
-                using var response = await client.GetAsync(url, cancellationToken);
-                response.EnsureSuccessStatusCode();
-                // 响应体只作局部变量：解析完成后出作用域即可被 GC 回收，不进程级常驻。
-                var body = await response.Content.ReadAsStringAsync(cancellationToken);
-                var entries = name == "models.dev"
-                    ? ParseModelsDev(body)
-                    : ParseLiteLlm(body);
-                foreach (var (key, entry) in entries)
+                if (!index.TryGetValue(key, out var list))
                 {
-                    if (!index.TryGetValue(key, out var list))
-                    {
-                        list = [];
-                        index[key] = list;
-                    }
-                    list.Add(entry);
+                    list = [];
+                    index[key] = list;
                 }
-                if (entries.Any())
-                {
-                    sourceNames.Add(name);
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                // 单源失败容忍：models.dev 不可达时 LiteLLM 仍可用，反之亦然。
-                _logger.LogWarning(ex, "Fetch model price source failed: {Source}", name);
+                list.Add(entry);
             }
         }
 
         return (index, sourceNames);
+    }
+
+    /// <summary>
+    /// 拉取并解析单个价格源。失败返回 (name, null)（单源失败容忍，调用方继续用另一源）。
+    /// 迭代器在此处一次性物化（ToList），避免消费方多次枚举导致大 JSON 重复解析。
+    /// </summary>
+    private async Task<(string Name, List<KeyValuePair<string, ModelPriceSourceEntry>>? Entries)> FetchSourceEntriesAsync(
+        string name, string url, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("ModelPriceSource");
+            using var response = await client.GetAsync(url, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            // 响应体只作局部变量：解析完成后出作用域即可被 GC 回收，不进程级常驻。
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            var entries = (name == "models.dev"
+                ? ParseModelsDev(body)
+                : ParseLiteLlm(body)).ToList();
+            return (name, entries);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Fetch model price source failed: {Source}", name);
+            return (name, null);
+        }
     }
 
     /// <summary>解析 models.dev：按厂商分组，cost 单位已是 USD/百万 tokens，直接取用。</summary>

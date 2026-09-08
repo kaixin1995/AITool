@@ -343,8 +343,9 @@ builder.Services.AddHttpClient("ReleaseFeed", c => c.Timeout = TimeSpan.FromSeco
         AutomaticDecompression = System.Net.DecompressionMethods.All
     });
 builder.Services.AddSingleton<ClientReleaseFeedService>();
-// 公开模型价格源（models.dev / LiteLLM）：模型价格首选查询方式，AI 仅作未收录模型的补漏。
-builder.Services.AddHttpClient("ModelPriceSource", c => c.Timeout = TimeSpan.FromSeconds(30));
+// 公开模型价格源（models.dev / LiteLLM）：每次现拉现解析、零常驻（内存优先）。
+// 双源并行拉取，单源 15s 超时（2-3MB JSON 正常网络数秒即达），总耗时上限即最慢单源 15s。
+builder.Services.AddHttpClient("ModelPriceSource", c => c.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddSingleton<ModelPriceSourceService>();
 // Codex 额度被动冷却与重置服务。
 builder.Services.AddScoped<ICodexQuotaCooldownService, CodexQuotaCooldownService>();
