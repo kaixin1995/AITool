@@ -90,4 +90,50 @@ public sealed class ClientReleaseFeedServiceTests
         ClientReleaseFeedService.ParseChangelogHtml("").Should().BeEmpty();
         ClientReleaseFeedService.ParseChangelogHtml("no versions here").Should().BeEmpty();
     }
+
+    [Fact]
+    public void Sectioned_changelog_extracts_only_requested_panel()
+    {
+        // 取自 antigravity.google/changelog 真实结构：四个产品面板（hub/cli/ide/sdk），
+        // 每个面板内版本号在 version-link 锚点、日期紧跟其后的 <br>。
+        const string html = """
+        <html><body>
+        <div data-list-panel="hub" style="display: none;">
+          <div class="version"><a class="version-link x" href="/d" title="View release 2.12.2">2.12.2</a><br class="x">September 3, 2026</div>
+        </div>
+        <div data-list-panel="cli" style="display: none;">
+          <div class="version"><a class="version-link x" href="/d" title="View release 1.1.25">1.1.25</a><br class="x">September 3, 2026</div>
+          <div class="version"><a class="version-link x" href="/d" title="View release 1.1.24">1.1.24</a><br class="x">September 2, 2026</div>
+          <div class="version"><a class="version-link x" href="/d" title="View release 1.0.0">1.0.0</a><br class="x">January 1, 2026</div>
+        </div>
+        <div data-list-panel="ide" style="display: none;">
+          <div class="version"><a class="version-link x" href="/d" title="View release 2.5.5">2.5.5</a><br class="x">August 13, 2026</div>
+        </div>
+        </body></html>
+        """;
+        var lines = ClientReleaseFeedService.ParseSectionedChangelogHtml(html, "cli");
+
+        lines.Should().HaveCount(3);
+        lines[0].Should().Be("- 1.1.25（发布于 September 3, 2026，正式版）");
+        lines[1].Should().Contain("1.1.24");
+        lines.Should().NotContain(l => l.Contains("2.12.2") || l.Contains("2.5.5"), "不得混入其他产品板块的版本");
+    }
+
+    [Fact]
+    public void Sectioned_changelog_falls_back_to_line_pairing_when_panel_missing()
+    {
+        // 无 data-list-panel 结构（如 ZCode 式页面）时回退通用行配对。
+        const string html = """
+        <html><body><h2>3.11.2</h2><p>Released Sep 4, 2026</p></body></html>
+        """;
+        ClientReleaseFeedService.ParseSectionedChangelogHtml(html, "cli")
+            .Should().ContainSingle().Which.Should().Contain("3.11.2");
+    }
+
+    [Fact]
+    public void Sectioned_changelog_handles_malformed_body()
+    {
+        ClientReleaseFeedService.ParseSectionedChangelogHtml("", "cli").Should().BeEmpty();
+        ClientReleaseFeedService.ParseSectionedChangelogHtml("broken <div data-list-panel=\"cli\"", "cli").Should().BeEmpty();
+    }
 }

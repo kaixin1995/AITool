@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace AITool.Web.Services;
 
@@ -45,6 +46,11 @@ public sealed class ClientReleaseFeedService
         ["zcode"] =
         [
             new ReleaseSource("changelog", "官方更新页: zcode.z.ai/changelog", "https://zcode.z.ai/en/changelog")
+        ],
+        ["antigravity"] =
+        [
+            // antigravity.google/changelog 按产品分四个板块（hub/cli/ide/sdk），CLI 版本在 data-list-panel="cli" 面板内。
+            new ReleaseSource("changelog", "官方更新页: antigravity.google/changelog（Antigravity CLI 板块）", "https://antigravity.google/changelog", Section: "cli")
         ]
     };
 
@@ -62,7 +68,7 @@ public sealed class ClientReleaseFeedService
     /// <summary>一个档案的发布源查询结果。Success=false 表示没有已知源或全部拉取失败。</summary>
     public sealed record ReleaseFeedResult(bool Success, string Facts, string SourceLabels);
 
-    private sealed record ReleaseSource(string Kind, string Label, string Url);
+    private sealed record ReleaseSource(string Kind, string Label, string Url, string? Section = null);
 
     public Task<ReleaseFeedResult> LookupAsync(string profileKey, CancellationToken cancellationToken)
     {
@@ -106,7 +112,9 @@ public sealed class ClientReleaseFeedService
                     var lines = source.Kind switch
                     {
                         "npm" => ParseNpmLatest(body),
-                        "changelog" => ParseChangelogHtml(body),
+                        "changelog" => string.IsNullOrEmpty(source.Section)
+                            ? ParseChangelogHtml(body)
+                            : ParseSectionedChangelogHtml(body, source.Section),
                         _ => ParseGitHubReleases(body)
                     };
                     if (lines.Count > 0)
@@ -131,6 +139,46 @@ public sealed class ClientReleaseFeedService
             : new ReleaseFeedResult(false, string.Empty, string.Empty);
         Cache[key] = (DateTimeOffset.UtcNow, result);
         return result;
+    }
+
+    /// <summary>
+    /// 解析带产品板块的 changelog 页面（如 antigravity.google/changelog）：页面按产品把更新表
+    /// 放进 <c>&lt;div data-list-panel="cli"&gt;</c> 等面板容器（tab 切换显示），先用 Section 键切片出
+    /// 目标面板，再提取「version-link 锚点 + 紧随其后的日期文本」配对。面板结构缺失时回退整页行配对。
+    /// </summary>
+    public static List<string> ParseSectionedChangelogHtml(string html, string section)
+    {
+        try
+        {
+            var marker = $"data-list-panel=\"{section}\"";
+            var start = html.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0) return ParseChangelogHtml(html);
+            start = html.IndexOf('>', start) + 1;
+            var next = html.IndexOf("data-list-panel=", start, StringComparison.Ordinal);
+            var pane = next > start ? html[start..next] : html[start..];
+
+            var lines = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var pairRegex = new Regex(
+                """class="version-link[^"]*"[^>]*>(?<version>[^<]+)</a>\s*<br[^>]*>\s*(?<date>[^<\r\n]+)""",
+                RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            foreach (Match match in pairRegex.Matches(pane))
+            {
+                var version = match.Groups["version"].Value.Trim();
+                var date = match.Groups["date"].Value.Trim();
+                if (version.Length == 0 || date.Length == 0 || !seen.Add(version)) continue;
+                lines.Add($"- {version}（发布于 {date}，正式版）");
+                if (lines.Count >= 12) break;
+            }
+            if (lines.Count > 0) return lines;
+
+            // 结构化配对失败：对切片内容退回通用行配对。
+            return ParseChangelogHtml(pane);
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     /// <summary>解析 npm /latest 响应为事实行。解析失败返回空清单。</summary>

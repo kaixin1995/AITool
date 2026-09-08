@@ -336,7 +336,12 @@ builder.Services.AddScoped<KimiCredentialRefreshService>();
 // AI 助手：请求头模板查最新版本、模型价格 AI 查价等后台功能的统一 AI 调用通道。
 builder.Services.AddScoped<AiAssistantService>();
 // 客户端官方发布源（GitHub Releases / npm）：AI 查最新版先拉确定性数据，AI 只做归纳。
-builder.Services.AddHttpClient("ReleaseFeed", c => c.Timeout = TimeSpan.FromSeconds(20));
+// Google 等前端会无条件返回 gzip 内容，必须开启自动解压，否则拿到乱码解析失败。
+builder.Services.AddHttpClient("ReleaseFeed", c => c.Timeout = TimeSpan.FromSeconds(20))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        AutomaticDecompression = System.Net.DecompressionMethods.All
+    });
 builder.Services.AddSingleton<ClientReleaseFeedService>();
 // 公开模型价格源（models.dev / LiteLLM）：模型价格首选查询方式，AI 仅作未收录模型的补漏。
 builder.Services.AddHttpClient("ModelPriceSource", c => c.Timeout = TimeSpan.FromSeconds(30));
