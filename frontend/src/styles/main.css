@@ -42,7 +42,8 @@
 }
 
 [data-theme='dark'] {
-  --text-color-secondary: rgba(255, 255, 255, 0.62);
+  /* 次级文字 0.62 在小字号（徽章/标签）暗底上近似黑字，提亮到 0.74 */
+  --text-color-secondary: rgba(255, 255, 255, 0.74);
   --bg-page: #101014;
   --bg-card: #18181C;
   --bg-input: #1F1F24;
@@ -71,7 +72,7 @@
   --border-color-global: #1F2937;
   --border-color-soft: rgba(255, 255, 255, 0.08);
   --text-primary: #F8FAFC;
-  --text-color-secondary: #94A3B8;
+  --text-color-secondary: #ADB9C9;
   --card-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.5), 0 0 1px 1px rgba(255, 255, 255, 0.05);
 }
 
