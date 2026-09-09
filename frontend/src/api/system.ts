@@ -27,6 +27,7 @@ export interface SystemSettings {
   oauthQuotaMaxCacheHours: number
   oauthAutoDisableThresholdPercent: number
   oauthInspectionCacheEnabled: boolean
+  defaultAiTargetMappingId: string | null
   lastUsageLogPrunedAt: string | null
   lastUsageLogPrunedCount: number
 }

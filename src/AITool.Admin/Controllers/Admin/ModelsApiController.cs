@@ -1,4 +1,5 @@
-using AITool.Infrastructure.Proxy;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
@@ -32,11 +33,7 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 后台缓存失效服务（双宿主下推送到 Core）。
-    /// </summary>
-    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
-    /// <summary>
-    /// 代理元数据缓存（本地失效）。
+    /// 代理元数据缓存。
     /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
     /// <summary>
@@ -55,26 +52,36 @@ public sealed class ModelsApiController : ControllerBase
     /// 站点级联删除工具（复用空路由入口清理逻辑）。
     /// </summary>
     private readonly SiteCascadeDeleter _cascadeDeleter;
+    /// <summary>
+    /// AI 助手服务（价格表 AI 查价使用）。
+    /// </summary>
+    private readonly AiAssistantService _aiAssistant;
+    /// <summary>
+    /// 公开价格源（models.dev / LiteLLM）查询服务（价格表首选查询方式）。
+    /// </summary>
+    private readonly ModelPriceSourceService _priceSourceService;
 
     /// <summary>
     /// 初始化模型管理 API 控制器。
     /// </summary>
     public ModelsApiController(
         AppDbContext dbContext,
-        AdminCacheInvalidationService adminCacheInvalidation,
         ProxyRequestMetadataCache metadataCache,
         ModelConcurrencyLimiter concurrencyLimiter,
         ModelVendorCatalogService vendorCatalogService,
         Application.Pricing.IModelPricingService pricingService,
-        SiteCascadeDeleter cascadeDeleter)
+        SiteCascadeDeleter cascadeDeleter,
+        AiAssistantService aiAssistant,
+        ModelPriceSourceService priceSourceService)
     {
         _dbContext = dbContext;
-        _adminCacheInvalidation = adminCacheInvalidation;
         _metadataCache = metadataCache;
         _concurrencyLimiter = concurrencyLimiter;
         _vendorCatalogService = vendorCatalogService;
         _pricingService = pricingService;
         _cascadeDeleter = cascadeDeleter;
+        _aiAssistant = aiAssistant;
+        _priceSourceService = priceSourceService;
     }
 
     /// <summary>
@@ -92,8 +99,8 @@ public sealed class ModelsApiController : ControllerBase
         await _dbContext.Client.Deleteable<ModelHealthMonitor>().ExecuteCommandAsync(cancellationToken);
         await _dbContext.Client.Deleteable<ModelLibraryItem>().ExecuteCommandAsync(cancellationToken);
 
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new
         {
@@ -190,8 +197,7 @@ public sealed class ModelsApiController : ControllerBase
             maxConcurrency = mapping.MaxConcurrency,
             clientEmulation = mapping.ClientEmulation,
             extraHeadersJson = mapping.ExtraHeadersJson,
-            egressProxyUrl = mapping.EgressProxyUrl,
-            overrideReasoningEffort = mapping.OverrideReasoningEffort
+            egressProxyUrl = mapping.EgressProxyUrl
         }, "站点模型映射已更新"));
     }
 
@@ -621,6 +627,247 @@ public sealed class ModelsApiController : ControllerBase
 
         return Ok(ApiResponse.Ok("模型价格已保存"));
     }
+
+    /// <summary>
+    /// 模型价格（首选查询方式）：从公开价格源（models.dev / LiteLLM）匹配模型定价。
+    /// 一次请求全量匹配，零 AI 调用、秒级返回；未收录的模型由前端引导走 AI 补漏。
+    /// </summary>
+    [HttpPost("pricing/source-fetch")]
+    public async Task<IActionResult> SourceFetchPricing([FromBody] SourceFetchPricingRequest? request, CancellationToken cancellationToken)
+    {
+        var ids = (request?.Ids ?? [])
+            .Where(i => !string.IsNullOrWhiteSpace(i))
+            .Select(i => i!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(300)
+            .ToList();
+
+        if (ids.Count == 0)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "没有要查询的模型 ID" }));
+        }
+
+        var result = await _priceSourceService.LookupAsync(ids, cancellationToken);
+        if (!result.Success)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = result.Error }));
+        }
+
+        var entries = result.Matched
+            .Select(kvp => new AiPriceEntryDto
+            {
+                Id = kvp.Key,
+                DisplayName = kvp.Value.Key,
+                Input = ClampPrice(kvp.Value.Input),
+                Output = ClampPrice(kvp.Value.Output),
+                CacheRead = ClampPrice(kvp.Value.CacheRead),
+                CacheWrite = ClampPrice(kvp.Value.CacheWrite)
+            })
+            .ToList();
+
+        return Ok(ApiResponse.Ok(new { success = true, entries, unmatched = result.Unmatched, sources = result.Sources }));
+    }
+
+    public sealed class SourceFetchPricingRequest
+    {
+        public List<string?> Ids { get; set; } = [];
+    }
+
+    /// <summary>
+    /// AI 查价格（第一步）：生成分批查询计划。目标 = 价格表缺失的模型库模型（必含）
+    /// + 现有条目（includeExisting=true 时）。返回逐模型目标与当前价格快照，
+    /// 前端在二级弹窗中按批调用 ai-query 并实时展示进度与结果。
+    /// </summary>
+    [HttpPost("pricing/ai-plan")]
+    public async Task<IActionResult> AiPlanPricing([FromBody] AiUpdatePricingRequest? request, CancellationToken cancellationToken)
+    {
+        var includeExisting = request?.IncludeExisting ?? false;
+
+        var currentCatalog = await _pricingService.GetCatalogAsync(cancellationToken);
+        var existingById = currentCatalog.Models
+            .GroupBy(m => m.Id.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        // 目标清单：价格表缺失的模型库模型（必含）+ 现有条目（可选）。超长截断，避免查询轮次过多。
+        const int MaxTargets = 80;
+        var enabledModelNames = await _dbContext.ModelLibraryItems
+            .Where(m => m.IsEnabled)
+            .Select(m => m.ModelName)
+            .ToListAsync(cancellationToken);
+        var missing = enabledModelNames
+            .Where(name => !string.IsNullOrWhiteSpace(name) && !existingById.ContainsKey(name.Trim()))
+            .Select(name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var targets = new List<AiPlanTargetDto>();
+        foreach (var id in missing)
+        {
+            if (targets.Count >= MaxTargets) break;
+            targets.Add(new AiPlanTargetDto { Id = id, IsExisting = false, Current = null });
+        }
+        if (includeExisting)
+        {
+            foreach (var pair in existingById)
+            {
+                if (targets.Count >= MaxTargets) break;
+                targets.Add(new AiPlanTargetDto
+                {
+                    Id = pair.Key,
+                    IsExisting = true,
+                    Current = new AiPriceSnapshotDto
+                    {
+                        Input = pair.Value.Input,
+                        Output = pair.Value.Output,
+                        CacheRead = pair.Value.CacheRead,
+                        CacheWrite = pair.Value.CacheWrite
+                    }
+                });
+            }
+        }
+
+        var truncated = missing.Count + (includeExisting ? existingById.Count : 0) > targets.Count;
+        return Ok(ApiResponse.Ok(new { targets, truncated }));
+    }
+
+    /// <summary>
+    /// AI 查价格（第二步）：按批查询官方定价（每批最多 10 个模型）。单批失败只影响该批，
+    /// 前端标记失败行后继续后续批次。只查询不落库，返回 AI 给出且命中本批清单的条目。
+    /// </summary>
+    [HttpPost("pricing/ai-query")]
+    public async Task<IActionResult> AiQueryPricing([FromBody] AiQueryPricingRequest? request, CancellationToken cancellationToken)
+    {
+        const int maxBatchSize = 10;
+        var queries = (request?.Queries ?? [])
+            .Where(q => !string.IsNullOrWhiteSpace(q?.Id))
+            .Select(q => (Id: q!.Id!.Trim(), q.Current))
+            .GroupBy(q => q.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .Take(maxBatchSize)
+            .ToList();
+
+        if (queries.Count == 0)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "本批次没有可查询的模型" }));
+        }
+
+        var listText = string.Join("\n", queries.Select(q =>
+            q.Current is null
+                ? $"- {q.Id}（价格表缺失，新条目）"
+                : $"- {q.Id}（当前：输入 {q.Current.Input}，输出 {q.Current.Output}，缓存读 {q.Current.CacheRead}）"));
+
+        var prompt = $@"根据你所了解的官方公开定价，给出以下 AI 模型的 API 单价（美元 / 每百万 tokens）。
+
+模型清单：
+{listText}
+
+要求：
+1. 只输出一个 JSON 数组，不要输出任何其他文字或代码块围栏，格式：
+[{{""id"":""模型ID原样"",""displayName"":""官方显示名"",""input"":输入单价,""output"":输出单价,""cacheRead"":缓存读单价,""cacheWrite"":缓存写单价}}]
+2. input / output 必填；cacheRead / cacheWrite 可省略（省略按 0 处理）。
+3. 价格单位统一为 USD / 1M tokens；如果你了解的是 per-1K 或 per-1T 价格，请先换算成 per-1M。
+4. 只返回你确定官方定价的模型；不确定或不知道的模型直接省略，禁止编造价格。";
+
+        var aiResult = await _aiAssistant.CompleteAsync(prompt, cancellationToken);
+        if (!aiResult.Success)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = aiResult.Error }));
+        }
+
+        List<AiPriceEntryDto> aiEntries;
+        try
+        {
+            var json = AiAssistantService.ExtractJsonBlock(aiResult.Content!);
+            // 模型常把数字输出成字符串（"0.3"），AllowReadingFromString 兼容两种形态。
+            aiEntries = JsonSerializer.Deserialize<List<AiPriceEntryDto>>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = JsonNumberHandling.AllowReadingFromString
+            })
+                ?? [];
+        }
+        catch
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "AI 返回内容无法解析为价格数组，本批已跳过" }));
+        }
+
+        if (aiEntries.Count == 0)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "AI 未返回本批模型的定价（可能不了解这批模型）" }));
+        }
+
+        // 只接受本批清单内的 id（防 AI 幻觉编造清单外模型），去重后钳非负。
+        var requested = queries.Select(q => q.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var entries = new List<AiPriceEntryDto>();
+        foreach (var aiEntry in aiEntries)
+        {
+            var id = aiEntry.Id?.Trim();
+            if (string.IsNullOrWhiteSpace(id) || !seen.Add(id)) continue;
+            if (!requested.Contains(id)) continue;
+
+            entries.Add(new AiPriceEntryDto
+            {
+                Id = id,
+                DisplayName = string.IsNullOrWhiteSpace(aiEntry.DisplayName) ? id : aiEntry.DisplayName.Trim(),
+                Input = ClampPrice(aiEntry.Input),
+                Output = ClampPrice(aiEntry.Output),
+                CacheRead = ClampPrice(aiEntry.CacheRead),
+                CacheWrite = ClampPrice(aiEntry.CacheWrite)
+            });
+        }
+
+        if (entries.Count == 0)
+        {
+            return Ok(ApiResponse.Ok(new { success = false, error = "AI 返回的模型均不在本批清单中，已跳过" }));
+        }
+
+        return Ok(ApiResponse.Ok(new { success = true, entries }));
+    }
+
+    public sealed class AiUpdatePricingRequest
+    {
+        /// <summary>true 时连同价格表已有条目一起交由 AI 核对；false（默认）仅查询缺失的模型。</summary>
+        public bool IncludeExisting { get; set; }
+    }
+
+    public sealed class AiQueryPricingRequest
+    {
+        public List<AiQueryItem>? Queries { get; set; }
+    }
+
+    public sealed class AiQueryItem
+    {
+        public string? Id { get; set; }
+        public AiPriceSnapshotDto? Current { get; set; }
+    }
+
+    public sealed class AiPlanTargetDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public bool IsExisting { get; set; }
+        public AiPriceSnapshotDto? Current { get; set; }
+    }
+
+    public sealed class AiPriceSnapshotDto
+    {
+        public decimal Input { get; set; }
+        public decimal Output { get; set; }
+        public decimal CacheRead { get; set; }
+        public decimal CacheWrite { get; set; }
+    }
+
+    public sealed class AiPriceEntryDto
+    {
+        public string? Id { get; set; }
+        public string? DisplayName { get; set; }
+        public decimal Input { get; set; }
+        public decimal Output { get; set; }
+        public decimal CacheRead { get; set; }
+        public decimal CacheWrite { get; set; }
+    }
+
+    private static decimal ClampPrice(decimal value) => value < 0 ? 0 : value;
 
     /// <summary>
     /// 为模型添加站点关联映射（已存在则更新启用状态，标记 LastStatus="manual"）。

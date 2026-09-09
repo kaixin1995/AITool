@@ -688,7 +688,14 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
     modelSearch.value = ''
     let models: OAuthRemoteModelItem[] = []
     if (acc.provider === 'codex') {
-      models = await api.fetchOAuthModels(acc.id)
+      const result = await api.fetchOAuthModels(acc.id)
+      models = result.models
+      // 远端分层目录刷新结果提示：变更成功提示；失败警告（不影响本次拉取）。
+      if (result.catalogChanged) {
+        message.success(result.catalogNote || '远端模型目录已刷新')
+      } else if (result.catalogRefreshed === false && result.catalogNote) {
+        message.warning(result.catalogNote)
+      }
     } else if (acc.provider === 'antigravity') {
       models = await api.fetchGoogleModels(acc.id)
     } else if (acc.provider === 'kimi') {

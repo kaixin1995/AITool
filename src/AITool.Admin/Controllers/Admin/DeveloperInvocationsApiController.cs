@@ -179,73 +179,38 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return NotFound();
         }
 
-        if (request.ModelId == Guid.Empty)
+        CachedFallbackTarget? target;
+        if (request.ModelId == Guid.Empty && request.MappingId == Guid.Empty)
         {
-            return BadRequest(ApiResponse.Fail("请选择用于诊断的 AI 模型", "invalid_model"));
-        }
-
-        var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
-        if (model is null)
-        {
-            return Ok(ApiResponse.Ok(new DeveloperAiDiagnoseResponse
+            // 未显式指定诊断模型：使用设置页「AI 助手」配置的默认站点/模型。
+            target = await ResolveDefaultAiTargetAsync(cancellationToken);
+            if (target == null)
             {
-                Success = false,
-                Error = "所选诊断模型不存在或已禁用"
-            }));
-        }
-
-        // 构造诊断提示词
-        var prompt = BuildAiDiagnosisPrompt(request);
-
-        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-        var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
-        var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
-
-        CachedFallbackTarget? target = null;
-        if (request.MappingId != Guid.Empty)
-        {
-            var targets = await _metadataCache.GetChatTargetsAsync(request.ModelId, cancellationToken);
-            var selectedTarget = targets.FirstOrDefault(x => x.MappingId == request.MappingId);
-            if (selectedTarget != null)
-            {
-                target = new CachedFallbackTarget
+                return Ok(ApiResponse.Ok(new DeveloperAiDiagnoseResponse
                 {
-                    ModelId = request.ModelId,
-                    SiteId = selectedTarget.SiteId,
-                    SiteKeyId = selectedTarget.SiteKeyId,
-                    CircuitKey = selectedTarget.CircuitKey,
-                    SiteName = selectedTarget.SiteName,
-                    ProtocolType = selectedTarget.ProtocolType,
-                    BaseUrl = selectedTarget.BaseUrl,
-                    EndpointPathMode = selectedTarget.EndpointPathMode,
-                    ApiKey = selectedTarget.ApiKey,
-                    SiteModelName = selectedTarget.SiteModelName,
-                    ExtraHeaders = selectedTarget.ExtraHeaders
-                };
+                    Success = false,
+                    Error = "未选择诊断模型，且「设置 → AI 助手」尚未配置默认 AI 站点/模型"
+                }));
             }
         }
-
-        if (target == null)
+        else
         {
-            var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
-            var availableRoute = allRoutes.FirstOrDefault(r => !_circuitStore.IsBlocked(r.CircuitKey));
-            if (availableRoute != null)
+            if (request.ModelId == Guid.Empty)
             {
-                target = new CachedFallbackTarget
-                {
-                    ModelId = request.ModelId,
-                    SiteId = availableRoute.SiteId,
-                    SiteKeyId = availableRoute.SiteKeyId,
-                    CircuitKey = availableRoute.CircuitKey,
-                    SiteName = availableRoute.SiteName,
-                    ProtocolType = availableRoute.ProtocolType,
-                    BaseUrl = availableRoute.BaseUrl,
-                    EndpointPathMode = availableRoute.EndpointPathMode,
-                    ApiKey = availableRoute.ApiKey,
-                    SiteModelName = availableRoute.SiteModelName,
-                    ExtraHeaders = availableRoute.ExtraHeaders
-                };
+                return BadRequest(ApiResponse.Fail("请选择用于诊断的 AI 模型", "invalid_model"));
             }
+
+            var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
+            if (model is null)
+            {
+                return Ok(ApiResponse.Ok(new DeveloperAiDiagnoseResponse
+                {
+                    Success = false,
+                    Error = "所选诊断模型不存在或已禁用"
+                }));
+            }
+
+            target = await ResolveExplicitDiagnosticTargetAsync(request.ModelId, request.MappingId, model.ModelName, cancellationToken);
         }
 
         if (target == null)
@@ -256,6 +221,13 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 Error = "没有可用的模型路由目标"
             }));
         }
+
+        // 构造诊断提示词
+        var prompt = BuildAiDiagnosisPrompt(request);
+
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
+        var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
@@ -367,30 +339,49 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return NotFound();
         }
 
-        if (request.DiagnosticModelId == Guid.Empty)
+        var explicitModelSelected = request.DiagnosticModelId != Guid.Empty
+            || (request.DiagnosticMappingId.HasValue && request.DiagnosticMappingId.Value != Guid.Empty);
+        CachedFallbackTarget? diagnosticTarget;
+        if (!explicitModelSelected)
         {
-            return BadRequest(ApiResponse.Fail("请选择用于诊断的 AI 模型", "invalid_diagnostic_model"));
-        }
-
-        var diagnosticModel = await _metadataCache.GetEnabledModelAsync(request.DiagnosticModelId, cancellationToken);
-        if (diagnosticModel is null)
-        {
-            return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+            // 未显式指定诊断模型：使用设置页「AI 助手」配置的默认站点/模型。
+            diagnosticTarget = await ResolveDefaultAiTargetAsync(cancellationToken);
+            if (diagnosticTarget == null)
             {
-                Success = false,
-                Error = "所选诊断模型不存在或已禁用"
-            }));
+                return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+                {
+                    Success = false,
+                    Error = "未选择诊断模型，且「设置 → AI 助手」尚未配置默认 AI 站点/模型"
+                }));
+            }
         }
-
-        // 1. 解析诊断模型的目标路由
-        var diagnosticTarget = await ResolveDiagnosticTargetAsync(request.DiagnosticModelId, request.DiagnosticMappingId, diagnosticModel.ModelName, cancellationToken);
-        if (diagnosticTarget == null)
+        else
         {
-            return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+            if (request.DiagnosticModelId == Guid.Empty)
             {
-                Success = false,
-                Error = "诊断模型无可用路由目标"
-            }));
+                return BadRequest(ApiResponse.Fail("请选择用于诊断的 AI 模型", "invalid_diagnostic_model"));
+            }
+
+            var diagnosticModel = await _metadataCache.GetEnabledModelAsync(request.DiagnosticModelId, cancellationToken);
+            if (diagnosticModel is null)
+            {
+                return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+                {
+                    Success = false,
+                    Error = "所选诊断模型不存在或已禁用"
+                }));
+            }
+
+            // 1. 解析诊断模型的目标路由
+            diagnosticTarget = await ResolveExplicitDiagnosticTargetAsync(request.DiagnosticModelId, request.DiagnosticMappingId ?? Guid.Empty, diagnosticModel.ModelName, cancellationToken);
+            if (diagnosticTarget == null)
+            {
+                return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+                {
+                    Success = false,
+                    Error = "诊断模型无可用路由目标"
+                }));
+            }
         }
 
         // 2. 解析被测试的上游站点凭据与配置
@@ -555,57 +546,83 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         }));
     }
 
-    private async Task<CachedFallbackTarget?> ResolveDiagnosticTargetAsync(
+    /// <summary>
+    /// 解析请求显式指定的诊断模型目标：优先按 MappingId 精确匹配，否则取该模型第一个未熔断的路由。
+    /// </summary>
+    private async Task<CachedFallbackTarget?> ResolveExplicitDiagnosticTargetAsync(
         Guid modelId,
-        Guid? mappingId,
+        Guid mappingId,
         string modelName,
         CancellationToken cancellationToken)
     {
-        if (mappingId.HasValue && mappingId.Value != Guid.Empty)
+        if (mappingId != Guid.Empty)
         {
             var targets = await _metadataCache.GetChatTargetsAsync(modelId, cancellationToken);
-            var selectedTarget = targets.FirstOrDefault(x => x.MappingId == mappingId.Value);
+            var selectedTarget = targets.FirstOrDefault(x => x.MappingId == mappingId);
             if (selectedTarget != null)
             {
-                return new CachedFallbackTarget
-                {
-                    ModelId = modelId,
-                    SiteId = selectedTarget.SiteId,
-                    SiteKeyId = selectedTarget.SiteKeyId,
-                    CircuitKey = selectedTarget.CircuitKey,
-                    SiteName = selectedTarget.SiteName,
-                    ProtocolType = selectedTarget.ProtocolType,
-                    BaseUrl = selectedTarget.BaseUrl,
-                    EndpointPathMode = selectedTarget.EndpointPathMode,
-                    ApiKey = selectedTarget.ApiKey,
-                    SiteModelName = selectedTarget.SiteModelName,
-                    ExtraHeaders = selectedTarget.ExtraHeaders
-                };
+                return ToFallbackTarget(modelId, selectedTarget);
             }
         }
 
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(modelName, cancellationToken);
         var availableRoute = allRoutes.FirstOrDefault(r => !_circuitStore.IsBlocked(r.CircuitKey));
-        if (availableRoute != null)
+        return availableRoute != null ? ToFallbackTarget(modelId, availableRoute) : null;
+    }
+
+    /// <summary>
+    /// 解析设置页「AI 助手」配置的默认站点/模型为诊断目标。未配置或目标已失效返回 null。
+    /// 与 AiAssistantService 共用同一配置，实现「一次选定、全系统调用」。
+    /// </summary>
+    private async Task<CachedFallbackTarget?> ResolveDefaultAiTargetAsync(CancellationToken cancellationToken)
+    {
+        var settings = await _dbContext.SystemRuntimeSettings
+            .FirstAsync(x => x.Id == 1, cancellationToken);
+        if (settings?.DefaultAiTargetMappingId is not { } mappingId || mappingId == Guid.Empty)
         {
-            return new CachedFallbackTarget
-            {
-                ModelId = modelId,
-                SiteId = availableRoute.SiteId,
-                SiteKeyId = availableRoute.SiteKeyId,
-                CircuitKey = availableRoute.CircuitKey,
-                SiteName = availableRoute.SiteName,
-                ProtocolType = availableRoute.ProtocolType,
-                BaseUrl = availableRoute.BaseUrl,
-                EndpointPathMode = availableRoute.EndpointPathMode,
-                ApiKey = availableRoute.ApiKey,
-                SiteModelName = availableRoute.SiteModelName,
-                ExtraHeaders = availableRoute.ExtraHeaders
-            };
+            return null;
         }
 
-        return null;
+        var targets = await _metadataCache.GetChatTargetsAsync(cancellationToken);
+        var selected = targets.FirstOrDefault(x => x.MappingId == mappingId);
+        return selected != null ? ToFallbackTarget(selected.ModelId, selected) : null;
     }
+
+    private static CachedFallbackTarget ToFallbackTarget(Guid modelId, CachedChatTarget target) => new()
+    {
+        ModelId = modelId,
+        SiteId = target.SiteId,
+        SiteKeyId = target.SiteKeyId,
+        CircuitKey = target.CircuitKey,
+        SiteName = target.SiteName,
+        ProtocolType = target.ProtocolType,
+        BaseUrl = target.BaseUrl,
+        EndpointPathMode = target.EndpointPathMode,
+        ApiKey = target.ApiKey,
+        SiteModelName = target.SiteModelName,
+        ExtraHeaders = target.ExtraHeaders,
+        ClientEmulation = target.ClientEmulation,
+        EgressProxyUrl = target.EgressProxyUrl,
+        GoogleProjectId = target.GoogleProjectId
+    };
+
+    private static CachedFallbackTarget ToFallbackTarget(Guid modelId, CachedProxyRouteTarget route) => new()
+    {
+        ModelId = modelId,
+        SiteId = route.SiteId,
+        SiteKeyId = route.SiteKeyId,
+        CircuitKey = route.CircuitKey,
+        SiteName = route.SiteName,
+        ProtocolType = route.ProtocolType,
+        BaseUrl = route.BaseUrl,
+        EndpointPathMode = route.EndpointPathMode,
+        ApiKey = route.ApiKey,
+        SiteModelName = route.SiteModelName,
+        ExtraHeaders = route.ExtraHeaders,
+        ClientEmulation = route.ClientEmulation,
+        EgressProxyUrl = route.EgressProxyUrl,
+        GoogleProjectId = route.GoogleProjectId
+    };
 
     private async Task<(string SiteName, string BaseUrl, string ApiKey, string EndpointPathMode, string ProtocolType, string? ProjectId, string? ExtraHeaders)> ResolveTestSiteInfoAsync(
         DeveloperAutoDiagnoseLoopRequest request,

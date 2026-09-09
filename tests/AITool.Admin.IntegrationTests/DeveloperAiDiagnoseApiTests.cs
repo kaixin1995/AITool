@@ -36,7 +36,7 @@ public sealed class DeveloperAiDiagnoseApiTests
     }
 
     [Fact]
-    public async Task Ai_diagnose_validates_empty_model()
+    public async Task Ai_diagnose_empty_model_falls_back_to_default_and_fails_when_unconfigured()
     {
         await using var factory = new AiDiagnoseTestWebApplicationFactory(developerFeaturesEnabled: true);
         using var client = factory.CreateClient();
@@ -47,8 +47,11 @@ public sealed class DeveloperAiDiagnoseApiTests
             ErrorMessage = "test error"
         });
 
+        // 空模型 + 未配置默认 AI 站点/模型：返回业务失败（HTTP 200），提示先到设置页配置。
         var response = await client.PostAsync(Endpoint, content);
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("尚未配置默认 AI 站点/模型");
     }
 
     private static StringContent JsonContent(object obj)

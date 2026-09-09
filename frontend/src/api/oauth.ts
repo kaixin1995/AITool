@@ -194,6 +194,28 @@ export interface OAuthRemoteModelItem {
   existingDisplayName: string | null
 }
 
+// 拉取账号提供程序的上游模型目录（供选择导入）。
+// Codex 端点会顺带刷新远端分层目录，响应为 { catalogRefreshed, catalogChanged, catalogNote, models }；
+// Google/Kimi 端点仍返回裸数组。统一解包为 { models, ... }。
+export interface OAuthFetchModelsResult {
+  models: OAuthRemoteModelItem[]
+  catalogRefreshed?: boolean
+  catalogChanged?: boolean
+  catalogNote?: string | null
+}
+export async function fetchOAuthModels(id: string): Promise<OAuthFetchModelsResult> {
+  const res = await httpGet<OAuthRemoteModelItem[] | OAuthFetchModelsResult>(`/api/admin/oauth/accounts/${id}/fetch-models`)
+  if (Array.isArray(res)) {
+    return { models: res }
+  }
+  return {
+    models: res.models ?? [],
+    catalogRefreshed: res.catalogRefreshed,
+    catalogChanged: res.catalogChanged,
+    catalogNote: res.catalogNote
+  }
+}
+
 export interface OAuthModelSelection {
   remoteModelName: string
   displayName: string
@@ -215,10 +237,6 @@ export interface OAuthResetCreditsInfo {
   rawJson: string | null
 }
 
-// 拉取账号提供程序的上游模型目录（供选择导入）。
-export async function fetchOAuthModels(id: string): Promise<OAuthRemoteModelItem[]> {
-  return httpGet<OAuthRemoteModelItem[]>(`/api/admin/oauth/accounts/${id}/fetch-models`)
-}
 export async function importSelectedOAuthModels(id: string, selections: OAuthModelSelection[]): Promise<void> {
   await httpPost(`/api/admin/oauth/accounts/${id}/import-selected-models`, { selections })
 }

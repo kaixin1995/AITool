@@ -83,6 +83,7 @@ public sealed class SystemSettingsApiController : ControllerBase
             oauthQuotaMaxCacheHours = settings.OAuthQuotaMaxCacheHours,
             oauthAutoDisableThresholdPercent = settings.OAuthAutoDisableThresholdPercent,
             oauthInspectionCacheEnabled = settings.OAuthInspectionCacheEnabled,
+            defaultAiTargetMappingId = settings.DefaultAiTargetMappingId,
             lastUsageLogPrunedAt = settings.LastUsageLogPrunedAt,
             lastUsageLogPrunedCount = settings.LastUsageLogPrunedCount
         }));

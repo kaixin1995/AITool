@@ -170,6 +170,12 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     /// OAuth 账号额度巡检缓存复用开关。关闭时每轮巡检都真实刷新额度；开启时未被使用的账号沿用缓存快照。
     /// </summary>
     public bool OAuthInspectionCacheEnabled { get; set; }
+
+    /// <summary>
+    /// AI 助手功能使用的默认站点/模型（聊天目标 MappingId）。
+    /// 可空语义：null 表示保持现值；Guid.Empty 表示清除配置。
+    /// </summary>
+    public Guid? DefaultAiTargetMappingId { get; set; }
 }
 
 /// <summary>

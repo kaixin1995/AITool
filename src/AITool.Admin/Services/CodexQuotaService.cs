@@ -1,4 +1,3 @@
-using AITool.Infrastructure.Proxy;
 using System.Net.Http.Headers;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
@@ -6,6 +5,7 @@ using AITool.Domain.Codex;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace AITool.Admin.Services;
@@ -23,7 +23,6 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 {
     // wham/usage 端点（codex-patrol 同款）
     private const string UsageUrl = "https://chatgpt.com/backend-api/wham/usage";
-    private const string UserAgent = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
 
     /// <summary>结果缓存 TTL（防抖）。</summary>
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);
@@ -31,10 +30,9 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     private readonly HttpClient _httpClient;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
-    /// <summary>split 双宿主：变更推送 Core（惰性解析，避免 配额服务→失效服务→设置服务→配额服务 的 DI 环）。</summary>
-    private readonly IServiceScopeFactory _corePushScopeFactory;
     private readonly IMemoryCache _resultCache;
     private readonly CodexCredentialRefreshService _credentialRefreshService;
+    private readonly ICodexClientVersionResolver _versionResolver;
     private readonly ILogger<CodexQuotaService> _logger;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。KeyedAsyncLock 会在账号不再使用时回收锁条目。</summary>
@@ -44,17 +42,17 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         HttpClient httpClient,
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
-        IServiceScopeFactory corePushScopeFactory,
         IMemoryCache resultCache,
         CodexCredentialRefreshService credentialRefreshService,
+        ICodexClientVersionResolver versionResolver,
         ILogger<CodexQuotaService> logger)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
-        _corePushScopeFactory = corePushScopeFactory;
         _resultCache = resultCache;
         _credentialRefreshService = credentialRefreshService;
+        _versionResolver = versionResolver;
         _logger = logger;
     }
 
@@ -154,9 +152,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             .ExecuteCommandAsync(cancellationToken);
         await SetLinkedSiteEnabledAsync(client, current.LinkedSiteId, enabled, cancellationToken);
         _metadataCache.InvalidateRouteTargets();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateCodexAccounts();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
     }
 
     public async Task ApplyFeatureToggleAsync(bool enabled, CancellationToken cancellationToken)
@@ -188,9 +184,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         }
 
         _metadataCache.InvalidateRouteTargets();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateCodexAccounts();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
     }
 
     /// <inheritdoc />
@@ -232,7 +226,6 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                         .ExecuteCommandAsync(cancellationToken);
                     // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
                     _metadataCache.InvalidateCodexAccounts();
-                    await PushToCoreAsyncAccountCredentials(CancellationToken.None);
 
                     // 自动禁用判定：任一窗口使用百分比达到全局阈值时禁用（阈值用百分比 0-100 表达）
                     var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
@@ -271,10 +264,11 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
         try
         {
+            var versionInfo = await _versionResolver.ResolveAsync(ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, UsageUrl);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", account.AccessToken);
-            request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+            request.Headers.TryAddWithoutValidation("User-Agent", versionInfo.UserAgent);
             request.Headers.TryAddWithoutValidation("Originator", "codex_cli_rs");
             if (!string.IsNullOrEmpty(account.AccountId))
             {
@@ -413,24 +407,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         }
 
         _metadataCache.InvalidateRouteTargets();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateCodexAccounts();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _logger.LogWarning("Codex account {Id} auto-disabled: {Reason}", account.Id, reason);
-    }
-
-    /// <summary>惰性解析 AdminCacheInvalidationService 推送变更到 Core（scoped，调用点建作用域）。</summary>
-    private async Task PushToCoreAsyncAccountCredentials(CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var scope = _corePushScopeFactory.CreateScope();
-            await scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>()
-                .InvalidateAccountCredentialsAsync(cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            // 推送失败不影响主流程：下次写操作或启动推送会重试。
-        }
     }
 }

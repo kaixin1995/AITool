@@ -111,3 +111,48 @@ export function countJsonDiffs(nodes: JsonDiffNode[]): { added: number; removed:
   walk(nodes)
   return { added, removed, changed }
 }
+
+/** 字符串值内部分段对比的结果：公共前缀 + [旧片段] + [新片段] + 公共后缀。 */
+export interface StringSegmentDiff {
+  prefix: string
+  removed: string
+  added: string
+  suffix: string
+}
+
+/**
+ * 提取两个字符串中间变化的片段（最长公共前缀 + 最长公共后缀）。
+ * 适用于「长字符串里改了一小段」的场景（如 User-Agent 版本号升级）：
+ * 界面只高亮变化的片段，未变的上下文保持原样。
+ * 两串完全不同（无公共前后缀可言）时返回 null，调用方回退为整值对比展示。
+ */
+export function diffStringSegments(before: string, after: string): StringSegmentDiff | null {
+  // 公共前缀最长不能吃掉另一串的全部（否则后缀计算会重叠）。
+  let prefixLen = 0
+  const maxPrefix = Math.min(before.length, after.length)
+  while (prefixLen < maxPrefix && before[prefixLen] === after[prefixLen]) prefixLen += 1
+
+  let suffixLen = 0
+  const maxSuffix = Math.min(before.length - prefixLen, after.length - prefixLen)
+  while (
+    suffixLen < maxSuffix
+    && before[before.length - 1 - suffixLen] === after[after.length - 1 - suffixLen]
+  ) {
+    suffixLen += 1
+  }
+
+  const removed = before.slice(prefixLen, before.length - suffixLen)
+  const added = after.slice(prefixLen, after.length - suffixLen)
+  if (!removed || !added) return null
+
+  // 公共部分占比过低说明两串基本无关，分段展示没有意义。
+  const common = prefixLen + suffixLen
+  if (common * 2 < Math.max(before.length, after.length)) return null
+
+  return {
+    prefix: before.slice(0, prefixLen),
+    removed,
+    added,
+    suffix: before.slice(before.length - suffixLen)
+  }
+}

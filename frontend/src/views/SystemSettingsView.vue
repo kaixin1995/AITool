@@ -7,6 +7,7 @@ import {
 import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
 import type { SystemSettings } from '@/api/system'
+import { getChatTargets, type ChatModelTarget } from '@/api/chat'
 import { validateSystemSettingsNumbers } from './systemSettingsState'
 import { useAuthStore } from '@/stores/auth'
 import { useCurrency } from '@/composables/useCurrency'
@@ -22,6 +23,36 @@ const currencyOptions: SelectOption[] = [
 ]
 const loading = ref(false)
 const saving = ref(false)
+
+// Guid.Empty 形式：清除「默认 AI 站点/模型」时提交该值（后端 null 语义是保持现值，不能用于清除）。
+const EMPTY_GUID = '00000000-0000-0000-0000-000000000000'
+
+const aiTargets = ref<ChatModelTarget[]>([])
+const aiTargetsLoading = ref(false)
+
+const aiTargetOptions = computed<SelectOption[]>(() => {
+  const seen = new Set<string>()
+  const options: SelectOption[] = []
+  for (const target of aiTargets.value) {
+    if (seen.has(target.mappingId)) continue
+    seen.add(target.mappingId)
+    const siteName = target.siteName?.trim() || '未命名站点'
+    const modelLabel = target.modelDisplayName?.trim() || target.siteModelName?.trim() || '未知模型'
+    options.push({ label: `${siteName} / ${modelLabel}`, value: target.mappingId })
+  }
+  return options
+})
+
+async function loadAiTargets(): Promise<void> {
+  aiTargetsLoading.value = true
+  try {
+    aiTargets.value = await getChatTargets()
+  } catch {
+    // 目标列表加载失败不阻塞设置页其余功能，仅下拉为空。
+  } finally {
+    aiTargetsLoading.value = false
+  }
+}
 
 const clearLogsForm = reactive({
   source: null as string | null,
@@ -76,6 +107,7 @@ const form = reactive<SystemSettings>({
   oauthQuotaMaxCacheHours: 6,
   oauthAutoDisableThresholdPercent: 95,
   oauthInspectionCacheEnabled: false,
+  defaultAiTargetMappingId: null,
   lastUsageLogPrunedAt: null,
   lastUsageLogPrunedCount: 0
 })
@@ -101,7 +133,11 @@ async function handleSave(): Promise<void> {
 
   saving.value = true
   try {
-    await systemApi.updateSystemSettings(form)
+    // 清除选择时提交 Guid.Empty（后端把 Guid.Empty 解释为清除；null 表示保持现值）。
+    await systemApi.updateSystemSettings({
+      ...form,
+      defaultAiTargetMappingId: form.defaultAiTargetMappingId || EMPTY_GUID
+    })
     // 立即刷新登录态里的功能开关快照（含调试工具分页可用性），
     // 否则导航回调试工具时仍按旧状态渲染，出现"Tab 可见但 API 404"的不一致。
     await auth.fetchStatus()
@@ -127,7 +163,10 @@ async function handleClearAllLogs(): Promise<void> {
   await loadSettings()
 }
 
-onMounted(loadSettings)
+onMounted(() => {
+  void loadSettings()
+  void loadAiTargets()
+})
 </script>
 
 <template>
@@ -250,6 +289,25 @@ onMounted(loadSettings)
         </NCard>
 
         <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title">AI 助手</h5>
+          <NForm label-placement="top">
+            <div class="settings-grid">
+              <NFormItem class="ai-target-field">
+                <template #label><span class="form-label-tip">默认 AI 站点/模型<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>「请求头模板库」的 AI 查最新版、「模型价格」的 AI 查价格等功能通过该站点/模型发起查询。选项来自对话测试可用的站点模型，可输入关键字搜索。未配置时相关功能会提示先到这里选择。</NTooltip></span></template>
+                <NSelect
+                  v-model:value="form.defaultAiTargetMappingId"
+                  :options="aiTargetOptions"
+                  :loading="aiTargetsLoading"
+                  filterable
+                  clearable
+                  placeholder="-- 选择用于 AI 助手的站点 / 模型 --"
+                />
+              </NFormItem>
+            </div>
+          </NForm>
+        </NCard>
+
+        <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title form-label-tip">账号额度巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 OAuth 账号功能总开关开启时生效。巡检会周期性检查各账号的额度窗口。</NTooltip></h5>
           <NForm label-placement="top">
             <div class="oauth-inspection-row">
@@ -362,6 +420,11 @@ onMounted(loadSettings)
 .settings-grid :deep(.n-select) {
   width: 220px;
   max-width: 100%;
+}
+
+/* AI 站点/模型选择器需要更宽容纳「站点 / 模型」组合文本 */
+.ai-target-field :deep(.n-select) {
+  width: 360px;
 }
 
 /* 账号额度巡检：开关组 + 三个数值输入框用 flex 紧凑连续排列 */

@@ -106,7 +106,7 @@ describe('OAuth 与凭证合同', () => {
 })
 
 describe('OAuth 模型 API 合同', () => {
-  it('保留后端返回的模型名称、别名与现有映射状态', async () => {
+  it('保留后端返回的模型名称、别名与现有映射状态（裸数组兼容）', async () => {
     const models = [{
       remoteModelName: 'gpt-5-codex',
       displayName: 'GPT-5 Codex',
@@ -116,10 +116,28 @@ describe('OAuth 模型 API 合同', () => {
     }]
     mockedHttpGet.mockResolvedValueOnce(models)
 
-    await expect(fetchOAuthModels('account-1')).resolves.toEqual(models)
+    await expect(fetchOAuthModels('account-1')).resolves.toEqual({ models })
     expect(mockedHttpGet).toHaveBeenCalledWith(
       '/api/admin/oauth/accounts/account-1/fetch-models'
     )
+  })
+
+  it('透传 Codex 端点新合同中的远端目录刷新信息', async () => {
+    const payload = {
+      catalogRefreshed: true,
+      catalogChanged: true,
+      catalogNote: '远端模型目录已刷新',
+      models: [{
+        remoteModelName: 'gpt-6-astra',
+        displayName: 'gpt-6-astra',
+        existingMappingId: null,
+        isEnabled: false,
+        existingDisplayName: null
+      }]
+    }
+    mockedHttpGet.mockResolvedValueOnce(payload)
+
+    await expect(fetchOAuthModels('account-1')).resolves.toEqual(payload)
   })
 
   it('按 selections 合同提交显示名称和选择状态', async () => {

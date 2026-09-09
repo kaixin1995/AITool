@@ -326,7 +326,8 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                     || existing.HeadersJson.Contains("opencode/1.15.0")
                     || existing.HeadersJson.Contains("antigravity/1.10.4")
                     || existing.HeadersJson.Contains("x-goog-api-client")
-                    || existing.HeadersJson.Contains("claude-cli/2.1.161"))
+                    || existing.HeadersJson.Contains("claude-cli/2.1.161")
+                    || existing.HeadersJson.Contains("Codex Desktop/0.149.0"))
                 {
                     existing.HeadersJson = def.HeadersJson;
                 }
@@ -394,7 +395,7 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 Description = "OpenAI Codex Desktop 客户端真实特征指纹",
                 HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
                 {
-                    ["User-Agent"] = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)",
+                    ["User-Agent"] = "Codex Desktop/0.153.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)",
                     ["Originator"] = "Codex Desktop",
                     ["Session-Id"] = "${guid}",
                     ["Thread-Id"] = "${guid}",

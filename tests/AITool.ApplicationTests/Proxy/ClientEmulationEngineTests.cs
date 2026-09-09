@@ -92,7 +92,7 @@ public sealed class ClientEmulationEngineTests
             null,
             false);
 
-        Assert.StartsWith("Codex Desktop/0.149.0", headers["User-Agent"]);
+        Assert.StartsWith("Codex Desktop/0.153.3", headers["User-Agent"]);
         Assert.Equal("Codex Desktop", headers["Originator"]);
         Assert.True(headers.ContainsKey("Session-Id"));
         Assert.True(headers.ContainsKey("Thread-Id"));

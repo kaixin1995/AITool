@@ -311,6 +311,21 @@ builder.Services.AddHostedService<KimiTokenRefreshService>();
 builder.Services.AddScoped<KimiAccountProvisioner>();
 builder.Services.AddScoped<KimiCredentialRefreshService>();
 
+// AI 助手：请求头模板查最新版本、模型价格 AI 查价等后台功能的统一 AI 调用通道。
+builder.Services.AddScoped<AiAssistantService>();
+// 客户端官方发布源（GitHub Releases / npm）：AI 查最新版先拉确定性数据，AI 只做归纳。
+// Google 等前端会无条件返回 gzip 内容，必须开启自动解压，否则拿到乱码解析失败。
+builder.Services.AddHttpClient("ReleaseFeed", c => c.Timeout = TimeSpan.FromSeconds(20))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        AutomaticDecompression = System.Net.DecompressionMethods.All
+    });
+builder.Services.AddSingleton<ClientReleaseFeedService>();
+// 公开模型价格源（models.dev / LiteLLM）：每次现拉现解析、零常驻（内存优先）。
+// 双源并行拉取，单源 15s 超时（2-3MB JSON 正常网络数秒即达），总耗时上限即最慢单源 15s。
+builder.Services.AddHttpClient("ModelPriceSource", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddSingleton<ModelPriceSourceService>();
+
 // —— SQL 迁移执行服务（仅执行服务器 sql-migrations 目录脚本，密码确认 + 事务 + dry-run） ——
 builder.Services.AddScoped<SqlMigrationRunnerService>();
 

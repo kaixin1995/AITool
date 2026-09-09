@@ -31,6 +31,7 @@ public sealed class CodexApiController : ControllerBase
     private readonly ICodexOAuthClient _oauth;
     private readonly CodexAccountProvisioner _provisioner;
     private readonly ICodexModelFetcher _modelFetcher;
+    private readonly ICodexModelCatalog _modelCatalog;
     private readonly ICodexQuotaService _quotaService;
     private readonly ICodexQuotaCooldownService _cooldownService;
     private readonly ICodexResetCreditsService _resetCreditsService;
@@ -43,6 +44,7 @@ public sealed class CodexApiController : ControllerBase
         ICodexOAuthClient oauth,
         CodexAccountProvisioner provisioner,
         ICodexModelFetcher modelFetcher,
+        ICodexModelCatalog modelCatalog,
         ICodexQuotaService quotaService,
         ICodexQuotaCooldownService cooldownService,
         ICodexResetCreditsService resetCreditsService,
@@ -54,6 +56,7 @@ public sealed class CodexApiController : ControllerBase
         _oauth = oauth;
         _provisioner = provisioner;
         _modelFetcher = modelFetcher;
+        _modelCatalog = modelCatalog;
         _quotaService = quotaService;
         _cooldownService = cooldownService;
         _resetCreditsService = resetCreditsService;
@@ -365,7 +368,7 @@ public sealed class CodexApiController : ControllerBase
         }
     }
 
-    /// <summary>拉取该账号的上游模型列表（预览，不立即导入）。</summary>
+    /// <summary>拉取该账号的上游模型列表（预览，不立即导入）。顺带 best-effort 刷新远端分层目录（供新账号供给使用）。</summary>
     [HttpGet("accounts/{id}/fetch-models")]
     public async Task<IActionResult> FetchModels(Guid id, CancellationToken ct)
     {
@@ -375,6 +378,10 @@ public sealed class CodexApiController : ControllerBase
         {
             return BadRequest(new { message = "账号无 access_token" });
         }
+
+        // best-effort 刷新远端分层目录（router-for-me/models，失败沿用本地），让新账号默认映射跟上上游新模型。
+        // 先启动不等待：与拉上游模型并行执行，避免目录源不可达（最坏两个 URL 串行超时）拖慢本次请求。
+        var catalogRefreshTask = _modelCatalog.TryRefreshFromRemoteAsync(ct);
 
         try
         {
@@ -415,12 +422,38 @@ public sealed class CodexApiController : ControllerBase
                 });
             }
 
-            return Ok(result);
+            var catalogRefresh = await catalogRefreshTask;
+            return Ok(new
+            {
+                catalogRefreshed = catalogRefresh.Success,
+                catalogChanged = catalogRefresh.Changed,
+                catalogNote = catalogRefresh.Success
+                    ? (catalogRefresh.Changed ? "远端模型目录已刷新" : "远端模型目录无变化")
+                    : catalogRefresh.Error,
+                models = result
+            });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Fetch OAuth account models failed for account {AccountId}", id);
+            // 拉模型已失败，不等目录刷新结果直接返回；后台回收任务避免未观察的取消异常。
+            _ = ObserveCatalogRefreshAsync(catalogRefreshTask);
             return Ok(new { success = false, message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 吸收目录刷新任务的取消/异常（仅用于错误路径的 fire-and-forget 回收，结果丢弃）。
+    /// </summary>
+    private static async Task ObserveCatalogRefreshAsync(Task<CodexCatalogRefreshResult> task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+            // 请求结束时 ct 取消属预期。
         }
     }
 

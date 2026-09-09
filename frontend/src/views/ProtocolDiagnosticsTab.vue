@@ -161,10 +161,7 @@ async function loadInitData(): Promise<void> {
       listProfiles()
     ])
     chatTargets.value = targetsData
-    if (!selectedDiagnosticMappingId.value && targetsData.length > 0) {
-      selectedDiagnosticMappingId.value = targetsData[0].mappingId
-      selectedDiagnosticModelId.value = targetsData[0].modelId
-    }
+    // 诊断模型不自动选中第一个目标：未选择时后端使用「设置 → AI 助手」的默认 AI 站点/模型。
 
     availableSites.value = sitesData
     if (!selectedTargetSiteId.value && sitesData.length > 0) {
@@ -240,14 +237,9 @@ async function applyDumpToDiagnostic(dump: DiagnosticDumpItem): Promise<void> {
 }
 
 async function handleStartAutoDiagnoseLoop(): Promise<void> {
-  if (!selectedDiagnosticModelId.value) {
-    message.warning('请先选择用于分析的 AI 诊断模型')
-    return
-  }
-
   const site = availableSites.value.find((s) => s.id === selectedTargetSiteId.value)
   const payload: AutoDiagnoseLoopPayload = {
-    diagnosticModelId: selectedDiagnosticModelId.value,
+    diagnosticModelId: selectedDiagnosticModelId.value || undefined,
     diagnosticMappingId: selectedDiagnosticMappingId.value || undefined,
     enableReasoning: enableReasoning.value,
     reasoningEffort: reasoningEffort.value,
@@ -450,7 +442,8 @@ onMounted(async () => {
                 v-model:value="selectedDiagnosticMappingId"
                 :options="diagnosticModelOptions"
                 filterable
-                placeholder="选择用于诊断与微调的模型"
+                clearable
+                placeholder="默认：设置页 AI 助手模型（可选覆盖）"
                 size="small"
               />
             </div>

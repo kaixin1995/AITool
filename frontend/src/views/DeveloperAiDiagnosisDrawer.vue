@@ -65,10 +65,8 @@ const targetOptions = computed<SelectOption[]>(() => {
 async function loadTargets(): Promise<void> {
   try {
     targets.value = await getChatTargets()
-    if (!selectedMappingId.value && targets.value.length > 0) {
-      selectedMappingId.value = targets.value[0].mappingId
-      selectedModelId.value = targets.value[0].modelId
-    }
+    // 不自动选中第一个目标：未选择时后端使用「设置 → AI 助手」配置的默认 AI 站点/模型，
+    // 在下拉中显式选择则覆盖默认值。
   } catch {
     // 静默
   }
@@ -88,10 +86,6 @@ watch(() => props.show, async (val) => {
 
 async function handleStartDiagnose(): Promise<void> {
   if (!props.context) return
-  if (!selectedModelId.value) {
-    message.warning('请先选择用于诊断的模型')
-    return
-  }
 
   diagnosing.value = true
   result.value = null
@@ -99,7 +93,7 @@ async function handleStartDiagnose(): Promise<void> {
   try {
     const res = await runAiDiagnose({
       ...props.context,
-      modelId: selectedModelId.value,
+      modelId: selectedModelId.value || undefined,
       mappingId: selectedMappingId.value || undefined
     })
     result.value = res
@@ -227,7 +221,7 @@ async function handleConfirmApply(): Promise<void> {
   >
     <NDrawerContent title="🤖 AI 智能故障诊断" closable>
       <div class="ai-diagnose-container">
-        <!-- 顶部选择诊断模型区（参考 ChatTestPane） -->
+        <!-- 顶部选择诊断模型区（参考 ChatTestPane）；不选则使用设置页默认 AI 模型 -->
         <div class="ai-model-selector-bar">
           <div class="selector-row">
             <div class="selector-item flex-1">
@@ -236,7 +230,8 @@ async function handleConfirmApply(): Promise<void> {
                 v-model:value="selectedMappingId"
                 :options="targetOptions"
                 filterable
-                placeholder="请选择站点模型"
+                clearable
+                placeholder="默认：设置页 AI 助手模型（可选覆盖）"
                 size="small"
               />
             </div>
@@ -479,7 +474,7 @@ async function handleConfirmApply(): Promise<void> {
 
 .snapshot-label {
   font-size: 11px;
-  color: #64748b;
+  color: var(--text-color-secondary, #64748b);
 }
 
 .snapshot-error {
@@ -570,7 +565,8 @@ async function handleConfirmApply(): Promise<void> {
 .section-content {
   font-size: 12px;
   line-height: 1.6;
-  color: var(--text-color, #475569);
+  /* --text-color 变量并不存在（恒走回退值），改用主题感知的主文字色 */
+  color: var(--text-primary, #475569);
 }
 
 .rules-section {
@@ -579,7 +575,8 @@ async function handleConfirmApply(): Promise<void> {
   border-radius: 6px;
 }
 
-:global(.dark) .rules-section {
+/* 应用以 data-theme 属性切换暗色（html 上无 .dark 类），:global(.dark) 选择器永不命中 */
+[data-theme='dark'] .rules-section {
   background: #1e293b;
 }
 
@@ -618,9 +615,13 @@ async function handleConfirmApply(): Promise<void> {
   font-size: 12px;
 }
 
-:global(.dark) .rule-chip {
+[data-theme='dark'] .rule-chip {
   background: #0f172a;
   border-color: #334155;
+}
+
+[data-theme='dark'] .rule-detail code {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .rule-detail {

@@ -99,6 +99,14 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.OAuthAutoDisableThresholdPercent = Math.Max(1, Math.Min(100, request.OAuthAutoDisableThresholdPercent));
         settings.OAuthInspectionCacheEnabled = request.OAuthInspectionCacheEnabled;
 
+        // AI 助手默认目标：可空语义——null 保持现值；Guid.Empty 清除配置（前端“未选择”提交空值）。
+        if (request.DefaultAiTargetMappingId.HasValue)
+        {
+            settings.DefaultAiTargetMappingId = request.DefaultAiTargetMappingId.Value == Guid.Empty
+                ? null
+                : request.DefaultAiTargetMappingId.Value;
+        }
+
         await _dbContext.UpdateAsync(settings, cancellationToken);
 
         // 总开关 true→false：交给每个额度提供程序禁用自己的账号和关联站点。

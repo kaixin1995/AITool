@@ -315,5 +315,39 @@ public static class SqlSugarSetup
         {
             logger?.LogWarning(ex, "Failed to align ModelLibraryItems DisplayName with ModelName");
         }
+
+        SanitizeAccountQuotaTimestamps(db, logger);
+    }
+
+    /// <summary>
+    /// 清理三张账号表的 <c>LastQuotaCheckedAt</c> 脏值（置 NULL）。
+    /// <para>
+    /// 背景：该列为 DateTimeOffset?，SQLite 中以本地时钟文本存储（如 <c>2026-09-08 13:33:01</c>）。
+    /// 历史数据中一旦混入无法解析的文本（异常写入/手工编辑），SqlSugar 的 DataReader 实体绑定会
+    /// 整表抛「XX绑定到XXAccount失败」，导致额度巡检无法列出该类任何账号。用 datetime() 可解析性
+    /// 判定，正常值与带 offset 的历史格式都保留，仅清掉确实无法解析的行；置 NULL 无副作用
+    /// （只影响巡检排序优先级，下一轮额度查询会重新写入）。
+    /// </para>
+    /// </summary>
+    public static void SanitizeAccountQuotaTimestamps(ISqlSugarClient db, ILogger? logger = null)
+    {
+        foreach (var table in new[] { "GoogleAccounts", "CodexAccounts", "KimiAccounts" })
+        {
+            try
+            {
+                var affected = db.Ado.ExecuteCommand(
+                    $"UPDATE {table} SET LastQuotaCheckedAt = NULL " +
+                    "WHERE LastQuotaCheckedAt IS NOT NULL AND LastQuotaCheckedAt != '' " +
+                    "AND datetime(LastQuotaCheckedAt) IS NULL;");
+                if (affected > 0)
+                {
+                    logger?.LogWarning("Sanitized {Count} invalid LastQuotaCheckedAt value(s) in {Table}", affected, table);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Failed to sanitize LastQuotaCheckedAt in {Table}", table);
+            }
+        }
     }
 }

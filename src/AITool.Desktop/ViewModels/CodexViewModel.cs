@@ -640,12 +640,12 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         try
         {
-            var models = await _apiService.SendAsync<List<CodexRemoteModelItem>>(
-                HttpMethod.Get,
-                account.IsCodex
-                    ? $"/api/admin/oauth/accounts/{account.Id}/fetch-models"
-                    : GoogleApiPath($"/accounts/{account.Id}/fetch-models"),
-                null);
+            var models = account.IsCodex
+                ? await FetchCodexRemoteModelsAsync(account.Id)
+                : await _apiService.SendAsync<List<CodexRemoteModelItem>>(
+                    HttpMethod.Get,
+                    GoogleApiPath($"/accounts/{account.Id}/fetch-models"),
+                    null);
             foreach (var model in models)
             {
                 model.Alias = string.IsNullOrWhiteSpace(model.ExistingDisplayName)
@@ -666,6 +666,36 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             IsModelLoading = false;
             NotifyModelSelectionProperties();
         }
+    }
+
+    /// <summary>
+    /// 拉取 Codex 上游模型清单。服务端响应兼容两种形态：
+    /// 新版为 { catalogRefreshed, catalogChanged, catalogNote, models } 对象（附带远端目录刷新结果）；
+    /// 旧版为裸数组。
+    /// </summary>
+    private async Task<List<CodexRemoteModelItem>> FetchCodexRemoteModelsAsync(string accountId)
+    {
+        var payload = await _apiService.SendAsync<JsonElement>(
+            HttpMethod.Get,
+            $"/api/admin/oauth/accounts/{accountId}/fetch-models",
+            null);
+
+        var modelsElement = payload.ValueKind == JsonValueKind.Array
+            ? payload
+            : payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("models", out var models)
+                ? models
+                : default;
+
+        if (modelsElement.ValueKind != JsonValueKind.Array)
+        {
+            // 失败信封（{success:false,message}）在 ApiService.DeserializeResponse 已抛 ApiException 走
+            // 调用方 catch；能走到这里说明是意外形状，按空清单处理。
+            return [];
+        }
+
+        return JsonSerializer.Deserialize<List<CodexRemoteModelItem>>(modelsElement.GetRawText(),
+                   new JsonSerializerOptions(JsonSerializerDefaults.Web))
+               ?? [];
     }
 
     [RelayCommand]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countJsonDiffs, diffJson } from './jsonDiff'
+import { countJsonDiffs, diffJson, diffStringSegments } from './jsonDiff'
 
 describe('jsonDiff 字段级对比', () => {
   it('对象键的新增/移除/修改', () => {
@@ -40,5 +40,41 @@ describe('jsonDiff 字段级对比', () => {
   it('差异计数', () => {
     const nodes = diffJson({ a: 1, b: 2 }, { a: 3, c: 4 })
     expect(countJsonDiffs(nodes)).toEqual({ added: 1, removed: 1, changed: 1 })
+  })
+})
+
+describe('diffStringSegments 值内分段对比', () => {
+  it('User-Agent 版本号升级：提取中间变化片段', () => {
+    const before = 'Codex Desktop/0.153.3 (Windows 10.0.19045; x86_64) unknown'
+    const after = 'Codex Desktop/0.153.4 (Windows 10.0.19045; x86_64) unknown'
+    expect(diffStringSegments(before, after)).toEqual({
+      prefix: 'Codex Desktop/0.153.',
+      removed: '3',
+      added: '4',
+      suffix: ' (Windows 10.0.19045; x86_64) unknown'
+    })
+  })
+
+  it('多字符片段变化', () => {
+    expect(diffStringSegments('ZCode/3.9.1 run', 'ZCode/3.11.2 run')).toEqual({
+      prefix: 'ZCode/3.',
+      removed: '9.1',
+      added: '11.2',
+      suffix: ' run'
+    })
+  })
+
+  it('完全不同的字符串返回 null（分段无意义）', () => {
+    expect(diffStringSegments('abc', 'xyz')).toBeNull()
+  })
+
+  it('纯追加/纯删除（单侧片段为空）返回 null', () => {
+    expect(diffStringSegments('hello', 'hello world')).toBeNull()
+    expect(diffStringSegments('hello world', 'hello')).toBeNull()
+  })
+
+  it('空串与相等串返回 null', () => {
+    expect(diffStringSegments('', 'abc')).toBeNull()
+    expect(diffStringSegments('same', 'same')).toBeNull()
   })
 })

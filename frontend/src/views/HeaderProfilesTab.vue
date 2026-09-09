@@ -28,13 +28,33 @@ import {
   updateHeaderProfile,
   deleteHeaderProfile,
   previewHeaders,
+  aiFetchLatestVersion,
   type HeaderProfile,
-  type HeaderProfilePayload
+  type HeaderProfilePayload,
+  type AiLatestVersionResponse
 } from '@/api/headerProfiles'
+import JsonDiffView from '@/components/JsonDiffView.vue'
 
 const message = useMessage()
 const loading = ref(false)
 const profiles = ref<HeaderProfile[]>([])
+
+// —— AI 查最新版 ——
+const aiCheckingId = ref<string | null>(null)
+const showAiModal = ref(false)
+const aiResult = ref<AiLatestVersionResponse | null>(null)
+const aiApplying = ref(false)
+const aiProfileId = ref<string | null>(null)
+const aiProfileName = ref('')
+
+// upToDate=true 且无 latestVersion 表示 AI 无法确定该客户端的最新版本（非「已是最新」）。
+const aiResultTagType = computed(() =>
+  !aiResult.value?.upToDate ? 'warning' : aiResult.value.latestVersion ? 'success' : 'default'
+)
+const aiResultTagLabel = computed(() => {
+  if (!aiResult.value?.upToDate) return '发现新版本'
+  return aiResult.value.latestVersion ? '已是最新' : '无法确认最新版本'
+})
 
 // 编辑/新建弹窗
 const showModal = ref(false)
@@ -215,6 +235,50 @@ function copyPlaceholder(tag: string) {
   message.success(`已复制占位符: ${tag}`)
 }
 
+async function handleAiCheckVersion(profile: HeaderProfile) {
+  aiCheckingId.value = profile.id
+  try {
+    const res = await aiFetchLatestVersion(profile.id)
+    if (!res.success) {
+      message.error(res.error || 'AI 查询失败')
+      return
+    }
+    aiProfileId.value = profile.id
+    aiProfileName.value = profile.name
+    aiResult.value = res
+    showAiModal.value = true
+  } catch (err: any) {
+    message.error(err?.response?.data?.message || err?.message || 'AI 查询失败')
+  } finally {
+    aiCheckingId.value = null
+  }
+}
+
+async function handleApplyAiVersion() {
+  const result = aiResult.value
+  const profile = profiles.value.find((p) => p.id === aiProfileId.value)
+  if (!result?.changed || !result.proposedHeadersJson || !profile) return
+
+  aiApplying.value = true
+  try {
+    await updateHeaderProfile(profile.id, {
+      key: profile.key,
+      name: profile.name,
+      description: profile.description || null,
+      headersJson: result.proposedHeadersJson,
+      isEnabled: profile.isEnabled,
+      sortOrder: profile.sortOrder
+    })
+    message.success(`已把「${profile.name}」User-Agent 版本更新为 ${result.latestVersion}`)
+    showAiModal.value = false
+    await loadProfiles()
+  } catch (err: any) {
+    message.error(err?.response?.data?.message || err?.message || '应用更新失败')
+  } finally {
+    aiApplying.value = false
+  }
+}
+
 function parseHeadersCount(json?: string | null): number {
   if (!json?.trim()) return 0
   try {
@@ -286,6 +350,20 @@ onMounted(() => {
             <span class="order-label">排序: {{ p.sortOrder }}</span>
           </div>
           <NSpace size="small">
+            <NTooltip>
+              <template #trigger>
+                <NButton
+                  size="tiny"
+                  secondary
+                  :loading="aiCheckingId === p.id"
+                  :disabled="aiCheckingId !== null && aiCheckingId !== p.id"
+                  @click="handleAiCheckVersion(p)"
+                >
+                  AI 查最新版
+                </NButton>
+              </template>
+              通过设置页配置的默认 AI 站点/模型查询该客户端的最新版本并对比当前 User-Agent
+            </NTooltip>
             <NButton size="tiny" secondary @click="cloneProfile(p)">克隆</NButton>
             <NButton size="tiny" type="primary" ghost @click="openEditModal(p)">
               {{ p.isBuiltIn ? '查看 / 自定义' : '编辑' }}
@@ -399,6 +477,50 @@ onMounted(() => {
         <NSpace justify="end">
           <NButton @click="showModal = false">取消</NButton>
           <NButton type="primary" :loading="modalSubmitting" @click="handleSave">保存方案</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- AI 查最新版结果/确认弹窗 -->
+    <NModal
+      v-model:show="showAiModal"
+      preset="card"
+      :title="`AI 版本查询结果 [${aiProfileName}]`"
+      style="width: 760px; max-width: 95vw;"
+    >
+      <template v-if="aiResult">
+        <div class="ai-version-summary">
+          <!-- AI 表示不确定时 latestVersion 为空且 upToDate=true，须与「真是最新」区分展示 -->
+          <NTag :type="aiResultTagType" :bordered="false">
+            {{ aiResultTagLabel }}
+          </NTag>
+          <span class="ai-version-text">
+            当前版本：<code>{{ aiResult.currentVersion }}</code>
+            <template v-if="aiResult.latestVersion">
+              &nbsp;→&nbsp;最新版本：<code class="ai-version-latest">{{ aiResult.latestVersion }}</code>
+            </template>
+          </span>
+        </div>
+        <p v-if="aiResult.note" class="ai-version-note">{{ aiResult.note }}</p>
+        <p v-if="aiResult.sourceNote" class="ai-version-note">{{ aiResult.sourceNote }}</p>
+
+        <div v-if="aiResult.changed && aiResult.proposedHeadersJson" class="ai-diff-wrap">
+          <div class="ai-diff-title">更新后的请求头对比（仅替换 User-Agent 版本段，确认后才会写入）：</div>
+          <JsonDiffView :before="aiResult.currentHeadersJson || ''" :after="aiResult.proposedHeadersJson" />
+        </div>
+      </template>
+
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="showAiModal = false">关闭</NButton>
+          <NButton
+            v-if="aiResult?.changed"
+            type="primary"
+            :loading="aiApplying"
+            @click="handleApplyAiVersion"
+          >
+            应用更新（更新为 {{ aiResult?.latestVersion }}）
+          </NButton>
         </NSpace>
       </template>
     </NModal>
@@ -634,5 +756,45 @@ onMounted(() => {
   justify-content: center;
   align-items: center;
   padding: 48px 0;
+}
+
+.ai-version-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ai-version-text {
+  font-size: 13px;
+  color: var(--n-text-color-2);
+}
+
+.ai-version-text code {
+  background: var(--n-color-embedded);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: monospace;
+}
+
+.ai-version-latest {
+  color: var(--n-primary-color);
+  font-weight: 600;
+}
+
+.ai-version-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--n-text-color-3);
+}
+
+.ai-diff-wrap {
+  margin-top: 12px;
+}
+
+.ai-diff-title {
+  font-size: 12px;
+  color: var(--n-text-color-3);
+  margin-bottom: 6px;
 }
 </style>

@@ -1,42 +1,50 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using AITool.Application.Codex;
-using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 
 namespace AITool.Infrastructure.Codex;
 
 /// <summary>
 /// 动态拉取 Codex 上游模型目录。请求格式移植自 CPA
 /// （reference-projects/CLIProxyAPI/cmd/fetch_codex_models/main.go:231-295）。
+/// <para>
+/// client_version 与 User-Agent 由 <see cref="ICodexClientVersionResolver"/> 统一解析
+/// （优先请求头模板库 CodexCli 档案，配置兜底），与转发链路版本保持一致。
+/// </para>
 /// </summary>
 public sealed class CodexModelFetcher : ICodexModelFetcher
 {
     private const string ModelsBaseUrl = "https://chatgpt.com/backend-api/codex/models";
-    private const string UserAgentSuffix = " (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
 
     private readonly HttpClient _httpClient;
-    private readonly string _clientVersion;
-    private readonly string _userAgent;
+    private readonly ICodexClientVersionResolver _versionResolver;
+    private readonly ILogger<CodexModelFetcher> _logger;
 
-    public CodexModelFetcher(HttpClient httpClient, IOptions<CodexUpstreamOptions> options)
+    public CodexModelFetcher(
+        HttpClient httpClient,
+        ICodexClientVersionResolver versionResolver,
+        ILogger<CodexModelFetcher> logger)
     {
         _httpClient = httpClient;
-        _clientVersion = options?.Value?.ClientVersion ?? "0.149.0-alpha.4.3";
-        _userAgent = $"Codex Desktop/{_clientVersion} (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
+        _versionResolver = versionResolver;
+        _logger = logger;
     }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<CodexRemoteModel>> FetchAsync(string accessToken, string accountId, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{ModelsBaseUrl}?client_version={_clientVersion}");
+        var versionInfo = await _versionResolver.ResolveAsync(cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{ModelsBaseUrl}?client_version={Uri.EscapeDataString(versionInfo.ClientVersion)}");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Headers.TryAddWithoutValidation("Originator", "Codex Desktop");
-        request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
+        request.Headers.TryAddWithoutValidation("User-Agent", versionInfo.UserAgent);
         if (!string.IsNullOrEmpty(accountId))
         {
             request.Headers.TryAddWithoutValidation("Chatgpt-Account-Id", accountId);
         }
+        _logger.LogDebug("Fetch codex models with client_version {Version} (source: {Source})", versionInfo.ClientVersion, versionInfo.Source);
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();

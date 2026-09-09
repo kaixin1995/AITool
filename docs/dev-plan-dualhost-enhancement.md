@@ -256,3 +256,21 @@ CoreConfigController(status)、CoreConfigHandshakeController(handshake)、CoreCo
   消除端口探测释放后的并行抢占竞态（RelaySerialized）
 - 最终回归：Admin 153 / Core 291 / 单元 328 / 前端 118 全绿；
   性能门 2 例（100 次转发均值 <100ms、连续流式后宿主健康）通过
+
+---
+
+## 附录 D：master 二次同步记录（2026-09-09，15 提交）
+
+**移植范围**：AI 助手统一通道 + 公开数据源查询（e6c2806，51 文件）及其后续修复链——
+发布源 gzip/通用摘要（b3b1166/fac9c10）、账号表脏值清理（77f0b07）、价格源内存治理
+三件套（a4cbe95/250bc70/71e96f5）、JSON diff 分段高亮（22c706a）、暗色主题修复×5、
+版本号 1.0.1.26。
+
+**双宿主适配**：
+- 新服务落 Admin 宿主（AiAssistant/ClientReleaseFeed/ModelPriceSource），DI 注册入 AdminProgramServices
+- master 的 `AITool.Web.Contracts` 由形状一致的 `Application.Common.ApiResponse` 承担（改 using，消除二义性）
+- AI 诊断空模型语义随 master 更新（400→200+配置提示），两个测试同步适配
+- 新增 PricingSourceFetchApiTests（2 例）补齐 source-fetch 端点契约覆盖
+
+**回归**：Admin 172 / Core 291 / 单元 365 / 前端 128 全绿；性能门通过（代理热路径无退化，
+新服务全在管理面：价格源零常驻、发布源有界缓存 30min TTL）。

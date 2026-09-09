@@ -106,6 +106,67 @@ export async function saveModelPricing(payload: ModelPricingCatalog): Promise<vo
   await httpPut('/api/admin/models/pricing', payload)
 }
 
+// —— AI 查价格（两段式：ai-plan 拿查询计划，ai-query 分批查询）——
+export interface AiPriceSnapshot {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+export interface AiPlanTarget {
+  id: string
+  isExisting: boolean
+  current: AiPriceSnapshot | null
+}
+export interface AiPlanResponse {
+  targets: AiPlanTarget[]
+  truncated: boolean
+}
+export interface AiPriceEntryDto {
+  id: string
+  displayName: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+export interface AiQueryResponse {
+  success: boolean
+  error?: string | null
+  entries: AiPriceEntryDto[]
+}
+
+// 生成查询计划（快）：缺失模型 + 可选的已有条目。
+export async function aiPlanPricing(includeExisting: boolean): Promise<AiPlanResponse> {
+  return httpPost<AiPlanResponse>('/api/admin/models/pricing/ai-plan', { includeExisting })
+}
+
+// 按批查询（每批 ≤ 10 个，批量大小由前端控制），单批失败不影响其他批次。
+export async function aiQueryPricing(targets: AiPlanTarget[]): Promise<AiQueryResponse> {
+  // 单批较小、AI 响应快；仍留足余量。
+  return httpPost<AiQueryResponse>(
+    '/api/admin/models/pricing/ai-query',
+    { queries: targets.map((t) => ({ id: t.id, current: t.current })) },
+    { timeout: 120000 }
+  )
+}
+
+// —— 公开价格源（models.dev / LiteLLM）——（价格表首选查询方式：一次请求全量匹配，零 AI 调用）
+export interface SourceFetchResponse {
+  success: boolean
+  error?: string | null
+  entries: AiPriceEntryDto[]
+  /** 价格源未收录的模型 ID（可用 AI 补漏或手动填写）。 */
+  unmatched: string[]
+  /** 本次命中的价格源名称（如 models.dev、LiteLLM）。 */
+  sources: string[]
+}
+export async function sourceFetchPricing(ids: string[]): Promise<SourceFetchResponse> {
+  // 每次现拉双源（models.dev 4.5MB + LiteLLM 2.3MB，服务端零缓存零常驻、双源并行、单源 15s 超时），
+  // 最坏约 15s 加解析，留足余量。
+  return httpPost<SourceFetchResponse>('/api/admin/models/pricing/source-fetch', { ids }, { timeout: 90000 })
+}
+
 // 模型详情 + 映射管理（原 Models/Edit 功能）
 export interface ModelSiteMapping {
   mappingId: string

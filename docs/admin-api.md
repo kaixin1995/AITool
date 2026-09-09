@@ -80,6 +80,9 @@
 | PUT | `/vendor-catalog` | 保存厂商目录 |
 | GET | `/pricing` | 模型价格表（本地 model-pricing.json；含 usdToCny 汇率与峰谷配置；首次访问从模板初始化） |
 | PUT | `/pricing` | 保存价格表（校验+写文件+立即刷新计价缓存；保存后统计/日志金额实时更新） |
+| POST | `/pricing/ai-fetch` | AI 补漏定价（未收录模型经 AI 助手查询并合并入库） |
+| POST | `/pricing/source-fetch` | 公开价格源匹配（models.dev/LiteLLM 双源并行；零 AI 调用秒级返回；单源失败容忍） |
+| POST | `/{id}/ai-latest-version` | 查客户端官方最新版本（GitHub Releases/npm 确定性数据 + AI 归纳；30 分钟缓存） |
 | POST | `/{id}/mappings` | 新增站点映射 |
 | DELETE | `/{id}/mappings/{mappingId}` | 删除映射 |
 | PUT | `/mappings/{mappingId}/concurrency` | 更新映射最大并发 |
