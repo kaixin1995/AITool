@@ -1000,15 +1000,6 @@ function inspectionRows(item: OAuthInspectionAccountResult): InspectionDisplayRo
   return quota === '-' ? [] : [{ model: '账号额度', quota }]
 }
 
-function accountQuotaPercent(acc: OAuthAccount): number | null {
-  if (acc.windows && acc.windows.length > 0) {
-    return Math.min(...acc.windows.map((w) => Math.max(0, 100 - Number(w.usedPercent || 0))))
-  }
-  const percents = [acc.fiveHourUsedPercent, acc.weeklyUsedPercent]
-    .filter((value): value is number => value != null && Number.isFinite(Number(value)))
-  return percents.length ? Math.min(...percents.map((value) => Math.max(0, 100 - value))) : null
-}
-
 function accountStatusLabel(acc: OAuthAccount): string {
   if (acc.disabledByUpstream) return '上游403禁用'
   if (acc.isQuotaCooling) return '冷却中'
