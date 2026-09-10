@@ -1166,6 +1166,10 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+[data-theme='dark'] .trace-header-badge-tag {
+  color: #34D399;
+}
+
 .trace-header-toggle-btn.active .trace-header-badge-tag {
   background: rgba(255, 255, 255, 0.25);
   color: #ffffff;
@@ -1340,6 +1344,10 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 600;
   color: #0284c7;
+}
+
+[data-theme='dark'] .smart-diag-action {
+  color: #7DD3FC;
 }
 
 .smart-diag-actions {

@@ -1040,6 +1040,12 @@ onUnmounted(() => {
   color: #dc2626;
 }
 
+/* 暗色补齐：chip 文字为 600-700 深色调，暗色卡片上对比不足 */
+[data-theme='dark'] .usage-log-chip-total { color: #34D399; }
+[data-theme='dark'] .usage-log-chip-first { color: #FBBF24; }
+[data-theme='dark'] .usage-log-chip-stream { color: #93C5FD; }
+[data-theme='dark'] .usage-log-chip-stream-interrupted { color: #FCA5A5; }
+
 .detail-placeholder,
 .detail-line {
   color: var(--text-color-secondary);

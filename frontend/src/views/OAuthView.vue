@@ -1323,7 +1323,7 @@ onUnmounted(() => {
           <strong>操作步骤：</strong>
           <ol class="oauth-steps">
             <li>点击下方<strong>「打开 Kimi 授权页面」</strong>按钮，将在新标签页中打开 Moonshot Kimi 官方授权页。</li>
-            <li>在授权页中确认或输入用户验证码：<strong style="color: #18a058; font-size: 1.15em">{{ kimiUserCode }}</strong></li>
+            <li>在授权页中确认或输入用户验证码：<strong class="oauth-user-code">{{ kimiUserCode }}</strong></li>
             <li>授权成功后系统将自动检测并完成登录（有效时间剩余：<strong>{{ formatSeconds(kimiCountdown) }}</strong>）。</li>
           </ol>
         </NAlert>
@@ -1739,6 +1739,13 @@ onUnmounted(() => {
 
 :global([data-theme='dark']) .oauth-token-expired { color: #f87171; }
 :global([data-theme='dark']) .oauth-token-warning { color: #f87171; }
+
+.oauth-user-code {
+  color: #18a058;
+  font-size: 1.15em;
+}
+
+:global([data-theme='dark']) .oauth-user-code { color: #4ade80; }
 
 .reset-credit-list-title {
   margin: 0 0 8px;

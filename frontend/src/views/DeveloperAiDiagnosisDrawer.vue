@@ -543,6 +543,10 @@ async function handleConfirmApply(): Promise<void> {
   margin-bottom: 2px;
 }
 
+[data-theme='dark'] .summary-title {
+  color: #34D399;
+}
+
 .summary-text {
   margin: 0;
   font-size: 13px;
@@ -591,6 +595,10 @@ async function handleConfirmApply(): Promise<void> {
   font-size: 12px;
   font-weight: 700;
   color: #0284c7;
+}
+
+[data-theme='dark'] .rules-title {
+  color: #7DD3FC;
 }
 
 .rules-count {

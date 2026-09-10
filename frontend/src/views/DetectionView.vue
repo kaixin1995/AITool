@@ -460,6 +460,11 @@ onBeforeUnmount(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+[data-theme='dark'] .model-group-meta code,
+[data-theme='dark'] .remote-model-name {
+  color: #93C5FD;
+}
+
 .model-group-meta code {
   padding: 2px 6px;
 }
