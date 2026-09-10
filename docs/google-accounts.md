@@ -30,7 +30,7 @@ ProxyProtocolBridge（Gemini 桥）──► daily-cloudcode-pa v1internal 端�
 | OAuth scope | cloud-platform + userinfo + cclog + experimentsandconfigs（5 个） |
 | project 来源 | loadCodeAssist → cloudaicompanionProject（含 onboardUser 轮询回退） |
 | 模型清单 | 动态 `v1internal:fetchAvailableModels`（含 claude-sonnet-4-6-thinking 与 gemini 分层别名补齐） |
-| 额度查询 | fetchAvailableModels → 每模型 quotaInfo.remainingFraction 窗口 |
+| 额度查询 | fetchAvailableModels → 按前缀聚合为两个额度桶：`claude`/`gpt-oss*` 一桶、`gemini*` 一桶（其余模型的 quotaInfo 为上游噪声）；桶内取最大已用，自动禁用/恢复**只看 Gemini 桶** |
 | 额外元信息 | 订阅 tier（free/pro/ultra）+ 积分（availableCredits） |
 
 常量定义：`src/AITool.Application/Google/GoogleAccountKinds.cs`（`Normalize` 把任意历史值归一为 Antigravity）。
@@ -60,7 +60,7 @@ ProxyProtocolBridge（Gemini 桥）──► daily-cloudcode-pa v1internal 端�
 - **401 实时刷新**：`GoogleCredentialRefreshService`（同 Codex 模式，`CreateCredentialRefreshCallback` 按 ManagedSource 分派）。
 - **后台刷新**：`GoogleTokenRefreshService` 覆盖全部 Google 账号（access_token 约 1 小时有效：扫描 5 分钟 / 提前 10 分钟 / 同账号最小间隔 5 分钟 / invalid_grant 退避 30 分钟；历史 GeminiCli 行同样按 Antigravity 凭据刷新，失败即进入退避）。
 - **使用中兜底**：代理上游返回 401 时由 `GoogleCredentialRefreshService` 按隐藏站点 single-flight 刷新，并同步账号与隐藏站点；普通临时刷新失败不会阻塞后台循环，`invalid_grant` 按 30 分钟退避，避免短暂网络故障直接导致账号永久失效。
-- **额度**：`GoogleAccountQuotaService : IAccountQuotaProvider`（ProviderKey=`google`，自动纳入通用巡检、自动禁用阈值与 OAuth 总开关）。
+- **额度**：`GoogleAccountQuotaService : IAccountQuotaProvider`（ProviderKey=`google`，自动纳入通用巡检、自动禁用阈值与 OAuth 总开关）。`GoogleQuotaParser` 把 fetchAvailableModels 按前缀聚合为两个额度桶（`claude`/`gpt-oss*` → Claude/GPT-OSS 桶，`gemini*` → Gemini 桶，其余模型的 quotaInfo 为上游噪声直接忽略）；自动禁用/恢复覆写 `SelectDisablePercent` **只看 Gemini 桶**（Claude/GPT-OSS 桶耗尽不禁用账号），卡片与巡检页展示两桶剩余进度条。
 - **调试聊天页**：`ChatApiController` 对 Gemini 目标走同一协议桥（非流式 + 流式），SSE 块先转 OpenAI chunk 再复用既有解析。
 
 ## 数据与缓存
@@ -79,10 +79,10 @@ ProxyProtocolBridge（Gemini 桥）──► daily-cloudcode-pa v1internal 端�
 ## 测试
 
 - `tests/AITool.IntegrationTests/Proxy/ProxyProtocolBridgeGeminiTests.cs`（26 个）：请求三方向转换、封套/CLI 封套、思考覆盖（含 gemini-3 等级表达）、响应块/usage/stop_reason 映射、SSE 状态机（签名切块/跨块工具索引/收尾幂等）、空内容兜底、schema $ref/allOf 清理、usage 提取口径与部分 usage 跨块保留。
-- `tests/AITool.ApplicationTests/Google/GoogleAccountBasicsTests.cs`（16 个）：kinds 常量与归一化、Antigravity 端点/scope、授权 URL 构造（offline/consent/state/scope）、额度解析（remainingFraction→窗口、无数据返回 null）、协议解析器 Gemini 分支与历史行为回归、Antigravity 模型拉取的 slug 与友好名解析。
-- `tests/AITool.ApplicationTests/Proxy/ProxyForwardServiceResponseTests.cs` 覆盖 Gemini `usage: null` 回退到 `response.usageMetadata`、字符串/null 数值容错；`tests/AITool.IntegrationTests/Chat/ChatApiTests.cs` 覆盖 Antigravity 最后一块 SSE 携带 usage 时聊天结果与 usage log 的 token 统计；`tests/AITool.IntegrationTests/Google/GoogleQuotaMatchingTests.cs` 覆盖模型名与额度窗口的精确/变体匹配。
+- `tests/AITool.ApplicationTests/Google/GoogleAccountBasicsTests.cs`（16 个）：kinds 常量与归一化、Antigravity 端点/scope、授权 URL 构造（offline/consent/state/scope）、额度解析（remainingFraction→两桶聚合、无数据返回 null）、协议解析器 Gemini 分支与历史行为回归、Antigravity 模型拉取的 slug 与友好名解析。
+- `tests/AITool.ApplicationTests/Proxy/ProxyForwardServiceResponseTests.cs` 覆盖 Gemini `usage: null` 回退到 `response.usageMetadata`、字符串/null 数值容错；`tests/AITool.IntegrationTests/Chat/ChatApiTests.cs` 覆盖 Antigravity 最后一块 SSE 携带 usage 时聊天结果与 usage log 的 token 统计；`tests/AITool.IntegrationTests/Google/GoogleQuotaMatchingTests.cs` 覆盖额度两桶聚合（前缀归类、桶内最大已用、重置时间透出、噪声模型忽略）。
 
 ## 与 gcli2api 的取舍
 
 - 不移植：假流式/抗截断模型名前缀（`假流式/`、`流式抗截断/`）、多凭证轮换重试（AITool 用路由多站点 + 熔断 + fallback 表达）、`stream2nostream` 配置、`enabledCreditTypes`（默认关闭）、MongoDB/PostgreSQL 存储、GeminiCLI 接入方式（上游演进后已随 gcli2api 一并移除）。
-- 保留核心语义：CLI 封套字段、thoughtSignature 跳过校验占位符、安全设置全开、强制 maxOutputTokens/topK、usage 三段口径、每模型额度窗口。
+- 保留核心语义：CLI 封套字段、thoughtSignature 跳过校验占位符、安全设置全开、强制 maxOutputTokens/topK、usage 三段口径、额度两桶聚合。

@@ -122,9 +122,10 @@ public sealed class GeminiProxyEndToEndTests
     }
 
     [Fact]
-    public async Task Refresh_quota_for_antigravity_account_returns_model_windows()
+    public async Task Refresh_quota_for_antigravity_account_returns_bucket_windows()
     {
-        // Antigravity 额度链路：refresh-quota → fetchAvailableModels → 每模型剩余比例窗口持久化并在账号列表回显。
+        // Antigravity 额度链路：refresh-quota → fetchAvailableModels → 按前缀聚合为
+        // Claude/GPT-OSS 与 Gemini 两个额度桶，持久化并在账号列表回显。
         const string quotaJson =
             "{\"models\":{\"gemini-3-pro-preview\":{\"quotaInfo\":{\"remainingFraction\":0.85,\"resetTime\":\"2026-08-20T02:30:00Z\"}},\"claude-sonnet-4-6\":{\"quotaInfo\":{\"remainingFraction\":0.05,\"resetTime\":\"2026-08-19T10:00:00Z\"}}}}";
         await using var factory = new GeminiProxyWebApplicationFactory(
@@ -146,7 +147,7 @@ public sealed class GeminiProxyEndToEndTests
             content: null);
         var refreshBody = await refreshResponse.Content.ReadAsStringAsync();
         refreshResponse.StatusCode.Should().Be(HttpStatusCode.OK, refreshBody);
-        refreshBody.Should().Contain("gemini-3-pro-preview", "额度响应应包含模型窗口");
+        refreshBody.Should().Contain("\"gemini\"", "额度响应应包含 Gemini 桶窗口");
 
         using var listResponse = await client.GetAsync("/api/admin/google-accounts/accounts");
         var listBody = await listResponse.Content.ReadAsStringAsync();
@@ -155,9 +156,11 @@ public sealed class GeminiProxyEndToEndTests
         var account = listDoc.RootElement.EnumerateArray()
             .Single(item => item.GetProperty("id").GetString() == GoogleAccountId.ToString());
         var windows = account.GetProperty("windows");
-        windows.GetArrayLength().Should().Be(2, "额度结果应持久化并在账号列表解析为窗口");
-        var geminiWindow = windows.EnumerateArray().Single(w => w.GetProperty("id").GetString() == "gemini-3-pro-preview");
+        windows.GetArrayLength().Should().Be(2, "额度结果应持久化并在账号列表解析为两桶窗口");
+        var geminiWindow = windows.EnumerateArray().Single(w => w.GetProperty("id").GetString() == "gemini");
         geminiWindow.GetProperty("usedPercent").GetDouble().Should().BeApproximately(15d, 0.01);
+        var claudeWindow = windows.EnumerateArray().Single(w => w.GetProperty("id").GetString() == "claude-gpt-oss");
+        claudeWindow.GetProperty("usedPercent").GetDouble().Should().BeApproximately(95d, 0.01);
         account.GetProperty("lastQuotaCheckedAt").GetString().Should().NotBeNullOrEmpty();
     }
 

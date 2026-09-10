@@ -50,6 +50,16 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
 
     public string ProviderKey => "google";
 
+    /// <summary>
+    /// 自动禁用/恢复只看 Gemini 桶：Gemini 额度耗尽即禁用整个账号；
+    /// Claude/GPT-OSS 桶耗尽不禁用（Antigravity 真实额度只有这两桶，其余为上游噪声）。
+    /// </summary>
+    public double? SelectDisablePercent(AccountQuotaSnapshot snapshot)
+    {
+        var gemini = snapshot.Windows.FirstOrDefault(window => GoogleQuotaParser.IsGeminiBucket(window.Id));
+        return gemini?.UsedPercent;
+    }
+
     /// <summary>额度查询结果（内部口径）。</summary>
     private sealed record GoogleQuotaInfo
     {
@@ -242,12 +252,12 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
                     var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
                     if (account.IsEnabled)
                     {
-                        var maxPercent = GetMaxUsedPercent(info);
+                        var geminiPercent = GetGeminiUsedPercent(info);
                         var threshold = (double)runtime.OAuthAutoDisableThresholdPercent;
-                        if (maxPercent.HasValue && maxPercent.Value >= threshold)
+                        if (geminiPercent.HasValue && geminiPercent.Value >= threshold)
                         {
                             await DisableAccountAsync(account, cancellationToken,
-                                $"额度使用 {maxPercent.Value:F1}% 达到全局阈值 {threshold}");
+                                $"Gemini 额度使用 {geminiPercent.Value:F1}% 达到全局阈值 {threshold}");
                         }
                     }
                 }
@@ -314,7 +324,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
                 Windows = (windows ?? []).Select(w => new GoogleQuotaWindow
                 {
                     Id = w.Id,
-                    Label = w.Id,
+                    Label = w.Label,
                     UsedPercent = w.UsedPercent,
                     ResetLabel = w.ResetLabel,
                     ResetAtUtc = w.ResetAtUtc,
@@ -327,9 +337,9 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         }
     }
 
-    /// <summary>自动禁用判定：取所有模型窗口的最大已用百分比。</summary>
-    private static double? GetMaxUsedPercent(GoogleQuotaInfo info)
-        => info.Windows.Count == 0 ? null : info.Windows.Max(w => w.UsedPercent);
+    /// <summary>自动禁用判定：只看 Gemini 桶的已用百分比（Claude/GPT-OSS 桶耗尽不禁用）。</summary>
+    private static double? GetGeminiUsedPercent(GoogleQuotaInfo info)
+        => info.Windows.FirstOrDefault(window => GoogleQuotaParser.IsGeminiBucket(window.Id))?.UsedPercent;
 
     private static AccountQuotaTarget ToQuotaTarget(GoogleAccount account) => new()
     {

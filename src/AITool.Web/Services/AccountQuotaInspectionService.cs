@@ -377,7 +377,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
             AddLog("quota", $"账号 {account.DisplayName} 真实刷新成功");
         }
 
-        var usedPercent = SelectThresholdPercent(snapshot.Windows);
+        var usedPercent = provider.SelectDisablePercent(snapshot);
         var threshold = (double)autoDisableThresholdPercent;
         if (usedPercent.HasValue && usedPercent.Value >= threshold && account.IsEnabled)
         {
@@ -407,15 +407,6 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         if (lastUsedAt is null) return false;
         var cutoff = since ?? DateTimeOffset.UtcNow.AddDays(-1);
         return lastUsedAt.Value > cutoff;
-    }
-
-    private static double? SelectThresholdPercent(IReadOnlyList<AccountQuotaWindow> windows)
-    {
-        var candidates = windows
-            .Where(window => window.UsedPercent.HasValue)
-            .Select(window => window.UsedPercent!.Value)
-            .ToList();
-        return candidates.Count == 0 ? null : candidates.Max();
     }
 
     private static string AppendReason(string current, string addition)

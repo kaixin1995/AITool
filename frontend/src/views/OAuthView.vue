@@ -989,16 +989,11 @@ interface InspectionDisplayRow {
 
 function inspectionRows(item: OAuthInspectionAccountResult): InspectionDisplayRow[] {
   if (item.providerKey === 'google') {
-    const account = accounts.value.find(acc => acc.id === item.accountId)
-    const selectedModels = new Set((account?.selectedModels ?? []).map(model => model.toLowerCase()))
-    if (selectedModels.size === 0) return []
-
-    return (item.windows ?? [])
-      .filter(window => selectedModels.has(window.id.toLowerCase()) || selectedModels.has(window.label.toLowerCase()))
-      .map(window => ({
-        model: window.label,
-        quota: `${formatInspectionPercent(window.usedPercent)}${window.resetLabel ? ` · 于 ${window.resetLabel}` : ''}`
-      }))
+    // Antigravity 额度按桶展示（Claude/GPT-OSS 系列、Gemini 系列），每个桶一行
+    return (item.windows ?? []).map(window => ({
+      model: window.label,
+      quota: `${formatInspectionPercent(window.usedPercent)}${window.resetLabel ? ` · 于 ${window.resetLabel}` : ''}`
+    }))
   }
 
   const quota = formatInspectionWindows(item)
@@ -1186,9 +1181,7 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div v-else class="oauth-window-placeholder">
-                  {{ acc.provider === 'antigravity' && (acc.selectedModels?.length ?? 0) === 0
-                      ? '尚未拉取模型，不显示无关额度'
-                      : acc.lastQuotaCheckedAt ? '暂无已拉取模型额度' : '未刷新额度，点击下方「刷新额度」获取' }}
+                  {{ acc.lastQuotaCheckedAt ? '暂无额度数据' : '未刷新额度，点击下方「刷新额度」获取' }}
                 </div>
 
                 <div v-if="!exportMode" class="oauth-card-meta">

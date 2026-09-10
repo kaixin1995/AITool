@@ -459,44 +459,15 @@ public sealed class GoogleAccountsApiController : ControllerBase
             var parsed = GoogleQuotaParser.Parse(a.LastQuotaRawJson);
             if (parsed is not null)
             {
-                if (string.Equals(a.AccountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase))
+                // Antigravity 真实额度只有两桶（Claude/GPT-OSS 系列、Gemini 系列），
+                // 解析层已按前缀聚合，直接透出，不再按勾选模型过滤。
+                windows = parsed.Select(w => (object)new
                 {
-                    if (selectedModelNames.Length > 0)
-                    {
-                        var list = new List<object>();
-                        foreach (var modelName in selectedModelNames)
-                        {
-                            // 优先精确匹配，其次前缀/变体匹配，确保每个已勾选模型仅对应一条额度条
-                            var window = parsed.FirstOrDefault(w => string.Equals(w.Id, modelName, StringComparison.OrdinalIgnoreCase))
-                                         ?? parsed.FirstOrDefault(w => IsModelMatchingQuotaWindow(w.Id, modelName));
-                            if (window is not null)
-                            {
-                                list.Add(new
-                                {
-                                    id = modelName,
-                                    label = modelName,
-                                    usedPercent = window.UsedPercent,
-                                    resetLabel = window.ResetLabel,
-                                });
-                            }
-                        }
-                        windows = list;
-                    }
-                    else
-                    {
-                        windows = [];
-                    }
-                }
-                else
-                {
-                    windows = parsed.Select(w => (object)new
-                    {
-                        id = w.Id,
-                        label = w.Label,
-                        usedPercent = w.UsedPercent,
-                        resetLabel = w.ResetLabel,
-                    }).ToList();
-                }
+                    id = w.Id,
+                    label = w.Label,
+                    usedPercent = w.UsedPercent,
+                    resetLabel = w.ResetLabel,
+                }).ToList();
             }
         }
 
@@ -520,51 +491,6 @@ public sealed class GoogleAccountsApiController : ControllerBase
             createdAt = a.CreatedAt,
             message,
         };
-    }
-
-    /// <summary>
-    /// 判断模型名称与额度窗口标识是否匹配（支持前缀、后缀变体与分层模型池匹配，如 gemini-3.7-flash-high 匹配 gemini-3.7-flash-tiered）。
-    /// </summary>
-    public static bool IsModelMatchingQuotaWindow(string windowId, string modelName)
-    {
-        if (string.IsNullOrWhiteSpace(windowId) || string.IsNullOrWhiteSpace(modelName))
-        {
-            return false;
-        }
-
-        if (string.Equals(windowId, modelName, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var cleanWindow = NormalizeQuotaModelName(windowId);
-        var cleanModel = NormalizeQuotaModelName(modelName);
-
-        if (string.Equals(cleanWindow, cleanModel, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (cleanModel.StartsWith(cleanWindow, StringComparison.OrdinalIgnoreCase) ||
-            cleanWindow.StartsWith(cleanModel, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static string NormalizeQuotaModelName(string name)
-    {
-        var trimmed = name.Trim();
-        foreach (var suffix in new[] { "-tiered", "-thinking", "-high", "-medium", "-low", "-extra-low", "-preview", "-agent" })
-        {
-            if (trimmed.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
-            {
-                trimmed = trimmed[..^suffix.Length];
-            }
-        }
-        return trimmed;
     }
 
     private static void CleanupExpiredSessions()
