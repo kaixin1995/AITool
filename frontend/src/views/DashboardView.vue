@@ -290,6 +290,20 @@ onMounted(loadStats)
 .stat-card-icon.info,
 .quick-action-icon.info { background: #E6F7FF; color: #2080F0; }
 
+/* 暗色补齐：浅色粉底图标块在暗色下是刺眼亮块，改为半透明色调底+提亮图标色 */
+[data-theme='dark'] .stat-card-icon.primary,
+[data-theme='dark'] .quick-action-icon.primary { background: rgba(108, 158, 255, 0.16); color: #85B0FF; }
+[data-theme='dark'] .stat-card-icon.success,
+[data-theme='dark'] .quick-action-icon.success { background: rgba(24, 160, 88, 0.18); color: #4ADE80; }
+[data-theme='dark'] .stat-card-icon.warning,
+[data-theme='dark'] .quick-action-icon.warning { background: rgba(240, 160, 32, 0.16); color: #FBBF24; }
+[data-theme='dark'] .stat-card-icon.danger,
+[data-theme='dark'] .quick-action-icon.danger { background: rgba(208, 48, 80, 0.16); color: #F87171; }
+[data-theme='dark'] .stat-card-icon.purple,
+[data-theme='dark'] .quick-action-icon.purple { background: rgba(139, 92, 246, 0.18); color: #C4B5FD; }
+[data-theme='dark'] .stat-card-icon.info,
+[data-theme='dark'] .quick-action-icon.info { background: rgba(32, 128, 240, 0.16); color: #7EB8FF; }
+
 .stat-card-value {
   color: var(--text-primary);
   font-size: 28px;

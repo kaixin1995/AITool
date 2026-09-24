@@ -1,4 +1,3 @@
-using AITool.Infrastructure.Proxy;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -8,6 +7,7 @@ using AITool.Domain.Google;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Google;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace AITool.Admin.Services;
@@ -26,7 +26,6 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
     private readonly HttpClient _httpClient;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
-    /// <summary>split 双宿主：变更推送 Core（惰性解析，避免 配额服务→失效服务→设置服务→配额服务 的 DI 环）。</summary>
     private readonly IServiceScopeFactory _corePushScopeFactory;
     private readonly IMemoryCache _resultCache;
     private readonly GoogleCredentialRefreshService _credentialRefreshService;
@@ -54,6 +53,16 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
     }
 
     public string ProviderKey => "google";
+
+    /// <summary>
+    /// 自动禁用/恢复只看 Gemini 桶：Gemini 额度耗尽即禁用整个账号；
+    /// Claude/GPT-OSS 桶耗尽不禁用（Antigravity 真实额度只有这两桶，其余为上游噪声）。
+    /// </summary>
+    public double? SelectDisablePercent(AccountQuotaSnapshot snapshot)
+    {
+        var gemini = snapshot.Windows.FirstOrDefault(window => GoogleQuotaParser.IsGeminiBucket(window.Id));
+        return gemini?.UsedPercent;
+    }
 
     /// <summary>额度查询结果（内部口径）。</summary>
     private sealed record GoogleQuotaInfo
@@ -179,7 +188,6 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
             .ExecuteCommandAsync(cancellationToken);
         await SetLinkedSiteEnabledAsync(client, current.LinkedSiteId, enabled, cancellationToken);
         _metadataCache.InvalidateRouteTargets();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateGoogleAccounts();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
     }
@@ -213,7 +221,6 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         }
 
         _metadataCache.InvalidateRouteTargets();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateGoogleAccounts();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
     }
@@ -247,17 +254,17 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
                         .UpdateColumns(x => new { x.LastQuotaRawJson, x.LastQuotaCheckedAt })
                         .ExecuteCommandAsync(cancellationToken);
                     _metadataCache.InvalidateGoogleAccounts();
-                    await PushToCoreAsyncAccountCredentials(CancellationToken.None);
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
 
                     var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
                     if (account.IsEnabled)
                     {
-                        var maxPercent = GetMaxUsedPercent(info);
+                        var geminiPercent = GetGeminiUsedPercent(info);
                         var threshold = (double)runtime.OAuthAutoDisableThresholdPercent;
-                        if (maxPercent.HasValue && maxPercent.Value >= threshold)
+                        if (geminiPercent.HasValue && geminiPercent.Value >= threshold)
                         {
                             await DisableAccountAsync(account, cancellationToken,
-                                $"额度使用 {maxPercent.Value:F1}% 达到全局阈值 {threshold}");
+                                $"Gemini 额度使用 {geminiPercent.Value:F1}% 达到全局阈值 {threshold}");
                         }
                     }
                 }
@@ -324,7 +331,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
                 Windows = (windows ?? []).Select(w => new GoogleQuotaWindow
                 {
                     Id = w.Id,
-                    Label = w.Id,
+                    Label = w.Label,
                     UsedPercent = w.UsedPercent,
                     ResetLabel = w.ResetLabel,
                     ResetAtUtc = w.ResetAtUtc,
@@ -337,9 +344,9 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         }
     }
 
-    /// <summary>自动禁用判定：取所有模型窗口的最大已用百分比。</summary>
-    private static double? GetMaxUsedPercent(GoogleQuotaInfo info)
-        => info.Windows.Count == 0 ? null : info.Windows.Max(w => w.UsedPercent);
+    /// <summary>自动禁用判定：只看 Gemini 桶的已用百分比（Claude/GPT-OSS 桶耗尽不禁用）。</summary>
+    private static double? GetGeminiUsedPercent(GoogleQuotaInfo info)
+        => info.Windows.FirstOrDefault(window => GoogleQuotaParser.IsGeminiBucket(window.Id))?.UsedPercent;
 
     private static AccountQuotaTarget ToQuotaTarget(GoogleAccount account) => new()
     {
@@ -417,7 +424,6 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         }
 
         _metadataCache.InvalidateRouteTargets();
-        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateGoogleAccounts();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _logger.LogWarning("Google account {Id} auto-disabled: {Reason}", account.Id, reason);

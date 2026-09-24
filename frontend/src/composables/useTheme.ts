@@ -160,6 +160,17 @@ const classicDarkOverrides: GlobalThemeOverrides = {
     color: '#18181C',
     colorModal: '#1F1F24',
     colorPopover: '#1F1F24'
+  },
+  // Checkbox/Radio 的边框直接取 common.borderColor（与弹窗/表格背景同色系），
+  // 未选中态是透明底+纯边框，不单独提亮边框会整体隐形。
+  Checkbox: {
+    border: '1px solid rgba(255, 255, 255, 0.28)',
+    borderDisabled: '1px solid rgba(255, 255, 255, 0.15)'
+  },
+  Radio: {
+    boxShadow: 'inset 0 0 0 1px rgba(255, 255, 255, 0.28)',
+    boxShadowDisabled: 'inset 0 0 0 1px rgba(255, 255, 255, 0.15)',
+    buttonBorderColor: 'rgba(255, 255, 255, 0.28)'
   }
 }
 
@@ -192,12 +203,25 @@ const modernDarkOverrides: GlobalThemeOverrides = {
     colorModal: '#1E293B',
     colorPopover: '#1E293B',
     boxShadow: '0 4px 25px rgba(0, 0, 0, 0.4)'
+  },
+  // Checkbox/Radio 的边框直接取 common.borderColor（与弹窗/表格背景同色系），
+  // 未选中态是透明底+纯边框，不单独提亮边框会整体隐形。
+  Checkbox: {
+    border: '1px solid rgba(255, 255, 255, 0.28)',
+    borderDisabled: '1px solid rgba(255, 255, 255, 0.15)'
+  },
+  Radio: {
+    boxShadow: 'inset 0 0 0 1px rgba(255, 255, 255, 0.28)',
+    boxShadowDisabled: 'inset 0 0 0 1px rgba(255, 255, 255, 0.15)',
+    buttonBorderColor: 'rgba(255, 255, 255, 0.28)'
   }
 }
 
 function applyAttributes(dark: boolean, sk: SkinMode): void {
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
   document.documentElement.setAttribute('data-skin', sk)
+  // 同步 Tailwind dark: 变体（darkMode: selector 策略依赖 <html> 上的 .dark 类）。
+  document.documentElement.classList.toggle('dark', dark)
 }
 
 // 初始化

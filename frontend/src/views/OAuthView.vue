@@ -989,29 +989,15 @@ interface InspectionDisplayRow {
 
 function inspectionRows(item: OAuthInspectionAccountResult): InspectionDisplayRow[] {
   if (item.providerKey === 'google') {
-    const account = accounts.value.find(acc => acc.id === item.accountId)
-    const selectedModels = new Set((account?.selectedModels ?? []).map(model => model.toLowerCase()))
-    if (selectedModels.size === 0) return []
-
-    return (item.windows ?? [])
-      .filter(window => selectedModels.has(window.id.toLowerCase()) || selectedModels.has(window.label.toLowerCase()))
-      .map(window => ({
-        model: window.label,
-        quota: `${formatInspectionPercent(window.usedPercent)}${window.resetLabel ? ` · 于 ${window.resetLabel}` : ''}`
-      }))
+    // Antigravity 额度按桶展示（Claude/GPT-OSS 系列、Gemini 系列），每个桶一行
+    return (item.windows ?? []).map(window => ({
+      model: window.label,
+      quota: `${formatInspectionPercent(window.usedPercent)}${window.resetLabel ? ` · 于 ${window.resetLabel}` : ''}`
+    }))
   }
 
   const quota = formatInspectionWindows(item)
   return quota === '-' ? [] : [{ model: '账号额度', quota }]
-}
-
-function accountQuotaPercent(acc: OAuthAccount): number | null {
-  if (acc.windows && acc.windows.length > 0) {
-    return Math.min(...acc.windows.map((w) => Math.max(0, 100 - Number(w.usedPercent || 0))))
-  }
-  const percents = [acc.fiveHourUsedPercent, acc.weeklyUsedPercent]
-    .filter((value): value is number => value != null && Number.isFinite(Number(value)))
-  return percents.length ? Math.min(...percents.map((value) => Math.max(0, 100 - value))) : null
 }
 
 function accountStatusLabel(acc: OAuthAccount): string {
@@ -1186,9 +1172,7 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div v-else class="oauth-window-placeholder">
-                  {{ acc.provider === 'antigravity' && (acc.selectedModels?.length ?? 0) === 0
-                      ? '尚未拉取模型，不显示无关额度'
-                      : acc.lastQuotaCheckedAt ? '暂无已拉取模型额度' : '未刷新额度，点击下方「刷新额度」获取' }}
+                  {{ acc.lastQuotaCheckedAt ? '暂无额度数据' : '未刷新额度，点击下方「刷新额度」获取' }}
                 </div>
 
                 <div v-if="!exportMode" class="oauth-card-meta">
@@ -1330,7 +1314,7 @@ onUnmounted(() => {
           <strong>操作步骤：</strong>
           <ol class="oauth-steps">
             <li>点击下方<strong>「打开 Kimi 授权页面」</strong>按钮，将在新标签页中打开 Moonshot Kimi 官方授权页。</li>
-            <li>在授权页中确认或输入用户验证码：<strong style="color: #18a058; font-size: 1.15em">{{ kimiUserCode }}</strong></li>
+            <li>在授权页中确认或输入用户验证码：<strong class="oauth-user-code">{{ kimiUserCode }}</strong></li>
             <li>授权成功后系统将自动检测并完成登录（有效时间剩余：<strong>{{ formatSeconds(kimiCountdown) }}</strong>）。</li>
           </ol>
         </NAlert>
@@ -1746,6 +1730,13 @@ onUnmounted(() => {
 
 :global([data-theme='dark']) .oauth-token-expired { color: #f87171; }
 :global([data-theme='dark']) .oauth-token-warning { color: #f87171; }
+
+.oauth-user-code {
+  color: #18a058;
+  font-size: 1.15em;
+}
+
+:global([data-theme='dark']) .oauth-user-code { color: #4ade80; }
 
 .reset-credit-list-title {
   margin: 0 0 8px;

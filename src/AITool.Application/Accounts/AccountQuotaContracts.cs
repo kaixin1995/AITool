@@ -62,6 +62,15 @@ public interface IAccountQuotaProvider
     /// </summary>
     AccountQuotaSnapshot? ParseCachedQuota(string rawJson);
 
+    /// <summary>
+    /// 选择用于自动禁用/恢复判定的已用百分比。默认取所有窗口的最大值；
+    /// 提供程序可覆写为只看关键窗口（如 Google 只看 Gemini 桶，Claude/GPT-OSS 桶耗尽不禁用）。
+    /// </summary>
+    double? SelectDisablePercent(AccountQuotaSnapshot snapshot)
+        => snapshot.Windows.Count == 0
+            ? null
+            : snapshot.Windows.Max(window => window.UsedPercent);
+
     Task<AccountQuotaSnapshot> QueryAsync(
         AccountQuotaTarget account,
         bool forceRefresh,

@@ -55,14 +55,14 @@ public sealed class GoogleQuotaParserTests
 
         var windows = GoogleQuotaParser.Parse(raw);
         windows.Should().NotBeNull();
-        windows.Should().HaveCount(2);
+        windows.Should().HaveCount(2, "真实额度聚合为 Claude/GPT-OSS 与 Gemini 两桶");
 
-        var gemini = windows!.Single(w => w.Id == "gemini-3-pro-preview");
+        var gemini = windows!.Single(w => w.Id == GoogleQuotaParser.GeminiBucketId);
         gemini.UsedPercent.Should().BeApproximately(15d, 0.01);
         gemini.ResetAtUtc.Should().NotBeNull();
         gemini.ResetLabel.Should().NotBe("N/A");
 
-        var claude = windows.Single(w => w.Id == "claude-sonnet-4-6");
+        var claude = windows.Single(w => w.Id == GoogleQuotaParser.ClaudeGptOssBucketId);
         claude.UsedPercent.Should().BeApproximately(95d, 0.01);
     }
 
