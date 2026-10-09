@@ -5,6 +5,7 @@ using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Application.Google;
 using AITool.Application.Kimi;
+using AITool.Application.Xai;
 using AITool.Application.Operations;
 using AITool.Application.Pricing;
 using AITool.Application.Proxy;
@@ -15,6 +16,7 @@ using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Google;
 using AITool.Infrastructure.Kimi;
+using AITool.Infrastructure.Xai;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.OpenAI;
@@ -322,6 +324,23 @@ builder.Services.AddHostedService<CodexTokenRefreshService>();
 builder.Services.AddHostedService<GoogleTokenRefreshService>();
 // 周期刷新 Kimi 账号 token。
 builder.Services.AddHostedService<KimiTokenRefreshService>();
+
+// 注册 xAI (Grok) OAuth 账号栈：设备码登录 + SuperGrok 额度巡检 + 隐藏站点供给。
+builder.Services.AddHttpClient<IXaiOAuthClient, XaiOAuthClient>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHttpClient<IXaiModelFetcher, XaiModelFetcher>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddScoped<XaiAccountProvisioner>();
+builder.Services.AddHttpClient<XaiQuotaService>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<XaiQuotaService>());
+builder.Services.AddHostedService<XaiTokenRefreshService>();
 // 周期恢复冷却到期的当前 OAuth 提供程序账号（清除冷却，恢复 Site，若未被手动禁用）。
 builder.Services.AddHostedService<CodexCooldownRecoveryService>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();

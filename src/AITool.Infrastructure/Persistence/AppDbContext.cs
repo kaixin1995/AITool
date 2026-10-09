@@ -9,6 +9,7 @@ using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
+using AITool.Domain.Xai;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
@@ -91,6 +92,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<CodexAccount> CodexAccounts => _client.Queryable<CodexAccount>();
     public ISugarQueryable<GoogleAccount> GoogleAccounts => _client.Queryable<GoogleAccount>();
     public ISugarQueryable<KimiAccount> KimiAccounts => _client.Queryable<KimiAccount>();
+    public ISugarQueryable<XaiAccount> XaiAccounts => _client.Queryable<XaiAccount>();
     public ISugarQueryable<ModelLibraryItem> ModelLibraryItems => _client.Queryable<ModelLibraryItem>();
     public ISugarQueryable<SiteModelMapping> SiteModelMappings => _client.Queryable<SiteModelMapping>();
     public ISugarQueryable<DetectionTask> DetectionTasks => _client.Queryable<DetectionTask>();
@@ -267,6 +269,7 @@ public static class SqlSugarSetup
             typeof(CodexAccount),
             typeof(GoogleAccount),
             typeof(KimiAccount),
+            typeof(XaiAccount),
             typeof(ModelLibraryItem),
             typeof(SiteModelMapping),
             typeof(DetectionTask),

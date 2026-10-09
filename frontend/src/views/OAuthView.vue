@@ -22,8 +22,8 @@ import {
   isInspectionDisabledError
 } from './accountInspectionState'
 
-// 统一账号视图：Codex、Google（Antigravity）与 Kimi (Moonshot AI) 账号合入同一列表，用 provider 区分厂商。
-type ProviderKind = 'codex' | 'antigravity' | 'kimi'
+// 统一账号视图：Codex、Google（Antigravity）、Kimi (Moonshot AI) 与 xAI (Grok) 账号合入同一列表，用 provider 区分厂商。
+type ProviderKind = 'codex' | 'antigravity' | 'kimi' | 'xai'
 type ProviderFilter = 'all' | ProviderKind
 type AccountStatusFilter = 'enabled' | 'disabled' | 'all'
 type UnifiedAccount = OAuthAccount & {
@@ -36,20 +36,23 @@ type UnifiedAccount = OAuthAccount & {
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
   codex: 'Codex',
   antigravity: 'Antigravity',
-  kimi: 'Kimi'
+  kimi: 'Kimi',
+  xai: 'Grok'
 }
 
 const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'codex', label: PROVIDER_LABELS.codex },
   { key: 'antigravity', label: PROVIDER_LABELS.antigravity },
-  { key: 'kimi', label: PROVIDER_LABELS.kimi }
+  { key: 'kimi', label: PROVIDER_LABELS.kimi },
+  { key: 'xai', label: PROVIDER_LABELS.xai }
 ]
 
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
   { key: 'antigravity', label: 'Antigravity' },
-  { key: 'kimi', label: 'Kimi' }
+  { key: 'kimi', label: 'Kimi' },
+  { key: 'xai', label: 'Grok (xAI)' }
 ] as const
 
 const PROVIDER_IMPORT_OPTIONS = PROVIDER_LOGIN_OPTIONS
@@ -84,13 +87,29 @@ function toUnifiedKimiAccount(acc: api.KimiAccountSummary): UnifiedAccount {
   }
 }
 
+// xAI (Grok) 账号摘要映射为统一卡片结构。
+function toUnifiedXaiAccount(acc: api.XaiAccountSummary): UnifiedAccount {
+  return {
+    ...acc,
+    provider: 'xai',
+    accountId: acc.userId ?? null,
+    accountKind: 'SuperGrok',
+    planType: acc.planType ?? 'SuperGrok',
+    resetCreditsAvailableCount: null,
+    autoDisableThreshold: null,
+    fiveHourUsedPercent: null,
+    weeklyUsedPercent: null
+  }
+}
+
 function providerLabel(acc: UnifiedAccount): string {
   return PROVIDER_LABELS[acc.provider] ?? acc.provider
 }
 
-function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' {
+function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' | 'error' {
   if (acc.provider === 'codex') return 'info'
   if (acc.provider === 'antigravity') return 'warning'
+  if (acc.provider === 'xai') return 'error'
   return 'success'
 }
 
@@ -136,6 +155,10 @@ const importPlaceholder = computed(() => {
   }
   if (importProvider.value === 'kimi') {
     return '{"type":"kimi","access_token":"...","refresh_token":"...","device_id":"..."}'
+  }
+  if (importProvider.value === 'xai') {
+    // Grok CLI 的 ~/.grok/auth.json 即此形态（也可粘贴平铺 access_token/refresh_token）。
+    return '{"https://auth.x.ai::<client-id>":{"key":"...","refresh_token":"..."}}'
   }
   return '{"refresh_token":"...","project_id":"..."}'
 })
@@ -251,11 +274,12 @@ function invalidatePendingRefreshes(): void {
 
 async function loadAccounts(showError: boolean): Promise<void> {
   const requestId = ++accountsRequestId
-  // Codex、Google 与 Kimi 账号合并展示；接口在功能开关关闭时返回 404。
-  const [codexResult, googleResult, kimiResult] = await Promise.allSettled([
+  // Codex、Google、Kimi 与 xAI 账号合并展示；接口在功能开关关闭时返回 404。
+  const [codexResult, googleResult, kimiResult, xaiResult] = await Promise.allSettled([
     api.listOAuthAccounts(),
     api.listGoogleAccounts(),
-    api.listKimiAccounts()
+    api.listKimiAccounts(),
+    api.listXaiAccounts()
   ])
   if (requestId !== accountsRequestId) return
 
@@ -282,8 +306,14 @@ async function loadAccounts(showError: boolean): Promise<void> {
   if (kimiResult.status === 'rejected' && showError) {
     message.error(`Kimi 账号加载失败：${(kimiResult.reason as Error).message}`)
   }
+  const xaiAccounts: UnifiedAccount[] = xaiResult.status === 'fulfilled'
+    ? xaiResult.value.map(toUnifiedXaiAccount)
+    : []
+  if (xaiResult.status === 'rejected' && showError) {
+    message.error(`Grok 账号加载失败：${(xaiResult.reason as Error).message}`)
+  }
 
-  accounts.value = [...codexAccounts, ...googleAccounts, ...kimiAccounts].sort(
+  accounts.value = [...codexAccounts, ...googleAccounts, ...kimiAccounts, ...xaiAccounts].sort(
     (a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
   )
   featureDisabled.value = false
@@ -398,6 +428,38 @@ function clearKimiDeviceFlow(): void {
   kimiDeviceId.value = ''
 }
 
+// xAI 设备码授权状态（流程与 Kimi 同构：RFC 8628）
+const xaiDeviceCode = ref('')
+const xaiUserCode = ref('')
+const xaiVerificationUri = ref('')
+const xaiVerificationUriComplete = ref('')
+const xaiExpiresIn = ref(600)
+const xaiCountdown = ref(600)
+let xaiPollTimer: ReturnType<typeof setInterval> | null = null
+let xaiCountdownTimer: ReturnType<typeof setInterval> | null = null
+
+function clearXaiDeviceFlow(): void {
+  if (xaiPollTimer) {
+    clearInterval(xaiPollTimer)
+    xaiPollTimer = null
+  }
+  if (xaiCountdownTimer) {
+    clearInterval(xaiCountdownTimer)
+    xaiCountdownTimer = null
+  }
+  xaiDeviceCode.value = ''
+  xaiUserCode.value = ''
+  xaiVerificationUri.value = ''
+  xaiVerificationUriComplete.value = ''
+  xaiExpiresIn.value = 600
+  xaiCountdown.value = 600
+}
+
+function clearAllDeviceFlows(): void {
+  clearKimiDeviceFlow()
+  clearXaiDeviceFlow()
+}
+
 function formatSeconds(secs: number): string {
   const m = Math.floor(secs / 60)
   const s = secs % 60
@@ -409,13 +471,13 @@ function openOAuthModal(provider: ProviderKind = 'codex'): void {
   oauthUrl.value = ''
   oauthCallbackInput.value = ''
   oauthDisplayName.value = ''
-  clearKimiDeviceFlow()
+  clearAllDeviceFlows()
   oauthModal.value = true
 }
 
 async function handleStartOAuth(): Promise<void> {
   oauthStartLoading.value = true
-  clearKimiDeviceFlow()
+  clearAllDeviceFlows()
   try {
     if (oauthProvider.value === 'kimi') {
       const result = await api.startKimiDeviceFlow()
@@ -457,6 +519,44 @@ async function handleStartOAuth(): Promise<void> {
           // 轮询异常静默
         }
       }, (result.interval || 5) * 1000)
+    } else if (oauthProvider.value === 'xai') {
+      const result = await api.startXaiDeviceFlow()
+      xaiDeviceCode.value = result.deviceCode
+      xaiUserCode.value = result.userCode
+      xaiVerificationUri.value = result.verificationUri
+      xaiVerificationUriComplete.value = result.verificationUriComplete
+      xaiExpiresIn.value = result.expiresIn
+      xaiCountdown.value = result.expiresIn
+
+      xaiCountdownTimer = setInterval(() => {
+        if (xaiCountdown.value > 0) {
+          xaiCountdown.value--
+        } else {
+          clearXaiDeviceFlow()
+          message.warning('Grok 授权码已过期，请重新开始登录')
+        }
+      }, 1000)
+
+      xaiPollTimer = setInterval(async () => {
+        if (!xaiDeviceCode.value || !oauthModal.value) return
+        try {
+          const pollRes = await api.pollXaiToken(
+            xaiDeviceCode.value,
+            oauthDisplayName.value.trim() || undefined
+          )
+          if (pollRes.status === 'success') {
+            clearXaiDeviceFlow()
+            message.success('Grok OAuth 登录成功')
+            oauthModal.value = false
+            await load()
+          } else if (pollRes.status === 'error') {
+            clearXaiDeviceFlow()
+            message.error(pollRes.errorDescription || 'Grok 授权失败')
+          }
+        } catch {
+          // 轮询异常静默
+        }
+      }, (result.interval || 5) * 1000)
     } else {
       const result = oauthProvider.value === 'codex'
         ? await api.startOAuth()
@@ -471,18 +571,22 @@ async function handleStartOAuth(): Promise<void> {
   }
 }
 
-async function handleManualCheckKimiAuth(): Promise<void> {
-  if (!kimiDeviceCode.value) return
+async function handleManualCheckDeviceAuth(): Promise<void> {
+  const isXai = oauthProvider.value === 'xai'
+  const deviceCode = isXai ? xaiDeviceCode.value : kimiDeviceCode.value
+  if (!deviceCode) return
   oauthLoading.value = true
   try {
-    const pollRes = await api.pollKimiToken(
-      kimiDeviceCode.value,
-      kimiDeviceId.value || undefined,
-      oauthDisplayName.value.trim() || undefined
-    )
+    const pollRes = isXai
+      ? await api.pollXaiToken(xaiDeviceCode.value, oauthDisplayName.value.trim() || undefined)
+      : await api.pollKimiToken(
+          kimiDeviceCode.value,
+          kimiDeviceId.value || undefined,
+          oauthDisplayName.value.trim() || undefined
+        )
     if (pollRes.status === 'success') {
-      clearKimiDeviceFlow()
-      message.success('Kimi OAuth 登录成功')
+      clearAllDeviceFlows()
+      message.success(isXai ? 'Grok OAuth 登录成功' : 'Kimi OAuth 登录成功')
       oauthModal.value = false
       await load()
     } else if (pollRes.status === 'pending') {
@@ -500,8 +604,8 @@ async function handleManualCheckKimiAuth(): Promise<void> {
 }
 
 async function handleCompleteOAuth(): Promise<void> {
-  if (oauthProvider.value === 'kimi') {
-    await handleManualCheckKimiAuth()
+  if (oauthProvider.value === 'kimi' || oauthProvider.value === 'xai') {
+    await handleManualCheckDeviceAuth()
     return
   }
   if (!oauthCallbackInput.value.trim()) { message.warning('请粘贴回调 URL'); return }
@@ -530,6 +634,8 @@ async function handleToggle(acc: UnifiedAccount): Promise<void> {
       await api.toggleGoogleAccount(acc.id, !acc.isEnabled)
     } else if (acc.provider === 'kimi') {
       await api.toggleKimiAccount(acc.id, !acc.isEnabled)
+    } else if (acc.provider === 'xai') {
+      await api.toggleXaiAccount(acc.id, !acc.isEnabled)
     }
     acc.isEnabled = !acc.isEnabled
   } catch (e) { message.error((e as Error).message) }
@@ -545,6 +651,9 @@ async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
     } else if (acc.provider === 'kimi') {
       await api.refreshKimiQuota(acc.id)
       message.success('已刷新额度')
+    } else if (acc.provider === 'xai') {
+      await api.refreshXaiQuota(acc.id)
+      message.success('已刷新额度')
     }
     await load()
   } catch (e) { message.error((e as Error).message) }
@@ -556,6 +665,8 @@ async function handleDelete(acc: UnifiedAccount): Promise<void> {
     await api.deleteGoogleAccount(acc.id)
   } else if (acc.provider === 'kimi') {
     await api.deleteKimiAccount(acc.id)
+  } else if (acc.provider === 'xai') {
+    await api.deleteXaiAccount(acc.id)
   }
   message.success('已删除账号')
   await load()
@@ -617,6 +728,13 @@ async function handleSaveEdit(): Promise<void> {
         editRefreshToken.value || undefined
       )
       message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
+    } else if (editAccount.value.provider === 'xai') {
+      await api.updateXaiAccount(
+        editAccount.value.id,
+        editDisplayName.value.trim(),
+        editRefreshToken.value || undefined
+      )
+      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
     }
     editModal.value = false
     await load()
@@ -632,6 +750,8 @@ async function handleManualRefreshToken(): Promise<void> {
       await api.refreshOAuthToken(editAccount.value.id)
     } else if (editAccount.value.provider === 'kimi') {
       await api.refreshKimiToken(editAccount.value.id)
+    } else if (editAccount.value.provider === 'xai') {
+      await api.refreshXaiToken(editAccount.value.id)
     }
     message.success('Token 已刷新')
     // 刷新后更新当前编辑的账号对象和列表，让用户看到新的过期时间
@@ -700,6 +820,8 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
       models = await api.fetchGoogleModels(acc.id)
     } else if (acc.provider === 'kimi') {
       models = await api.fetchKimiModels(acc.id)
+    } else if (acc.provider === 'xai') {
+      models = await api.fetchXaiModels(acc.id)
     }
     modelList.value = models.map(model => ({
       ...model,
@@ -758,6 +880,8 @@ async function handleImportModels(): Promise<void> {
       await api.importSelectedGoogleModels(modelAccount.value.id, selections)
     } else if (modelAccount.value.provider === 'kimi') {
       await api.importSelectedKimiModels(modelAccount.value.id, selections)
+    } else if (modelAccount.value.provider === 'xai') {
+      await api.importSelectedXaiModels(modelAccount.value.id, selections)
     }
     message.success(modelAccount.value.provider === 'codex'
       ? `已导入 ${checkedModels.value.length} 个模型`
@@ -806,6 +930,13 @@ async function handleImportCredential(): Promise<void> {
         ? await api.importKimiCredentialFiles(importFiles.value)
         : await api.importKimiCredential(importJsonText.value.trim())
       result = kimiResult
+    } else if (importProvider.value === 'xai') {
+      // xAI 凭证仅支持粘贴 JSON（grok auth.json 或平铺 token），文件走 Kimi/Codex。
+      if (!importJsonText.value.trim()) {
+        message.warning('请粘贴 Grok 凭证 JSON（auth.json 或平铺 access_token/refresh_token）')
+        return
+      }
+      result = await api.importXaiCredential(importJsonText.value.trim())
     } else {
       // Google 凭证：仅支持粘贴 JSON（需含 refresh_token），文件导入走 Codex。
       if (!importJsonText.value.trim()) {
@@ -1048,7 +1179,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
-  clearKimiDeviceFlow()
+  clearAllDeviceFlows()
   invalidatePendingRefreshes()
 })
 </script>
@@ -1299,37 +1430,37 @@ onUnmounted(() => {
     </NSpin>
 
     <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序；按厂商展示对应流程。 -->
-    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${PROVIDER_LABELS[oauthProvider]}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearKimiDeviceFlow">
+    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${PROVIDER_LABELS[oauthProvider]}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearAllDeviceFlows">
       <div class="oauth-form-group">
         <p class="oauth-form-label">账号显示名称（可选）</p>
-        <NInput v-model:value="oauthDisplayName" :placeholder="oauthProvider === 'kimi' ? '留空则默认 Kimi 账号' : '留空则用邮箱'" />
+        <NInput v-model:value="oauthDisplayName" :placeholder="oauthProvider === 'kimi' ? '留空则默认 Kimi 账号' : oauthProvider === 'xai' ? '留空则默认 Grok 账号' : '留空则用邮箱'" />
       </div>
       <NButton type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">
-        {{ oauthProvider === 'kimi' && kimiUserCode ? '重新获取验证码' : '开始登录' }}
+        {{ (oauthProvider === 'kimi' && kimiUserCode) || (oauthProvider === 'xai' && xaiUserCode) ? '重新获取验证码' : '开始登录' }}
       </NButton>
 
-      <!-- Kimi RFC 8628 设备码授权区域 -->
-      <div v-if="oauthProvider === 'kimi' && kimiUserCode" class="oauth-auth-area">
+      <!-- Kimi / xAI RFC 8628 设备码授权区域（两厂商流程同构） -->
+      <div v-if="(oauthProvider === 'kimi' && kimiUserCode) || (oauthProvider === 'xai' && xaiUserCode)" class="oauth-auth-area">
         <NAlert type="info" :show-icon="false">
           <strong>操作步骤：</strong>
           <ol class="oauth-steps">
-            <li>点击下方<strong>「打开 Kimi 授权页面」</strong>按钮，将在新标签页中打开 Moonshot Kimi 官方授权页。</li>
-            <li>在授权页中确认或输入用户验证码：<strong class="oauth-user-code">{{ kimiUserCode }}</strong></li>
-            <li>授权成功后系统将自动检测并完成登录（有效时间剩余：<strong>{{ formatSeconds(kimiCountdown) }}</strong>）。</li>
+            <li>点击下方<strong>「打开{{ oauthProvider === 'xai' ? ' xAI' : ' Kimi' }}授权页面」</strong>按钮，将在新标签页中打开官方授权页。</li>
+            <li>在授权页中确认或输入用户验证码：<strong class="oauth-user-code">{{ oauthProvider === 'xai' ? xaiUserCode : kimiUserCode }}</strong></li>
+            <li>授权成功后系统将自动检测并完成登录（有效时间剩余：<strong>{{ formatSeconds(oauthProvider === 'xai' ? xaiCountdown : kimiCountdown) }}</strong>）。</li>
           </ol>
         </NAlert>
         <p class="oauth-form-label">用户验证码 (User Code)</p>
         <div class="oauth-url-row">
-          <NInput :value="kimiUserCode" readonly style="font-weight: bold; font-size: 1.25em; text-align: center; letter-spacing: 2px" />
-          <NButton secondary @click="copyText(kimiUserCode)">复制验证码</NButton>
-          <NButton tag="a" :href="kimiVerificationUriComplete || kimiVerificationUri" target="_blank" type="primary">打开 Kimi 授权页面</NButton>
+          <NInput :value="oauthProvider === 'xai' ? xaiUserCode : kimiUserCode" readonly style="font-weight: bold; font-size: 1.25em; text-align: center; letter-spacing: 2px" />
+          <NButton secondary @click="copyText(oauthProvider === 'xai' ? xaiUserCode : kimiUserCode)">复制验证码</NButton>
+          <NButton tag="a" :href="oauthProvider === 'xai' ? (xaiVerificationUriComplete || xaiVerificationUri) : (kimiVerificationUriComplete || kimiVerificationUri)" target="_blank" type="primary">打开{{ oauthProvider === 'xai' ? ' xAI' : ' Kimi' }}授权页面</NButton>
         </div>
         <div style="margin-top: 14px; display: flex; align-items: center; justify-content: space-between; color: var(--n-text-color-3)">
           <span style="display: inline-flex; align-items: center">
             <NSpin size="small" style="margin-right: 8px" />
             正在等待浏览器授权确认...
           </span>
-          <NButton size="small" secondary :loading="oauthLoading" @click="handleManualCheckKimiAuth">已完成授权，立即检查</NButton>
+          <NButton size="small" secondary :loading="oauthLoading" @click="handleManualCheckDeviceAuth">已完成授权，立即检查</NButton>
         </div>
       </div>
 
@@ -1357,7 +1488,7 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="oauthModal = false">取消</NButton>
-          <NButton v-if="oauthProvider !== 'kimi'" type="primary" :loading="oauthLoading" @click="handleCompleteOAuth">完成登录</NButton>
+          <NButton v-if="oauthProvider !== 'kimi' && oauthProvider !== 'xai'" type="primary" :loading="oauthLoading" @click="handleCompleteOAuth">完成登录</NButton>
         </NSpace>
       </template>
     </NModal>
