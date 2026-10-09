@@ -108,18 +108,18 @@ onBeforeUnmount(() => {
 <template>
   <div class="site-quota-tab">
     <div class="site-quota-toolbar">
-      <NTooltip trigger="hover" placement="right">
-        <template #trigger>
-          <span class="site-quota-help-trigger">?</span>
-        </template>
-        套餐额度按密钥独立计算（一个密钥 = 一份订阅）。<br>
-        数据仅在进入本页或点击「刷新全部」时查询，不会自动轮询。<br>
-        已禁用的密钥同样会查询额度——禁用只停止转发消耗，不影响额度查看。
-      </NTooltip>
       <div class="site-quota-toolbar-actions">
         <span v-if="lastRefreshedAt" class="site-quota-refreshed-at">
           上次刷新：{{ formatCheckedAtAgo(lastRefreshedAt, now) }}
         </span>
+        <NTooltip trigger="hover" placement="left">
+          <template #trigger>
+            <span class="site-quota-help-trigger">?</span>
+          </template>
+          套餐额度按密钥独立计算（一个密钥 = 一份订阅）。<br>
+          数据仅在进入本页或点击「刷新全部」时查询，不会自动轮询。<br>
+          已禁用的密钥同样会查询额度——禁用只停止转发消耗，不影响额度查看。
+        </NTooltip>
         <NButton size="small" type="primary" secondary :loading="refreshing" :disabled="!hasSites" @click="refreshAll">
           刷新全部
         </NButton>
@@ -206,13 +206,7 @@ onBeforeUnmount(() => {
               {{ key.status === 'never' ? '未查询过，进入本页或点「刷新全部」获取' : '暂无额度数据' }}
             </div>
 
-            <div class="site-quota-key-foot">
-              <span v-if="key.error" class="site-quota-key-error" :style="{ color: errorColor }" :title="key.error">{{ key.error }}</span>
-              <span v-else-if="key.checkedAtUtc" class="site-quota-key-checked">
-                上次查询：{{ formatCheckedAtAgo(key.checkedAtUtc, now) }}
-              </span>
-              <span v-else class="site-quota-key-checked">从未查询</span>
-            </div>
+            <div v-if="key.error" class="site-quota-key-error" :style="{ color: errorColor }" :title="key.error">{{ key.error }}</div>
           </div>
         </div>
 
@@ -234,7 +228,7 @@ onBeforeUnmount(() => {
 .site-quota-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
 }
 
@@ -422,19 +416,6 @@ onBeforeUnmount(() => {
 }
 
 .site-quota-windows-empty {
-  color: var(--text-color-secondary);
-  font-size: 12px;
-}
-
-.site-quota-key-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 16px;
-}
-
-.site-quota-key-checked {
   color: var(--text-color-secondary);
   font-size: 12px;
 }
