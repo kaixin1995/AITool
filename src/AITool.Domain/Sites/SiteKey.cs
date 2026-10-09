@@ -55,4 +55,34 @@ public sealed class SiteKey
     /// 密钥创建时间，用于记录该 Key 何时被加入系统。
     /// </summary>
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 最近一次套餐额度查询的原始响应 JSON（按站点所属供应商的原样报文），供「额度查询」
+    /// 页面打开时免查询直接展示缓存值。仅额度供应商（当前为智谱 GLM）的站点会写入；
+    /// 查询失败时保留上次成功值，配合 <see cref="LastQuotaStatus"/> 置灰展示。
+    /// <para>
+    /// 注意列类型必须显式 text：SqlSugar 对既有表的 ALTER 补列路径会把 Length&gt;8000 的
+    /// 字符串列映射成 varchar(max)，SQLite 语法不认（CREATE 路径则无此问题）。
+    /// </para>
+    /// </summary>
+    [SugarColumn(ColumnDataType = "text", IsNullable = true)]
+    public string? LastQuotaRawJson { get; set; }
+
+    /// <summary>
+    /// 最近一次额度查询时间（含失败尝试），用于展示「上次查询 X 分钟前」。
+    /// </summary>
+    [SugarColumn(IsNullable = true)]
+    public DateTimeOffset? LastQuotaCheckedAt { get; set; }
+
+    /// <summary>
+    /// 最近一次额度查询结果状态：null=从未查询，ok=成功，invalid_credential=密钥失效（401/403），error=其他错误。
+    /// </summary>
+    [SugarColumn(Length = 32, IsNullable = true)]
+    public string? LastQuotaStatus { get; set; }
+
+    /// <summary>
+    /// 最近一次额度查询的错误信息；成功时清空。
+    /// </summary>
+    [SugarColumn(Length = 500, IsNullable = true)]
+    public string? LastQuotaError { get; set; }
 }

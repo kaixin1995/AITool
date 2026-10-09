@@ -9,6 +9,7 @@ using AITool.Application.Operations;
 using AITool.Application.Pricing;
 using AITool.Application.Proxy;
 using AITool.Application.SiteCatalog;
+using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Common;
@@ -277,6 +278,16 @@ builder.Services.AddHttpClient<KimiQuotaService>(c =>
     c.Timeout = TimeSpan.FromSeconds(30);
 });
 builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<KimiQuotaService>());
+
+// 注册站点套餐额度查询（站点页「额度查询」Tab）：供应商扩展点 + 智谱 GLM 实现。
+// 纯手动模式（进入页面/点击刷新才查询），无后台巡检，故不加结果缓存；
+// 结果直接落库到 SiteKey.LastQuota* 列，重启后仍可展示上次值。
+builder.Services.AddScoped<SiteQuotaService>();
+builder.Services.AddHttpClient<ZhipuSiteQuotaProvider>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+builder.Services.AddTransient<ISiteQuotaProvider>(sp => sp.GetRequiredService<ZhipuSiteQuotaProvider>());
 
 // 注册代理主入口实体配置，配置 SocketsHttpHandler 连接池提高并发能力。
 // 连接池寿命与站点专属代理客户端（ProxyForwardService）对齐为 15 分钟：过短会在持续负载下频繁重建连接。
