@@ -471,3 +471,116 @@ export async function exportKimiCredentials(
   )
 }
 
+
+// —— xAI 账号 (Grok / SuperGrok) ——
+
+export interface XaiAccountSummary {
+  id: string
+  displayName: string
+  email: string | null
+  userId: string | null
+  planType: string | null
+  isEnabled: boolean
+  /** refresh_token 已被上游拒绝，需要重新设备码登录。 */
+  requiresReauth: boolean
+  isQuotaCooling: boolean
+  quotaCoolingUntil: string | null
+  lastQuotaCheckedAt: string | null
+  // 额度窗口（从最近一次 grok.com 账单查询解析：单窗口 SuperGrok credits）
+  windows?: OAuthQuotaWindow[] | null
+  tokenExpiresAt: string | null
+  createdAt: string | null
+  linkedSiteId: string
+}
+
+export interface XaiDeviceCodeResponse {
+  deviceCode: string
+  userCode: string
+  verificationUri: string
+  verificationUriComplete: string
+  expiresIn: number
+  interval: number
+}
+
+export interface XaiPollTokenResponse {
+  status: 'pending' | 'slow_down' | 'success' | 'error'
+  message?: string
+  error?: string
+  errorDescription?: string
+  account?: XaiAccountSummary
+}
+
+export async function listXaiAccounts(): Promise<XaiAccountSummary[]> {
+  return httpGet<XaiAccountSummary[]>('/api/admin/xai-accounts/accounts')
+}
+
+export async function startXaiDeviceFlow(): Promise<XaiDeviceCodeResponse> {
+  return httpPost<XaiDeviceCodeResponse>('/api/admin/xai-accounts/start-device-flow', {})
+}
+
+export async function pollXaiToken(
+  deviceCode: string,
+  displayName?: string
+): Promise<XaiPollTokenResponse> {
+  return httpPost<XaiPollTokenResponse>('/api/admin/xai-accounts/poll-token', {
+    deviceCode,
+    displayName
+  })
+}
+
+export async function toggleXaiAccount(id: string, enabled: boolean): Promise<void> {
+  await httpPost(`/api/admin/xai-accounts/accounts/${id}/toggle`, { isEnabled: enabled })
+}
+
+export async function refreshXaiToken(id: string): Promise<void> {
+  await httpPost(`/api/admin/xai-accounts/accounts/${id}/refresh-token`)
+}
+
+export interface XaiQuotaWindows {
+  checkedAt: string
+  planType: string | null
+  windows: OAuthQuotaWindow[]
+}
+
+export async function refreshXaiQuota(id: string): Promise<XaiQuotaWindows> {
+  return httpPost<XaiQuotaWindows>(`/api/admin/xai-accounts/accounts/${id}/refresh-quota`)
+}
+
+export async function updateXaiAccount(
+  id: string,
+  displayName: string,
+  refreshToken?: string
+): Promise<void> {
+  const body: Record<string, string> = { displayName }
+  if (refreshToken && refreshToken.trim()) body.refreshToken = refreshToken.trim()
+  await httpPut(`/api/admin/xai-accounts/accounts/${id}`, body)
+}
+
+export async function deleteXaiAccount(id: string): Promise<void> {
+  await httpDelete(`/api/admin/xai-accounts/accounts/${id}`)
+}
+
+export async function fetchXaiModels(id: string): Promise<OAuthRemoteModelItem[]> {
+  return httpGet<OAuthRemoteModelItem[]>(`/api/admin/xai-accounts/accounts/${id}/fetch-models`)
+}
+
+export async function importSelectedXaiModels(
+  id: string,
+  selections: OAuthModelSelection[]
+): Promise<void> {
+  await httpPost(`/api/admin/xai-accounts/accounts/${id}/import-selected-models`, { models: selections })
+}
+
+export async function importXaiCredential(
+  jsonText: string
+): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
+  const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
+    '/api/admin/xai-accounts/import-credential',
+    jsonText,
+    { headers: { 'Content-Type': 'application/json' } }
+  )
+  return {
+    successes: result.successes ?? [],
+    failures: result.failures ?? []
+  }
+}

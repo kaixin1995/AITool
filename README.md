@@ -5,7 +5,8 @@
 AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发多个 AI 服务站点的请求。它提供管理后台来管理站点、模型、路由规则、访问密钥，并通过 OpenAI/Anthropic 兼容协议对外提供代理服务，支持按优先级自动故障转移。
 
 核心能力：
-- 多站点管理（注册 OpenAI/Anthropic 兼容的 AI 服务站点）
+- 多站点管理（注册 OpenAI/Anthropic/Responses 兼容的 AI 服务站点，**一个站点挂多把 Key 主备调度**，各自独立并发计数与熔断；新建站点**厂商预设一键填充**——24 个官方厂商端点/路径模式/协议自动带出，仅需填密钥）
+- **站点额度查询**（站点页「额度查询」Tab：按密钥独立展示套餐额度/账户余额，供应商可扩展 `ISiteQuotaProvider`；已支持智谱 GLM 编程套餐——5 小时/每周双窗口与 DeepSeek 账户余额（官方 `/user/balance`）；纯手动刷新，结果落库重启可回放，失败保留上次值置灰）
 - 统一模型库（将不同站点的同名模型归一化管理）
 - 路由规则（为模型配置多站点优先级，失败自动重试下一个站点）
 - 熔断保护（站点连续失败达到阈值后临时屏蔽）
@@ -21,6 +22,7 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 统计分析（用量趋势、模型分布、缓存命中率等可视化仪表盘）
 - 开发者追踪（内存环形缓冲区，调试代理请求全链路）
 - OpenAI Responses API 代理（支持 HTTP 和 WebSocket 两种模式）
+- OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；内置 Codex、Google（Antigravity）、Kimi 与 **xAI/Grok（SuperGrok）** 提供程序——xAI 为 RFC 8628 设备码登录 + grok.com gRPC-web 账单额度（protobuf 启发式解析），详见 [docs/xai-accounts.md](docs/xai-accounts.md)）
 - **Core-Admin 双宿主部署**（Admin 管理面 + Core 代理面独立进程，生产可分离部署）
 
 ---
@@ -665,23 +667,24 @@ ToSummary → JSON 返回前端
 
 ## 管理后台页面
 
-所有页面在 `src/AITool.Admin/Pages/Admin/` 下。
+Vue3 SPA（路由在 `frontend/src/router/`），构建产物托管于 Admin 宿主。
 
-| 页面路径 | 功能 | 说明 |
-|----------|------|------|
-| `/Admin/Chat` | 对话测试 | 流式/非流式对话，支持路由选择 + 故障转移 |
-| `/Admin/Sites` | 站点管理 | 创建/编辑/删除/导入/导出 |
-| `/Admin/Models` | 模型库 | 模型列表 + 创建/编辑/删除，含映射状态 |
-| `/Admin/Routes` | 路由规则管理 | 模型入口 → 候选实例队列 → 拖拽排序 → 保存 |
-| `/Admin/AccessKeys` | 访问密钥管理 | 创建/切换/删除密钥 |
-| `/Admin/Detection` | 模型检测 | 手动/定时检测，增量进度 |
-| `/Admin/DetectionTasks` | 检测任务管理 | Cron 定时任务配置 |
-| `/Admin/ModelHealth` | 模型健康监控 | 可用率时间线图表 |
-| `/Admin/Conversations` | 对话记录 | 按会话浏览用户输入和 AI 输出 |
-| `/Admin/UsageLogs` | 使用日志 | Token 级别用量追踪 |
-| `/Admin/Analytics` | 统计分析 | 趋势、分布、缓存命中率等可视化 |
-| `/Admin/System/Settings` | 系统设置 | 超时、重试、熔断、并发、日志保留、开发者功能 |
-| `/Admin/Developer/Invocations` | 调试追踪 | 代理请求全链路详情（调用调试/客户端模拟/并发检测三栏） |
+| 路由 | 功能 | 说明 |
+|------|------|------|
+| `/chat` | 对话测试 | 流式/非流式对话，支持路由选择 + 故障转移 |
+| `/sites` | 站点管理 | 创建（**厂商预设一键填充**）/编辑/删除/批量删除/导入/导出/多 Key CRUD |
+| `/sites#quota` | 站点额度查询 | 按密钥展示套餐额度/账户余额（智谱 GLM / DeepSeek），纯手动刷新 |
+| `/models` | 模型库 | 模型列表 + 创建/编辑/删除，含映射状态 + 价格管理 |
+| `/routes` | 路由规则管理 | 模型入口 → 候选实例队列 → 拖拽排序 → 保存 |
+| `/access-keys` | 访问密钥管理 | 创建/切换/删除密钥 |
+| `/detection` | 模型检测 | 手动/秒级定时检测，增量进度 |
+| `/model-health` | 模型健康监控 | 可用率时间线图表 |
+| `/conversations` | 对话记录 | 按会话浏览用户输入和 AI 输出 |
+| `/usage-logs` | 使用日志 | Token 级别用量追踪 |
+| `/analytics` | 统计分析 | 趋势、分布、缓存命中率等可视化仪表盘 |
+| `/oauth` | OAuth 账号托管 | Codex / Google（Antigravity）/ Kimi / xAI（Grok）统一账号列表 |
+| `/system` | 系统设置 | 超时、重试、熔断、并发、日志保留、开发者功能 |
+| `/developer-invocations` | 调试追踪 | 代理请求全链路详情（调用追踪/模拟器/并发/熔断/协议诊断/SQL 迁移） |
 
 ---
 

@@ -274,3 +274,20 @@ CoreConfigController(status)、CoreConfigHandshakeController(handshake)、CoreCo
 
 **回归**：Admin 172 / Core 291 / 单元 365 / 前端 128 全绿；性能门通过（代理热路径无退化，
 新服务全在管理面：价格源零常驻、发布源有界缓存 30min TTL）。
+
+---
+
+## 附录 E：master 三次同步记录（2026-09-11 ~ 2026-10-09）
+
+### 第二轮（8c088d1/6977b89/5e00b0f，3 提交）
+Antigravity 额度两桶聚合（SelectDisablePercent 钩子）+ 暗色修复 + 行为测试。
+回归修复：DashboardView Core 状态行恢复、GoogleAccountsApi 凭证推送恢复。
+
+### 第三轮（8117287/6b97bdf/606797e/c2e17d3/cc8f000，5 提交，41 文件）
+- **站点额度查询**（ISiteQuotaProvider 抽象 + 智谱 GLM 5h/weekly 双窗口 + DeepSeek 余额）
+- **新建站点厂商预设**（24 厂商端点/路径/协议一键填充）
+- **xAI (Grok/SuperGrok) 账号托管**（RFC 8628 设备码 + gRPC-web protobuf 额度 + 全套 CRUD/刷新）
+- 文档刷新 + UI 精简
+
+版本号 1.0.1.26 → 1.0.1.28；README 核心能力/管理页面章节全面刷新。
+回归：Admin 187 / Core 291 / 单元 400 / 前端 156 全绿。

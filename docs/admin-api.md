@@ -55,6 +55,8 @@
 | GET | `/export` | 导出站点 JSON（含完整 keys） |
 | POST | `/import` | 导入（JSON 数组或 TSV） |
 | GET/POST/PUT/DELETE | `/{id}/keys...` | 站点多 Key CRUD + toggle（L236-358） |
+| GET | `/quota/overview` | 站点额度总览（纯落库缓存，不打上游；仅返回可查站点——智谱 GLM / DeepSeek） |
+| POST | `/{id}/quota/refresh` | 刷新该站全部密钥额度（站内密钥并发查询、逐密钥落库；禁用密钥同样查询） |
 
 ## 5. 站点模型目录 `api/admin/site-catalog`（SiteCatalogApiController）
 
@@ -230,6 +232,24 @@
 | POST | `/accounts/export-credentials` | 导出账号凭证（codex_credential_*.json） |
 
 > Codex 体系详见 [codex.md](codex.md)。
+
+## 18.1 xAI 账号 `api/admin/xai-accounts`（XaiAccountsApiController，类级 OAuth 功能开关）
+
+SuperGrok 设备码登录与账号管理（详见 [xai-accounts.md](xai-accounts.md)），端点与 Kimi 栈（`api/admin/kimi-accounts`）同构：
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/start-device-flow` | 发起 RFC 8628 设备码授权（OIDC Discovery 动态解析端点） |
+| POST | `/poll-token` | 轮询换取 token 并自动建账号（隐藏 Site + 模型映射） |
+| GET | `/accounts` | 账号列表（含额度窗口与 requiresReauth 状态） |
+| POST | `/accounts/{id}/toggle` | 启停（同步隐藏站点） |
+| PUT | `/accounts/{id}` | 编辑（改名 / 换 refresh_token） |
+| POST | `/accounts/{id}/refresh-token` | 手动刷新 access_token（拒绝时标记需重新登录） |
+| POST | `/accounts/{id}/refresh-quota` | 实时查询 grok.com 账单额度（protobuf 启发式解析）并持久化 |
+| DELETE | `/accounts/{id}` | 删除（级联清理隐藏站点） |
+| GET | `/accounts/{id}/fetch-models` | 拉取 api.x.ai/v1/models 模型清单 |
+| POST | `/accounts/{id}/import-selected-models` | 导入勾选模型 |
+| POST | `/import-credential` | 导入凭证 JSON（`~/.grok/auth.json` 形态或平铺 token） |
 
 ## 19. Core 宿主运行状态（仪表盘联动）
 

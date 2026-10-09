@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch, type VNode } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput,
   NSwitch, NPopconfirm, NSelect, NCheckbox, NProgress, NInputNumber, NDropdown, NTooltip,
@@ -8,6 +8,7 @@ import {
   useMessage, useDialog, type DataTableColumn, type DataTableColumns
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
+import SitesQuotaTab from './SitesQuotaTab.vue'
 import * as sitesApi from '@/api/sites'
 import type { ModelSelectionItem, SiteFetchResult, SiteListItem, SitePayload } from '@/api/sites'
 import { getProxyProfiles, type ProxyProfile } from '@/api/proxyProfiles'
@@ -19,11 +20,43 @@ import {
   type SiteExportItem,
   type SiteImportPreviewItem
 } from './sitesState'
+import {
+  CUSTOM_PRESET_ID,
+  applyVendorPreset,
+  buildVendorPresetOptions,
+  findVendorPreset
+} from './siteVendorPresets'
 
 const message = useMessage()
 const dialog = useDialog()
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
+
+// Tab 与路由 hash 同步（#quota 直达额度查询页），刷新页面后停留原 Tab；
+// NTabPane 默认 display-directive="if"，每次进入「额度查询」都会重新挂载并自动刷新一次。
+function getSitesTabFromHash(): 'sites' | 'quota' {
+  const hash = route.hash.replace(/^#/, '').toLowerCase()
+  if (hash === 'quota' || route.query.tab === 'quota') {
+    return 'quota'
+  }
+  return 'sites'
+}
+
+const activeTab = ref<'sites' | 'quota'>(getSitesTabFromHash())
+watch(activeTab, (tab) => {
+  const nextHash = tab === 'quota' ? '#quota' : '#sites'
+  if (route.hash !== nextHash) {
+    void router.replace({ hash: nextHash })
+  }
+})
+watch(() => route.hash, () => {
+  const next = getSitesTabFromHash()
+  if (activeTab.value !== next) {
+    activeTab.value = next
+  }
+})
+
 // 网络代理功能开关（登录态接口 features.developerTabs.proxyProfiles；旧后端无此字段时视为开启）。
 const proxyFeatureEnabled = computed(() => auth.status?.features?.developerTabs?.proxyProfiles ?? true)
 const loading = ref(false)
@@ -71,6 +104,23 @@ const form = reactive<SitePayload>({
 })
 const saving = ref(false)
 
+// ── 新建站点的厂商预设 ──────────────────────────────────────
+// 仅预填「新建」表单（地址/路径模式/协议），选「自定义」即原有手填流程；
+// 编辑站点不展示预设选择，老数据零影响。
+const vendorPresetId = ref<string>(CUSTOM_PRESET_ID)
+const lastVendorPresetId = ref<string | null>(null)
+const vendorPresetOptions = buildVendorPresetOptions()
+const selectedVendorPreset = computed(() => findVendorPreset(vendorPresetId.value))
+const apiKeyPlaceholder = computed(() =>
+  selectedVendorPreset.value?.keyPlaceholder
+  ?? 'sk-...（作为首个默认密钥，更多密钥创建后用「密钥管理」添加）'
+)
+
+function handleVendorPresetChange(id: string): void {
+  lastVendorPresetId.value = applyVendorPreset(form, id, lastVendorPresetId.value)
+  vendorPresetId.value = lastVendorPresetId.value
+}
+
 const isEditMode = computed(() => !!editingId.value)
 const modalTitle = computed(() => (isEditMode.value ? '编辑站点' : '新建站点'))
 
@@ -95,6 +145,8 @@ function openCreate(): void {
     supportsOpenAi: true, supportsAnthropic: false, supportsResponses: false,
     clientEmulation: 'None', extraHeadersJson: '', egressProxyUrl: '', isEnabled: true
   })
+  vendorPresetId.value = CUSTOM_PRESET_ID
+  lastVendorPresetId.value = null
   loadProxyProfiles()
   showModal.value = true
 }
@@ -949,25 +1001,32 @@ onBeforeUnmount(handleCatalogClosed)
     </PageHeader>
 
     <NCard>
-      <div class="site-bulk-toolbar">
-        <NPopconfirm @positive-click="handleBulkDelete">
-          <template #trigger>
-            <NButton size="small" type="error" secondary :disabled="checkedRowKeys.length === 0">批量删除（{{ checkedRowKeys.length }}）</NButton>
-          </template>
-          确认批量删除选中的 {{ checkedRowKeys.length }} 个站点？关联映射和路由规则会一并清理。
-        </NPopconfirm>
-      </div>
-      <NDataTable
-        v-model:checked-row-keys="checkedRowKeys"
-        :columns="columns"
-        :data="sites"
-        :loading="loading"
-        :row-key="(row: SiteListItem) => row.id"
-        :pagination="{ pageSize: 20 }"
-        :scroll-x="1060"
-        size="small"
-        striped
-      />
+      <NTabs v-model:value="activeTab" type="line">
+        <NTabPane name="sites" tab="站点列表">
+          <div class="site-bulk-toolbar">
+            <NPopconfirm @positive-click="handleBulkDelete">
+              <template #trigger>
+                <NButton size="small" type="error" secondary :disabled="checkedRowKeys.length === 0">批量删除（{{ checkedRowKeys.length }}）</NButton>
+              </template>
+              确认批量删除选中的 {{ checkedRowKeys.length }} 个站点？关联映射和路由规则会一并清理。
+            </NPopconfirm>
+          </div>
+          <NDataTable
+            v-model:checked-row-keys="checkedRowKeys"
+            :columns="columns"
+            :data="sites"
+            :loading="loading"
+            :row-key="(row: SiteListItem) => row.id"
+            :pagination="{ pageSize: 20 }"
+            :scroll-x="1060"
+            size="small"
+            striped
+          />
+        </NTabPane>
+        <NTabPane name="quota" tab="额度查询">
+          <SitesQuotaTab />
+        </NTabPane>
+      </NTabs>
     </NCard>
 
     <NModal
@@ -978,6 +1037,27 @@ onBeforeUnmount(handleCatalogClosed)
       :mask-closable="false"
     >
       <NForm label-placement="top">
+        <NFormItem v-if="!isEditMode">
+          <template #label>
+            <NSpace align="center" :size="6">
+              <span>厂商预设</span>
+              <NTooltip trigger="hover">
+                <template #trigger><span class="site-protocol-help-trigger">?</span></template>
+                选择厂商后自动填充基础地址、接口路径模式与协议支持，只需填写密钥；选「自定义」则手动填写全部字段。填充后的值仍可自由修改。
+              </NTooltip>
+              <NTag v-if="selectedVendorPreset?.quotaAvailable" size="tiny" type="success" :bordered="false">
+                支持额度查询
+              </NTag>
+            </NSpace>
+          </template>
+          <NSelect
+            :value="vendorPresetId"
+            :options="vendorPresetOptions"
+            filterable
+            placeholder="自定义 / 选择厂商"
+            @update:value="handleVendorPresetChange"
+          />
+        </NFormItem>
         <NFormItem label="站点名称">
           <NInput v-model:value="form.name" placeholder="如：OpenAI 官方" />
         </NFormItem>
@@ -992,7 +1072,7 @@ onBeforeUnmount(handleCatalogClosed)
             v-model:value="form.apiKey"
             type="password"
             show-password-on="click"
-            placeholder="sk-...（作为首个默认密钥，更多密钥创建后用「密钥管理」添加）"
+            :placeholder="apiKeyPlaceholder"
           />
         </NFormItem>
         <NFormItem>

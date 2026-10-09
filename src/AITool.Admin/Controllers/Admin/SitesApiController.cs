@@ -39,15 +39,20 @@ public sealed class SitesApiController : ControllerBase
     /// 站点级联删除工具。
     /// </summary>
     private readonly SiteCascadeDeleter _cascadeDeleter;
+    /// <summary>
+    /// 站点套餐额度编排服务。
+    /// </summary>
+    private readonly SiteQuotaService _siteQuotaService;
 
     /// <summary>
     /// 初始化站点管理 API 控制器。
     /// </summary>
-    public SitesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache, SiteCascadeDeleter cascadeDeleter)
+    public SitesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache, SiteCascadeDeleter cascadeDeleter, SiteQuotaService siteQuotaService)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _cascadeDeleter = cascadeDeleter;
+        _siteQuotaService = siteQuotaService;
     }
 
     /// <summary>
@@ -70,6 +75,32 @@ public sealed class SitesApiController : ControllerBase
             .ToDictionary(g => g.Key, g => g.OrderBy(k => k.Priority).ThenBy(k => k.CreatedAt).ThenBy(k => k.Id).ToList());
 
         return Ok(sites.Select(s => MapSiteToListItem(s, keysBySite)));
+    }
+
+    /// <summary>
+    /// 站点套餐额度总览：仅返回上次查询的落库缓存（不触发上游请求），供「额度查询」Tab
+    /// 打开时先行渲染；实时数据由前端进入页面后调用刷新端点获取。
+    /// </summary>
+    [HttpGet("quota/overview")]
+    public async Task<IActionResult> QuotaOverview(CancellationToken cancellationToken)
+    {
+        var overview = await _siteQuotaService.GetOverviewAsync(cancellationToken);
+        return Ok(overview.Sites);
+    }
+
+    /// <summary>
+    /// 刷新单个站点全部密钥的套餐额度：并发查询上游、逐密钥落库缓存，返回刷新后的站点额度。
+    /// </summary>
+    [HttpPost("{id:guid}/quota/refresh")]
+    public async Task<IActionResult> RefreshQuota(Guid id, CancellationToken cancellationToken)
+    {
+        var site = await _siteQuotaService.RefreshSiteAsync(id, cancellationToken);
+        if (site is null)
+        {
+            return NotFound(ApiResponse.Fail("站点不存在或不支持额度查询", "site_not_found"));
+        }
+
+        return Ok(site);
     }
 
     /// <summary>

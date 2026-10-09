@@ -1,6 +1,8 @@
 using AITool.Admin;
 using AITool.Admin.Controllers.Proxy;
 using AITool.Admin.Services;
+using AITool.Application.Sites;
+using AITool.Infrastructure.Xai;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Application.Common;
@@ -310,6 +312,36 @@ builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService
 builder.Services.AddHostedService<KimiTokenRefreshService>();
 builder.Services.AddScoped<KimiAccountProvisioner>();
 builder.Services.AddScoped<KimiCredentialRefreshService>();
+
+// —— 站点级额度查询（智谱 GLM / DeepSeek 余额）——
+builder.Services.AddScoped<SiteQuotaService>();
+builder.Services.AddHttpClient<ZhipuSiteQuotaProvider>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
+builder.Services.AddTransient<ISiteQuotaProvider>(sp => sp.GetRequiredService<ZhipuSiteQuotaProvider>());
+builder.Services.AddHttpClient<DeepSeekSiteQuotaProvider>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
+builder.Services.AddTransient<ISiteQuotaProvider>(sp => sp.GetRequiredService<DeepSeekSiteQuotaProvider>());
+
+// —— xAI (Grok/SuperGrok) 账号托管 ——
+builder.Services.AddHttpClient<AITool.Application.Xai.IXaiOAuthClient, AITool.Infrastructure.Xai.XaiOAuthClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHttpClient<AITool.Application.Xai.IXaiModelFetcher, AITool.Infrastructure.Xai.XaiModelFetcher>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddScoped<XaiAccountProvisioner>();
+builder.Services.AddHttpClient<XaiQuotaService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<XaiQuotaService>());
+builder.Services.AddHostedService<XaiTokenRefreshService>();
 
 // AI 助手：请求头模板查最新版本、模型价格 AI 查价等后台功能的统一 AI 调用通道。
 builder.Services.AddScoped<AiAssistantService>();
