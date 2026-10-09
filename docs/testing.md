@@ -1,14 +1,14 @@
 # 测试体系
 
-> 本文是 [README.md](../README.md) 的测试细节篇。当前 master 共 **2 个测试项目**：ApplicationTests 119 个执行用例 + IntegrationTests 313 个执行用例（Fact/Theory 展开 InlineData 后的实测数，`dotnet test` 于 2026-08-18 实跑确认；下文表格内的「用例」列为源码属性数，Theory 会展开为更多执行用例）；前端有 20 个 vitest 文件、98 个执行用例。
+> 本文是 [README.md](../README.md) 的测试细节篇。当前 master 共 **2 个测试项目**：ApplicationTests 286 个执行用例 + IntegrationTests 406 个执行用例（Fact/Theory 展开 InlineData 后的实测数，`dotnet test` 于 2026-10-09 实跑确认；下文表格内的「用例」列为源码属性数，Theory 会展开为更多执行用例）；前端有 26 个 vitest 文件、156 个执行用例。
 > `tests/AITool.Core.IntegrationTests/` 与 `tests/AITool.Admin.IntegrationTests/` 目录只剩 bin/obj 构建残留（split 分支遗留，无源码、不在解决方案），不是现存测试项目。
 
 ## 1. 测试策略
 
 | 项目 | 定位 | 隔离手段 |
 |------|------|----------|
-| `tests/AITool.ApplicationTests`（xUnit + FluentAssertions） | 单元/服务测试（119 用例） | `TestDatabaseFactory.Create()`：每个测试 `%TEMP%/aitool-test-{GUID}.db` 临时 SQLite 文件，`SqlSugarSetup.InitializeDatabase` 建表，Dispose 删文件 |
-| `tests/AITool.IntegrationTests`（xUnit + FluentAssertions + `WebApplicationFactory<Program>`） | 端到端集成（313 用例） | 每个测试工厂持有独立 `%TEMP%/aitool-<场景>-{GUID}.db`；`IntegrationTestDbHelper.ReplaceWithSqlSugar` 覆盖生产 SqlSugar 注册；`UseEnvironment("Testing")`；`IProxyForwardService` 换 Fake / Stub `HttpMessageHandler`，**不打真实外部 API** |
+| `tests/AITool.ApplicationTests`（xUnit + FluentAssertions） | 单元/服务测试（286 用例） | `TestDatabaseFactory.Create()`：每个测试 `%TEMP%/aitool-test-{GUID}.db` 临时 SQLite 文件，`SqlSugarSetup.InitializeDatabase` 建表，Dispose 删文件 |
+| `tests/AITool.IntegrationTests`（xUnit + FluentAssertions + `WebApplicationFactory<Program>`） | 端到端集成（406 用例） | 每个测试工厂持有独立 `%TEMP%/aitool-<场景>-{GUID}.db`；`IntegrationTestDbHelper.ReplaceWithSqlSugar` 覆盖生产 SqlSugar 注册；`UseEnvironment("Testing")`；`IProxyForwardService` 换 Fake / Stub `HttpMessageHandler`，**不打真实外部 API** |
 
 公共工具：
 - `tests/AITool.ApplicationTests/TestDatabaseFactory.cs` — 临时库创建/销毁
@@ -35,6 +35,9 @@
 | `UsageLogs/UsageLogErrorClassifierTests.cs` | 5 | 错误分类优先级（流中断最高、成功 null） |
 | `Google/GoogleAccountBasicsTests.cs` | 16 | Google 账号字段、额度窗口解析与 OAuth URL |
 | `Google/GeminiForwardPipelineTests.cs` | 3 | Gemini 请求封套、project 注入、usage 口径 |
+| `Zhipu/ZhipuQuotaParserTests.cs` | 19 | 智谱额度解析：unit 3/6 显式分桶、重置时间兜底启发式、大小写/字符串数值兼容、业务错误、host 匹配（用例翻译自 cc-switch） |
+| `DeepSeek/DeepSeekBalanceParserTests.cs` | 6 | DeepSeek 余额解析：官方样例、多币种、可选字段、坏条目跳过、空数组、host 匹配 |
+| `Xai/GrokQuotaParserTests.cs` | 10 | Grok gRPC-web protobuf 启发式：精确路径优先、过期/越界排除、零用量特判、多帧独立计数、trailer percent 解码（内置 protobuf 编码辅助构造用例） |
 
 ## 3. IntegrationTests 文件清单
 
@@ -48,6 +51,9 @@
 | `Chat/ChatRealForwardResponsesTests.cs` | 2 | 真实 ProxyForwardService：Responses JSON 取内容、Codex SSE 聚合 |
 | `Services/CredentialRefreshTests.cs` | 1 | Codex 401 凭证刷新按隐藏站点 single-flight |
 | `Services/AccountQuotaInspectionTests.cs` | 1 | 通用巡检综合多个额度窗口的最大已用比例 |
+| `Sites/SiteQuotaApiTests.cs` | 5 | 站点额度端点：总览纯缓存解析与脱敏、假供应商刷新/落库/回读全链路（含禁用密钥照查与 invalid_credential 映射）、未知/不支持站点 404 |
+| `Services/ZhipuSiteQuotaProviderTests.cs` | 8 | 智谱供应商 HTTP 行为：官方端点 URL、裸 key 鉴权（无 Bearer）、401/403→密钥失效、业务错误、缓存回读对称 |
+| `Services/DeepSeekSiteQuotaProviderTests.cs` | 6 | DeepSeek 供应商 HTTP 行为：官方余额端点、Bearer 鉴权、401→密钥失效、非 2xx、缓存回读对称 |
 | `Contracts/ApiResponseTests.cs` | 6 | 统一包装契约 |
 | `Developer/ProtocolDiagnosticsApiTests.cs` | 18 | 离线协议诊断：链路阶段、流式方向矩阵、试运行规则 scope、非法协议/流框架 400 |
 | `Developer/SqlMigrationApiTests.cs` | 9 | SQL 迁移：事务提交/回滚、密码确认、重复执行、路径穿越拒绝、试运行 |
@@ -107,4 +113,4 @@ npm run type-check    # vue-tsc --noEmit
 npm run build         # 类型检查 + vite build
 ```
 
-前端 vitest 覆盖：`api/http.test.ts`、`api/chat.test.ts`、`api/routes.test.ts`、`api/analytics.test.ts`、`api/oauth.test.ts` + 各视图 `*State.test.ts`（约 20 个文件）。
+前端 vitest 覆盖：`api/http.test.ts`、`api/chat.test.ts`、`api/routes.test.ts`、`api/analytics.test.ts`、`api/oauth.test.ts` + 各视图 `*State.test.ts`（26 个文件、156 用例；站点额度相关为 `views/sitesQuotaState.test.ts`（剩余百分比/颜色阈值/重置倒计时/相对时间/余额格式化）、`views/siteVendorPresets.test.ts`（目录完整性/厂商收录/表单应用与名称保护））。

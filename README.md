@@ -5,7 +5,8 @@
 AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发多个 AI 服务站点的请求。它提供一个管理后台来管理站点、模型、路由规则、访问密钥，并通过 OpenAI/Anthropic 兼容协议对外提供代理服务，支持按优先级自动故障转移。
 
 核心能力：
-- 多站点管理（注册 OpenAI/Anthropic/Responses 兼容的 AI 服务站点，**一个站点挂多把 Key 主备调度**，各自独立并发计数与熔断）
+- 多站点管理（注册 OpenAI/Anthropic/Responses 兼容的 AI 服务站点，**一个站点挂多把 Key 主备调度**，各自独立并发计数与熔断；新建站点**厂商预设一键填充**——24 个官方厂商端点/路径模式/协议自动带出，仅需填密钥）
+- **站点额度查询**（站点页「额度查询」Tab：按密钥独立展示套餐额度/账户余额，供应商可扩展 `ISiteQuotaProvider`；已支持智谱 GLM 编程套餐——5 小时/每周双窗口（unit 显式分桶，移植自 cc-switch）与 DeepSeek 账户余额（官方 `/user/balance`）；纯手动刷新（进入页面自动一次 + 全局按钮），结果落库重启可回放，失败保留上次值置灰）
 - 统一模型库（不同站点同名模型归一化管理，支持强制覆盖 reasoning_effort、绑定兼容规则集）
 - 路由规则（路由入口 + 有序候选实例队列，失败自动切换下一顺位；**支持时间规则**：全天 / 仅指定时间可用 / 指定时间不可用）
 - 路由回退监控（从调用日志还原故障转移事件，展示哪些请求触发了路由跳转）
@@ -26,7 +27,7 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 开发者调试（进程内环形调用追踪 + 客户端模拟器 + 并发/熔断监控 + **离线协议诊断台**（转换链路可视化/字段级对比/规则试运行/一键保存规则）+ **SQL 迁移执行**（密码确认+事务+试运行+全量审计）+ **请求头模板库**（命名档案 + 动态占位符引擎 + **AI 查最新版**：先抓官方发布源（GitHub Releases / npm / 官网 changelog）确定性数据、AI 只做归纳、版本号须出现在事实清单才采信；UA 与独立版本头（如 `x-zcode-app-version`）同步替换）+ **网络代理池**（出口代理方案管理/测速））
 - 客户端特征模拟（`ClientEmulationEngine`：请求头模板库命名档案 + `guid/nanoid/timestamp/model` 动态占位符；站点/模型库/映射三层配置，模板最底层注入、显式配置覆盖；出口代理按站点生效）
 - OpenAI Responses API 代理（HTTP、WebSocket、Compact 三种模式）
-- OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；内置 Codex、Google（GeminiCLI/Antigravity）与 Kimi 提供程序）
+- OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；内置 Codex、Google（Antigravity）、Kimi 与 **xAI/Grok（SuperGrok）** 提供程序——xAI 为 RFC 8628 设备码登录 + grok.com gRPC-web 账单额度（protobuf 启发式解析），详见 [docs/xai-accounts.md](docs/xai-accounts.md)）
 - **Codex 客户端版本单源化**（版本号唯一来源为请求头模板库 CodexCli 档案 User-Agent，转发伪装/拉模型/查额度三路一致，配置兜底；**远端模型目录**按需从 router-for-me/models 刷新（双 URL 回退 + 校验 + 原子替换），新账号默认映射无需发版即可跟上上游新模型）
 
 ---
@@ -45,6 +46,7 @@ README 是全貌入口；`docs/` 下按主题提供**函数级**细节文档：
 | [docs/debug-tools.md](docs/debug-tools.md) | 调试工具六页签：调用追踪 / 模拟器 / 并发 / 熔断 / 协议诊断 / SQL 迁移 |
 | [docs/codex.md](docs/codex.md) | OAuth 账号托管：当前 Codex 提供程序、额度、冷却、通用巡检、credits、禁用状态矩阵 |
 | [docs/google-accounts.md](docs/google-accounts.md) | Google 账号托管：GeminiCLI/Antigravity 登录、额度、Gemini 协议桥（移植自 gcli2api） |
+| [docs/xai-accounts.md](docs/xai-accounts.md) | xAI 账号托管：SuperGrok 设备码登录、gRPC-web 账单额度（protobuf 启发式解析）、协议路径（移植自 cc-switch） |
 | [docs/testing.md](docs/testing.md) | 测试体系：策略、用例清单、usage 断言口径 |
 | [docs/tools.md](docs/tools.md) | build.ps1 / publish.ps1 / ProtocolSyncCheck、仓库目录速查 |
 
@@ -126,7 +128,7 @@ graph TD
 ### 实体关系图
 
 ```
-Site ──1:N──> SiteKey (多把 Key，主备调度；熔断/并发按 Key 独立)
+Site ──1:N──> SiteKey (多把 Key，主备调度；熔断/并发按 Key 独立；LastQuota* 列存额度查询缓存)
 Site ──1:N──> SiteModelMapping <──N:1── ModelLibraryItem ──N:1──> CompatibilityProfile
 Site <──1:1── CodexAccount (LinkedSiteId，ManagedSource="Codex" 隐藏站点，Responses 协议)
 
@@ -234,7 +236,7 @@ flowchart TD
 |--------------------|----------|
 | `auth` | `status` / `login` / `refresh` / `logout` / `setup`（首次设密码） |
 | `admin/dashboard` | `stats` |
-| `admin/sites` | CRUD / toggle / bulk-delete / **export / import** / `/{id}/keys...`（多 Key CRUD） |
+| `admin/sites` | CRUD / toggle / bulk-delete / **export / import** / `/{id}/keys...`（多 Key CRUD）/ **quota-overview + `/{id}/quota/refresh`（站点额度，见「额度查询」Tab）** |
 | `admin/site-catalog` | fetch-models / fetch-all-models / fetch-all-progress / import-selected |
 | `admin/models` | CRUD / toggle / clear-all / **vendor-catalog 读写** / `/{id}/mappings` / mappings concurrency / **pricing 价格表读写** / **pricing/ai-plan · ai-query（AI 查价格计划与分批补漏）** / **pricing/source-fetch（公开价格源匹配）** |
 | `admin/route-rules` | entries CRUD / site-instances / models / discover-sites / list / save / toggle / delete |
@@ -253,6 +255,7 @@ flowchart TD
 | `admin/developer/proxy-profiles` | CRUD / test（出口代理连通性测速） |
 | `admin/sql-migrations` | 列表 / `{fileName}/execute`（密码确认 + 事务 + 试运行 + 审计） |
 | `admin/oauth` | OAuth / 凭证导入导出 / 账号 CRUD / 额度 / 模型 / 通用巡检 / reset-credits（详见 [docs/codex.md](docs/codex.md)；旧 `admin/codex` 仅兼容保留） |
+| `admin/google-accounts` · `admin/kimi-accounts` · `admin/xai-accounts` | Google（Antigravity）/ Kimi / xAI（Grok）账号栈：设备码或回调式登录、凭证导入、额度、模型（分别见 [docs/google-accounts.md](docs/google-accounts.md) 与 [docs/xai-accounts.md](docs/xai-accounts.md)） |
 | `/hangfire` | Hangfire 仪表盘（未登录重定向登录页） |
 
 ---
