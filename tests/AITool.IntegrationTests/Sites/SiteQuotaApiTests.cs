@@ -102,6 +102,9 @@ public sealed class SiteQuotaApiTests
         keys[0].GetProperty("status").GetString().Should().Be("ok");
         keys[0].GetProperty("level").GetString().Should().Be("Fake Coding Pro");
         keys[0].GetProperty("windows").GetArrayLength().Should().Be(2);
+        keys[0].GetProperty("balances").GetArrayLength().Should().Be(1);
+        keys[0].GetProperty("balances")[0].GetProperty("currency").GetString().Should().Be("CNY");
+        keys[0].GetProperty("balances")[0].GetProperty("totalBalance").GetDecimal().Should().Be(110.00m);
 
         // 坏密钥：状态 invalid_credential（凭据失效）+ 错误文案在响应中可见。
         keys[1].GetProperty("status").GetString().Should().Be("invalid_credential");
@@ -274,7 +277,7 @@ internal sealed class SiteQuotaWebApplicationFactory : WebApplicationFactory<Pro
 
 /// <summary>
 /// 假站点额度供应商：匹配 quota-test.invalid；密钥值为 bad-key 时返回凭据失效，
-/// 其余返回固定两窗口成功结果。RawJson 与 ParseCached 对称，验证落库回读链路。
+/// 其余返回窗口 + 余额混合结果。RawJson 与 ParseCached 对称，验证落库回读链路。
 /// </summary>
 internal sealed class FakeSiteQuotaProvider : ISiteQuotaProvider
 {
@@ -312,6 +315,10 @@ internal sealed class FakeSiteQuotaProvider : ISiteQuotaProvider
                 new SiteQuotaWindow("five_hour", "5 小时窗口", 30, null, null),
                 new SiteQuotaWindow("weekly_limit", "每周额度", 60, null, null),
             ],
+            Balances =
+            [
+                new SiteQuotaBalanceInfo("CNY", 110.00m, 10.00m, 100.00m),
+            ],
         });
     }
 
@@ -331,6 +338,10 @@ internal sealed class FakeSiteQuotaProvider : ISiteQuotaProvider
             [
                 new SiteQuotaWindow("five_hour", "5 小时窗口", 30, null, null),
                 new SiteQuotaWindow("weekly_limit", "每周额度", 60, null, null),
+            ],
+            Balances =
+            [
+                new SiteQuotaBalanceInfo("CNY", 110.00m, 10.00m, 100.00m),
             ],
         };
     }

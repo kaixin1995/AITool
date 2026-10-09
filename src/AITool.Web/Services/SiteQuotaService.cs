@@ -190,7 +190,8 @@ public sealed class SiteQuotaService
             parsed?.Level,
             key.LastQuotaError,
             key.LastQuotaCheckedAt,
-            parsed?.Windows ?? []);
+            parsed?.Windows ?? [],
+            parsed?.Balances ?? []);
     }
 
     /// <summary>密钥脱敏：前 4 位 + *** + 后 4 位（与 SitesApiController.MaskApiKey 口径一致）。</summary>

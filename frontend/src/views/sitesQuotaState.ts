@@ -79,3 +79,32 @@ export function quotaStatusChip(status: SiteQuotaKey['status']): QuotaStatusChip
 export function isStaleQuota(status: SiteQuotaKey['status']): boolean {
   return status === 'invalid_credential' || status === 'error'
 }
+
+// 常见币种符号；未收录的币种直接展示代码（如 "AUD "）。
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  CNY: '¥',
+  USD: '$',
+  EUR: '€',
+  GBP: '£',
+  JPY: '¥'
+}
+
+export function currencySymbol(currency: string): string {
+  return CURRENCY_SYMBOLS[currency] ?? `${currency} `
+}
+
+/** 余额金额展示：币种符号 + 固定两位小数（后端 decimal 序列化可能丢尾零）。 */
+export function formatBalance(currency: string, amount: number | null | undefined): string {
+  const value = Number(amount ?? 0)
+  return `${currencySymbol(currency)}${(Number.isFinite(value) ? value : 0).toFixed(2)}`
+}
+
+/** 余额明细行（赠送/充值）：两者都无时返回 null（不渲染明细行）。 */
+export function formatBalanceDetail(
+  balance: Pick<SiteQuotaKey['balances'][number], 'currency' | 'grantedBalance' | 'toppedUpBalance'>
+): string | null {
+  const parts: string[] = []
+  if (balance.grantedBalance != null) parts.push(`赠送 ${formatBalance(balance.currency, balance.grantedBalance)}`)
+  if (balance.toppedUpBalance != null) parts.push(`充值 ${formatBalance(balance.currency, balance.toppedUpBalance)}`)
+  return parts.length > 0 ? parts.join(' · ') : null
+}

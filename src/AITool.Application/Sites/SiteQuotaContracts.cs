@@ -16,7 +16,21 @@ public sealed record SiteQuotaWindow(
     DateTimeOffset? ResetAtUtc);
 
 /// <summary>
-/// 单次站点额度查询结果（或缓存解析结果）。
+/// 站点账户余额（按量计费供应商如 DeepSeek 的 /user/balance，与窗口型额度并列展示）。
+/// </summary>
+/// <param name="Currency">币种代码（CNY / USD）。</param>
+/// <param name="TotalBalance">总余额。</param>
+/// <param name="GrantedBalance">赠送余额（未赠送为 null）。</param>
+/// <param name="ToppedUpBalance">充值余额（无该字段为 null）。</param>
+public sealed record SiteQuotaBalanceInfo(
+    string Currency,
+    decimal TotalBalance,
+    decimal? GrantedBalance,
+    decimal? ToppedUpBalance);
+
+/// <summary>
+/// 单次站点额度查询结果（或缓存解析结果）。窗口型（Windows）与余额型（Balances）
+/// 至少其一非空即视为成功。
 /// </summary>
 public sealed record SiteQuotaQueryResult
 {
@@ -35,8 +49,11 @@ public sealed record SiteQuotaQueryResult
     /// <summary>上游原始响应体，成功时用于落库缓存（SiteKey.LastQuotaRawJson）。</summary>
     public string RawJson { get; init; } = string.Empty;
 
-    /// <summary>解析出的额度窗口列表。</summary>
+    /// <summary>解析出的额度窗口列表（窗口型供应商）。</summary>
     public IReadOnlyList<SiteQuotaWindow> Windows { get; init; } = [];
+
+    /// <summary>解析出的余额列表（余额型供应商，如 DeepSeek）。</summary>
+    public IReadOnlyList<SiteQuotaBalanceInfo> Balances { get; init; } = [];
 }
 
 /// <summary>
@@ -79,6 +96,7 @@ public interface ISiteQuotaProvider
 /// <param name="Error">最近一次查询的错误信息。</param>
 /// <param name="CheckedAtUtc">最近一次查询时间（含失败尝试）。</param>
 /// <param name="Windows">额度窗口（失败时为上次成功值，前端置灰展示）。</param>
+/// <param name="Balances">账户余额（失败时为上次成功值，前端置灰展示）。</param>
 public sealed record SiteQuotaKeyInfo(
     Guid KeyId,
     string KeyValueMasked,
@@ -89,7 +107,8 @@ public sealed record SiteQuotaKeyInfo(
     string? Level,
     string? Error,
     DateTimeOffset? CheckedAtUtc,
-    IReadOnlyList<SiteQuotaWindow> Windows);
+    IReadOnlyList<SiteQuotaWindow> Windows,
+    IReadOnlyList<SiteQuotaBalanceInfo> Balances);
 
 /// <summary>额度查询页面单个站点（及其全部密钥）的展示信息。</summary>
 public sealed record SiteQuotaSiteInfo(

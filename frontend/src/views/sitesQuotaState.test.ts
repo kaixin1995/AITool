@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  currencySymbol,
+  formatBalance,
+  formatBalanceDetail,
   formatCheckedAtAgo,
   formatResetCountdown,
   isStaleQuota,
@@ -96,5 +99,27 @@ describe('站点额度 - 状态徽章', () => {
     expect(isStaleQuota('invalid_credential')).toBe(true)
     expect(isStaleQuota('ok')).toBe(false)
     expect(isStaleQuota('never')).toBe(false)
+  })
+})
+
+describe('站点额度 - 余额展示', () => {
+  it('常见币种映射符号，未知币种展示代码', () => {
+    expect(currencySymbol('CNY')).toBe('¥')
+    expect(currencySymbol('USD')).toBe('$')
+    expect(currencySymbol('AUD')).toBe('AUD ')
+  })
+
+  it('金额固定两位小数，非法/缺失按 0 处理', () => {
+    expect(formatBalance('CNY', 88.6)).toBe('¥88.60')
+    expect(formatBalance('CNY', 110)).toBe('¥110.00')
+    expect(formatBalance('USD', 0.5)).toBe('$0.50')
+    expect(formatBalance('CNY', null)).toBe('¥0.00')
+    expect(formatBalance('CNY', Number.NaN)).toBe('¥0.00')
+  })
+
+  it('明细行拼装赠送与充值，皆无时返回 null', () => {
+    expect(formatBalanceDetail({ currency: 'CNY', grantedBalance: 8.6, toppedUpBalance: 80 })).toBe('赠送 ¥8.60 · 充值 ¥80.00')
+    expect(formatBalanceDetail({ currency: 'USD', grantedBalance: null, toppedUpBalance: 20 })).toBe('充值 $20.00')
+    expect(formatBalanceDetail({ currency: 'CNY', grantedBalance: null, toppedUpBalance: null })).toBeNull()
   })
 })

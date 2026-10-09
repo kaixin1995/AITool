@@ -72,6 +72,8 @@ export const SITE_VENDOR_PRESETS: readonly SiteVendorPreset[] = [
     supportsAnthropic: false,
     supportsResponses: false,
     keyPlaceholder: 'sk-...',
+    // DeepSeek 为按量计费，额度查询展示的是账户余额（GET /user/balance）。
+    quotaAvailable: true,
     group: 'cn'
   },
   {

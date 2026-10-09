@@ -289,6 +289,13 @@ builder.Services.AddHttpClient<ZhipuSiteQuotaProvider>(c =>
 });
 builder.Services.AddTransient<ISiteQuotaProvider>(sp => sp.GetRequiredService<ZhipuSiteQuotaProvider>());
 
+// DeepSeek 余额查询（按量计费，GET /user/balance，官方文档化接口）。
+builder.Services.AddHttpClient<DeepSeekSiteQuotaProvider>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+builder.Services.AddTransient<ISiteQuotaProvider>(sp => sp.GetRequiredService<DeepSeekSiteQuotaProvider>());
+
 // 注册代理主入口实体配置，配置 SocketsHttpHandler 连接池提高并发能力。
 // 连接池寿命与站点专属代理客户端（ProxyForwardService）对齐为 15 分钟：过短会在持续负载下频繁重建连接。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>()

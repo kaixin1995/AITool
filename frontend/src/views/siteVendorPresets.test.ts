@@ -52,6 +52,10 @@ describe('站点厂商预设 - 目录完整性', () => {
     expect(findVendorPreset('openai')?.quotaAvailable).toBeUndefined()
   })
 
+  it('DeepSeek 预设支持余额查询', () => {
+    expect(findVendorPreset('deepseek')?.quotaAvailable).toBe(true)
+  })
+
   it('智谱编程套餐端点为 OpenAI 协议（cc-switch pi/hermes/opencode 三处实证），Anthropic 走专用端点', () => {
     const coding = emptyForm()
     applyVendorPreset(coding, 'zhipu-intl', null)

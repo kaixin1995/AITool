@@ -14,6 +14,14 @@ export interface SiteQuotaWindow {
   resetAtUtc: string | null
 }
 
+/** 账户余额（按量计费供应商如 DeepSeek）。 */
+export interface SiteQuotaBalance {
+  currency: string
+  totalBalance: number
+  grantedBalance: number | null
+  toppedUpBalance: number | null
+}
+
 /** 单个密钥的额度信息（密钥值脱敏）。 */
 export interface SiteQuotaKey {
   keyId: string
@@ -28,6 +36,8 @@ export interface SiteQuotaKey {
   checkedAtUtc: string | null
   /** 额度窗口；失败时为上次成功值（UI 置灰展示）。 */
   windows: SiteQuotaWindow[]
+  /** 账户余额（余额型供应商如 DeepSeek）；失败时为上次成功值。 */
+  balances: SiteQuotaBalance[]
 }
 
 /** 单个站点（及其全部密钥）的额度信息。 */
