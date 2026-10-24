@@ -93,6 +93,30 @@ public sealed class SseHeadBufferTests
     }
 
     [Fact]
+    public void Finish_reason_null_is_warmup_but_nonnull_releases()
+    {
+        var buffer = new SseHeadBuffer();
+        // 真实 OpenAI 形态：首个 chunk 带 finish_reason:null——必须扣住（不能按字段名放行）。
+        buffer.TryHold("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n")
+            .Should().BeTrue("finish_reason:null 是热身");
+        // 终止 chunk 的 finish_reason 带非空字符串值——立即放行。
+        buffer.TryHold("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+            .Should().BeFalse("finish_reason:\"stop\" 是结束事件");
+    }
+
+    [Fact]
+    public void Tool_call_and_reasoning_deltas_release()
+    {
+        var buffer = new SseHeadBuffer();
+        buffer.TryHold("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\"}]}},\"finish_reason\":null}]}\n\n")
+            .Should().BeFalse("工具调用增量是内容事件");
+
+        var reasoning = new SseHeadBuffer();
+        reasoning.TryHold("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考\"}}]}\n\n")
+            .Should().BeFalse("推理增量是内容事件");
+    }
+
+    [Fact]
     public void Done_and_error_events_release_immediately()
     {
         new SseHeadBuffer().TryHold("data: [DONE]\n\n").Should().BeFalse();

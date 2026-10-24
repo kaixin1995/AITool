@@ -79,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NInput, NModal, NPopconfirm, NProgress, NSpace, NSpin, NTag, useMessage } from 'naive-ui'
 import {
   deleteDeviceOAuthAccount,
@@ -200,6 +200,11 @@ async function remove(account: DeviceOAuthAccount) {
     message.error(`删除失败：${(error as Error).message}`)
   }
 }
+
+watch(signInVisible, (visible) => {
+  // 弹窗经遮罩/ESC/关闭按钮退出时同样终结登录轮询，避免隐藏状态下无限 3 秒轮询。
+  if (!visible) finishSignIn()
+})
 
 onMounted(load)
 onUnmounted(() => {

@@ -104,6 +104,8 @@ public sealed class KiroTraeVendorTests
         second.Tokens!.AccessToken.Should().Be("aws-at");
         var extra = JsonDocument.Parse(second.ExtraJson!);
         extra.RootElement.GetProperty("method").GetString().Should().Be("idc");
+        // AWS 动态注册的 clientSecret 必须随账号持久化（刷新必带，否则首刷 400 砖号）。
+        extra.RootElement.GetProperty("clientSecret").GetString().Should().Be("aws-sec");
         extra.RootElement.GetProperty("region").GetString().Should().Be("us-west-2");
         extra.RootElement.GetProperty("clientId").GetString().Should().Be("aws-cid");
 

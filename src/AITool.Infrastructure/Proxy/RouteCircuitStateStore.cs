@@ -127,23 +127,22 @@ public sealed class RouteCircuitStateStore
     /// </summary>
     public (DateTimeOffset UntilUtc, string Reason)? GetRest(Guid routeId)
     {
-        if (_restedRoutes.TryGetValue(routeId, out var until))
+        // 清理与 IsBlocked 同口径入锁：防止清掉并发写入的新休息。
+        lock (_syncRoot)
         {
-            if (until > DateTimeOffset.UtcNow && _restReasons.TryGetValue(routeId, out var reason))
+            if (_restedRoutes.TryGetValue(routeId, out var until))
             {
-                return (until, reason);
+                if (until > DateTimeOffset.UtcNow)
+                {
+                    return (until, _restReasons.TryGetValue(routeId, out var reason) ? reason : string.Empty);
+                }
+
+                _restedRoutes.TryRemove(routeId, out _);
+                _restReasons.TryRemove(routeId, out _);
             }
 
-            if (until > DateTimeOffset.UtcNow)
-            {
-                return (until, string.Empty);
-            }
-
-            _restedRoutes.TryRemove(routeId, out _);
-            _restReasons.TryRemove(routeId, out _);
+            return null;
         }
-
-        return null;
     }
 
     /// <summary>
@@ -184,7 +183,6 @@ public sealed class RouteCircuitStateStore
 
             return false;
         }
-        return false;
     }
 
     /// <summary>
@@ -196,23 +194,26 @@ public sealed class RouteCircuitStateStore
         var now = DateTimeOffset.UtcNow;
         var result = new Dictionary<Guid, CircuitRouteInfo>();
 
-        // 先清理已过期的熔断与休息
-        foreach (var pair in _blockedRoutes)
+        // 先清理已过期的熔断与休息（入锁：与 Rest/IsBlocked 同口径，防清掉并发新写入）
+        lock (_syncRoot)
         {
-            if (pair.Value <= now)
+            foreach (var pair in _blockedRoutes)
             {
-                _blockedRoutes.TryRemove(pair.Key, out _);
-                _failCounts.TryRemove(pair.Key, out _);
-                _routeMeta.TryRemove(pair.Key, out _);
+                if (pair.Value <= now)
+                {
+                    _blockedRoutes.TryRemove(pair.Key, out _);
+                    _failCounts.TryRemove(pair.Key, out _);
+                    _routeMeta.TryRemove(pair.Key, out _);
+                }
             }
-        }
 
-        foreach (var pair in _restedRoutes)
-        {
-            if (pair.Value <= now)
+            foreach (var pair in _restedRoutes)
             {
-                _restedRoutes.TryRemove(pair.Key, out _);
-                _restReasons.TryRemove(pair.Key, out _);
+                if (pair.Value <= now)
+                {
+                    _restedRoutes.TryRemove(pair.Key, out _);
+                    _restReasons.TryRemove(pair.Key, out _);
+                }
             }
         }
 

@@ -112,9 +112,19 @@ public sealed class SseHeadBuffer
             return true;
         }
 
+        // 工具调用与推理增量：与文本增量同等地位，立即放行。
+        if (chunk.Contains("tool_calls", StringComparison.Ordinal)
+            || chunk.Contains("function_call_arguments.delta", StringComparison.Ordinal)
+            || chunk.Contains("reasoning_content", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
         // 结束与错误：立即放行（错误块交给上层判定，不能扣在缓冲里）。
+        // 注意 finish_reason 必须匹配「非 null 值」——每个 chat chunk 都带 finish_reason:null。
         if (chunk.Contains("[DONE]", StringComparison.Ordinal)
-            || chunk.Contains("finish_reason", StringComparison.Ordinal)
+            || chunk.Contains("finish_reason\":\"", StringComparison.Ordinal)
+            || chunk.Contains("finish_reason\": \"", StringComparison.Ordinal)
             || chunk.Contains("message_stop", StringComparison.Ordinal)
             || chunk.Contains("response.completed", StringComparison.Ordinal))
         {

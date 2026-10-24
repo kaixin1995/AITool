@@ -342,7 +342,9 @@ public sealed partial class OpenAiProxyController
                 if (!streamOutcome.CanFallback
                     || RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult))
                 {
-                    return new EmptyResult();
+                    // 严格回退命中：客户端尚未收到任何字节（SSE 只在 2xx 才回调），把上游 4xx 原样回给
+                    // 客户端——绝不能返回 EmptyResult（流式桥已预置 200，会变成静默空流）。
+                    return WriteStreamFallbackError(streamResult);
                 }
 
                 continue;

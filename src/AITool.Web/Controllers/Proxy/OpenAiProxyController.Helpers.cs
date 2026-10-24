@@ -1323,6 +1323,20 @@ public sealed partial class OpenAiProxyController
     }
 
     /// <summary>
+    /// 流式失败回退终结时，把上游错误以非流式形式写回客户端（仅当响应尚未开始时可写）。
+    /// </summary>
+    private IActionResult WriteStreamFallbackError(AITool.Application.Proxy.ProxyForwardResult result)
+    {
+        if (!Response.HasStarted)
+        {
+            var statusCode = result.StatusCode > 0 ? result.StatusCode : 502;
+            return StatusCode(statusCode, result.ErrorMessage ?? result.ResponseBody ?? "upstream error");
+        }
+
+        return new EmptyResult();
+    }
+
+    /// <summary>
     /// 按运行时设置创建 SSE 首包蓄流器（StreamHeadBufferEnabled 关闭时返回 null，行为与原先完全一致）。
     /// </summary>
     private async Task<AITool.Application.Proxy.SseHeadBuffer?> TryCreateSseHeadBufferAsync(CancellationToken cancellationToken)

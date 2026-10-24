@@ -234,19 +234,21 @@ public sealed class RouteCandidatePolicyService
             return false;
         }
 
-        foreach (var word in RateLimitOnlyWords)
-        {
-            if (errorBody.Contains(word, StringComparison.OrdinalIgnoreCase))
-            {
-                return false; // 明确的限流文案：不是配额耗尽
-            }
-        }
-
+        // 配额词优先于限流词：同时含两者的报文（如「rate limit …余额不足」）描述的是配额耗尽，
+        // 按重置点休息比按 Retry-After 反复撞墙更正确。
         foreach (var word in QuotaExhaustionWords)
         {
             if (errorBody.Contains(word, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
+            }
+        }
+
+        foreach (var word in RateLimitOnlyWords)
+        {
+            if (errorBody.Contains(word, StringComparison.OrdinalIgnoreCase))
+            {
+                return false; // 明确的限流文案且无配额词：不是配额耗尽
             }
         }
 

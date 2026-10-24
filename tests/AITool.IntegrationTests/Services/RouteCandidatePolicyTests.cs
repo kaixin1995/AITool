@@ -83,6 +83,10 @@ public sealed class RouteCandidatePolicyTests : IDisposable
     [InlineData("""{"error":{"message":"余额不足或无可用资源包"}}""", true)]
     [InlineData("Insufficient quota", true)]
     [InlineData("""{"error":{"message":"rate limited, slow down"}}""", false)]
+    [InlineData("rate limit is exceeded — try again in 30s", false)]
+    [InlineData("per-minute quota exceeded", false)]
+    [InlineData("You exceeded your quota. Billing required.", true)]
+    [InlineData("rate limit reached and 余额不足", true)]
     [InlineData("", false)]
     public void Quota_exhaustion_classification(string body, bool expected)
     {

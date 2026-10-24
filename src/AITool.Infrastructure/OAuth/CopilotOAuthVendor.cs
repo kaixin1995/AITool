@@ -235,9 +235,15 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
         {
             throw;
         }
-        catch (Exception)
+        catch (InvalidOperationException)
         {
-            return null;
+            // 暂时性错误（5xx/缺 token）必须上抛为可重试——被下面的兜底吞掉会转换成
+            // RefreshRefused，把账号错标 RequiresReauth 砖掉。
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("Copilot 令牌交换请求失败：" + ex.Message, ex);
         }
     }
 

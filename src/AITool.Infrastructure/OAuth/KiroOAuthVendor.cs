@@ -142,7 +142,8 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
                 method: "idc",
                 region: session.Region!,
                 profileArn: null,
-                clientId: session.AwsClientId);
+                clientId: session.AwsClientId,
+                awsClientSecret: session.AwsClientSecret);
         }
 
         // —— Kiro 门户回调（社交直换；Builder ID 需要动态注册 AWS 客户端后续跳）。

@@ -482,7 +482,9 @@ public sealed class AnthropicProxyController : ControllerBase
                 if (!streamOutcome.CanFallback
                     || RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult))
                 {
-                    return new EmptyResult();
+                    // 严格回退命中：客户端尚未收到任何字节（SSE 只在 2xx 才回调），把上游 4xx 原样回给
+                    // 客户端——绝不能返回 EmptyResult（流式桥已预置 200，会变成静默空流）。
+                    return WriteStreamFallbackError(streamResult);
                 }
 
                 continue;
@@ -1422,6 +1424,20 @@ public sealed class AnthropicProxyController : ControllerBase
                 "更新路由失败状态失败，但继续尝试后续路由。RouteId={RouteId}",
                 routeId);
         }
+    }
+
+    /// <summary>
+    /// 流式失败回退终结时，把上游错误以非流式形式写回客户端（仅当响应尚未开始时可写）。
+    /// </summary>
+    private IActionResult WriteStreamFallbackError(AITool.Application.Proxy.ProxyForwardResult result)
+    {
+        if (!Response.HasStarted)
+        {
+            var statusCode = result.StatusCode > 0 ? result.StatusCode : 502;
+            return StatusCode(statusCode, result.ErrorMessage ?? result.ResponseBody ?? "upstream error");
+        }
+
+        return new EmptyResult();
     }
 
     /// <summary>

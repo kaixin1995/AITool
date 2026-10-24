@@ -101,6 +101,17 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
         {
             return BadRequest(ApiResponse.Fail(ex.Message, "callback_not_supported"));
         }
+        catch (DeviceOAuthRefreshRefusedException ex)
+        {
+            // 明确的鉴权拒绝是终态（授权码已消费，重试同一粘贴只会继续失败）。
+            Sessions.TryRemove(request.SessionId, out _);
+            return Ok(ApiResponse.Ok(new { status = "failed", error = ex.Message }));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("会话无效", StringComparison.Ordinal))
+        {
+            Sessions.TryRemove(request.SessionId, out _);
+            return Ok(ApiResponse.Ok(new { status = "failed", error = ex.Message }));
+        }
         catch (Exception ex)
         {
             // 暂时性错误（网络抖动等）保留会话：用户可继续点「检查登录状态」重试，不必重新发起。
