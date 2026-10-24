@@ -115,8 +115,7 @@ public sealed class DeviceOAuthAccountProvisioner
         // 聊天站点：协议与请求头按厂商定义；无 ChatSiteConfig 的厂商跳过（纯额度托管）。
         if (vendor.ChatSiteConfig is { } chat)
         {
-            var extraHeadersJson = System.Text.Json.JsonSerializer.Serialize(
-                chat.ExtraHeaders, AITool.Application.Common.JsonSerializerPresets.Compact);
+
             // 厂商在 ExtraJson 里给 chatBaseUrl 时覆盖默认基地址（如 Copilot 个人版端点）。
             var chatBaseUrl = TryGetExtraString(extraJson, "chatBaseUrl");
             // chatHeaders 为每账号稳定头（如 WorkBuddy 的设备指纹/身份头），合并进站点头。

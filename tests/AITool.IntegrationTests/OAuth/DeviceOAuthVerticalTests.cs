@@ -186,6 +186,7 @@ public sealed class DeviceOAuthVerticalTests : IDisposable
         site.ExtraHeadersJson.Should().Contain("X-Agent-Type", "厂商级静态头同时在");
     }
 
+    [Fact]
     public async Task Provisioner_skips_site_for_chat_less_vendors()
     {
         await using var scope = _serviceProvider.CreateAsyncScope();

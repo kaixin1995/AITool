@@ -146,7 +146,7 @@ public sealed class WorkBuddyVendorTests
     [Fact]
     public async Task Personal_quota_clamps_cycle_and_parses_utc8_expiry()
     {
-        var handler = new StubHandler((req, _) => req.RequestUri!.PathAndQuery.Contains("user-resource")
+        var handler = new StubHandler((req, _) => req.RequestUri!.PathAndQuery.Contains("get-user-resource")
             ? Json(HttpStatusCode.OK, """
                 {"code":0,"data":{"Accounts":[
                     {"CycleCapacitySize":100,"CycleCapacityRemain":150,"CycleCapacityUsed":30,"CycleEndTime":"2026-11-01 12:00:00"},
@@ -210,4 +210,66 @@ public sealed class WorkBuddyVendorTests
         => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes($"wb2a:{purpose}:{uid}"))).ToLowerInvariant()[..36];
 
     private readonly record struct CapturedAssert(string? RefreshTokenHeader, string? Authorization, string? RefreshSource);
+    [Fact]
+    public async Task Refresh_maps_business_code_12153_to_refused()
+    {
+        var handler = new StubHandler((req, _) => Json(HttpStatusCode.OK,
+            """{"code":12153,"msg":"session dead"}"""));
+        var vendor = new WorkBuddyOAuthVendor(new HttpClient(handler));
+
+        var act = () => vendor.RefreshTokenAsync(
+            new AITool.Application.OAuth.DeviceOAuthTokenSet { AccessToken = "a", RefreshToken = "r" }, null, CancellationToken.None);
+        await act.Should().ThrowAsync<AITool.Application.OAuth.DeviceOAuthRefreshRefusedException>("12153=会话死亡，须重登而非无限退避");
+    }
+
+    [Fact]
+    public async Task Refresh_accepts_bare_token_object_without_envelope()
+    {
+        var handler = new StubHandler((req, _) => Json(HttpStatusCode.OK,
+            """{"accessToken":"bare-at","refreshToken":"bare-rt"}"""));
+        var vendor = new WorkBuddyOAuthVendor(new HttpClient(handler));
+
+        var tokens = await vendor.RefreshTokenAsync(
+            new AITool.Application.OAuth.DeviceOAuthTokenSet { AccessToken = "a", RefreshToken = "r", ExpiresAt = DateTimeOffset.UtcNow.AddHours(1) },
+            null, CancellationToken.None);
+        tokens.AccessToken.Should().Be("bare-at", "裸 token 对象形态也要认");
+        tokens.RefreshToken.Should().Be("bare-rt");
+    }
+
+    [Fact]
+    public async Task Refresh_sends_device_fingerprint_headers_when_uid_known()
+    {
+        CapturedAssert? captured = null;
+        var handler = new StubHandler((req, _) =>
+        {
+            if (req.RequestUri!.PathAndQuery.Contains("/token/refresh"))
+            {
+                captured = new CapturedAssert(null, null, null);
+            }
+
+            return Json(HttpStatusCode.OK, """{"code":0,"data":{"accessToken":"at-2","expiresIn":3600}}""");
+        });
+        var vendor = new WorkBuddyOAuthVendor(new HttpClient(handler));
+
+        await vendor.RefreshTokenAsync(
+            new AITool.Application.OAuth.DeviceOAuthTokenSet { AccessToken = "a", RefreshToken = "r" },
+            JsonSerializer.Serialize(new { uid = "u-77" }),
+            CancellationToken.None);
+
+        var refreshReq = handler.Requests.Single(r => r.Url.Contains("/token/refresh")).Request;
+        refreshReq.Headers.Should().Contain(h => h.Key == "X-Machine-ID" && h.Value.First() == Derive("machine", "u-77"),
+            "uid 已知的刷新必须带指纹头（风控关联信号）");
+        refreshReq.Headers.Should().Contain(h => h.Key == "X-Session-ID" && h.Value.First() == Derive("session", "u-77"));
+    }
+
+    [Fact]
+    public void Personal_quota_descends_nested_envelope_shapes()
+    {
+        // 腾讯云风格 data.Response.Accounts 深层形态。
+        const string body = """{"code":0,"data":{"Response":{"Accounts":[{"CapacityRemain":40}]}}}""";
+        var parsed = WorkBuddyQuotaParser.ParsePersonal(body);
+        parsed.Should().NotBeNull();
+        parsed!.PlanType.Should().Contain("40");
+    }
+
 }

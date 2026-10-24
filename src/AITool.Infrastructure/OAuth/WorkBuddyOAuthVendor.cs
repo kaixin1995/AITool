@@ -188,7 +188,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             {
                 AccessToken = accessToken!,
                 RefreshToken = GetString(data, "refreshToken"),
-                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(GetNumber(data, "expiresIn") ?? 3600),
+                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(GetNumber(data, "expiresIn") is > 0 and { } loginSeconds ? loginSeconds : 3600),
             },
             ExternalUserId = uid,
             DisplayName = nickname,
@@ -211,7 +211,10 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         var uid = ReadStringExtra(extraJson, "uid");
         if (!string.IsNullOrWhiteSpace(uid))
         {
+            // 指纹头与身份头同发（对齐参考实现 _hdr(realm, token, uid)：uid 已知却不带指纹是风控关联信号）。
             headers["X-User-Id"] = uid!;
+            headers["X-Machine-ID"] = DeriveFingerprint("machine", uid!);
+            headers["X-Session-ID"] = DeriveFingerprint("session", uid!);
         }
 
         var enterpriseId = ReadStringExtra(extraJson, "enterpriseId");
@@ -233,10 +236,23 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             throw new InvalidOperationException($"WorkBuddy 刷新暂时失败：HTTP {status}");
         }
 
-        var (_, data) = UnwrapEnvelope(JsonDocument.Parse(body).RootElement.Clone());
-        var newAccess = data.ValueKind == JsonValueKind.Object ? GetString(data, "accessToken") : null;
+        var envelope = JsonDocument.Parse(body).RootElement.Clone();
+        var (code, data) = UnwrapEnvelope(envelope);
+        // 两种形态都认：{code,data} 信封或裸 token 对象（对齐参考实现）。
+        if (data.ValueKind is not JsonValueKind.Object)
+        {
+            data = envelope;
+        }
+
+        var newAccess = GetString(data, "accessToken");
         if (string.IsNullOrWhiteSpace(newAccess))
         {
+            // 业务码 12153（会话死亡）：登录态失效，重试无意义 → 需重登而非无限退避重试。
+            if (code == 12153)
+            {
+                throw new DeviceOAuthRefreshRefusedException("WorkBuddy 登录态已失效（code 12153），请重新扫码登录");
+            }
+
             throw new InvalidOperationException("WorkBuddy 刷新响应缺少 accessToken");
         }
 
@@ -245,7 +261,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             AccessToken = newAccess!,
             // 上游可能不回传新 refreshToken/expiresIn：缺省保留旧值。
             RefreshToken = (data.ValueKind == JsonValueKind.Object ? GetString(data, "refreshToken") : null) ?? refresh,
-            ExpiresAt = data.ValueKind == JsonValueKind.Object && GetNumber(data, "expiresIn") is { } seconds
+            ExpiresAt = GetNumber(data, "expiresIn") is > 0 and < 315_360_000 and { } seconds
                 ? DateTimeOffset.UtcNow.AddSeconds(seconds)
                 : current.ExpiresAt,
         };
@@ -281,8 +297,8 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
 
             // 国内版只有 /v2 前缀；国际版无前缀优先、404 回落 /v2（对齐 workbuddy-manager billing_paths）。
             string[] paths = _site == SiteSpec.China
-                ? ["/v2/billing/meter/user-resource"]
-                : ["/billing/meter/user-resource", "/v2/billing/meter/user-resource"];
+                ? ["/v2/billing/meter/get-user-resource"]
+                : ["/billing/meter/get-user-resource", "/v2/billing/meter/get-user-resource"];
 
             foreach (var path in paths)
             {
@@ -532,9 +548,17 @@ public static class WorkBuddyQuotaParser
         try
         {
             var root = JsonDocument.Parse(rawJson).RootElement;
-            // 企业响应形态宽松：在对象里找 credit/limitNum（或驼峰变体）。
-            double? used = FindNumber(root, "credit") ?? FindNumber(root, "Credit");
-            double? limit = FindNumber(root, "limitNum") ?? FindNumber(root, "LimitNum");
+            // 严格读信封 data 层（对齐参考实现 data.credit/limitNum；深度搜索会误吞无关嵌套对象的同名字段）。
+            var data = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Object
+                ? d
+                : root;
+            if (data.ValueKind is not JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var used = GetNumber(data, "credit") ?? GetNumber(data, "Credit");
+            var limit = GetNumber(data, "limitNum") ?? GetNumber(data, "LimitNum");
             if (used is null || limit is null)
             {
                 return null;
@@ -627,15 +651,37 @@ public static class WorkBuddyQuotaParser
 
     private static JsonElement? FindAccounts(JsonElement root)
     {
+        if (root.ValueKind == JsonValueKind.Array) return root.Clone();
         if (root.ValueKind != JsonValueKind.Object) return null;
-        // 形态对齐 workbuddy-manager _extract_resource_accounts：data.Accounts / data.ResourceAccounts / data.List。
-        var data = root.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Object ? d : root;
-        foreach (var name in new[] { "Accounts", "ResourceAccounts", "AccountsList", "List" })
+        // 对齐参考实现 _extract_resource_accounts：沿 Response/Data/data/response 最多四层下钻，
+        // 每层都尝试 Accounts/ResourceAccounts/AccountsList/List；腾讯云风格 data.Response.Accounts 也认。
+        var current = root;
+        for (var depth = 0; depth < 4; depth++)
         {
-            if (data.TryGetProperty(name, out var list) && list.ValueKind == JsonValueKind.Array)
+            foreach (var name in new[] { "Accounts", "ResourceAccounts", "AccountsList", "List" })
             {
-                return list.Clone();
+                if (current.TryGetProperty(name, out var list) && list.ValueKind == JsonValueKind.Array)
+                {
+                    return list.Clone();
+                }
             }
+
+            JsonElement? next = null;
+            foreach (var key in new[] { "Response", "Data", "data", "response" })
+            {
+                if (current.TryGetProperty(key, out var nested) && nested.ValueKind == JsonValueKind.Object)
+                {
+                    next = nested;
+                    break;
+                }
+            }
+
+            if (next is null)
+            {
+                return null;
+            }
+
+            current = next.Value;
         }
 
         return null;
