@@ -112,10 +112,13 @@ public sealed class SseHeadBuffer
             return true;
         }
 
-        // 工具调用与推理增量：与文本增量同等地位，立即放行。
-        if (chunk.Contains("tool_calls", StringComparison.Ordinal)
+        // 工具调用与推理增量：与文本增量同等地位放行——但只认「实际存在」的形态：
+        // "tool_calls":[ 数组出现（"tool_calls":null 是热身），推理内容须非空字符串
+        // （"reasoning_content":"" 是 DeepSeek/Qwen 系的首块热身）。
+        if (chunk.Contains("tool_calls\":[", StringComparison.Ordinal)
+            || chunk.Contains("tool_calls\": [", StringComparison.Ordinal)
             || chunk.Contains("function_call_arguments.delta", StringComparison.Ordinal)
-            || chunk.Contains("reasoning_content", StringComparison.Ordinal))
+            || ContainsNonEmptyJsonStringField(chunk, "reasoning_content"))
         {
             return true;
         }

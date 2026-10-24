@@ -125,7 +125,17 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
         }
 
         // 换一次 Copilot 会话令牌，拿到账号名与个人版聊天端点。
-        var exchange = await ExchangeAsync(githubToken, cancellationToken);
+        (string Token, DateTimeOffset ExpiresAt, string? Login, string? Api)? exchange;
+        try
+        {
+            exchange = await ExchangeAsync(githubToken, cancellationToken);
+        }
+        catch (DeviceOAuthRefreshRefusedException)
+        {
+            // 登录时的 403 通常是「该 GitHub 账号没有 Copilot 订阅」——重登解决不了，给准确指引。
+            return new DeviceOAuthPollResult { Error = "Copilot 会话令牌交换被拒（该 GitHub 账号可能没有 Copilot 订阅）" };
+        }
+
         if (exchange is not { } ex)
         {
             return new DeviceOAuthPollResult { Error = "Copilot 会话令牌交换失败（该 GitHub 账号可能没有 Copilot 订阅）" };

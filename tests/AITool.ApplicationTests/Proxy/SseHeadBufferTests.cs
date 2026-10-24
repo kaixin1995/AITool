@@ -117,6 +117,21 @@ public sealed class SseHeadBufferTests
     }
 
     [Fact]
+    public void Empty_reasoning_and_null_tool_calls_are_warmup()
+    {
+        var buffer = new SseHeadBuffer();
+        // DeepSeek/Qwen 系首块：reasoning_content 空字符串——热身，扣住。
+        buffer.TryHold("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"\"},\"finish_reason\":null}]}\n\n")
+            .Should().BeTrue("空 reasoning_content 是热身");
+        // tool_calls:null 序列化形态——热身。
+        buffer.TryHold("data: {\"choices\":[{\"delta\":{\"tool_calls\":null},\"finish_reason\":null}]}\n\n")
+            .Should().BeTrue("tool_calls:null 是热身");
+        // 真实工具调用（数组出现）——放行。
+        new SseHeadBuffer().TryHold("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0}]}},\"finish_reason\":null}]}\n\n")
+            .Should().BeFalse("tool_calls 数组是内容事件");
+    }
+
+    [Fact]
     public void Done_and_error_events_release_immediately()
     {
         new SseHeadBuffer().TryHold("data: [DONE]\n\n").Should().BeFalse();
