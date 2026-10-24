@@ -1109,8 +1109,12 @@ public sealed class ProxyForwardService : IProxyForwardService
         {
             if (!string.IsNullOrEmpty(request.TargetApiKey))
             {
-                httpRequest.Headers.Add("x-api-key", request.TargetApiKey);
+                foreach (var (name, value) in ResolveAnthropicAuthHeaders(request.TargetApiKey, request.ForwardHeaders))
+                {
+                    httpRequest.Headers.TryAddWithoutValidation(name, value);
+                }
             }
+
             httpRequest.Headers.Add(
                 "anthropic-version",
                 request.ForwardHeaders.TryGetValue("anthropic-version", out var anthropicVersion) && !string.IsNullOrWhiteSpace(anthropicVersion)
@@ -1131,6 +1135,13 @@ public sealed class ProxyForwardService : IProxyForwardService
             {
                 continue;
             }
+
+            // 内部标记头（鉴权形态选择），不透传给上游。
+            if (string.Equals(header.Key, AuthModeHeader, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase))
             {
                 httpRequest.Headers.Remove("Authorization");
@@ -1140,6 +1151,30 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
 
         return httpRequest;
+    }
+
+    /// <summary>
+    /// 站点侧通过 ExtraHeadersJson 携带 <c>X-AITool-Auth-Mode</c> 选择 Anthropic 鉴权形态：
+    /// 默认 x-api-key；<c>bearer</c> 时改发 Authorization Bearer（Claude OAuth 订阅、
+    /// MiniMax Code、Z.ai /api/anthropic 等以 Bearer 为准的上游）。
+    /// </summary>
+    public const string AuthModeHeader = "X-AITool-Auth-Mode";
+
+    /// <summary>解析 Anthropic 协议的鉴权头集合（key 形态：默认 x-api-key / bearer 形态：Authorization Bearer）。</summary>
+    public static IEnumerable<(string Name, string Value)> ResolveAnthropicAuthHeaders(
+        string apiKey,
+        IReadOnlyDictionary<string, string> forwardHeaders)
+    {
+        var bearerMode = forwardHeaders.TryGetValue(AuthModeHeader, out var mode)
+                         && string.Equals(mode.Trim(), "bearer", StringComparison.OrdinalIgnoreCase);
+        if (bearerMode)
+        {
+            yield return ("Authorization", "Bearer " + apiKey);
+        }
+        else
+        {
+            yield return ("x-api-key", apiKey);
+        }
     }
 
     /// <summary>

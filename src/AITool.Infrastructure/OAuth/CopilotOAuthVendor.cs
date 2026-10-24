@@ -42,6 +42,9 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
         ("gemini-3-pro", "Gemini 3 Pro (Copilot)"),
     ];
 
+    /// <summary>Copilot 会话令牌约 30 分钟，提前 2 分钟刷新即可（默认 30 分钟会导致每轮扫描都刷新）。</summary>
+    public TimeSpan RefreshLead => TimeSpan.FromMinutes(2);
+
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => new(
         DefaultChatBase,
         "OpenAI",

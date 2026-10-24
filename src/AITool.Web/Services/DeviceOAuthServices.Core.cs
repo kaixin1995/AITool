@@ -327,7 +327,6 @@ public sealed class DeviceOAuthAccountProvisioner
 public sealed class DeviceOAuthTokenRefreshService : BackgroundService
 {
     private static readonly TimeSpan ScanInterval = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan RefreshLead = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan MinRefreshInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RefreshFailureBackoff = TimeSpan.FromMinutes(30);
 
@@ -386,9 +385,6 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
         foreach (var account in due)
         {
             if (ct.IsCancellationRequested) break;
-            if (account.TokenExpiresAt is { } expires && expires - now > RefreshLead) continue;
-            if (_retryAt.TryGetValue(account.Id, out var retryAt) && now < retryAt) continue;
-            if (account.LastRefreshAt is { } last && now - last < MinRefreshInterval) continue;
 
             var vendor = registry.Find(account.VendorKey);
             if (vendor is null)
@@ -396,6 +392,13 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
                 _logger.LogWarning("No vendor registered for DeviceOAuthAccount {Id} vendor {Vendor}", account.Id, account.VendorKey);
                 continue;
             }
+
+            // 无过期时间的 token（如 ZCode 铸出的长效 API key）无需周期刷新；
+            // 有过期时间的按厂商级提前量（短寿 token 厂商覆写更小值）。
+            if (account.TokenExpiresAt is not { } expiresAt) continue;
+            if (expiresAt - now > vendor.RefreshLead) continue;
+            if (_retryAt.TryGetValue(account.Id, out var retryAt) && now < retryAt) continue;
+            if (account.LastRefreshAt is { } last && now - last < MinRefreshInterval) continue;
 
             try
             {

@@ -72,6 +72,7 @@ public sealed class MiniMaxOAuthVendor : IDeviceOAuthVendor
             ["User-Agent"] = "MiniMaxAgent",
             ["X-Mavis-Agent-Id"] = "main",
             ["anthropic-version"] = "2023-06-01",
+            ["X-AITool-Auth-Mode"] = "bearer",
         });
 
     public async Task<DeviceOAuthStartResult> StartSignInAsync(CancellationToken cancellationToken)

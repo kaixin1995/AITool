@@ -51,6 +51,12 @@ public interface IDeviceOAuthVendor
 
     /// <summary>默认模型清单（Slug=对外名，DisplayName=展示名）。</summary>
     IReadOnlyList<(string Slug, string DisplayName)> DefaultModels { get; }
+
+    /// <summary>
+    /// token 刷新提前量（默认 30 分钟）。短寿 token 厂商（如 Copilot 会话令牌约 30 分钟）
+    /// 覆写为更小值，避免每次扫描都触发刷新。
+    /// </summary>
+    TimeSpan RefreshLead => TimeSpan.FromMinutes(30);
 }
 
 /// <summary>发起登录结果：授权地址 + 轮询会话状态（不透明）。</summary>

@@ -52,6 +52,7 @@ public sealed class ClaudeOAuthVendor : IDeviceOAuthVendor
         {
             ["anthropic-version"] = "2023-06-01",
             ["anthropic-beta"] = "oauth-2025-04-20",
+            ["X-AITool-Auth-Mode"] = "bearer",
             ["User-Agent"] = "claude-cli/2.0.14 (external, cli)",
             ["x-app"] = "cli",
         });
