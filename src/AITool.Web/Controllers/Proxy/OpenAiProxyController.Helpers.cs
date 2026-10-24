@@ -1262,8 +1262,8 @@ public sealed partial class OpenAiProxyController
     /// <summary>
     /// 候选预排序（会话亲和优先，其次配额感知排序）；两个开关都关闭时原样返回，不产生任何开销。
     /// </summary>
-    private async Task<List<CachedProxyRouteTarget>> PreorderRoutesByPolicyAsync(
-        List<CachedProxyRouteTarget> routes,
+    private async Task<System.Collections.Generic.IReadOnlyList<CachedProxyRouteTarget>> PreorderRoutesByPolicyAsync(
+        System.Collections.Generic.IReadOnlyList<CachedProxyRouteTarget> routes,
         CachedProxyRuntimeSettings runtimeSettings,
         string? conversationKey,
         CancellationToken cancellationToken)

@@ -579,7 +579,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         // 路由候选策略（全部默认关闭）：会话亲和把上次成功候选挪到最前，配额排序按「最早重置优先」。
         var conversationKey = ResolveConversationKeySafely(runtimeSettings, Request, modelName, requestBody);
-        allRoutes = await PreorderRoutesByPolicyAsync(allRoutes.ToList(), runtimeSettings, conversationKey, cancellationToken);
+        allRoutes = await PreorderRoutesByPolicyAsync(allRoutes, runtimeSettings, conversationKey, cancellationToken);
 
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();

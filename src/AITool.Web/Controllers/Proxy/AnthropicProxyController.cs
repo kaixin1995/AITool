@@ -273,7 +273,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
         // 路由候选策略（全部默认关闭）：会话亲和把上次成功候选挪到最前，配额排序按「最早重置优先」。
         var conversationKey = ResolveConversationKeySafely(runtimeSettings, Request, modelName, requestBody);
-        allRoutes = await PreorderRoutesByPolicyAsync(allRoutes.ToList(), runtimeSettings, conversationKey, cancellationToken);
+        allRoutes = await PreorderRoutesByPolicyAsync(allRoutes, runtimeSettings, conversationKey, cancellationToken);
 
         // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个
         ProxyForwardResult? lastResult = null;
@@ -1489,8 +1489,8 @@ public sealed class AnthropicProxyController : ControllerBase
     /// <summary>
     /// 候选预排序（会话亲和优先，其次配额感知排序）；两个开关都关闭时原样返回。
     /// </summary>
-    private async Task<List<CachedProxyRouteTarget>> PreorderRoutesByPolicyAsync(
-        List<CachedProxyRouteTarget> routes,
+    private async Task<System.Collections.Generic.IReadOnlyList<CachedProxyRouteTarget>> PreorderRoutesByPolicyAsync(
+        System.Collections.Generic.IReadOnlyList<CachedProxyRouteTarget> routes,
         CachedProxyRuntimeSettings runtimeSettings,
         string? conversationKey,
         CancellationToken cancellationToken)

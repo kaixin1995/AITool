@@ -55,8 +55,14 @@ public sealed class RouteCandidatePolicyService
         string? conversationKey,
         CancellationToken cancellationToken)
     {
-        var list = routes.ToList();
+        // 性能：两个开关都关闭时零拷贝零解析原样返回（每个代理请求都会经过这里）；
+        // 仅在确有会话亲和键或启用配额排序时才拷贝重排。
+        if (string.IsNullOrWhiteSpace(conversationKey) && !quotaOrderingEnabled)
+        {
+            return [.. routes];
+        }
 
+        var list = routes.ToList();
         if (!string.IsNullOrWhiteSpace(conversationKey)
             && _sessionAffinity.TryOrderForConversation(list, conversationKey))
         {
@@ -68,11 +74,8 @@ public sealed class RouteCandidatePolicyService
             return list;
         }
 
-        var resets = new List<(CachedProxyRouteTarget Route, DateTimeOffset? Reset)>(list.Count);
-        foreach (var route in list)
-        {
-            resets.Add((route, await GetEarliestFutureResetAsync(route, cancellationToken)));
-        }
+        // 批量取全部候选的重置时间（一次 DB 往返 + 单 scope），替代逐候选查询。
+        var resets = await LoadResetsBatchAsync(list, cancellationToken);
 
         // 稳定排序：有重置时间的按时间升序在前，无数据的保持原相对次序在后。
         var ordered = resets
@@ -85,6 +88,110 @@ public sealed class RouteCandidatePolicyService
         return ordered;
     }
 
+    /// <summary>
+    /// 批量取全部候选的最早重置时间：先吃 60 秒内存缓存，未命中的键合并为一次 DB 查询
+    /// （SiteKeyId IN / SiteId IN 各一条）+ 单 scope 解析，替代逐候选的 scope+DB 往返。
+    /// </summary>
+    private async Task<List<(CachedProxyRouteTarget Route, DateTimeOffset? Reset)>> LoadResetsBatchAsync(
+        List<CachedProxyRouteTarget> routes,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var result = new List<(CachedProxyRouteTarget, DateTimeOffset?)>(routes.Count);
+        var misses = new List<CachedProxyRouteTarget>();
+        foreach (var route in routes)
+        {
+            if (_quotaResetCache.TryGetValue(route.SiteKeyId ?? route.SiteId, out var cached)
+                && now - cached.FetchedAtUtc < QuotaResetCacheTtl)
+            {
+                result.Add((route, cached.EarliestResetUtc));
+            }
+            else
+            {
+                misses.Add(route);
+                result.Add((route, null)); // 占位，回填
+            }
+        }
+
+        if (misses.Count == 0)
+        {
+            return result;
+        }
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<Infrastructure.Persistence.AppDbContext>();
+            var providers = scope.ServiceProvider.GetServices<ISiteQuotaProvider>().ToList();
+
+            var keyIds = misses.Where(r => r.SiteKeyId is not null).Select(r => r.SiteKeyId!.Value).Distinct().ToList();
+            var siteIds = misses.Where(r => r.SiteKeyId is null).Select(r => r.SiteId).Distinct().ToList();
+            var keys = new List<Domain.Sites.SiteKey>();
+            if (keyIds.Count > 0)
+            {
+                keys.AddRange(await dbContext.SiteKeys.Where(k => keyIds.Contains(k.Id)).ToListAsync(cancellationToken));
+            }
+
+            if (siteIds.Count > 0)
+            {
+                keys.AddRange(await dbContext.SiteKeys.Where(k => siteIds.Contains(k.SiteId)).ToListAsync(cancellationToken));
+            }
+
+            var byKey = keys.ToLookup(k => k.Id);
+            var bySite = keys.ToLookup(k => k.SiteId);
+            for (var i = 0; i < routes.Count; i++)
+            {
+                if (result[i].Item2 is not null || !misses.Contains(routes[i]))
+                {
+                    continue;
+                }
+
+                var route = routes[i];
+                var candidates = route.SiteKeyId is not null ? byKey[route.SiteKeyId.Value] : bySite[route.SiteId];
+                DateTimeOffset? earliest = null;
+                foreach (var key in candidates)
+                {
+                    if (string.IsNullOrWhiteSpace(key.LastQuotaRawJson))
+                    {
+                        continue;
+                    }
+
+                    foreach (var provider in providers)
+                    {
+                        var parsed = provider.ParseCached(key.LastQuotaRawJson);
+                        if (parsed is not { Success: true })
+                        {
+                            continue;
+                        }
+
+                        foreach (var window in parsed.Windows)
+                        {
+                            if (window.IsAside || window.ResetAtUtc is not { } reset || reset <= now)
+                            {
+                                continue;
+                            }
+
+                            if (earliest is null || reset < earliest)
+                            {
+                                earliest = reset;
+                            }
+                        }
+
+                        break;
+                    }
+                }
+
+                _quotaResetCache[route.SiteKeyId ?? route.SiteId] = new QuotaResetEntry(now, earliest);
+                result[i] = (route, earliest);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation("Batch quota reset lookup failed: {Message}", ex.Message);
+        }
+
+        return result;
+    }
     /// <summary>
     /// 取候选对应 Key 的最早未来重置时间：多 Key 展开候选用 SiteKeyId；兼容候选回退站点级
     /// （无 Key 记录取该站点全部 Key 中最早者）。数据来自 SiteKey.LastQuota* 落库缓存，
@@ -474,8 +581,22 @@ public sealed class SessionAffinityService
         // 插入即守上限：两轮小时级清理之间的写入也不能突破 512 条（逐出最久未用）。
         while (_map.Count >= MaxEntries)
         {
-            var oldest = _map.OrderBy(e => e.Value.LastUsedUtc).First();
-            _map.TryRemove(oldest.Key, out _);
+            // 线性最小扫描：O(n) 无排序分配（OrderBy 是 O(n log n) + 枚举器分配）。
+            string? oldestKey = null;
+            var oldestAt = DateTimeOffset.MaxValue;
+            foreach (var pair in _map)
+            {
+                if (pair.Value.LastUsedUtc < oldestAt)
+                {
+                    oldestAt = pair.Value.LastUsedUtc;
+                    oldestKey = pair.Key;
+                }
+            }
+
+            if (oldestKey is null || !_map.TryRemove(oldestKey, out _))
+            {
+                break;
+            }
         }
         _map[conversationKey] = new AffinityEntry(circuitKey, DateTimeOffset.UtcNow);
     }
