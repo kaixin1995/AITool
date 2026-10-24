@@ -379,11 +379,41 @@ public sealed class AccountQuotaInspectionService : BackgroundService
 
         var usedPercent = provider.SelectDisablePercent(snapshot);
         var threshold = (double)autoDisableThresholdPercent;
+        // 非对称阈值（滞回带）：禁用沿用配置阈值，回启要求低于阈值减去滞回量，
+        // 避免读数在阈值附近波动时账号被反复禁用/启用（对齐 magpie 的 98/90 双阈值做法）。
+        var reenableThreshold = Math.Max(1, threshold - ReenableHysteresisPercent);
         if (usedPercent.HasValue && usedPercent.Value >= threshold && account.IsEnabled)
         {
-            await provider.SetEnabledAsync(account, false, "quota-threshold", cancellationToken);
-            result.Action = "disable";
-            result.Reason = AppendReason(result.Reason, $"额度 {usedPercent.Value:F1}%≥{threshold}，已自动禁用");
+            if (usedCache)
+            {
+                // 禁用是高影响动作：若判定基于缓存读数，先绕过缓存强制一次新鲜读数复核，
+                // 新鲜读数失败则本轮跳过自动禁用（宁可靠代理侧冷却兜底，不基于过期数据禁用）。
+                AddLog("quota", $"账号 {account.DisplayName} 缓存读数达阈值，强制新鲜读数复核");
+                var fresh = await provider.QueryAsync(account, forceRefresh: true, cancellationToken);
+                if (!fresh.Success)
+                {
+                    result.Reason = AppendReason(result.Reason, "新鲜读数失败，本轮跳过自动禁用");
+                    AddLog("quota", $"账号 {account.DisplayName} 新鲜读数失败，暂不自动禁用");
+                    return result;
+                }
+
+                snapshot = fresh;
+                result.Windows = fresh.Windows;
+                result.CheckedAt = fresh.CheckedAt;
+                result.FromCache = false;
+                usedPercent = provider.SelectDisablePercent(fresh);
+            }
+
+            if (usedPercent.HasValue && usedPercent.Value >= threshold)
+            {
+                await provider.SetEnabledAsync(account, false, "quota-threshold", cancellationToken);
+                result.Action = "disable";
+                result.Reason = AppendReason(result.Reason, $"额度 {usedPercent.Value:F1}%≥{threshold}，已自动禁用");
+            }
+            else
+            {
+                result.Reason = AppendReason(result.Reason, $"复核读数 {usedPercent:F1}%，低于阈值，保持启用");
+            }
         }
         else if (usedPercent.HasValue
                  && !account.IsEnabled
@@ -391,15 +421,20 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                  && !account.DisabledByFeatureToggle
                  && !account.ManuallyDisabled
                  && !account.DisabledByUpstream
-                 && usedPercent.Value < threshold)
+                 && usedPercent.Value < reenableThreshold)
         {
             await provider.SetEnabledAsync(account, true, "quota-recovered", cancellationToken);
             result.Action = "enable";
-            result.Reason = AppendReason(result.Reason, "额度已恢复，已自动启用");
+            result.Reason = AppendReason(
+                result.Reason,
+                $"额度已恢复（{usedPercent.Value:F1}%<回启阈值 {reenableThreshold:F0}%），已自动启用");
         }
 
         return result;
     }
+
+    /// <summary>回启滞回量（百分点）：自动禁用阈值减去该值得回启阈值，防止阈值附近反复启停。</summary>
+    private const int ReenableHysteresisPercent = 8;
 
     private bool HasRecentUsage(Guid siteId, DateTimeOffset? since)
     {

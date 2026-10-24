@@ -76,6 +76,57 @@ public sealed class CredentialRefreshTests : IDisposable
         (await db.Sites.SingleAsync()).ApiKey.Should().Be("new-access-token");
     }
 
+    /// <summary>
+    /// 调用方在刷新进行中取消（客户端断开）不得中断写回：
+    /// OpenAI 轮换 refresh_token 后，半途放弃会导致新旧 token 同时失效（refresh_token_reused）。
+    /// </summary>
+    [Fact]
+    public async Task Codex_refresh_survives_caller_cancellation_after_refresh_started()
+    {
+        var oauth = new BlockingCodexOAuthClient();
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.Sites.Add(new Site
+        {
+            Id = _siteId,
+            Name = "Codex refresh cancel test",
+            ApiKey = "old-access-token",
+            BaseUrl = "https://example.com",
+            IsEnabled = true
+        });
+        db.CodexAccounts.Add(new CodexAccount
+        {
+            Id = Guid.NewGuid(),
+            DisplayName = "Codex refresh cancel test",
+            AccessToken = "old-access-token",
+            RefreshToken = "old-refresh-token",
+            LinkedSiteId = _siteId,
+            IsEnabled = true
+        });
+        await db.SaveChangesAsync();
+
+        var service = new CodexCredentialRefreshService(
+            db,
+            oauth,
+            scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>(),
+            NullLogger<CodexCredentialRefreshService>.Instance);
+
+        using var callerCts = new CancellationTokenSource();
+        var refreshTask = service.RefreshAsync(_siteId, "old-access-token", callerCts.Token);
+        await oauth.RefreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // 刷新请求已发出（旧 refresh_token 已被消费）之后调用方才断开。
+        callerCts.Cancel();
+        oauth.ReleaseRefresh();
+
+        var result = await refreshTask.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Should().Be("new-access-token");
+        var account = await db.CodexAccounts.SingleAsync();
+        account.AccessToken.Should().Be("new-access-token");
+        account.RefreshToken.Should().Be("new-refresh-token");
+        (await db.Sites.SingleAsync()).ApiKey.Should().Be("new-access-token");
+    }
+
     public void Dispose()
     {
         _serviceProvider.Dispose();
