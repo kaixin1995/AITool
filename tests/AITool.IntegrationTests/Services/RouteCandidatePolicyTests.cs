@@ -163,6 +163,43 @@ public sealed class RouteCandidatePolicyTests : IDisposable
     // ---- 配额感知排序（配 DB） ----
 
     [Fact]
+    public async Task Quota_ordering_batch_loads_by_site_key_id()
+    {
+        var provider = _serviceProvider.GetRequiredService<FakeSiteQuotaProvider>();
+        var siteWithKeys = Guid.NewGuid();
+        var soonKey = Guid.NewGuid();
+        var lateKey = Guid.NewGuid();
+        await using (var scope = _serviceProvider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Sites.Add(new Domain.Sites.Site { Id = siteWithKeys, Name = "multi-key", BaseUrl = "https://mk.com", IsEnabled = true });
+            db.SiteKeys.Add(new Domain.Sites.SiteKey
+            {
+                Id = soonKey, SiteId = siteWithKeys, KeyValue = "k-soon", Priority = 0, IsEnabled = true,
+                LastQuotaRawJson = provider.BuildRawJson(resetInHours: 2)
+            });
+            db.SiteKeys.Add(new Domain.Sites.SiteKey
+            {
+                Id = lateKey, SiteId = siteWithKeys, KeyValue = "k-late", Priority = 1, IsEnabled = true,
+                LastQuotaRawJson = provider.BuildRawJson(resetInHours: 96)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+        var routes = new List<CachedProxyRouteTarget>
+        {
+            new() { CircuitKey = Guid.NewGuid(), SiteId = siteWithKeys, SiteKeyId = lateKey },
+            new() { CircuitKey = Guid.NewGuid(), SiteId = siteWithKeys, SiteKeyId = soonKey },
+        };
+
+        var ordered = await policy.PreorderCandidatesAsync(routes, quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
+
+        ordered[0].SiteKeyId.Should().Be(soonKey, "带 SiteKeyId 的候选批量按密钥 ID 精确命中各自的重置时间");
+        ordered[1].SiteKeyId.Should().Be(lateKey);
+    }
+
     public async Task Quota_ordering_puts_soonest_reset_first()
     {
         var provider = _serviceProvider.GetRequiredService<FakeSiteQuotaProvider>();
