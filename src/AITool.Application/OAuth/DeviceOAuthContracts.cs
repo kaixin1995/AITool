@@ -40,6 +40,14 @@ public interface IDeviceOAuthVendor
     Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, string? extraJson, CancellationToken cancellationToken)
         => RefreshTokenAsync(refreshToken, cancellationToken);
 
+    /// <summary>
+    /// 携带完整当前 token 集的刷新（刷新请求需要旧 access token 参与鉴权的厂商覆写——
+    /// 如 WorkBuddy 的 X-Refresh-Token 流要求 Authorization 仍携带旧 access token）。
+    /// 默认回落到 refresh_token + ExtraJson 形态，既有厂商零改动。
+    /// </summary>
+    Task<DeviceOAuthTokenSet> RefreshTokenAsync(DeviceOAuthTokenSet current, string? extraJson, CancellationToken cancellationToken)
+        => RefreshTokenAsync(current.RefreshToken ?? string.Empty, extraJson, cancellationToken);
+
     /// <summary>实时查询额度。凭证失效返回 <see cref="DeviceOAuthQuotaResult.CredentialInvalid"/>=true。</summary>
     Task<DeviceOAuthQuotaResult> QueryQuotaAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken);
 

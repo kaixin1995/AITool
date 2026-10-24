@@ -156,6 +156,36 @@ public sealed class DeviceOAuthVerticalTests : IDisposable
     }
 
     [Fact]
+    public async Task Provisioner_merges_per_account_chat_headers_from_extra_json()
+    {
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AITool.Infrastructure.Persistence.AppDbContext>();
+        var provisioner = new DeviceOAuthAccountProvisioner(
+            db,
+            scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>(),
+            new SiteCascadeDeleter(db),
+            NullLogger<DeviceOAuthAccountProvisioner>.Instance);
+
+        var vendor = new AITool.Infrastructure.OAuth.WorkBuddyOAuthVendor(new HttpClient());
+        var extra = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["uid"] = "u-77",
+            ["chatHeaders"] = new Dictionary<string, string>
+            {
+                ["X-Machine-ID"] = "machine-abc",
+                ["X-User-Id"] = "u-77",
+            },
+        });
+        var account = await provisioner.ProvisionAsync(
+            vendor, "WB 号", "wb@example.com", "u-77",
+            new AITool.Application.OAuth.DeviceOAuthTokenSet { AccessToken = "at", RefreshToken = "rt", ExpiresAt = DateTimeOffset.UtcNow.AddHours(2) },
+            extra, CancellationToken.None);
+
+        var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+        site!.ExtraHeadersJson.Should().Contain("machine-abc").And.Contain("u-77", "每账号稳定头合并进站点头");
+        site.ExtraHeadersJson.Should().Contain("X-Agent-Type", "厂商级静态头同时在");
+    }
+
     public async Task Provisioner_skips_site_for_chat_less_vendors()
     {
         await using var scope = _serviceProvider.CreateAsyncScope();

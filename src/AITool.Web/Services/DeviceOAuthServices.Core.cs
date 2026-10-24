@@ -119,6 +119,21 @@ public sealed class DeviceOAuthAccountProvisioner
                 chat.ExtraHeaders, AITool.Application.Common.JsonSerializerPresets.Compact);
             // 厂商在 ExtraJson 里给 chatBaseUrl 时覆盖默认基地址（如 Copilot 个人版端点）。
             var chatBaseUrl = TryGetExtraString(extraJson, "chatBaseUrl");
+            // chatHeaders 为每账号稳定头（如 WorkBuddy 的设备指纹/身份头），合并进站点头。
+            var effectiveHeaders = new Dictionary<string, string>(chat.ExtraHeaders, StringComparer.OrdinalIgnoreCase);
+            if (TryGetExtraObject(extraJson, "chatHeaders") is { } perAccount)
+            {
+                foreach (var property in perAccount.EnumerateObject())
+                {
+                    if (!string.IsNullOrWhiteSpace(property.Name) && property.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        effectiveHeaders[property.Name] = property.Value.GetString()!;
+                    }
+                }
+            }
+
+            var mergedHeadersJson = System.Text.Json.JsonSerializer.Serialize(
+                effectiveHeaders, AITool.Application.Common.JsonSerializerPresets.Compact);
             if (site is null)
             {
                 site = new Site
@@ -133,7 +148,7 @@ public sealed class DeviceOAuthAccountProvisioner
                     SupportsResponses = chat.SupportsResponses,
                     ProtocolType = chat.ProtocolType,
                     ManagedSource = ManagedSource,
-                    ExtraHeadersJson = extraHeadersJson,
+                    ExtraHeadersJson = mergedHeadersJson,
                     IsEnabled = true,
                 };
                 await client.Insertable(site).ExecuteCommandAsync(ct);
@@ -144,7 +159,7 @@ public sealed class DeviceOAuthAccountProvisioner
                 site.ApiKey = tokens.AccessToken;
                 site.Name = label;
                 site.BaseUrl = chatBaseUrl ?? chat.BaseUrl;
-                site.ExtraHeadersJson = extraHeadersJson;
+                site.ExtraHeadersJson = mergedHeadersJson;
                 site.IsEnabled = true;
                 await client.Updateable(site).ExecuteCommandAsync(ct);
             }
@@ -243,6 +258,23 @@ public sealed class DeviceOAuthAccountProvisioner
     }
 
     /// <summary>读取厂商 ExtraJson 的字符串字段。</summary>
+    /// <summary>读取厂商 ExtraJson 的对象字段（如 chatHeaders）。</summary>
+    private static System.Text.Json.JsonElement? TryGetExtraObject(string? extraJson, string name)
+    {
+        if (string.IsNullOrWhiteSpace(extraJson)) return null;
+        try
+        {
+            var root = System.Text.Json.JsonDocument.Parse(extraJson).RootElement;
+            return root.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Object
+                ? value.Clone()
+                : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
     private static string? TryGetExtraString(string? extraJson, string name)
     {
         if (string.IsNullOrWhiteSpace(extraJson)) return null;
@@ -403,7 +435,15 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
             try
             {
                 // 刷新→写回为不可取消段（stoppingToken 不进 vendor/DB 调用），防止半途丢轮换。
-                var tokens = await vendor.RefreshTokenAsync(account.RefreshToken!, account.ExtraJson, CancellationToken.None);
+                var tokens = await vendor.RefreshTokenAsync(
+                    new DeviceOAuthTokenSet
+                    {
+                        AccessToken = account.AccessToken ?? string.Empty,
+                        RefreshToken = account.RefreshToken,
+                        ExpiresAt = account.TokenExpiresAt,
+                    },
+                    account.ExtraJson,
+                    CancellationToken.None);
                 account.AccessToken = tokens.AccessToken;
                 if (!string.IsNullOrWhiteSpace(tokens.RefreshToken)) account.RefreshToken = tokens.RefreshToken;
                 account.TokenExpiresAt = tokens.ExpiresAt;
@@ -495,7 +535,15 @@ public sealed class DeviceOAuthCredentialRefreshService
             using var coreCts = new CancellationTokenSource(RefreshSafetyTimeout);
             try
             {
-                var tokens = await vendor.RefreshTokenAsync(account.RefreshToken!, account.ExtraJson, coreCts.Token);
+                var tokens = await vendor.RefreshTokenAsync(
+                    new DeviceOAuthTokenSet
+                    {
+                        AccessToken = account.AccessToken ?? string.Empty,
+                        RefreshToken = account.RefreshToken,
+                        ExpiresAt = account.TokenExpiresAt,
+                    },
+                    account.ExtraJson,
+                    coreCts.Token);
                 account.AccessToken = tokens.AccessToken;
                 if (!string.IsNullOrWhiteSpace(tokens.RefreshToken)) account.RefreshToken = tokens.RefreshToken;
                 account.TokenExpiresAt = tokens.ExpiresAt;

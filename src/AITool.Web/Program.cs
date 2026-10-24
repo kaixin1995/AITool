@@ -375,6 +375,8 @@ builder.Services.AddHttpClient("device-oauth-claude", c => c.Timeout = TimeSpan.
 builder.Services.AddHttpClient("device-oauth-kiro", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient("device-oauth-trae-cn", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient("device-oauth-trae-global", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-workbuddy-cn", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-workbuddy-global", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.ClaudeOAuthVendor(
     sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-claude")));
 builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.KiroOAuthVendor(
@@ -383,6 +385,10 @@ builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructur
     sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-trae-cn")));
 builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.TraeOAuthVendor(
     sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-trae-global"), global: true));
+builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.WorkBuddyOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-workbuddy-cn")));
+builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.WorkBuddyOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-workbuddy-global"), global: true));
 builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.CopilotOAuthVendor(
     sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-copilot")));
 builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.MiniMaxOAuthVendor(
