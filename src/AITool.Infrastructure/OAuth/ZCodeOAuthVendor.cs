@@ -277,7 +277,7 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
         Id = window.Id,
         Label = window.Label,
         UsedPercent = window.UsedPercent,
-        ResetLabel = window.ResetLabel,
+        ResetLabel = window.ResetLabel ?? string.Empty,
         ResetAtUtc = window.ResetAtUtc,
     };
 

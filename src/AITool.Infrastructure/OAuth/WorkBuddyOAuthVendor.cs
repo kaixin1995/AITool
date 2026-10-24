@@ -524,7 +524,7 @@ public static class WorkBuddyQuotaParser
                     Label = $"资源包（剩余 {remain:0.##} 积分）",
                     UsedPercent = null,
                     ResetAtUtc = expiry,
-                    ResetLabel = expiry?.ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
+                    ResetLabel = expiry?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? string.Empty,
                 });
                 index++;
             }
@@ -616,7 +616,7 @@ public static class WorkBuddyQuotaParser
                     ResetAtUtc = GetNullableNumber(w, "resetAtUtc") is { } seconds
                         ? DateTimeOffset.FromUnixTimeSeconds((long)seconds)
                         : null,
-                    ResetLabel = GetString(w, "resetLabel"),
+                    ResetLabel = GetString(w, "resetLabel") ?? string.Empty,
                 });
             }
 

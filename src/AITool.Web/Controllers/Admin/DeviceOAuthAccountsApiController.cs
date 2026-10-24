@@ -104,12 +104,12 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
         catch (DeviceOAuthRefreshRefusedException ex)
         {
             // 明确的鉴权拒绝是终态（授权码已消费，重试同一粘贴只会继续失败）。
-            Sessions.TryRemove(request.SessionId, out _);
+            Sessions.TryRemove(request.SessionId ?? string.Empty, out _);
             return Ok(ApiResponse.Ok(new { status = "failed", error = ex.Message }));
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("会话无效", StringComparison.Ordinal))
         {
-            Sessions.TryRemove(request.SessionId, out _);
+            Sessions.TryRemove(request.SessionId ?? string.Empty, out _);
             return Ok(ApiResponse.Ok(new { status = "failed", error = ex.Message }));
         }
         catch (Exception ex)
@@ -133,7 +133,7 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             }));
         }
 
-        Sessions.TryRemove(request.SessionId, out _);
+        Sessions.TryRemove(request.SessionId ?? string.Empty, out _);
         if (poll.Tokens is null || poll.IsDenied || poll.IsExpired || !string.IsNullOrEmpty(poll.Error))
         {
             return Ok(ApiResponse.Ok(new

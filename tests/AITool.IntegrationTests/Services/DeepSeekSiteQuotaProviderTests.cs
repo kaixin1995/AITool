@@ -112,7 +112,7 @@ public sealed class DeepSeekSiteQuotaProviderTests
     }
 
     [Fact]
-    public void ParseCached_Roundtrips_Query_Result()
+    public async Task ParseCached_Roundtrips_Query_Result()
     {
         var provider = CreateProvider(_ => Json(HttpStatusCode.OK, SuccessBody), out _);
 
@@ -123,7 +123,7 @@ public sealed class DeepSeekSiteQuotaProviderTests
         cached.Balances.Should().HaveCount(1);
         cached.Balances[0].GrantedBalance.Should().Be(8.60m);
         // 与实时查询同源解析，保证落库回读与首查展示一致。
-        var live = provider.QueryAsync("https://api.deepseek.com", "k", CancellationToken.None).GetAwaiter().GetResult();
+        var live = await provider.QueryAsync("https://api.deepseek.com", "k", CancellationToken.None);
         live.Balances.Should().Equal(cached.Balances);
     }
 

@@ -63,7 +63,7 @@ public static class MiniMaxQuotaParser
                         Label = isGeneral ? $"套餐 {labelSuffix}窗口" : $"{Capitalize(name)} · {labelSuffix}窗口",
                         UsedPercent = used,
                         ResetAtUtc = resetAt,
-                        ResetLabel = resetAt?.ToLocalTime().ToString("MM-dd HH:mm"),
+                        ResetLabel = resetAt?.ToLocalTime().ToString("MM-dd HH:mm") ?? string.Empty,
                     };
                     (isGeneral ? blocking : aside).Add(window);
                 }
@@ -129,7 +129,7 @@ public static class MiniMaxQuotaParser
                         ResetAtUtc = GetNumber(w, "resetAtUtc") is { } seconds
                             ? DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1000))
                             : null,
-                        ResetLabel = GetString(w, "resetLabel"),
+                        ResetLabel = GetString(w, "resetLabel") ?? string.Empty,
                     });
                 }
             }

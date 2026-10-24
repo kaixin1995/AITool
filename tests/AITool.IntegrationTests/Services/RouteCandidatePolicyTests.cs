@@ -200,6 +200,7 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         ordered[1].SiteKeyId.Should().Be(lateKey);
     }
 
+    [Fact]
     public async Task Quota_ordering_puts_soonest_reset_first()
     {
         var provider = _serviceProvider.GetRequiredService<FakeSiteQuotaProvider>();
@@ -288,7 +289,7 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         var route = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), SiteId = Guid.NewGuid() };
 
         await policy.RecordRouteFailureAsync(route, 429, "usage limit", null, tieredCooldownEnabled: false,
-            meta: null, CancellationToken.None);
+            meta: new CircuitRouteMeta("q", "m"), CancellationToken.None);
 
         _circuitStore.IsBlocked(route.CircuitKey).Should().BeFalse("单次失败只计数不熔断（阈值 5）");
         _circuitStore.GetRest(route.CircuitKey).Should().BeNull("未启用分级冷却不休息");
