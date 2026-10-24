@@ -12,6 +12,8 @@ export interface SiteQuotaWindow {
   resetLabel: string | null
   /** 重置时间（UTC ISO），供前端做相对倒计时。 */
   resetAtUtc: string | null
+  /** 非阻塞窗口（如智谱 MCP 月度）：仅展示，不参与自动禁用与调度。 */
+  isAside?: boolean
 }
 
 /** 账户余额（按量计费供应商如 DeepSeek）。 */

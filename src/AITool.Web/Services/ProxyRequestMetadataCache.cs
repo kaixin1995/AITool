@@ -293,6 +293,11 @@ public sealed class ProxyRequestMetadataCache
                             DeveloperProxyProfilesEnabled = settings.DeveloperProxyProfilesEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
                             ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
+                            RouteQuotaOrderingEnabled = settings.RouteQuotaOrderingEnabled,
+                            SessionAffinityEnabled = settings.SessionAffinityEnabled,
+                            TieredRouteCooldownEnabled = settings.TieredRouteCooldownEnabled,
+                            StrictClientErrorFallbackEnabled = settings.StrictClientErrorFallbackEnabled,
+                            StreamHeadBufferEnabled = settings.StreamHeadBufferEnabled,
                             OAuthFeaturesEnabled = settings.OAuthFeaturesEnabled,
                             OAuthInspectionEnabled = settings.OAuthInspectionEnabled,
                             OAuthInspectionIntervalSeconds = settings.OAuthInspectionIntervalSeconds,
@@ -485,7 +490,7 @@ public sealed class ProxyRequestMetadataCache
                                 ExtraHeaders = BuildEffectiveExtraHeaders(chatEmulation, headerProfileMap, site.ExtraHeadersJson, model.ExtraHeadersJson, mapping.ExtraHeadersJson),
                                 ClientEmulation = chatEmulation,
                                 EgressProxyUrl = proxyFeatureEnabled
-                                    ? ResolveEgressProxyUrl(mapping.EgressProxyUrl, site.EgressProxyUrl, proxyMap)
+                                    ? ResolveEgressProxyUrl(mapping.EgressProxyUrl, candidate.EgressProxyUrl ?? site.EgressProxyUrl, proxyMap)
                                     : null,
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var chatGoogleProject) ? chatGoogleProject : string.Empty
                             });
@@ -1440,9 +1445,6 @@ public sealed class ProxyRequestMetadataCache
 
                         var clientEmulation = ResolveClientEmulation(mapping?.ClientEmulation, model?.ClientEmulation, site.ClientEmulation);
                         var extraHeaders = BuildEffectiveExtraHeaders(clientEmulation, headerProfileMap, site.ExtraHeadersJson, model?.ExtraHeadersJson, mapping?.ExtraHeadersJson);
-                        var egressProxyUrl = proxyFeatureEnabled
-                            ? ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap)
-                            : null;
                         // 思考等级优先级：站点映射 > 模型库 > 透传（均为空则透传客户端原始值）。
                         var overrideReasoningEffort = !string.IsNullOrWhiteSpace(mapping?.OverrideReasoningEffort)
                             ? mapping!.OverrideReasoningEffort!.Trim()
@@ -1450,6 +1452,10 @@ public sealed class ProxyRequestMetadataCache
 
                         foreach (var candidate in candidates)
                         {
+                            // 出口代理优先级：站点映射 > 密钥级 > 站点级（密钥级覆盖站点级）。
+                            var egressProxyUrl = proxyFeatureEnabled
+                                ? ResolveEgressProxyUrl(mapping?.EgressProxyUrl, candidate.EgressProxyUrl ?? site.EgressProxyUrl, proxyMap)
+                                : null;
                             expanded.Add(new CachedProxyRouteTarget
                             {
                                 RouteId = route.Id,
@@ -1869,7 +1875,7 @@ public sealed class ProxyRequestMetadataCache
     /// 为多 Key 展开准备的身份候选：一个站点可能产出多个候选，每个候选携带实际使用的密钥值和对应的 SiteKeyId。
     /// 站点没有启用的 SiteKey 时回退到站点默认密钥（兼容 Codex 托管站点和未迁移的老站点）。
     /// </summary>
-    internal sealed record SiteKeyCandidate(Guid? SiteKeyId, string ApiKey);
+    internal sealed record SiteKeyCandidate(Guid? SiteKeyId, string ApiKey, string? EgressProxyUrl = null);
 
     /// <summary>
     /// 取指定站点的密钥候选列表（按 Priority 升序，仅启用项）。
@@ -1889,12 +1895,12 @@ public sealed class ProxyRequestMetadataCache
                 .OrderBy(x => x.Priority)
                 .ThenBy(x => x.CreatedAt)
                 .ThenBy(x => x.Id)
-                .Select(x => new SiteKeyCandidate(x.Id, x.KeyValue))
+                .Select(x => new SiteKeyCandidate(x.Id, x.KeyValue, x.EgressProxyUrl))
                 .ToList();
         }
 
         // 回退：站点没有 SiteKey，用 Site.ApiKey 产出单条候选（null SiteKeyId 标记为兼容候选）
-        return [new SiteKeyCandidate(null, fallbackApiKey)];
+        return [new SiteKeyCandidate(null, fallbackApiKey, null)];
     }
 
     /// <summary>
@@ -2137,6 +2143,26 @@ public sealed class CachedProxyRuntimeSettings
     /// 并发排队等待的最大时间（秒）。
     /// </summary>
     public int ConcurrencyQueueTimeoutSeconds { get; set; } = 120;
+    /// <summary>
+    /// 配额感知路由排序开关（默认关闭，热路径读取）。
+    /// </summary>
+    public bool RouteQuotaOrderingEnabled { get; set; }
+    /// <summary>
+    /// 会话亲和开关（默认关闭，热路径读取）。
+    /// </summary>
+    public bool SessionAffinityEnabled { get; set; }
+    /// <summary>
+    /// 路由分级冷却开关（默认关闭，热路径读取）。
+    /// </summary>
+    public bool TieredRouteCooldownEnabled { get; set; }
+    /// <summary>
+    /// 客户端错误严格回退开关（默认关闭，热路径读取）。
+    /// </summary>
+    public bool StrictClientErrorFallbackEnabled { get; set; }
+    /// <summary>
+    /// 流式首包蓄流开关（默认关闭，SSE 透传链路读取）。
+    /// </summary>
+    public bool StreamHeadBufferEnabled { get; set; }
     /// <summary>
     /// OAuth 账号功能总开关。
     /// </summary>

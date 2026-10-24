@@ -250,7 +250,7 @@ export async function consumeResetCredit(id: string): Promise<void> {
 
 // —— Google 账号（Antigravity）——
 
-export type GoogleAccountKind = 'Antigravity'
+export type GoogleAccountKind = 'Antigravity' | 'GeminiCli'
 
 export interface GoogleAccountSummary {
   id: string

@@ -129,6 +129,31 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public int ConcurrencyQueueTimeoutSeconds { get; set; }
 
     /// <summary>
+    /// 配额感知路由排序开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? RouteQuotaOrderingEnabled { get; set; }
+
+    /// <summary>
+    /// 会话亲和开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? SessionAffinityEnabled { get; set; }
+
+    /// <summary>
+    /// 路由分级冷却开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? TieredRouteCooldownEnabled { get; set; }
+
+    /// <summary>
+    /// 客户端错误严格回退开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? StrictClientErrorFallbackEnabled { get; set; }
+
+    /// <summary>
+    /// 流式首包蓄流开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? StreamHeadBufferEnabled { get; set; }
+
+    /// <summary>
     /// OAuth 账号功能总开关（含 OAuth 登录账号、凭证导入和额度巡检）。
     /// 关闭后隐藏 OAuth 页面并禁用所有托管账号站点。
     /// </summary>

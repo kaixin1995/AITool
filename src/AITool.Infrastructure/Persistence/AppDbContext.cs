@@ -93,6 +93,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<GoogleAccount> GoogleAccounts => _client.Queryable<GoogleAccount>();
     public ISugarQueryable<KimiAccount> KimiAccounts => _client.Queryable<KimiAccount>();
     public ISugarQueryable<XaiAccount> XaiAccounts => _client.Queryable<XaiAccount>();
+    public ISugarQueryable<Domain.OAuth.DeviceOAuthAccount> DeviceOAuthAccounts => _client.Queryable<Domain.OAuth.DeviceOAuthAccount>();
     public ISugarQueryable<ModelLibraryItem> ModelLibraryItems => _client.Queryable<ModelLibraryItem>();
     public ISugarQueryable<SiteModelMapping> SiteModelMappings => _client.Queryable<SiteModelMapping>();
     public ISugarQueryable<DetectionTask> DetectionTasks => _client.Queryable<DetectionTask>();
@@ -270,6 +271,7 @@ public static class SqlSugarSetup
             typeof(GoogleAccount),
             typeof(KimiAccount),
             typeof(XaiAccount),
+            typeof(Domain.OAuth.DeviceOAuthAccount),
             typeof(ModelLibraryItem),
             typeof(SiteModelMapping),
             typeof(DetectionTask),

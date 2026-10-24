@@ -101,6 +101,11 @@ const form = reactive<SystemSettings>({
   developerProxyProfilesEnabled: false,
   concurrencyMode: 0,
   concurrencyQueueTimeoutSeconds: 120,
+  routeQuotaOrderingEnabled: false,
+  sessionAffinityEnabled: false,
+  tieredRouteCooldownEnabled: false,
+  strictClientErrorFallbackEnabled: false,
+  streamHeadBufferEnabled: false,
   oauthFeaturesEnabled: false,
   oauthInspectionEnabled: false,
   oauthInspectionIntervalSeconds: 1800,
@@ -250,6 +255,16 @@ onMounted(() => {
               <NFormItem>
                 <template #label><span class="form-label-tip">排队等待超时（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在“排队等待”模式下生效。超时后顺延到下一顺位。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.concurrencyQueueTimeoutSeconds" :min="1" :step="30" />
+              </NFormItem>
+              <NFormItem>
+                <template #label><span class="form-label-tip">路由候选策略<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>对齐 magpie 的路由增强，全部默认关闭；开启前行为与旧版完全一致。</NTooltip></span></template>
+                <div class="settings-switch-column">
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.routeQuotaOrderingEnabled" />配额感知排序（额度窗口最快重置的候选优先）</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.sessionAffinityEnabled" />会话亲和（同一会话粘住上次成功候选，保住上游 prompt cache）</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.tieredRouteCooldownEnabled" />分级冷却（配额 429 休到重置点、限流按 Retry-After）</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.strictClientErrorFallbackEnabled" />客户端错误严格回退（400 词表命中才回退下一候选）</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.streamHeadBufferEnabled" />流式首包蓄流（扣住热身块，上游秒断时可无感回退）</label>
+                </div>
               </NFormItem>
             </div>
           </NForm>
@@ -579,5 +594,10 @@ onMounted(() => {
   .oauth-inspection-row .oauth-field {
     width: 100%;
   }
+}
+.settings-switch-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 </style>

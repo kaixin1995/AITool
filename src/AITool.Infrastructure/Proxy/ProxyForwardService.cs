@@ -128,6 +128,34 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
+    /// 读取上游 Retry-After 原始秒数（不封顶，供分级冷却按真实指示休息；无头/非法为 null）。
+    /// </summary>
+    internal static int? TryReadRetryAfterSeconds(HttpResponseMessage? response)
+    {
+        var retryAfter = response?.Headers?.RetryAfter;
+        if (retryAfter is null)
+        {
+            return null;
+        }
+
+        if (retryAfter.Delta is { } delta && delta > TimeSpan.Zero)
+        {
+            return (int)Math.Min(delta.TotalSeconds, int.MaxValue);
+        }
+
+        if (retryAfter.Date is { } retryAt)
+        {
+            var seconds = (retryAt - DateTimeOffset.UtcNow).TotalSeconds;
+            if (seconds > 0)
+            {
+                return (int)Math.Min(seconds, int.MaxValue);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// 构建走指定出口代理的 Handler（连接池参数与主客户端口径一致）。
     /// </summary>
     private static SocketsHttpHandler CreateProxyHandler(string url)
@@ -304,7 +332,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
                             ErrorMessage = errorBody,
-                            RateLimitRetryCount = rateLimit429Retries
+                            RateLimitRetryCount = rateLimit429Retries,
+                            RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
                     }
                     else
@@ -322,7 +351,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
                             ErrorMessage = errorBody,
-                            RateLimitRetryCount = rateLimit429Retries
+                            RateLimitRetryCount = rateLimit429Retries,
+                            RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
                     }
                     continue;
@@ -576,7 +606,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
                             ErrorMessage = errorBody,
-                            RateLimitRetryCount = rateLimit429Retries
+                            RateLimitRetryCount = rateLimit429Retries,
+                            RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
                     }
                     else
@@ -594,7 +625,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
                             ErrorMessage = errorBody,
-                            RateLimitRetryCount = rateLimit429Retries
+                            RateLimitRetryCount = rateLimit429Retries,
+                            RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
                     }
 

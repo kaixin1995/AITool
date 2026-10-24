@@ -399,3 +399,6 @@ FodyWeavers.xsd
 /src/AITool.Web/wwwroot/index.html
 src/AITool.Admin/wwwroot/
 .zcode/tmp/
+
+# 参考项目克隆（magpie / cc-switch / CLIProxyAPI 等，仅本地阅读，不入库）
+/reference-projects/

@@ -18,6 +18,12 @@ public sealed class SiteQuotaService
     /// <summary>按站点串行化并发刷新，避免同站并发打上游。</summary>
     private static readonly KeyedAsyncLock Locks = new();
 
+    /// <summary>
+    /// 单站点内密钥额度查询的最大并发（对齐 magpie keyReadsAtOnce=8）：
+    /// 一个站点挂几十个 key 时不再瞬间并发打同一额度端点，降低被限流/风控的概率。
+    /// </summary>
+    private static readonly SemaphoreSlim KeyQuerySlots = new(Math.Min(8, Environment.ProcessorCount * 2));
+
     private readonly AppDbContext _dbContext;
     private readonly IEnumerable<ISiteQuotaProvider> _providers;
     private readonly ILogger<SiteQuotaService> _logger;
@@ -47,7 +53,7 @@ public sealed class SiteQuotaService
         var result = new List<SiteQuotaSiteInfo>();
         foreach (var site in sites)
         {
-            var provider = MatchProvider(site.BaseUrl);
+            var provider = MatchProvider(site);
             if (provider is null)
             {
                 continue;
@@ -72,7 +78,7 @@ public sealed class SiteQuotaService
             return null;
         }
 
-        var provider = MatchProvider(site.BaseUrl);
+        var provider = MatchProvider(site);
         if (provider is null)
         {
             return null;
@@ -90,8 +96,9 @@ public sealed class SiteQuotaService
                     .ToListAsync(cancellationToken))
                 .ToList();
 
-            var results = await Task.WhenAll(keys.Select(k =>
-                provider.QueryAsync(site.BaseUrl, k.KeyValue, cancellationToken)));
+            var context = BuildContext(site);
+            var results = await Task.WhenAll(keys.Select(k => QueryWithSlotAsync(
+                provider, context, k.KeyValue, cancellationToken)));
 
             for (var i = 0; i < keys.Count; i++)
             {
@@ -102,8 +109,37 @@ public sealed class SiteQuotaService
         }
     }
 
-    private ISiteQuotaProvider? MatchProvider(string baseUrl)
-        => _providers.FirstOrDefault(p => p.MatchesBaseUrl(baseUrl));
+    /// <summary>带站点内并发闸的密钥额度查询：限制同一站点同时打到上游的额度请求数。</summary>
+    private async Task<SiteQuotaQueryResult> QueryWithSlotAsync(
+        ISiteQuotaProvider provider,
+        SiteQuotaSiteContext site,
+        string apiKey,
+        CancellationToken cancellationToken)
+    {
+        await KeyQuerySlots.WaitAsync(cancellationToken);
+        try
+        {
+            return await provider.QueryAsync(site, apiKey, cancellationToken);
+        }
+        finally
+        {
+            KeyQuerySlots.Release();
+        }
+    }
+
+    /// <summary>构建额度查询的站点上下文（含自定义余额配置）。</summary>
+    private static SiteQuotaSiteContext BuildContext(Domain.Sites.Site site)
+        => new(site.BaseUrl, SiteQuotaBalanceConfig.TryParse(site.QuotaBalanceJson));
+
+    /// <summary>
+    /// 匹配站点的额度供应商：优先按完整上下文匹配（自定义余额配置优先于域名匹配），
+    /// 没有自定义配置时行为与按 base_url 匹配完全一致。
+    /// </summary>
+    private ISiteQuotaProvider? MatchProvider(Domain.Sites.Site site)
+    {
+        var context = BuildContext(site);
+        return _providers.FirstOrDefault(p => p.MatchesSite(context));
+    }
 
     private async Task<Dictionary<Guid, List<SiteKey>>> LoadKeysBySiteAsync(
         IReadOnlyList<Guid> siteIds,

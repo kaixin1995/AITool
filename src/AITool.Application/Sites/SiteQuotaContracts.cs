@@ -8,12 +8,14 @@ namespace AITool.Application.Sites;
 /// <param name="UsedPercent">已用百分比（0-100，忠实搬运不裁剪，负数/超 100 由渲染层处理）。</param>
 /// <param name="ResetLabel">重置时间的简短展示（如「10-12 17:44」），无重置时间为 null。</param>
 /// <param name="ResetAtUtc">重置时间（UTC），供前端做相对倒计时；无重置时间为 null。</param>
+/// <param name="IsAside">非阻塞窗口（如智谱月度 MCP 限时）：仅展示，永不参与自动禁用/调度判定。</param>
 public sealed record SiteQuotaWindow(
     string Id,
     string Label,
     double UsedPercent,
     string? ResetLabel,
-    DateTimeOffset? ResetAtUtc);
+    DateTimeOffset? ResetAtUtc,
+    bool IsAside = false);
 
 /// <summary>
 /// 站点账户余额（按量计费供应商如 DeepSeek 的 /user/balance，与窗口型额度并列展示）。
@@ -57,6 +59,70 @@ public sealed record SiteQuotaQueryResult
 }
 
 /// <summary>
+/// 自定义余额查询配置（Site.QuotaBalanceJson 的解析结果）。
+/// </summary>
+/// <param name="Url">余额接口完整 URL（如 https://panel.example.com/api/user/self）。</param>
+/// <param name="Method">HTTP 方法：GET（默认）或 POST。</param>
+/// <param name="Expression">从响应 JSON 提取余额的表达式（如 $.data.quota/500000），空则取根数值。</param>
+/// <param name="Currency">币种展示标签，默认 USD。</param>
+public sealed record SiteQuotaBalanceConfig(
+    string Url,
+    string Method,
+    string Expression,
+    string Currency)
+{
+    public static SiteQuotaBalanceConfig? TryParse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !root.TryGetProperty("url", out var url)
+                || url.ValueKind != System.Text.Json.JsonValueKind.String
+                || string.IsNullOrWhiteSpace(url.GetString()))
+            {
+                return null;
+            }
+
+            var method = root.TryGetProperty("method", out var m) && m.ValueKind == System.Text.Json.JsonValueKind.String
+                ? m.GetString()!.Trim().ToUpperInvariant()
+                : "GET";
+            if (method is not ("GET" or "POST"))
+            {
+                method = "GET";
+            }
+
+            var expression = root.TryGetProperty("expression", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.String
+                ? e.GetString()!.Trim()
+                : string.Empty;
+            var currency = root.TryGetProperty("currency", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(c.GetString())
+                ? c.GetString()!.Trim()
+                : "USD";
+
+            return new SiteQuotaBalanceConfig(url.GetString()!.Trim(), method, expression, currency);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+}
+
+/// <summary>
+/// 额度查询的站点上下文：除 base_url 外携带站点级自定义配置（如自定义余额查询）。
+/// </summary>
+public sealed record SiteQuotaSiteContext(
+    string BaseUrl,
+    SiteQuotaBalanceConfig? Balance);
+
+/// <summary>
 /// 站点套餐额度供应商扩展点：按 base_url 识别站点所属供应商，并用站点密钥查询套餐额度。
 /// <para>
 /// 站点页「额度查询」Tab 的编排（<c>SiteQuotaService</c>）只依赖本接口，新增供应商时
@@ -75,8 +141,21 @@ public interface ISiteQuotaProvider
     /// <summary>判断站点 base_url 是否属于该供应商（host 级匹配，不认路径中出现的域名）。</summary>
     bool MatchesBaseUrl(string baseUrl);
 
+    /// <summary>
+    /// 按完整站点上下文判断是否接管该站点的额度查询。
+    /// 默认按 base_url 匹配；携带自定义配置的供应商（如自定义余额）可按配置存在与否接管。
+    /// </summary>
+    bool MatchesSite(SiteQuotaSiteContext site) => MatchesBaseUrl(site.BaseUrl);
+
     /// <summary>用站点密钥实时查询套餐额度。</summary>
     Task<SiteQuotaQueryResult> QueryAsync(string baseUrl, string apiKey, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// 按完整站点上下文实时查询额度：默认回落到按 base_url 的查询，
+    /// 携带自定义配置的供应商覆写本方法读取 <see cref="SiteQuotaSiteContext.Balance"/>。
+    /// </summary>
+    Task<SiteQuotaQueryResult> QueryAsync(SiteQuotaSiteContext site, string apiKey, CancellationToken cancellationToken)
+        => QueryAsync(site.BaseUrl, apiKey, cancellationToken);
 
     /// <summary>
     /// 解析已缓存的原始响应（<c>SiteKey.LastQuotaRawJson</c>），还原窗口与套餐等级。

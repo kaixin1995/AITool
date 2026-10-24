@@ -1,0 +1,486 @@
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using AITool.Application.Sites;
+using AITool.Infrastructure.Proxy;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AITool.Web.Services;
+
+/// <summary>
+/// 路由候选策略服务：集中承载三项可独立开关的路由增强策略（全部默认关闭，不影响既有行为）。
+/// <para>
+/// ① 配额感知排序（RouteQuotaOrderingEnabled）：候选中「额度窗口最快重置」的优先——
+/// 重置即清零、不用就是浪费（magpie smart 模式的核心思想）。
+/// ② 会话亲和（SessionAffinityEnabled）：同一会话粘在上次成功应答的候选上，
+/// 避免逐请求回退把上游 prompt cache 打散（magpie affinity 的简化版：无 5 分钟活跃窗口衰减，
+/// 换候选发生在亲和候选被熔断/休息时）。
+/// ③ 分级冷却（TieredRouteCooldownEnabled）：配额耗尽休到该 Key 额度窗口的重置点（封顶 8 天）、
+/// 限流按 Retry-After（封顶 1 小时），其余失败仍走既有失败计数熔断。
+/// </para>
+/// </summary>
+public sealed class RouteCandidatePolicyService
+{
+    private readonly IServiceProvider _serviceProvider;
+    private readonly RouteCircuitStateStore _circuitStore;
+    private readonly SessionAffinityService _sessionAffinity;
+    private readonly ILogger<RouteCandidatePolicyService> _logger;
+
+    /// <summary>配额重置信息缓存条目（60 秒 TTL，含负缓存）。</summary>
+    private sealed record QuotaResetEntry(DateTimeOffset FetchedAtUtc, DateTimeOffset? EarliestResetUtc);
+
+    private readonly ConcurrentDictionary<Guid, QuotaResetEntry> _quotaResetCache = [];
+    private static readonly TimeSpan QuotaResetCacheTtl = TimeSpan.FromSeconds(60);
+
+    public RouteCandidatePolicyService(
+        IServiceProvider serviceProvider,
+        RouteCircuitStateStore circuitStore,
+        SessionAffinityService sessionAffinity,
+        ILogger<RouteCandidatePolicyService> logger)
+    {
+        _serviceProvider = serviceProvider;
+        _circuitStore = circuitStore;
+        _sessionAffinity = sessionAffinity;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// 候选预排序：会话亲和命中时把亲和候选挪到最前（不再做配额排序——会话粘性优先）；
+    /// 否则在启用配额排序时按「最早重置优先」稳定排序（无配额数据的候选保持原相对次序、排在有数据的之后）。
+    /// </summary>
+    public async Task<List<CachedProxyRouteTarget>> PreorderCandidatesAsync(
+        IReadOnlyList<CachedProxyRouteTarget> routes,
+        bool quotaOrderingEnabled,
+        string? conversationKey,
+        CancellationToken cancellationToken)
+    {
+        var list = routes.ToList();
+
+        if (!string.IsNullOrWhiteSpace(conversationKey)
+            && _sessionAffinity.TryOrderForConversation(list, conversationKey))
+        {
+            return list;
+        }
+
+        if (!quotaOrderingEnabled || list.Count < 2)
+        {
+            return list;
+        }
+
+        var resets = new List<(CachedProxyRouteTarget Route, DateTimeOffset? Reset)>(list.Count);
+        foreach (var route in list)
+        {
+            resets.Add((route, await GetEarliestFutureResetAsync(route, cancellationToken)));
+        }
+
+        // 稳定排序：有重置时间的按时间升序在前，无数据的保持原相对次序在后。
+        var ordered = resets
+            .Select((item, index) => (item.Route, item.Reset, index))
+            .OrderBy(item => item.Reset.HasValue ? 0 : 1)
+            .ThenBy(item => item.Reset ?? DateTimeOffset.MaxValue)
+            .ThenBy(item => item.index)
+            .Select(item => item.Route)
+            .ToList();
+        return ordered;
+    }
+
+    /// <summary>
+    /// 取候选对应 Key 的最早未来重置时间：多 Key 展开候选用 SiteKeyId；兼容候选回退站点级
+    /// （无 Key 记录取该站点全部 Key 中最早者）。数据来自 SiteKey.LastQuota* 落库缓存，
+    /// 60 秒内存 TTL；无配额数据（从未查询/查询失败/无窗口）返回 null（负缓存同样 60 秒）。
+    /// </summary>
+    private async Task<DateTimeOffset?> GetEarliestFutureResetAsync(CachedProxyRouteTarget route, CancellationToken cancellationToken)
+    {
+        var cacheKey = route.SiteKeyId ?? route.SiteId;
+        var now = DateTimeOffset.UtcNow;
+        if (_quotaResetCache.TryGetValue(cacheKey, out var cached)
+            && now - cached.FetchedAtUtc < QuotaResetCacheTtl)
+        {
+            return cached.EarliestResetUtc;
+        }
+
+        DateTimeOffset? earliest = null;
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<Infrastructure.Persistence.AppDbContext>();
+            var providers = scope.ServiceProvider.GetServices<ISiteQuotaProvider>().ToList();
+
+            var keys = route.SiteKeyId is { } keyId
+                ? await dbContext.SiteKeys.Where(k => k.Id == keyId).ToListAsync(cancellationToken)
+                : await dbContext.SiteKeys.Where(k => k.SiteId == route.SiteId).ToListAsync(cancellationToken);
+
+            foreach (var key in keys)
+            {
+                if (string.IsNullOrWhiteSpace(key.LastQuotaRawJson))
+                {
+                    continue;
+                }
+
+                foreach (var provider in providers)
+                {
+                    var parsed = provider.ParseCached(key.LastQuotaRawJson);
+                    if (parsed is not { Success: true })
+                    {
+                        continue;
+                    }
+
+                    foreach (var window in parsed.Windows)
+                    {
+                        // 非阻塞窗口（如智谱 MCP 月度）不参与重置排序。
+                        if (window.IsAside || window.ResetAtUtc is not { } reset || reset <= now)
+                        {
+                            continue;
+                        }
+
+                        if (earliest is null || reset < earliest)
+                        {
+                            earliest = reset;
+                        }
+                    }
+
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation("Quota reset lookup failed for site {SiteId}: {Message}", route.SiteId, ex.Message);
+        }
+
+        _quotaResetCache[cacheKey] = new QuotaResetEntry(now, earliest);
+        return earliest;
+    }
+
+    /// <summary>
+    /// 上游失败后的路由处置：启用分级冷却时——402/配额类 429 休到重置点（无数据休 30 分钟，封顶 8 天），
+    /// 纯限流 429 按 Retry-After（封顶 1 小时，缺省 2 分钟）；其余失败走既有失败计数熔断。
+    /// 未启用时行为与直接调用熔断计数完全一致。
+    /// </summary>
+    public async Task RecordRouteFailureAsync(
+        CachedProxyRouteTarget route,
+        int statusCode,
+        string? errorBody,
+        int? retryAfterSeconds,
+        bool tieredCooldownEnabled,
+        CircuitRouteMeta meta,
+        CancellationToken cancellationToken)
+    {
+        if (!tieredCooldownEnabled)
+        {
+            _circuitStore.Block(route.CircuitKey, meta);
+            return;
+        }
+
+        var body = errorBody ?? string.Empty;
+
+        if (statusCode == 402 || (statusCode == 429 && LooksLikeQuotaExhaustion(body)))
+        {
+            var reset = await GetEarliestFutureResetAsync(route, cancellationToken);
+            var now = DateTimeOffset.UtcNow;
+            var until = reset is { } resetAt && resetAt > now
+                ? resetAt
+                : now.AddMinutes(30);
+            if (until > now.AddDays(8))
+            {
+                until = now.AddDays(8);
+            }
+
+            _circuitStore.Rest(route.CircuitKey, until, $"配额耗尽，休息至 {until.ToLocalTime():MM-dd HH:mm}", meta);
+            return;
+        }
+
+        if (statusCode == 429)
+        {
+            var rest = TimeSpan.FromSeconds(Math.Clamp(retryAfterSeconds ?? 120, 1, 3600));
+            _circuitStore.Rest(route.CircuitKey, DateTimeOffset.UtcNow.Add(rest), $"限流，休息 {Math.Round(rest.TotalMinutes)} 分钟", meta);
+            return;
+        }
+
+        _circuitStore.Block(route.CircuitKey, meta);
+    }
+
+    /// <summary>
+    /// 客户端错误严格回退判定：开启严格模式且状态码为 400/413/422、错误体又未命中
+    /// 「换一家可能就好」词表时，返回 true（该失败应直接回给客户端，不再回退）。
+    /// </summary>
+    public static bool ClientErrorBlocksFallback(bool strictEnabled, AITool.Application.Proxy.ProxyForwardResult result)
+        => strictEnabled
+           && result.StatusCode is 400 or 413 or 422
+           && !IsClientErrorFallbackWorthy(result.ResponseBody ?? result.ErrorMessage);
+
+    /// <summary>配额耗尽类错误词表（中英文常见形态，ordinal 忽略大小写）。</summary>
+    private static readonly string[] QuotaExhaustionWords =
+    [
+        "usage_limit_reached", "usage limit", "quota", "insufficient", "billing",
+        "credit", "exceeded", "余额不足", "额度", "配额", "欠费",
+    ];
+
+    /// <summary>判断错误体是否为配额耗尽类（区分「没额度」与「太快了」两类 429）。</summary>
+    public static bool LooksLikeQuotaExhaustion(string? errorBody)
+    {
+        if (string.IsNullOrEmpty(errorBody))
+        {
+            return false;
+        }
+
+        foreach (var word in QuotaExhaustionWords)
+        {
+            if (errorBody.Contains(word, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 客户端错误（400/413/422）是否值得回退到下一候选：命中词表（配额/模型未提供/鉴权/区域等，
+    /// 这些换一家站点可能就好了）才回退；纯请求形态错误（参数畸形等，换谁都一样）直接回给客户端。
+    /// 对齐 magpie retryable 的 400 词表思想，用于 StrictClientErrorFallbackEnabled 开启时。
+    /// </summary>
+    public static bool IsClientErrorFallbackWorthy(string? errorBody)
+    {
+        if (string.IsNullOrWhiteSpace(errorBody))
+        {
+            return true; // 拿不到错误体时不拦截，保持既有回退行为
+        }
+
+        var worthy =
+            LooksLikeQuotaExhaustion(errorBody)
+            || errorBody.Contains("model", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("not_found", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("no such", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("unserved", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("unsupported", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("unavailable", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("deprecated", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("region", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("permission", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("invalid_api_key", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("authentication", StringComparison.OrdinalIgnoreCase)
+            || errorBody.Contains("不存在", StringComparison.Ordinal)
+            || errorBody.Contains("不支持", StringComparison.Ordinal)
+            || errorBody.Contains("未开通", StringComparison.Ordinal);
+        return worthy;
+    }
+}
+
+/// <summary>
+/// 会话亲和服务：会话键 → 上次成功应答的候选（CircuitKey），内存态、上限 512 条、24 小时过期。
+/// 会话键优先取 X-Session-Id / X-Conversation-Id 请求头，否则以「模型 + 首条用户消息前 512 字符」
+/// 的 SHA-256 充当（同一会话的首条用户消息在多轮请求中保持不变，是稳定的会话指纹）。
+/// </summary>
+public sealed class SessionAffinityService
+{
+    private sealed record AffinityEntry(Guid CircuitKey, DateTimeOffset LastUsedUtc);
+
+    private const int MaxEntries = 512;
+    private static readonly TimeSpan EntryTtl = TimeSpan.FromHours(24);
+
+    private readonly ConcurrentDictionary<string, AffinityEntry> _map = [];
+    private DateTimeOffset _lastPrunedUtc = DateTimeOffset.UtcNow;
+
+    /// <summary>解析会话指纹：请求头优先，否则哈希模型 + 首条用户消息。失败/信息不足返回 null。</summary>
+    public static string? TryResolveConversationKey(Microsoft.AspNetCore.Http.HttpRequest? request, string? modelName, string? requestBody)
+    {
+        var headerSession = request?.Headers["X-Session-Id"].FirstOrDefault()
+                            ?? request?.Headers["X-Conversation-Id"].FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(headerSession))
+        {
+            return "h:" + headerSession.Trim();
+        }
+
+        var firstUserMessage = TryExtractFirstUserMessage(requestBody);
+        if (string.IsNullOrWhiteSpace(firstUserMessage))
+        {
+            return null;
+        }
+
+        var payload = (modelName ?? string.Empty) + "\n" + firstUserMessage;
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
+        return "m:" + Convert.ToHexString(hash);
+    }
+
+    /// <summary>从请求体提取首条用户消息文本（前 512 字符）：兼容 OpenAI messages、Responses input、completions prompt。</summary>
+    internal static string? TryExtractFirstUserMessage(string? requestBody)
+    {
+        if (string.IsNullOrWhiteSpace(requestBody) || requestBody.Length > 2_000_000)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(requestBody);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            if (root.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var message in messages.EnumerateArray())
+                {
+                    if (message.ValueKind != JsonValueKind.Object
+                        || !message.TryGetProperty("role", out var role)
+                        || role.ValueKind != JsonValueKind.String
+                        || !string.Equals(role.GetString(), "user", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var text = ReadContentText(message);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        return text.Length > 512 ? text[..512] : text;
+                    }
+                }
+            }
+
+            if (root.TryGetProperty("input", out var input))
+            {
+                if (input.ValueKind == JsonValueKind.String && input.GetString() is { Length: > 0 } promptText)
+                {
+                    return promptText.Length > 512 ? promptText[..512] : promptText;
+                }
+
+                if (input.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in input.EnumerateArray())
+                    {
+                        if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } s)
+                        {
+                            return s.Length > 512 ? s[..512] : s;
+                        }
+
+                        if (item.ValueKind == JsonValueKind.Object
+                            && (!item.TryGetProperty("role", out var role) || string.Equals(role.GetString(), "user", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            var text = ReadContentText(item);
+                            if (!string.IsNullOrWhiteSpace(text))
+                            {
+                                return text.Length > 512 ? text[..512] : text;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (root.TryGetProperty("prompt", out var prompt) && prompt.ValueKind == JsonValueKind.String)
+            {
+                var text = prompt.GetString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text!.Length > 512 ? text![..512] : text;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static string? ReadContentText(JsonElement message)
+    {
+        if (!message.TryGetProperty("content", out var content))
+        {
+            return null;
+        }
+
+        switch (content.ValueKind)
+        {
+            case JsonValueKind.String:
+                return content.GetString();
+            case JsonValueKind.Array:
+                foreach (var part in content.EnumerateArray())
+                {
+                    if (part.ValueKind == JsonValueKind.Object
+                        && part.TryGetProperty("text", out var text)
+                        && text.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrEmpty(text.GetString()))
+                    {
+                        return text.GetString();
+                    }
+                }
+
+                break;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 把亲和候选挪到列表最前。返回是否命中（命中时调用方跳过配额排序）。
+    /// 只重排顺序，不改变候选集合；亲和候选熔断/休息时由转发循环自然跳过（此时视为未命中）。
+    /// </summary>
+    public bool TryOrderForConversation(List<CachedProxyRouteTarget> routes, string conversationKey)
+    {
+        if (!_map.TryGetValue(conversationKey, out var entry))
+        {
+            return false;
+        }
+
+        var index = routes.FindIndex(r => r.CircuitKey == entry.CircuitKey);
+        if (index <= 0)
+        {
+            return index == 0;
+        }
+
+        var pinned = routes[index];
+        routes.RemoveAt(index);
+        routes.Insert(0, pinned);
+        return true;
+    }
+
+    /// <summary>记录会话的成功应答候选。</summary>
+    public void RecordSuccess(string? conversationKey, Guid circuitKey)
+    {
+        if (string.IsNullOrWhiteSpace(conversationKey))
+        {
+            return;
+        }
+
+        PruneIfNeeded();
+        _map[conversationKey] = new AffinityEntry(circuitKey, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>定期清理过期与超量条目（机会式：每小时最多一次）。</summary>
+    private void PruneIfNeeded()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastPrunedUtc < TimeSpan.FromHours(1))
+        {
+            return;
+        }
+
+        _lastPrunedUtc = now;
+        foreach (var pair in _map)
+        {
+            if (now - pair.Value.LastUsedUtc > EntryTtl)
+            {
+                _map.TryRemove(pair.Key, out _);
+            }
+        }
+
+        if (_map.Count <= MaxEntries)
+        {
+            return;
+        }
+
+        foreach (var pair in _map.OrderBy(p => p.Value.LastUsedUtc).Take(_map.Count - MaxEntries))
+        {
+            _map.TryRemove(pair.Key, out _);
+        }
+    }
+}

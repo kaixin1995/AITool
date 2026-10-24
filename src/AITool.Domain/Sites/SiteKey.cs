@@ -81,6 +81,13 @@ public sealed class SiteKey
     public string? LastQuotaStatus { get; set; }
 
     /// <summary>
+    /// 密钥级出口网络代理地址（为空继承站点 EgressProxyUrl）：多账号同站点时可为每个 Key 指定独立出口，
+    /// 降低同 IP 相关性风控。校验规则与站点级一致（EgressProxyValidator）。
+    /// </summary>
+    [SugarColumn(Length = 300, IsNullable = true)]
+    public string? EgressProxyUrl { get; set; }
+
+    /// <summary>
     /// 最近一次额度查询的错误信息；成功时清空。
     /// </summary>
     [SugarColumn(Length = 500, IsNullable = true)]

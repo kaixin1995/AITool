@@ -120,6 +120,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// 负责维护路由熔断状态，避免持续命中异常站点。
     /// </summary>
     private readonly RouteCircuitStateStore _circuitStore;
+    private readonly RouteCandidatePolicyService _routeCandidatePolicy;
+    private readonly SessionAffinityService _sessionAffinity;
     /// <summary>
     /// 提供访问密钥、路由和运行时设置等缓存数据。
     /// </summary>
@@ -144,6 +146,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// 负责在 Kimi 上游凭证失效时即时刷新 access token。
     /// </summary>
     private readonly KimiCredentialRefreshService _kimiCredentialRefreshService;
+    private readonly DeviceOAuthCredentialRefreshService _deviceOAuthCredentialRefreshService;
     /// <summary>
     /// 记录代理请求诊断转储与对比样本。
     /// </summary>
@@ -160,24 +163,30 @@ public sealed partial class OpenAiProxyController : ControllerBase
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
         RouteCircuitStateStore circuitStore,
+        RouteCandidatePolicyService routeCandidatePolicy,
+        SessionAffinityService sessionAffinity,
         ProxyRequestMetadataCache metadataCache,
         DeveloperInvocationTraceStore traceStore,
         ModelConcurrencyLimiter concurrencyLimiter,
         CodexCredentialRefreshService codexCredentialRefreshService,
         GoogleCredentialRefreshService googleCredentialRefreshService,
         KimiCredentialRefreshService kimiCredentialRefreshService,
+        DeviceOAuthCredentialRefreshService deviceOAuthCredentialRefreshService,
         IProxyDiagnosticService diagnosticService,
         ILogger<OpenAiProxyController> logger)
     {
         _forwardService = forwardService;
         _usageLogService = usageLogService;
         _circuitStore = circuitStore;
+        _routeCandidatePolicy = routeCandidatePolicy;
+        _sessionAffinity = sessionAffinity;
         _metadataCache = metadataCache;
         _traceStore = traceStore;
         _concurrencyLimiter = concurrencyLimiter;
         _codexCredentialRefreshService = codexCredentialRefreshService;
         _googleCredentialRefreshService = googleCredentialRefreshService;
         _kimiCredentialRefreshService = kimiCredentialRefreshService;
+        _deviceOAuthCredentialRefreshService = deviceOAuthCredentialRefreshService;
         _diagnosticService = diagnosticService;
         _logger = logger;
     }
@@ -568,6 +577,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
             return StatusCode(403, new { error = new { message = $"模型 '{modelName}' 没有可用的路由，请检查路由配置或联系管理员", type = "invalid_request_error", code = "no_available_route" } });
         }
 
+        // 路由候选策略（全部默认关闭）：会话亲和把上次成功候选挪到最前，配额排序按「最早重置优先」。
+        var conversationKey = ResolveConversationKeySafely(runtimeSettings, Request, modelName, requestBody);
+        allRoutes = await PreorderRoutesByPolicyAsync(allRoutes.ToList(), runtimeSettings, conversationKey, cancellationToken);
+
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
@@ -688,6 +701,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, streamResult, requestId, traceId);
                 var streamCanFallback = !streamResult.Success
                     && streamOutcome.CanFallback
+                    && !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult)
                     && allRoutes.Skip(routeIndex + 1).Any(candidate =>
                         !IsRouteBlockedSafely(candidate.CircuitKey)
                         && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
@@ -724,6 +738,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 if (streamResult.Success)
                 {
                     SafeSucceedRoute(route.CircuitKey);
+                    RecordSessionAffinitySafely(conversationKey, route.CircuitKey);
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {
                         Status = "success",
@@ -752,7 +767,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     OutputTokens = streamResult.OutputTokens,
                     TotalDurationMs = streamResult.TotalDurationMs
                 });
-                SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
+                await RecordRouteFailureByPolicyAsync(route, streamResult, runtimeSettings);
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
                 {
@@ -770,9 +785,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
             }
 
             SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
-            var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate =>
-                !IsRouteBlockedSafely(candidate.CircuitKey)
-                && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
+            var canFallback = !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, result)
+                && allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                    !IsRouteBlockedSafely(candidate.CircuitKey)
+                    && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
 
             // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账，
             // 避免出现"日志已记成功、客户端却收到 502"，以及 fallback 成功后第一次尝试的真实
@@ -821,6 +837,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
             if (result.Success)
             {
                 SafeSucceedRoute(route.CircuitKey);
+                RecordSessionAffinitySafely(conversationKey, route.CircuitKey);
                 SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
@@ -849,7 +866,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 OutputTokens = result.OutputTokens,
                 TotalDurationMs = result.TotalDurationMs
             });
-            SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
+            await RecordRouteFailureByPolicyAsync(route, result, runtimeSettings);
             lastResult = result;
         }
 

@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
 
             <div v-if="key.windows.length > 0" class="site-quota-windows">
               <div v-for="w in key.windows" :key="w.id" class="site-quota-window">
-                <div class="site-quota-window-label">{{ w.label }}</div>
+                <div class="site-quota-window-label">{{ w.label }}{{ w.isAside ? '（不参与调度）' : '' }}</div>
                 <NProgress
                   class="site-quota-window-bar"
                   :percentage="remainingPercent(w.usedPercent)"

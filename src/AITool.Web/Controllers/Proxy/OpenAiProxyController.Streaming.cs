@@ -490,6 +490,16 @@ public sealed partial class OpenAiProxyController
         var inputTokens = 0;
         var cachedTokens = 0;
         var outputTokens = 0;
+        // 首包蓄流（默认关闭）：扣住开头的热身块，出现内容块才写客户端，扩大可回退窗口。
+        var headBuffer = await TryCreateSseHeadBufferAsync(cancellationToken);
+
+        async Task WriteChunkDirectAsync(string chunk, CancellationToken token)
+        {
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await Response.WriteAsync(chunk, token);
+            await Response.Body.FlushAsync(token);
+            startedWriting = true;
+        }
 
         async Task WriteRawSseBlockAsync(List<string> lines, CancellationToken token)
         {
@@ -512,10 +522,23 @@ public sealed partial class OpenAiProxyController
                 chunk = sseBlockConverter(chunk);
             }
 
-            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
-            await Response.WriteAsync(chunk, token);
-            await Response.Body.FlushAsync(token);
-            startedWriting = true;
+            if (headBuffer is not null)
+            {
+                if (headBuffer.TryHold(chunk))
+                {
+                    // 扣住：诊断捕获照记，但不写客户端、不置 startedWriting（保留回退窗口）。
+                    if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+                    return;
+                }
+
+                headBuffer.Release();
+                foreach (var held in headBuffer.Drain())
+                {
+                    await WriteChunkDirectAsync(held, token);
+                }
+            }
+
+            await WriteChunkDirectAsync(chunk, token);
         }
 
         async Task FlushOpenAiSseBlockAsync(CancellationToken token)
@@ -609,6 +632,24 @@ public sealed partial class OpenAiProxyController
         if (!result.Success && startedWriting)
         {
             result.IsStreamInterrupted = true;
+        }
+
+        // 首包蓄流收尾：流最终成功时冲刷扣住的热身块；失败时丢弃——它们从未写给客户端，
+        // startedWriting 保持 false，上层 CanFallback 仍为 true，可无感换下一候选。
+        if (headBuffer is not null && !headBuffer.Released)
+        {
+            headBuffer.Release();
+            if (result.Success)
+            {
+                foreach (var held in headBuffer.Drain())
+                {
+                    await WriteChunkDirectAsync(held, cancellationToken);
+                }
+            }
+            else
+            {
+                headBuffer.Drain();
+            }
         }
 
         // 流中断但已开始写入时，向客户端补发终止信号避免挂起

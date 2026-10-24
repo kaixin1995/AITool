@@ -126,6 +126,12 @@ public sealed class GoogleAccountProvisioner
                 // 客户端三种协议经 ProxyProtocolResolver 统一桥接到 Gemini。
                 ProtocolType = "Gemini",
                 ManagedSource = GoogleAccountKinds.ManagedSource,
+                // GeminiCli 接入用 gemini-cli 的 UA 覆盖 Antigravity 仿真预设的默认头。
+                ExtraHeadersJson = GoogleAccountKinds.IsGeminiCli(input.AccountKind)
+                    ? System.Text.Json.JsonSerializer.Serialize(
+                        new Dictionary<string, string> { ["User-Agent"] = GoogleAccountKinds.GeminiCliUserAgent },
+                        AITool.Application.Common.JsonSerializerPresets.Compact)
+                    : null,
                 IsEnabled = true,
             };
             await client.Insertable(site).ExecuteCommandAsync(ct);

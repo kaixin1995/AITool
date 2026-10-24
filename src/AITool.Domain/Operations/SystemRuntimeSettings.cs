@@ -126,6 +126,40 @@ public sealed class SystemRuntimeSettings
     public int ConcurrencyQueueTimeoutSeconds { get; set; } = 120;
 
     /// <summary>
+    /// 配额感知路由排序（默认关闭）：候选中额度窗口最快重置的优先——重置即清零、不用就是浪费。
+    /// 依据站点密钥的额度查询缓存（LastQuota* 列），无额度数据的候选保持原相对次序。
+    /// </summary>
+    public bool RouteQuotaOrderingEnabled { get; set; }
+
+    /// <summary>
+    /// 会话亲和（默认关闭）：同一会话粘在上次成功应答的站点密钥上，避免逐请求回退打散上游 prompt cache。
+    /// 会话指纹 = X-Session-Id/X-Conversation-Id 头，或「模型 + 首条用户消息前 512 字符」哈希；
+    /// 亲和候选被熔断/休息时自动落到下一候选。内存态，重启即清空。
+    /// </summary>
+    public bool SessionAffinityEnabled { get; set; }
+
+    /// <summary>
+    /// 路由分级冷却（默认关闭）：配额耗尽（402/配额类 429）直接休息到该 Key 额度窗口的重置点
+    ///（无数据休 30 分钟，封顶 8 天）；纯限流 429 按 Retry-After 休息（封顶 1 小时）；
+    /// 其余失败仍走失败计数熔断。关闭时全部走既有熔断计数。
+    /// </summary>
+    public bool TieredRouteCooldownEnabled { get; set; }
+
+    /// <summary>
+    /// 客户端错误严格回退（默认关闭）：开启后 400/413/422 仅在错误体命中词表
+    ///（配额/模型未提供/鉴权/区域等——换一家可能就好）时才回退下一候选；
+    /// 纯请求形态错误直接回给客户端，不再逐个浪费候选。关闭时保持全量回退。
+    /// </summary>
+    public bool StrictClientErrorFallbackEnabled { get; set; }
+
+    /// <summary>
+    /// 流式首包蓄流（holdWriter，默认关闭）：SSE 透传链路扣住开头几个热身块（ping/role 增量等），
+    /// 出现首个内容块才写给客户端。上游 200 后立刻断流时客户端尚未收到任何字节，
+    /// 可无感回退下一候选，而不是吃残流。正常流的首字延迟增加一般不超过一个事件块。
+    /// </summary>
+    public bool StreamHeadBufferEnabled { get; set; }
+
+    /// <summary>
     /// 最近一次执行使用日志清理的时间，用于展示或判断自动清理的运行情况。
     /// </summary>
     [SugarColumn(IsNullable = true)]

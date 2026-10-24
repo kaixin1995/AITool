@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NCard, NButton, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
+import DeviceOAuthAccountsTab from '@/views/DeviceOAuthAccountsTab.vue'
 import * as api from '@/api/oauth'
 import type {
   OAuthAccount,
@@ -51,6 +52,7 @@ const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
   { key: 'antigravity', label: 'Antigravity' },
+  { key: 'gemini-cli', label: 'Gemini CLI' },
   { key: 'kimi', label: 'Kimi' },
   { key: 'xai', label: 'Grok (xAI)' }
 ] as const
@@ -1426,7 +1428,10 @@ onUnmounted(() => {
             </NCard>
           </div>
         </NTabPane>
-      </NTabs>
+              <NTabPane name="device" tab="通用账号（MiniMax / Qoder / ZCode / Copilot / Claude）">
+          <DeviceOAuthAccountsTab />
+        </NTabPane>
+</NTabs>
     </NSpin>
 
     <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序；按厂商展示对应流程。 -->

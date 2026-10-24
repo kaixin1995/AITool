@@ -2,12 +2,17 @@ namespace AITool.Application.Google;
 
 /// <summary>
 /// Google 账号接入方式与上游端点常量。
-/// Antigravity 走 daily-cloudcode-pa.googleapis.com 的 v1internal 接口（Antigravity CLI 客户端身份）。
+/// Antigravity 走 daily-cloudcode-pa.googleapis.com 的 v1internal 接口（Antigravity CLI 客户端身份）；
+/// GeminiCli 走 cloudcode-pa.googleapis.com 的 v1internal 接口（gemini-cli 公开桌面客户端身份，
+/// 凭证为生态内广泛使用的固定 client_id/secret，对齐 gcli2api 的 Gemini CLI OAuth 常量）。
 /// </summary>
 public static class GoogleAccountKinds
 {
     /// <summary>Antigravity CLI 客户端接入（https://daily-cloudcode-pa.googleapis.com）。</summary>
     public const string Antigravity = "Antigravity";
+
+    /// <summary>Gemini CLI 客户端接入（https://cloudcode-pa.googleapis.com）。</summary>
+    public const string GeminiCli = "GeminiCli";
 
     /// <summary>隐藏 Site 的 ManagedSource 标识（站点管理页据此过滤托管 Site）。</summary>
     public const string ManagedSource = "Google";
@@ -15,6 +20,9 @@ public static class GoogleAccountKinds
     private const string AntigravityBaseUrl = "https://daily-cloudcode-pa.googleapis.com";
     private const string AntigravityClientId = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
     private const string AntigravityClientSecret = "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";
+    private const string GeminiCliBaseUrl = "https://cloudcode-pa.googleapis.com";
+    private const string GeminiCliClientId = "gemini-cli-client-id-removed";
+    private const string GeminiCliClientSecret = "gemini-cli-client-secret-removed";
 
     /// <summary>Google OAuth 授权端点。</summary>
     public const string AuthorizeUrl = "https://accounts.google.com/o/oauth2/auth";
@@ -35,32 +43,37 @@ public static class GoogleAccountKinds
     /// <summary>判断接入方式是否为合法值。</summary>
     public static bool IsValid(string? accountKind)
     {
-        return string.Equals(accountKind, Antigravity, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(accountKind, Antigravity, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(accountKind, GeminiCli, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>接入方式归一化（归一化为 Antigravity）。</summary>
+    /// <summary>接入方式归一化（未知值归一化为 Antigravity）。</summary>
     public static string Normalize(string? accountKind)
     {
-        return Antigravity;
+        return IsGeminiCli(accountKind) ? GeminiCli : Antigravity;
     }
 
     /// <summary>获取接入方式对应的上游根地址。</summary>
     public static string GetBaseUrl(string? accountKind = null)
     {
-        return AntigravityBaseUrl;
+        return IsGeminiCli(accountKind) ? GeminiCliBaseUrl : AntigravityBaseUrl;
     }
 
     /// <summary>获取接入方式对应的 OAuth client_id。</summary>
     public static string GetClientId(string? accountKind = null)
     {
-        return AntigravityClientId;
+        return IsGeminiCli(accountKind) ? GeminiCliClientId : AntigravityClientId;
     }
 
     /// <summary>获取接入方式对应的 OAuth client_secret。</summary>
     public static string GetClientSecret(string? accountKind = null)
     {
-        return AntigravityClientSecret;
+        return IsGeminiCli(accountKind) ? GeminiCliClientSecret : AntigravityClientSecret;
     }
+
+    /// <summary>是否为 Gemini CLI 接入方式。</summary>
+    public static bool IsGeminiCli(string? accountKind)
+        => string.Equals(accountKind, GeminiCli, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>获取接入方式对应的 OAuth scope 列表（空格拼接后放入授权 URL）。</summary>
     public static IReadOnlyList<string> GetScopes(string? accountKind = null)
@@ -77,4 +90,11 @@ public static class GoogleAccountKinds
 
     /// <summary>Antigravity CLI 客户端 User-Agent（对齐 agy 1.1.20 真实官方抓包特征）。</summary>
     public const string AntigravityUserAgent = "antigravity/cli/1.1.20 (aidev_client; os_type=windows; arch=amd64; cl=970154694; auth_method=consumer)";
+
+    /// <summary>Gemini CLI 客户端 User-Agent（对齐 gemini-cli 官方客户端特征）。</summary>
+    public const string GeminiCliUserAgent = "GeminiCLI/1.4.0 (windows; x64)";
+
+    /// <summary>获取接入方式对应的 User-Agent。</summary>
+    public static string GetUserAgent(string? accountKind = null)
+        => IsGeminiCli(accountKind) ? GeminiCliUserAgent : AntigravityUserAgent;
 }

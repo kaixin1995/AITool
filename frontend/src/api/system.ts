@@ -21,6 +21,11 @@ export interface SystemSettings {
   developerProxyProfilesEnabled: boolean
   concurrencyMode: number
   concurrencyQueueTimeoutSeconds: number
+  routeQuotaOrderingEnabled: boolean
+  sessionAffinityEnabled: boolean
+  tieredRouteCooldownEnabled: boolean
+  strictClientErrorFallbackEnabled: boolean
+  streamHeadBufferEnabled: boolean
   oauthFeaturesEnabled: boolean
   oauthInspectionEnabled: boolean
   oauthInspectionIntervalSeconds: number

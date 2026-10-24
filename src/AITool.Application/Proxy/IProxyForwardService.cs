@@ -158,6 +158,12 @@ public sealed class ProxyForwardResult
     public int RateLimitRetryCount { get; set; }
 
     /// <summary>
+    /// 上游 429 响应携带的 Retry-After 秒数（无该头或解析失败为 null）。
+    /// 供路由分级冷却按上游指示休息，而非固定时长。
+    /// </summary>
+    public int? RetryAfterSeconds { get; set; }
+
+    /// <summary>
     /// 标记本次调用是否因客户端主动取消而结束；取消不应触发后续路由回退。
     /// </summary>
     public bool IsCanceled { get; set; }

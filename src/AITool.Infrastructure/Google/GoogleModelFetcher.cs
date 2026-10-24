@@ -21,19 +21,19 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
     /// <inheritdoc />
     public async Task<IReadOnlyList<(string Slug, string DisplayName)>> FetchAsync(string accountKind, string accessToken, CancellationToken ct)
     {
-        return await FetchAntigravityModelsAsync(accessToken, ct);
+        return await FetchAntigravityModelsAsync(accountKind, accessToken, ct);
     }
 
-    private async Task<IReadOnlyList<(string Slug, string DisplayName)>> FetchAntigravityModelsAsync(string accessToken, CancellationToken ct)
+    private async Task<IReadOnlyList<(string Slug, string DisplayName)>> FetchAntigravityModelsAsync(string? accountKind, string accessToken, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
-            $"{GoogleAccountKinds.GetBaseUrl(GoogleAccountKinds.Antigravity)}/v1internal:fetchAvailableModels")
+            $"{GoogleAccountKinds.GetBaseUrl(accountKind)}/v1internal:fetchAvailableModels")
         {
             Content = new StringContent("{}", Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        request.Headers.TryAddWithoutValidation("User-Agent", GoogleAccountKinds.AntigravityUserAgent);
+        request.Headers.TryAddWithoutValidation("User-Agent", GoogleAccountKinds.GetUserAgent(accountKind));
         request.Headers.TryAddWithoutValidation("requestId", $"req-{Guid.NewGuid():N}");
         request.Headers.TryAddWithoutValidation("requestType", "agent");
 

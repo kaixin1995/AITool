@@ -150,6 +150,14 @@ public sealed partial class OpenAiProxyController
                 cancellationToken);
         }
 
+        if (string.Equals(route.ManagedSource, DeviceOAuthAccountProvisioner.ManagedSource, StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _deviceOAuthCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
         return null;
     }
 
@@ -1218,6 +1226,116 @@ public sealed partial class OpenAiProxyController
             _logger.LogError(ex,
                 "更新路由失败状态失败，但继续尝试后续路由。CircuitKey={CircuitKey}",
                 circuitKey);
+        }
+    }
+
+    /// <summary>
+    /// 按策略记录上游失败：分级冷却开启时按失败类型休息（配额→重置点、限流→Retry-After），
+    /// 关闭时与直接累计熔断计数完全一致。仅用于「有上游响应状态码」的失败；
+    /// 本地错误（协议转换失败等）仍走 <see cref="SafeBlockRoute"/>。
+    /// </summary>
+    private async Task RecordRouteFailureByPolicyAsync(
+        CachedProxyRouteTarget route,
+        AITool.Application.Proxy.ProxyForwardResult result,
+        CachedProxyRuntimeSettings runtimeSettings)
+    {
+        try
+        {
+            await _routeCandidatePolicy.RecordRouteFailureAsync(
+                route,
+                result.StatusCode,
+                result.ResponseBody ?? result.ErrorMessage,
+                result.RetryAfterSeconds,
+                runtimeSettings.TieredRouteCooldownEnabled,
+                new CircuitRouteMeta(route.SiteName, route.SiteModelName),
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "按策略记录路由失败状态异常，回退到普通熔断计数。CircuitKey={CircuitKey}",
+                route.CircuitKey);
+            SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
+        }
+    }
+
+    /// <summary>
+    /// 候选预排序（会话亲和优先，其次配额感知排序）；两个开关都关闭时原样返回，不产生任何开销。
+    /// </summary>
+    private async Task<List<CachedProxyRouteTarget>> PreorderRoutesByPolicyAsync(
+        List<CachedProxyRouteTarget> routes,
+        CachedProxyRuntimeSettings runtimeSettings,
+        string? conversationKey,
+        CancellationToken cancellationToken)
+    {
+        if (!runtimeSettings.SessionAffinityEnabled && !runtimeSettings.RouteQuotaOrderingEnabled)
+        {
+            return routes;
+        }
+
+        try
+        {
+            return await _routeCandidatePolicy.PreorderCandidatesAsync(
+                routes, runtimeSettings.RouteQuotaOrderingEnabled, conversationKey, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "候选预排序失败，保持原有顺序");
+            return routes;
+        }
+    }
+
+    /// <summary>
+    /// 解析会话指纹（仅会话亲和开启时调用；失败返回 null 不影响请求）。
+    /// </summary>
+    private static string? ResolveConversationKeySafely(
+        CachedProxyRuntimeSettings runtimeSettings,
+        Microsoft.AspNetCore.Http.HttpRequest request,
+        string? modelName,
+        string? requestBody)
+    {
+        if (!runtimeSettings.SessionAffinityEnabled)
+        {
+            return null;
+        }
+
+        return SessionAffinityService.TryResolveConversationKey(request, modelName, requestBody);
+    }
+
+    /// <summary>
+    /// 记录会话亲和的成功应答候选（会话键为空时无操作）。
+    /// </summary>
+    private void RecordSessionAffinitySafely(string? conversationKey, Guid circuitKey)
+    {
+        if (string.IsNullOrWhiteSpace(conversationKey))
+        {
+            return;
+        }
+
+        try
+        {
+            _sessionAffinity.RecordSuccess(conversationKey, circuitKey);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "记录会话亲和失败，不影响请求");
+        }
+    }
+
+    /// <summary>
+    /// 按运行时设置创建 SSE 首包蓄流器（StreamHeadBufferEnabled 关闭时返回 null，行为与原先完全一致）。
+    /// </summary>
+    private async Task<AITool.Application.Proxy.SseHeadBuffer?> TryCreateSseHeadBufferAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var settings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+            return settings.StreamHeadBufferEnabled ? new AITool.Application.Proxy.SseHeadBuffer() : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "读取流式首包蓄流设置失败，按关闭处理");
+            return null;
         }
     }
 

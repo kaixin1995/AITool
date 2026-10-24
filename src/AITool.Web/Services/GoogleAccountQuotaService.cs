@@ -288,7 +288,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
                 Content = new StringContent("{}", Encoding.UTF8, "application/json")
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", account.AccessToken);
-            request.Headers.TryAddWithoutValidation("User-Agent", GoogleAccountKinds.AntigravityUserAgent);
+            request.Headers.TryAddWithoutValidation("User-Agent", GoogleAccountKinds.GetUserAgent(account.AccountKind));
             request.Headers.TryAddWithoutValidation("requestId", $"req-{Guid.NewGuid():N}");
             request.Headers.TryAddWithoutValidation("requestType", "agent");
 
