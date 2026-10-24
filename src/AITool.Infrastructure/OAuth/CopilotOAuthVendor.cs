@@ -42,8 +42,11 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
         ("gemini-3-pro", "Gemini 3 Pro (Copilot)"),
     ];
 
-    /// <summary>Copilot 会话令牌约 30 分钟，提前 2 分钟刷新即可（默认 30 分钟会导致每轮扫描都刷新）。</summary>
-    public TimeSpan RefreshLead => TimeSpan.FromMinutes(2);
+    /// <summary>
+/// Copilot 会话令牌约 30 分钟。刷新扫描每 5 分钟一轮，提前量必须大于扫描间隔，
+/// 否则会出现「上一轮未到点、下一轮已过期」的空档（T-7 分钟刷新是安全下限）。
+/// </summary>
+    public TimeSpan RefreshLead => TimeSpan.FromMinutes(8);
 
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => new(
         DefaultChatBase,
@@ -202,17 +205,18 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
             {
                 if ((int)response.StatusCode is 401 or 403)
                 {
+                    // 只有明确的鉴权拒绝才算「需重登」；5xx/限流是暂时性错误，重试可恢复。
                     throw new DeviceOAuthRefreshRefusedException("GitHub 拒绝了该 token，请重新登录");
                 }
 
-                return null;
+                throw new InvalidOperationException($"Copilot 令牌交换暂时失败：HTTP {(int)response.StatusCode}");
             }
 
             var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken)).RootElement.Clone();
             var copilotToken = GetString(body, "token");
             if (string.IsNullOrEmpty(copilotToken))
             {
-                return null;
+                throw new InvalidOperationException("Copilot 交换响应缺少 token");
             }
 
             var expiresAt = GetNumber(body, "expires_at") is { } seconds

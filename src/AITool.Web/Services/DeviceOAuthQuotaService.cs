@@ -207,6 +207,8 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         var accounts = await client.Queryable<DeviceOAuthAccount>().Where(a => !a.IsDeleted).ToListAsync(cancellationToken);
         foreach (var account in accounts)
         {
+            // 对齐 Kimi 语义：站点启停只跟随「账号状态分支」，绝不能在重开总开关时
+            // 把被额度巡检禁用（非开关原因）的账号站点一并启用。
             if (!enabled)
             {
                 account.DisabledByFeatureToggle = account.IsEnabled;
@@ -214,6 +216,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
                 await client.Updateable(account)
                     .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
                     .ExecuteCommandAsync(cancellationToken);
+                await SetSiteEnabledAsync(client, account.LinkedSiteId, false, cancellationToken);
             }
             else if (account.DisabledByFeatureToggle && !account.ManuallyDisabled)
             {
@@ -222,20 +225,32 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
                 await client.Updateable(account)
                     .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
                     .ExecuteCommandAsync(cancellationToken);
-            }
-
-            if (account.LinkedSiteId != Guid.Empty)
-            {
-                var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
-                if (site is not null && site.IsEnabled == !enabled && !account.ManuallyDisabled)
-                {
-                    site.IsEnabled = enabled;
-                    await client.Updateable(site).UpdateColumns(s => new { s.IsEnabled }).ExecuteCommandAsync(cancellationToken);
-                }
+                await SetSiteEnabledAsync(client, account.LinkedSiteId, true, cancellationToken);
             }
         }
 
         _metadataCache.InvalidateRouteTargets();
+    }
+
+
+    /// <summary>空站点守卫的站点启停（LinkedSiteId=Empty 的账号直接跳过）。</summary>
+    private static async Task SetSiteEnabledAsync(
+        SqlSugar.ISqlSugarClient client,
+        Guid linkedSiteId,
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        if (linkedSiteId == Guid.Empty)
+        {
+            return;
+        }
+
+        var site = await client.Queryable<Site>().InSingleAsync(linkedSiteId);
+        if (site is not null && site.IsEnabled != enabled)
+        {
+            site.IsEnabled = enabled;
+            await client.Updateable(site).UpdateColumns(s => new { s.IsEnabled }).ExecuteCommandAsync(cancellationToken);
+        }
     }
 
     /// <summary>手动刷新入口。</summary>

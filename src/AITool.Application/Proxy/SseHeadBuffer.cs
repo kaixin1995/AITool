@@ -71,25 +71,82 @@ public sealed class SseHeadBuffer
     }
 
     /// <summary>
-    /// 判断 SSE 块是否携带实际内容：命中常见「文本增量/正文/工具调用」标志即算。
-    /// 检测是启发式的、宽松方向的——误判成「内容块」只是少扣一块，不影响正确性。
+    /// 判断 SSE 块是否携带实际内容。按「增量/正文事件类型」判定，而不是子串扫描——
+    /// 热身事件自身就带 content/text/error 字段名（Anthropic message_start 有 "content":[],
+    /// OpenAI 首 chunk 有 "content":""，Responses created 有 "text":{}/"error":null），按字段名扫会全部误放行。
+    /// 命中以下任一标记才算内容块：Anthropic content_block_delta / content_block_start（含 text_delta、
+    /// input_json_delta 载荷）；OpenAI chat 的非空文本增量；Responses 的 output_text.delta；
+    /// 结束与错误事件（[DONE]、finish_reason、显式 "error":{ 非空对象）同样立即放行。
     /// </summary>
     private static bool IsContentBearing(string chunk)
     {
         // 注释与心跳永远不是内容。
-        if (chunk.Contains(": ping", StringComparison.Ordinal)
-            || chunk.Contains("event: ping", StringComparison.Ordinal)
-            || chunk.Contains("\"type\":\"ping\"", StringComparison.Ordinal))
+        if (chunk.Contains("event: ping", StringComparison.Ordinal)
+            || chunk.Contains("\"type\":\"ping\"", StringComparison.Ordinal)
+            || chunk.Contains("\"type\": \"ping\"", StringComparison.Ordinal))
         {
             return false;
         }
 
-        return chunk.Contains("\"content", StringComparison.Ordinal)
-            || chunk.Contains("\"text\"", StringComparison.Ordinal)
-            || chunk.Contains("\"content_block_delta\"", StringComparison.Ordinal)
-            || chunk.Contains("\"input_json_delta\"", StringComparison.Ordinal)
-            || chunk.Contains("\"tool_calls\"", StringComparison.Ordinal)
-            || chunk.Contains("[DONE]", StringComparison.Ordinal)
-            || chunk.Contains("\"error\"", StringComparison.Ordinal);
+        // Anthropic：内容块开始/增量（event 行或 type 字段两种形态）。
+        if (chunk.Contains("event: content_block_delta", StringComparison.Ordinal)
+            || chunk.Contains("event: content_block_start", StringComparison.Ordinal)
+            || chunk.Contains("\"type\":\"content_block_delta\"", StringComparison.Ordinal)
+            || chunk.Contains("\"type\": \"content_block_delta\"", StringComparison.Ordinal)
+            || chunk.Contains("\"type\":\"content_block_start\"", StringComparison.Ordinal)
+            || chunk.Contains("\"type\": \"content_block_start\"", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // OpenAI chat：非空文本增量（"content":"" 是热身，"content":"字" 才放行）。
+        if (ContainsNonEmptyJsonStringField(chunk, "content"))
+        {
+            return true;
+        }
+
+        // Responses：文本增量事件。
+        if (chunk.Contains("output_text.delta", StringComparison.Ordinal)
+            || chunk.Contains("output_text.added", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // 结束与错误：立即放行（错误块交给上层判定，不能扣在缓冲里）。
+        if (chunk.Contains("[DONE]", StringComparison.Ordinal)
+            || chunk.Contains("finish_reason", StringComparison.Ordinal)
+            || chunk.Contains("message_stop", StringComparison.Ordinal)
+            || chunk.Contains("response.completed", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (chunk.Contains("\"error\":{", StringComparison.Ordinal) || chunk.Contains("\"error\": {", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>检测 JSON 文本中 "field":"非空值" 形态（字段名后紧跟非空字符串值；"field":"" 空串不算）。</summary>
+    private static bool ContainsNonEmptyJsonStringField(string chunk, string field)
+    {
+        foreach (var probe in new[] { "\"" + field + "\":\"", "\"" + field + "\": \"" })
+        {
+            var index = chunk.IndexOf(probe, StringComparison.Ordinal);
+            while (index >= 0)
+            {
+                var valueStart = index + probe.Length;
+                if (valueStart < chunk.Length && chunk[valueStart] != '"')
+                {
+                    return true;
+                }
+
+                index = chunk.IndexOf(probe, index + 1, StringComparison.Ordinal);
+            }
+        }
+
+        return false;
     }
 }

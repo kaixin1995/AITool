@@ -94,27 +94,31 @@ public sealed class RouteCircuitStateStore
             return;
         }
 
-        var effective = untilUtc;
-        if (_blockedRoutes.TryGetValue(routeId, out var blocked) && blocked > effective)
+        // 读最大-再写入必须原子：并发 Rest 交错会让较短休息覆盖较长（丢最长冷却）。
+        lock (_syncRoot)
         {
-            effective = blocked;
-        }
+            var effective = untilUtc;
+            if (_blockedRoutes.TryGetValue(routeId, out var blocked) && blocked > effective)
+            {
+                effective = blocked;
+            }
 
-        if (_restedRoutes.TryGetValue(routeId, out var rested) && rested > effective)
-        {
-            effective = rested;
-        }
+            if (_restedRoutes.TryGetValue(routeId, out var rested) && rested > effective)
+            {
+                effective = rested;
+            }
 
-        _restedRoutes[routeId] = effective;
-        _failCounts.TryRemove(routeId, out _);
-        if (meta is not null)
-        {
-            _routeMeta[routeId] = meta;
-        }
+            _restedRoutes[routeId] = effective;
+            _failCounts.TryRemove(routeId, out _);
+            if (meta is not null)
+            {
+                _routeMeta[routeId] = meta;
+            }
 
-        if (!string.IsNullOrWhiteSpace(reason))
-        {
-            _restReasons[routeId] = reason;
+            if (!string.IsNullOrWhiteSpace(reason))
+            {
+                _restReasons[routeId] = reason;
+            }
         }
     }
 
@@ -158,23 +162,28 @@ public sealed class RouteCircuitStateStore
     /// </summary>
     public bool IsBlocked(Guid routeId)
     {
-        if (_blockedRoutes.TryGetValue(routeId, out var until))
+        // 过期判定+清理入锁：防止「读到过期值→并发写入新休息→清理误删新休息」的丢更新。
+        lock (_syncRoot)
         {
-            if (until > DateTimeOffset.UtcNow) return true;
-            _blockedRoutes.TryRemove(routeId, out _);
-            _failCounts.TryRemove(routeId, out _);
-            _routeMeta.TryRemove(routeId, out _);
-        }
+            if (_blockedRoutes.TryGetValue(routeId, out var until))
+            {
+                if (until > DateTimeOffset.UtcNow) return true;
+                _blockedRoutes.TryRemove(routeId, out _);
+                _failCounts.TryRemove(routeId, out _);
+                _routeMeta.TryRemove(routeId, out _);
+            }
 
-        if (_restedRoutes.TryGetValue(routeId, out var rested))
-        {
-            if (rested > DateTimeOffset.UtcNow) return true;
-            _restedRoutes.TryRemove(routeId, out _);
-            _restReasons.TryRemove(routeId, out _);
-            _failCounts.TryRemove(routeId, out _);
-            _routeMeta.TryRemove(routeId, out _);
-        }
+            if (_restedRoutes.TryGetValue(routeId, out var rested))
+            {
+                if (rested > DateTimeOffset.UtcNow) return true;
+                _restedRoutes.TryRemove(routeId, out _);
+                _restReasons.TryRemove(routeId, out _);
+                _failCounts.TryRemove(routeId, out _);
+                _routeMeta.TryRemove(routeId, out _);
+            }
 
+            return false;
+        }
         return false;
     }
 
@@ -265,7 +274,7 @@ public sealed class RouteCircuitStateStore
     /// </summary>
     public int ResetAll()
     {
-        var count = _blockedRoutes.Count + _restedRoutes.Count;
+        var count = _blockedRoutes.Keys.Concat(_restedRoutes.Keys).Distinct().Count();
         _blockedRoutes.Clear();
         _restedRoutes.Clear();
         _restReasons.Clear();

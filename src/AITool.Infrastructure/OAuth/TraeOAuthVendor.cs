@@ -230,8 +230,11 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
         try
         {
             var root = JsonDocument.Parse(rawJson).RootElement;
-            return root.ValueKind == JsonValueKind.Object && GetString(root, "planType") is { } plan
-                ? new DeviceOAuthQuotaResult { Success = true, PlanType = plan }
+            // 只认自己的占位文案（含站点名），防止误吞其他厂商（如 MiniMax）的快照。
+            var label = $"{_site.Label}（已登录）";
+            return root.ValueKind == JsonValueKind.Object
+                   && GetString(root, "planType") == label
+                ? new DeviceOAuthQuotaResult { Success = true, PlanType = label }
                 : null;
         }
         catch (JsonException)
@@ -257,7 +260,10 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         var proofText = $"POST\n{DeviceExchangePath}\n{clientId}\n{refreshToken}\n{timestamp}\n{nonce}";
-        var signature = Convert.ToBase64String(ecdsa.SignData(Encoding.UTF8.GetBytes(proofText), HashAlgorithmName.SHA256));
+        var signature = Convert.ToBase64String(ecdsa.SignData(
+            Encoding.UTF8.GetBytes(proofText),
+            HashAlgorithmName.SHA256,
+            DSASignatureFormat.Rfc3279DerSequence));
 
         var payload = new Dictionary<string, object?>
         {
@@ -320,7 +326,8 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
         var newToken = GetString(result, "Token") ?? GetString(result, "token");
         if (string.IsNullOrWhiteSpace(newToken))
         {
-            throw new TraeExchangeRefusedException("Trae 续期响应缺少 Token");
+            // 缺 Token 的 200 可能已消费旧 refresh_token：直接中止（不再试第二个身份），按暂时性错误上报。
+            throw new InvalidOperationException("Trae 续期响应缺少 Token");
         }
 
         var newRefresh = GetString(result, "RefreshToken") ?? GetString(result, "refreshToken") ?? refreshToken;

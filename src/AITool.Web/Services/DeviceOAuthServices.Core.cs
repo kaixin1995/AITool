@@ -472,6 +472,13 @@ public sealed class DeviceOAuthCredentialRefreshService
 
     public async Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
     {
+        // 无站点账号（LinkedSiteId=Empty，如 Qoder/Trae/Kiro）：按站点键查账号会命中任意同态账号，
+        // 绝不能拿别的账号 token 用——直接返回 null（额度查询按 CredentialInvalid 报错即可）。
+        if (linkedSiteId == Guid.Empty)
+        {
+            return null;
+        }
+
         using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
         {
             var account = (await _dbContext.DeviceOAuthAccounts

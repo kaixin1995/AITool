@@ -182,6 +182,8 @@ public sealed class RouteCandidatePolicyService
             var until = reset is { } resetAt && resetAt > now
                 ? resetAt
                 : now.AddMinutes(30);
+            // 至少休息 1 分钟：Rest 对 ≤now 的时刻直接早退，不钳制会出现「既不休息也不计数」的空窗。
+            if (until < now.AddMinutes(1)) until = now.AddMinutes(1);
             if (until > now.AddDays(8))
             {
                 until = now.AddDays(8);
@@ -213,8 +215,15 @@ public sealed class RouteCandidatePolicyService
     /// <summary>配额耗尽类错误词表（中英文常见形态，ordinal 忽略大小写）。</summary>
     private static readonly string[] QuotaExhaustionWords =
     [
-        "usage_limit_reached", "usage limit", "quota", "insufficient", "billing",
-        "credit", "exceeded", "余额不足", "额度", "配额", "欠费",
+        "usage_limit_reached", "usage limit", "quota_exceeded", "insufficient_quota",
+        "insufficient quota", "billing", "credit exhausted", "余额不足", "额度不足", "配额不足", "欠费", "用完",
+    ];
+
+    /// <summary>纯限流类文案：命中则按 Retry-After 走限流休息，绝不能休到额度重置点。</summary>
+    private static readonly string[] RateLimitOnlyWords =
+    [
+        "rate limit", "rate_limit", "ratelimit", "too many requests", "per minute", "per_second",
+        "try again", "slow down", "请求过于频繁", "稍后重试",
     ];
 
     /// <summary>判断错误体是否为配额耗尽类（区分「没额度」与「太快了」两类 429）。</summary>
@@ -223,6 +232,14 @@ public sealed class RouteCandidatePolicyService
         if (string.IsNullOrEmpty(errorBody))
         {
             return false;
+        }
+
+        foreach (var word in RateLimitOnlyWords)
+        {
+            if (errorBody.Contains(word, StringComparison.OrdinalIgnoreCase))
+            {
+                return false; // 明确的限流文案：不是配额耗尽
+            }
         }
 
         foreach (var word in QuotaExhaustionWords)
@@ -452,6 +469,12 @@ public sealed class SessionAffinityService
         }
 
         PruneIfNeeded();
+        // 插入即守上限：两轮小时级清理之间的写入也不能突破 512 条（逐出最久未用）。
+        while (_map.Count >= MaxEntries)
+        {
+            var oldest = _map.OrderBy(e => e.Value.LastUsedUtc).First();
+            _map.TryRemove(oldest.Key, out _);
+        }
         _map[conversationKey] = new AffinityEntry(circuitKey, DateTimeOffset.UtcNow);
     }
 

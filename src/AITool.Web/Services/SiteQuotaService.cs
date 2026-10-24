@@ -19,8 +19,8 @@ public sealed class SiteQuotaService
     private static readonly KeyedAsyncLock Locks = new();
 
     /// <summary>
-    /// 单站点内密钥额度查询的最大并发（对齐 magpie keyReadsAtOnce=8）：
-    /// 一个站点挂几十个 key 时不再瞬间并发打同一额度端点，降低被限流/风控的概率。
+    /// 额度查询的全局并发闸（同时打到所有上游的额度请求数上限，对齐 magpie keyReadsAtOnce=8；
+    /// 同站点本身已按 KeyedAsyncLock 串行，此闸约束跨站点并发）。
     /// </summary>
     private static readonly SemaphoreSlim KeyQuerySlots = new(Math.Min(8, Environment.ProcessorCount * 2));
 
@@ -132,12 +132,22 @@ public sealed class SiteQuotaService
         => new(site.BaseUrl, SiteQuotaBalanceConfig.TryParse(site.QuotaBalanceJson));
 
     /// <summary>
-    /// 匹配站点的额度供应商：优先按完整上下文匹配（自定义余额配置优先于域名匹配），
-    /// 没有自定义配置时行为与按 base_url 匹配完全一致。
+    /// 匹配站点的额度供应商：站点配置了自定义余额（QuotaBalanceJson）时自定义余额优先于域名匹配
+    ///（用户显式配置覆盖内置厂商识别）；未配置时行为与按 base_url 匹配完全一致。
     /// </summary>
     private ISiteQuotaProvider? MatchProvider(Domain.Sites.Site site)
     {
         var context = BuildContext(site);
+        if (context.Balance is not null)
+        {
+            var custom = _providers.FirstOrDefault(p =>
+                string.Equals(p.ProviderKey, "custom-balance", StringComparison.OrdinalIgnoreCase));
+            if (custom is not null)
+            {
+                return custom;
+            }
+        }
+
         return _providers.FirstOrDefault(p => p.MatchesSite(context));
     }
 

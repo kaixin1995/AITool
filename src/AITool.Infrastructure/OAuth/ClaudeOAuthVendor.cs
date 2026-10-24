@@ -140,17 +140,21 @@ public sealed class ClaudeOAuthVendor : IDeviceOAuthVendor
         return Task.FromResult(new DeviceOAuthQuotaResult
         {
             Success = true,
-            PlanType = "Claude 订阅（额度随响应被动采集）",
+            PlanType = PassivePlanLabel,
         });
     }
+
+    /// <summary>被动额度占位文案（缓存解析只认这一个值，防止误吞其他厂商的快照）。</summary>
+    public const string PassivePlanLabel = "Claude 订阅（额度随响应被动采集）";
 
     public DeviceOAuthQuotaResult? ParseCachedQuota(string rawJson)
     {
         try
         {
             var root = JsonDocument.Parse(rawJson).RootElement;
-            return root.ValueKind == JsonValueKind.Object && GetString(root, "planType") is { } plan
-                ? new DeviceOAuthQuotaResult { Success = true, PlanType = plan }
+            return root.ValueKind == JsonValueKind.Object
+                   && GetString(root, "planType") == PassivePlanLabel
+                ? new DeviceOAuthQuotaResult { Success = true, PlanType = PassivePlanLabel }
                 : null;
         }
         catch (JsonException)

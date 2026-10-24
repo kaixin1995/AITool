@@ -769,7 +769,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 });
                 await RecordRouteFailureByPolicyAsync(route, streamResult, runtimeSettings);
                 lastResult = streamResult;
-                if (!streamOutcome.CanFallback)
+                if (!streamOutcome.CanFallback
+                    || RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult))
                 {
                     return new EmptyResult();
                 }
@@ -868,6 +869,11 @@ public sealed partial class OpenAiProxyController : ControllerBase
             });
             await RecordRouteFailureByPolicyAsync(route, result, runtimeSettings);
             lastResult = result;
+            // 客户端错误严格回退：纯请求形态错误直接把上游 4xx 回给客户端，不再消耗其余候选。
+            if (RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, result))
+            {
+                break;
+            }
         }
 
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;

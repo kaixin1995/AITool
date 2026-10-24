@@ -479,7 +479,8 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 await RecordRouteFailureByPolicyAsync(route, streamResult, runtimeSettings);
                 lastResult = streamResult;
-                if (!streamOutcome.CanFallback)
+                if (!streamOutcome.CanFallback
+                    || RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult))
                 {
                     return new EmptyResult();
                 }
@@ -602,6 +603,11 @@ public sealed class AnthropicProxyController : ControllerBase
             // 转发或转换失败：按策略记录（分级冷却开启时按类型休息，否则累计熔断计数）
             await RecordRouteFailureByPolicyAsync(route, result, runtimeSettings);
             lastResult = result;
+            // 客户端错误严格回退：纯请求形态错误直接把上游 4xx 回给客户端，不再消耗其余候选。
+            if (RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, result))
+            {
+                break;
+            }
         }
 
         // 所有路由均失败

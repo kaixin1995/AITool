@@ -193,6 +193,10 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
         {
             return new DeviceOAuthPollResult { Error = ex.Message };
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new DeviceOAuthPollResult { Error = "铸造 GLM API key 失败：" + ex.Message };
+        }
     }
 
     public Task<DeviceOAuthPollResult> CompleteWithCallbackAsync(string sessionJson, string callbackUrl, CancellationToken cancellationToken)
@@ -214,7 +218,7 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
     }
 
     public Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken)
-        => RefreshTokenAsync(refreshToken, null, CancellationToken.None);
+        => RefreshTokenAsync(refreshToken, null, cancellationToken);
 
     public async Task<DeviceOAuthQuotaResult> QueryQuotaAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
     {

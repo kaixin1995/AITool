@@ -264,18 +264,30 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
                         ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(GetNumber(body, "expiresIn") ?? GetNumber(body, "expires_in") ?? 3600),
                     };
                 }
+
+                throw new InvalidOperationException("Kiro 刷新响应缺少 accessToken");
             }
+
+            if ((int)response.StatusCode is 400 or 401 or 403)
+            {
+                throw new DeviceOAuthRefreshRefusedException("Kiro refresh_token 已失效，请重新登录");
+            }
+
+            // 5xx/网络抖动等暂时性错误：抛可重试异常，绝不能标记需重登（否则账号被砖）。
+            throw new InvalidOperationException($"Kiro 刷新暂时失败：HTTP {(int)response.StatusCode}");
         }
         catch (DeviceOAuthRefreshRefusedException)
         {
             throw;
         }
-        catch (Exception)
+        catch (InvalidOperationException)
         {
-            // 落到下一形态。
+            throw;
         }
-
-        throw new DeviceOAuthRefreshRefusedException("Kiro refresh_token 已失效，请重新登录");
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("Kiro 刷新请求失败：" + ex.Message, ex);
+        }
     }
 
     /// <summary>按账号 ExtraJson 携带的形态刷新（社交 / AWS 客户端），供刷新服务经 QueryQuotaAsync 的凭证路径之外单独使用。</summary>
@@ -289,6 +301,8 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
             {
                 ["grant_type"] = "refresh_token",
                 ["client_id"] = clientId,
+                // AWS SSO-OIDC 公共客户端的 refresh 同样要求 clientSecret（登录换 token 时已发）。
+                ["client_secret"] = TryGetExtra(extraJson, "clientSecret") ?? string.Empty,
                 ["refresh_token"] = refreshToken,
             }, cancellationToken);
             var access = GetString(form, "accessToken") ?? GetString(form, "access_token");
@@ -354,11 +368,13 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
 
     private static DeviceOAuthPollResult Success(
         string accessToken, string? refreshToken, double? expiresIn,
-        string method, string region, string? profileArn, string? clientId)
+        string method, string region, string? profileArn, string? clientId, string? awsClientSecret = null)
     {
         var extra = new Dictionary<string, string> { ["method"] = method, ["region"] = region };
         if (!string.IsNullOrWhiteSpace(profileArn)) extra["profileArn"] = profileArn!;
         if (!string.IsNullOrWhiteSpace(clientId)) extra["clientId"] = clientId!;
+        // IDC 客户端的 secret 刷新必带（登录时动态注册所得），必须随账号持久化。
+        if (method == "idc" && !string.IsNullOrWhiteSpace(awsClientSecret)) extra["clientSecret"] = awsClientSecret!;
         return new DeviceOAuthPollResult
         {
             Tokens = new DeviceOAuthTokenSet

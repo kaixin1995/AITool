@@ -179,7 +179,9 @@ public sealed class QoderOAuthVendor : IDeviceOAuthVendor
             // 用户信息失败不阻断登录。
         }
 
-        var extra = JsonSerializer.Serialize(new { deviceToken, machineId = session.MachineId });
+        // tokenSource 记录聊天凭证来源（job=国际站 jobToken / device=国内站设备 token），刷新端点按此分派。
+        var tokenSource = chatToken == deviceToken ? "device" : "job";
+        var extra = JsonSerializer.Serialize(new { deviceToken, machineId = session.MachineId, tokenSource });
         return new DeviceOAuthPollResult
         {
             Tokens = new DeviceOAuthTokenSet { AccessToken = chatToken, RefreshToken = chatRefresh, ExpiresAt = expires },
@@ -190,10 +192,17 @@ public sealed class QoderOAuthVendor : IDeviceOAuthVendor
         };
     }
 
-    public async Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken)
+    public Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, string? extraJson, CancellationToken cancellationToken)
+        => RefreshCoreAsync(refreshToken, TryGetExtraString(extraJson, "tokenSource"), cancellationToken);
+
+    public Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken)
+        => RefreshCoreAsync(refreshToken, null, cancellationToken);
+
+    private async Task<DeviceOAuthTokenSet> RefreshCoreAsync(string refreshToken, string? tokenSource, CancellationToken cancellationToken)
     {
-        // 国际站 job token 刷新；国内站设备 token 刷新（同一 refresh 端点形态）。
-        var url = refreshToken.StartsWith("job:", StringComparison.Ordinal)
+        // 刷新端点按登录时记录的 tokenSource 分派（job=国际站 jobToken / device=国内站设备 token）；
+        // 未记录时保守按设备 token 端点。
+        var url = string.Equals(tokenSource, "job", StringComparison.OrdinalIgnoreCase)
             ? $"{_site.OpenApi}/api/v1/jobToken/refresh"
             : $"{_site.OpenApi}/api/v1/deviceToken/refresh";
         using var request = new HttpRequestMessage(HttpMethod.Post, url)
@@ -281,7 +290,8 @@ public sealed class QoderOAuthVendor : IDeviceOAuthVendor
             }
         }
 
-        return null;
+        // 缺失/已过期的时间戳兜底 2 小时：返回 null 会让刷新循环把该账号当成「永不过期」跳过。
+        return DateTimeOffset.UtcNow.AddHours(2);
     }
 
     private static string? TryGetExtraString(string? extraJson, string name)

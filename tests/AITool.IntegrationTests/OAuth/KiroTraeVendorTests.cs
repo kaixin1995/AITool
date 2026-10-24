@@ -112,6 +112,42 @@ public sealed class KiroTraeVendorTests
     }
 
     [Fact]
+    public async Task Kiro_social_refresh_5xx_is_retryable_not_refused()
+    {
+        var handler = new StubHandler(_ => Json(HttpStatusCode.ServiceUnavailable, "{}"));
+        var vendor = new KiroOAuthVendor(new HttpClient(handler));
+        var extra = System.Text.Json.JsonSerializer.Serialize(new { method = "social", region = "us-east-1" });
+
+        // 5xx 必须是可重试异常；若误判为「需重登」，账号会被 RequiresReauth 砖掉。
+        var act = () => vendor.RefreshTokenAsync("rt-1", extra, CancellationToken.None);
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        await act.Should().NotThrowAsync<AITool.Application.OAuth.DeviceOAuthRefreshRefusedException>();
+    }
+
+    [Fact]
+    public async Task Kiro_idc_refresh_sends_client_secret()
+    {
+        CapturedRequest? captured = null;
+        var handler = new StubHandler(req =>
+        {
+            if (req.Url.AbsoluteUri.Contains("oidc.us-west-2.amazonaws.com/token"))
+            {
+                captured = req;
+                return Json(HttpStatusCode.OK, """{"accessToken":"a2","refreshToken":"r2","expiresIn":3600}""");
+            }
+
+            return Json(HttpStatusCode.OK, "{}");
+        });
+        var vendor = new KiroOAuthVendor(new HttpClient(handler));
+        var extra = System.Text.Json.JsonSerializer.Serialize(new { method = "idc", region = "us-west-2", clientId = "cid", clientSecret = "csec" });
+
+        var tokens = await vendor.RefreshTokenAsync("r1", extra, CancellationToken.None);
+        tokens.AccessToken.Should().Be("a2");
+        captured.Should().NotBeNull();
+        captured!.Form.Should().Contain("client_id=cid").And.Contain("client_secret=csec").And.Contain("refresh_token=r1");
+    }
+
+    [Fact]
     public void Kiro_usage_parser_reads_breakdown_and_trial()
     {
         const string body = """
@@ -213,7 +249,8 @@ public sealed class KiroTraeVendorTests
         ecdsa.VerifyData(
             Encoding.UTF8.GetBytes(text),
             Convert.FromBase64String(proof.GetProperty("Signature").GetString()!),
-            HashAlgorithmName.SHA256).Should().BeTrue("proof 必须能被随请求携带的设备公钥验签");
+            HashAlgorithmName.SHA256,
+            DSASignatureFormat.Rfc3279DerSequence).Should().BeTrue("proof 必须能被随请求携带的设备公钥验签（DER 格式）");
     }
 
     [Fact]

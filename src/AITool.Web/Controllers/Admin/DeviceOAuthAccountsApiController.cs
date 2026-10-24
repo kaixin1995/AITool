@@ -90,20 +90,21 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
 
         DeviceOAuthPollResult poll;
         // 粘贴回调流（如 Claude）：带 callbackUrl 时走 CompleteWithCallback，否则轮询。
-        if (!string.IsNullOrWhiteSpace(request.CallbackUrl))
+        // 厂商任何异常（网络错误、上游拒绝、响应畸形）统一兜底为登录失败，不向上抛 500。
+        try
         {
-            try
-            {
-                poll = await vendor.CompleteWithCallbackAsync(session.SessionJson, request.CallbackUrl!, ct);
-            }
-            catch (NotSupportedException ex)
-            {
-                return BadRequest(ApiResponse.Fail(ex.Message, "callback_not_supported"));
-            }
+            poll = !string.IsNullOrWhiteSpace(request.CallbackUrl)
+                ? await vendor.CompleteWithCallbackAsync(session.SessionJson, request.CallbackUrl!, ct)
+                : await vendor.PollSignInAsync(session.SessionJson, ct);
         }
-        else
+        catch (NotSupportedException ex)
         {
-            poll = await vendor.PollSignInAsync(session.SessionJson, ct);
+            return BadRequest(ApiResponse.Fail(ex.Message, "callback_not_supported"));
+        }
+        catch (Exception ex)
+        {
+            // 暂时性错误（网络抖动等）保留会话：用户可继续点「检查登录状态」重试，不必重新发起。
+            return Ok(ApiResponse.Ok(new { status = "pending", message = $"暂时出错，可重试：{ex.Message}" }));
         }
         if (poll.IsPending)
         {
