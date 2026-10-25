@@ -172,10 +172,11 @@ onBeforeUnmount(() => {
             <div v-if="key.windows.length > 0" class="site-quota-windows">
               <div v-for="w in key.windows" :key="w.id" class="site-quota-window">
                 <div class="site-quota-window-label">
-                  <NTooltip trigger="hover" placement="top">
+                  <NTooltip v-if="w.isAside" trigger="hover" placement="top">
                     <template #trigger>{{ w.label }}</template>
                     非阻塞窗口：仅展示，不参与自动禁用与调度
                   </NTooltip>
+                  <template v-else>{{ w.label }}</template>
                 </div>
                 <NProgress
                   class="site-quota-window-bar"

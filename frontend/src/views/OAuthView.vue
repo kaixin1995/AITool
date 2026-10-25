@@ -6,6 +6,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
 import {
   deleteDeviceOAuthAccount,
+  updateDeviceOAuthAccount,
   fetchDeviceOAuthAccounts,
   fetchDeviceOAuthVendors,
   pollDeviceOAuthSignIn,
@@ -737,6 +738,8 @@ async function handleStartOAuth(): Promise<void> {
 }
 
 async function pollDeviceSignIn(manual: boolean): Promise<void> {
+  // 单飞：手动检查与 3 秒自动轮询并发会竞争同一登录会话（Kiro 二段 state 错配风险）。
+  if (oauthLoading.value) return
   if (!deviceSessionId.value || !oauthModal.value) return
   oauthLoading.value = true
   try {
@@ -760,7 +763,7 @@ async function pollDeviceSignIn(manual: boolean): Promise<void> {
       clearDeviceFlow()
       message.error(result.error || '登录失败')
     } else if (manual) {
-      message.info('尚未完成授权，请继续')
+      message.info(result.message || '尚未完成授权，请继续')
     }
   } catch (e) {
     if (manual) message.error((e as Error).message)
@@ -944,6 +947,13 @@ async function handleSaveEdit(): Promise<void> {
         editRefreshToken.value || undefined
       )
       message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
+    } else if (deviceVendorOf(editAccount.value.provider)) {
+      await updateDeviceOAuthAccount(
+        editAccount.value.id,
+        editDisplayName.value.trim(),
+        editRefreshToken.value || undefined
+      )
+      message.success(editRefreshToken.value ? '凭证已更新（额度查询将按需重登）' : '已更新')
     }
     editModal.value = false
     await load()
@@ -1549,7 +1559,7 @@ onUnmounted(() => {
                     <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </NButton>
-                    <NButton class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
+                    <NButton v-if="acc.provider === 'codex' || acc.provider === 'antigravity' || acc.provider === 'kimi' || acc.provider === 'xai'" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                     </NButton>
                     <NPopconfirm @positive-click="handleDelete(acc)">
@@ -1777,7 +1787,7 @@ onUnmounted(() => {
         <div v-if="editAccount?.provider === 'codex' || editAccount?.provider === 'kimi'">
           <p class="edit-label">手动刷新 Token</p>
           <NSpace align="center" :size="8">
-            <NButton :loading="editTokenRefreshing" @click="handleManualRefreshToken">立即刷新 access_token</NButton>
+            <NButton v-if="editAccount && !deviceVendorOf(editAccount.provider)" :loading="editTokenRefreshing" @click="handleManualRefreshToken">立即刷新 access_token</NButton>
             <span v-if="editAccount?.tokenExpiresAt" class="edit-hint">
               当前过期：{{ formatDateTime(editAccount.tokenExpiresAt) }}
             </span>
