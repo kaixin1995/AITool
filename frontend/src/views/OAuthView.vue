@@ -152,12 +152,21 @@ const statusFilteredAccounts = computed(() => {
   const enabled = accountStatusFilter.value === 'enabled'
   return accounts.value.filter(acc => acc.isEnabled === enabled)
 })
-const providerFilterOptions = computed(() => PROVIDER_FILTER_OPTIONS.map(option => ({
-  ...option,
-  count: option.key === 'all'
-    ? statusFilteredAccounts.value.length
-    : statusFilteredAccounts.value.filter(acc => acc.provider === option.key).length
-})))
+const providerFilterOptions = computed(() => {
+  // 静态五家 + 通用厂商动态追加：登录下拉加了谁，筛选就能按谁过滤（含账号计数）。
+  const staticOptions = PROVIDER_FILTER_OPTIONS.map(option => ({
+    ...option,
+    count: option.key === 'all'
+      ? statusFilteredAccounts.value.length
+      : statusFilteredAccounts.value.filter(acc => acc.provider === option.key).length
+  }))
+  const deviceOptions = deviceVendors.value.map(v => ({
+    key: v.vendorKey as ProviderFilter,
+    label: v.label,
+    count: statusFilteredAccounts.value.filter(acc => acc.provider === v.vendorKey).length
+  }))
+  return [...staticOptions, ...deviceOptions]
+})
 const filteredAccounts = computed(() => providerFilter.value === 'all'
   ? statusFilteredAccounts.value
   : statusFilteredAccounts.value.filter(acc => acc.provider === providerFilter.value))
