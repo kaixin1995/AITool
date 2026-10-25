@@ -46,6 +46,7 @@ const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'codex', label: PROVIDER_LABELS.codex },
   { key: 'antigravity', label: PROVIDER_LABELS.antigravity },
+  { key: 'gemini-cli', label: PROVIDER_LABELS['gemini-cli'] },
   { key: 'kimi', label: PROVIDER_LABELS.kimi },
   { key: 'xai', label: PROVIDER_LABELS.xai }
 ]
@@ -64,7 +65,7 @@ const PROVIDER_IMPORT_OPTIONS = PROVIDER_LOGIN_OPTIONS
 function toUnifiedGoogleAccount(acc: GoogleAccountSummary): UnifiedAccount {
   return {
     ...acc,
-    provider: 'antigravity',
+    provider: acc.accountKind === 'GeminiCli' ? 'gemini-cli' : 'antigravity',
     accountKind: acc.accountKind,
     accountId: null,
     planType: acc.subscriptionTier,

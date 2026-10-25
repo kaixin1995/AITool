@@ -1,7 +1,7 @@
 <template>
   <div class="device-oauth-tab">
     <NAlert type="info" :show-icon="true" style="margin-bottom: 12px">
-      通用轮询式 OAuth 账号（MiniMax Code / Qoder / ZCode / GitHub Copilot / Claude 订阅）：
+      通用轮询式 OAuth 账号（MiniMax Code / Qoder / ZCode / GitHub Copilot / Claude 订阅 / Kiro / Trae / WorkBuddy 等）：
       登录后自动创建托管账号，接入统一的额度巡检与自动启停；支持聊天转发的厂商会自动创建隐藏站点并进入路由。
     </NAlert>
 
