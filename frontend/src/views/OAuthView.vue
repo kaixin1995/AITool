@@ -231,15 +231,14 @@ const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.valu
 })))
 
 const accountTableColumns = [
-  {
-    title: '名称',
-    key: 'name',
-    minWidth: 220,
+  { title: '套餐', key: 'plan', width: 110, render(row: AccountTableRow) { return row.plan ? h(NTag, { size: 'small', bordered: false, class: 'oauth-table-plan-tag' }, { default: () => row.plan }) : h('span', { class: 'oauth-table-sub' }, '—') } },
+  { title: '名称 / 套餐', key: 'name',
+    minWidth: 170,
     render(row: AccountTableRow) {
       // 名称 + 套餐副行：省掉独立套餐列，窄屏不再挤爆。
       const nodes = [h('div', { class: 'oauth-table-name' }, row.name)]
       if (row.plan) {
-        nodes.push(h('div', { class: 'oauth-table-sub' }, row.plan))
+        nodes.push(h('div', { class: 'oauth-table-plan-sub' }, row.plan))
       }
       if (row.email) {
         nodes.push(h('div', { class: 'oauth-table-sub oauth-table-email' }, row.email))
@@ -253,13 +252,14 @@ const accountTableColumns = [
     // 额度窗口：每个窗口一行进度条（短名在左，百分比文字嵌在条内），竖排展示全部窗口。
     title: '额度窗口',
     key: 'windows',
-    minWidth: 260,
+    minWidth: 240,
     render(row: AccountTableRow) {
       if (row.windows.length === 0) return h('span', { class: 'oauth-table-sub' }, '—')
       return h('div', { class: 'oauth-table-windows' }, {
         default: () => row.windows.map(w => {
           // 填充口径与卡片一致：显示「剩余 %」（used 100% → 空条，剩余 100% → 满绿条）。
           const remaining = w.usedPercent == null ? null : Math.min(100, Math.max(0, 100 - w.usedPercent))
+          const pctText = remaining == null ? '' : Math.round(remaining) + '%'
           return h('div', { class: 'oauth-table-window-row' }, {
             default: () => [
               h('span', { class: 'oauth-table-window-name', title: w.label }, w.shortLabel),
@@ -271,11 +271,10 @@ const accountTableColumns = [
                     percentage: remaining,
                     status: quotaColor(remaining),
                     showIndicator: false,
-                    height: 14,
+                    height: 10,
                     borderRadius: 3
-                  }, {
-                    default: () => h('span', { class: 'oauth-table-window-pct' }, Math.round(remaining) + '%')
-                  })
+                  }),
+              h('span', { class: 'oauth-table-window-pct' }, pctText),
             ]
           })
         })
@@ -300,7 +299,7 @@ const accountTableColumns = [
         trigger: () => h(NButton, { size: 'tiny', secondary: true, type: 'error' }, { default: () => '删除' }),
         default: () => '确认删除该账号？'
       }))
-      return h(NSpace, { size: 'small', wrap: false }, { default: () => buttons })
+      return h('div', { class: 'oauth-table-actions' }, { default: () => buttons })
     }
   }
 ]
@@ -2423,7 +2422,7 @@ onUnmounted(() => {
 .oauth-table-window-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .oauth-table-window-name {
   flex-shrink: 0;
@@ -2435,7 +2434,7 @@ onUnmounted(() => {
 }
 .oauth-table-window-bar {
   flex: 1;
-  min-width: 140px;
+  min-width: 100px;
 }
 /* 条内百分比：绝对定位居中在填充条上（Naive 指示器已关） */
 .oauth-table-window-bar :deep(.n-progress) {
@@ -2453,16 +2452,12 @@ onUnmounted(() => {
   background: var(--bg-page, #f3f3f3);
 }
 .oauth-table-window-pct {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  line-height: 14px;
-  color: #fff;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.35);
-  pointer-events: none;
+  flex-shrink: 0;
+  width: 42px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-color-secondary, #666);
+  font-variant-numeric: tabular-nums;
 }
 .oauth-table-window-none {
   font-size: 12px;
@@ -2471,6 +2466,39 @@ onUnmounted(() => {
 .oauth-table-nowrap {
   white-space: nowrap;
 }
+
+
+/* 表格：套餐小标记（弱化样式，不与厂商标签抢视觉） */
+.oauth-table-plan-tag {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oauth-table-plan-sub {
+  font-size: 12px;
+  color: var(--text-color-secondary, #888);
+}
+
+/* 表格：Token 列不折行 */
+.oauth-table-token {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 表格：操作按钮——两排紧凑栅格，弱化边框 */
+.oauth-table-actions {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 4px 6px;
+  justify-content: start;
+}
+.oauth-table-actions .n-button {
+  --n-height: 22px;
+  font-size: 12px;
+  padding: 0 8px;
+  border-radius: 4px;
+}
+
 
 .oauth-grid {
   display: grid;
