@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NAlert, NCard, NButton, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, useMessage } from 'naive-ui'
+import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
 import {
@@ -140,6 +140,12 @@ function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' | 
 // 导出凭证支持的账号数量（Codex 与 Kimi）。
 const exportableAccountCount = computed(() => accounts.value.filter(acc => acc.provider === 'codex' || acc.provider === 'kimi').length)
 const codexAccountCount = exportableAccountCount
+type AccountViewMode = 'card' | 'table'
+const accountViewMode = ref<AccountViewMode>(
+  (localStorage.getItem('oauth:viewMode') as AccountViewMode) || 'card'
+)
+watch(accountViewMode, mode => localStorage.setItem('oauth:viewMode', mode))
+
 const accountStatusFilter = ref<AccountStatusFilter>('enabled')
 const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFilter }> = [
   { label: '已启用', value: 'enabled' },
@@ -167,6 +173,68 @@ const providerFilterOptions = computed(() => {
   }))
   return [...staticOptions, ...deviceOptions]
 })
+// 表格视图行（复用卡片同源数据与操作；窗口合并为一列文本便于扫读）。
+interface AccountTableRow {
+  id: string
+  name: string
+  providerLabel: string
+  providerTag: 'info' | 'success' | 'warning' | 'error'
+  statusLabel: string
+  statusTag: 'success' | 'warning' | 'default' | 'error'
+  plan: string
+  email: string
+  windows: string
+  tokenExpiry: string
+  createdAt: string
+  isEnabled: boolean
+  raw: UnifiedAccount
+}
+
+const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.value.map(acc => ({
+  id: acc.id,
+  name: acc.displayName,
+  providerLabel: providerLabel(acc),
+  providerTag: providerTagType(acc),
+  statusLabel: accountStatusLabel(acc),
+  statusTag: accountStatusType(acc),
+  plan: [acc.planType, acc.creditAmount != null ? '积分 ' + acc.creditAmount : null].filter(Boolean).join(' · '),
+  email: acc.email ?? '',
+  windows: (acc.windows ?? [])
+    .map(w => (w.usedPercent != null ? w.label + ' ' + formatInspectionPercent(w.usedPercent) : w.label))
+    .join('；'),
+  tokenExpiry: acc.tokenExpiresAt ? formatDateTime(acc.tokenExpiresAt) : '',
+  createdAt: acc.createdAt ? formatDateTime(acc.createdAt) : '',
+  isEnabled: acc.isEnabled,
+  raw: acc
+})))
+
+const accountTableColumns = [
+  { title: '名称', key: 'name', minWidth: 140, ellipsis: { tooltip: true } },
+  { title: '厂商', key: 'providerLabel', width: 120, render(row: AccountTableRow) { return h(NTag, { size: 'small', bordered: false, type: row.providerTag }, { default: () => row.providerLabel }) } },
+  { title: '状态', key: 'statusLabel', width: 100, render(row: AccountTableRow) { return h(NTag, { size: 'small', bordered: false, type: row.statusTag }, { default: () => row.statusLabel }) } },
+  { title: '套餐', key: 'plan', minWidth: 120, ellipsis: { tooltip: true } },
+  { title: '额度窗口', key: 'windows', minWidth: 200, ellipsis: { tooltip: true } },
+  { title: '邮箱', key: 'email', minWidth: 160, ellipsis: { tooltip: true } },
+  { title: 'Token 到期', key: 'tokenExpiry', width: 130 },
+  { title: '创建时间', key: 'createdAt', width: 130 },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 180,
+    render(row: AccountTableRow) {
+      return h(NSpace, { size: 'small', wrap: false }, {
+        default: () => [
+          h(NButton, { size: 'tiny', secondary: true, onClick: () => handleRefreshQuota(row.raw) }, { default: () => '刷新' }),
+          h(NButton, { size: 'tiny', secondary: true, onClick: () => handleToggle(row.raw) }, { default: () => (row.isEnabled ? '禁用' : '启用') }),
+          h(NPopconfirm, { onPositiveClick: () => handleDelete(row.raw) }, {
+            trigger: () => h(NButton, { size: 'tiny', secondary: true, type: 'error' }, { default: () => '删除' }),
+            default: () => '确认删除该账号？'
+          })
+        ]
+      })
+    }
+  }
+]
 const filteredAccounts = computed(() => providerFilter.value === 'all'
   ? statusFilteredAccounts.value
   : statusFilteredAccounts.value.filter(acc => acc.provider === providerFilter.value))
@@ -242,6 +310,8 @@ const importFailures = ref<OAuthCredentialImportFailure[]>([])
 const importProvider = ref<string>('codex')
 
 const exportMode = ref(false)
+// 导出凭证的勾选交互绑定在卡片上：进入导出模式自动切回卡片视图。
+watch(exportMode, active => { if (active) accountViewMode.value = 'card' })
 const selectedExportAccountIds = ref<string[]>([])
 const exportLoading = ref(false)
 
@@ -1331,6 +1401,11 @@ onUnmounted(() => {
     <PageHeader title="OAuth 管理" subtitle="管理 OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
       <template #actions>
         <template v-if="!exportMode">
+          <NButtonGroup size="small">
+            <NButton size="small" :secondary="accountViewMode !== 'card'" :type="accountViewMode === 'card' ? 'primary' : 'default'" title="卡片视图" @click="accountViewMode = 'card'">卡片</NButton>
+            <NButton size="small" :secondary="accountViewMode !== 'table'" :type="accountViewMode === 'table' ? 'primary' : 'default'" title="表格视图" @click="accountViewMode = 'table'">表格</NButton>
+          </NButtonGroup>
+
           <NSelect
             v-model:value="accountStatusFilter"
             :options="accountStatusFilterOptions"
@@ -1379,6 +1454,17 @@ onUnmounted(() => {
               </div>
 
               <NEmpty v-if="filteredAccounts.length === 0" description="当前筛选条件暂无账号" />
+              <!-- 表格视图：与卡片二选一（视图切换在顶部），操作与卡片同源 -->
+              <NDataTable
+                v-else-if="accountViewMode === 'table'"
+                :columns="accountTableColumns"
+                :data="accountTableRows"
+                :row-key="(row: AccountTableRow) => row.id"
+                size="small"
+                :bordered="false"
+                :max-height="640"
+                :scroll-x="1200"
+              />
               <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
               <article
                 v-for="acc in filteredAccounts"
