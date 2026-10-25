@@ -258,22 +258,23 @@ const accountTableColumns = [
       if (row.windows.length === 0) return h('span', { class: 'oauth-table-sub' }, '—')
       return h('div', { class: 'oauth-table-windows' }, {
         default: () => row.windows.map(w => {
-          const used = w.usedPercent == null ? null : Math.min(100, Math.max(0, w.usedPercent))
+          // 填充口径与卡片一致：显示「剩余 %」（used 100% → 空条，剩余 100% → 满绿条）。
+          const remaining = w.usedPercent == null ? null : Math.min(100, Math.max(0, 100 - w.usedPercent))
           return h('div', { class: 'oauth-table-window-row' }, {
             default: () => [
               h('span', { class: 'oauth-table-window-name', title: w.label }, w.shortLabel),
-              used == null
+              remaining == null
                 ? h('span', { class: 'oauth-table-window-none' }, '—')
                 : h(NProgress, {
                     class: 'oauth-table-window-bar',
                     type: 'line',
-                    percentage: used,
-                    status: quotaColor(used),
+                    percentage: remaining,
+                    status: quotaColor(remaining),
                     showIndicator: false,
                     height: 14,
                     borderRadius: 3
                   }, {
-                    default: () => h('span', { class: 'oauth-table-window-pct' }, formatInspectionPercent(used))
+                    default: () => h('span', { class: 'oauth-table-window-pct' }, Math.round(remaining) + '%')
                   })
             ]
           })
