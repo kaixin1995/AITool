@@ -3,8 +3,17 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NCard, NButton, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
-import DeviceOAuthAccountsTab from '@/views/DeviceOAuthAccountsTab.vue'
 import * as api from '@/api/oauth'
+import {
+  deleteDeviceOAuthAccount,
+  fetchDeviceOAuthAccounts,
+  fetchDeviceOAuthVendors,
+  pollDeviceOAuthSignIn,
+  refreshDeviceOAuthQuota,
+  startDeviceOAuthSignIn,
+  toggleDeviceOAuthAccount,
+  type DeviceOAuthVendor
+} from '@/api/deviceOauth'
 import type {
   OAuthAccount,
   OAuthCredentialImportFailure,
@@ -24,7 +33,7 @@ import {
 } from './accountInspectionState'
 
 // 统一账号视图：Codex、Google（Antigravity）、Kimi (Moonshot AI) 与 xAI (Grok) 账号合入同一列表，用 provider 区分厂商。
-type ProviderKind = 'codex' | 'antigravity' | 'gemini-cli' | 'kimi' | 'xai'
+type ProviderKind = 'codex' | 'antigravity' | 'gemini-cli' | 'kimi' | 'xai' | (string & {})
 type ProviderFilter = 'all' | ProviderKind
 type AccountStatusFilter = 'enabled' | 'disabled' | 'all'
 type UnifiedAccount = OAuthAccount & {
@@ -32,6 +41,11 @@ type UnifiedAccount = OAuthAccount & {
   accountKind?: string | null
   projectId?: string | null
   creditAmount?: number | null
+  requiresReauth?: boolean
+}
+
+function providerLabelOf(key: string): string {
+  return PROVIDER_LABELS[key as keyof typeof PROVIDER_LABELS] ?? deviceVendorLabel(key)
 }
 
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
@@ -50,6 +64,12 @@ const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
   { key: 'kimi', label: PROVIDER_LABELS.kimi },
   { key: 'xai', label: PROVIDER_LABELS.xai }
 ]
+
+// 通用（设备码/授权链接）厂商：登录入口动态并入「+ OAuth 登录」，账号并入统一卡片。
+const deviceVendors = ref<DeviceOAuthVendor[]>([])
+const deviceVendorOf = (key?: string): DeviceOAuthVendor | undefined =>
+  deviceVendors.value.find(v => v.vendorKey === key)
+const deviceVendorLabel = (key: string): string => deviceVendorOf(key)?.label ?? key
 
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
@@ -107,7 +127,7 @@ function toUnifiedXaiAccount(acc: api.XaiAccountSummary): UnifiedAccount {
 }
 
 function providerLabel(acc: UnifiedAccount): string {
-  return PROVIDER_LABELS[acc.provider] ?? acc.provider
+  return PROVIDER_LABELS[acc.provider as keyof typeof PROVIDER_LABELS] ?? deviceVendorLabel(acc.provider)
 }
 
 function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' | 'error' {
@@ -142,7 +162,10 @@ const filteredAccounts = computed(() => providerFilter.value === 'all'
   ? statusFilteredAccounts.value
   : statusFilteredAccounts.value.filter(acc => acc.provider === providerFilter.value))
 
-const loginDropdownOptions = PROVIDER_LOGIN_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 登录` }))
+const loginDropdownOptions = computed(() => [
+  ...PROVIDER_LOGIN_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 登录` })),
+  ...deviceVendors.value.map(v => ({ key: v.vendorKey, label: `${v.label} 登录` }))
+])
 const importDropdownOptions = PROVIDER_IMPORT_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 凭证` }))
 
 function handleSelectLoginProvider(key: string | number): void {
@@ -170,13 +193,9 @@ const importPlaceholder = computed(() => {
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
-function getOAuthTabFromHash(): 'accounts' | 'inspection' | 'device' {
+function getOAuthTabFromHash(): 'accounts' | 'inspection' {
   const hash = route.hash.replace(/^#/, '').toLowerCase()
-  const queryTab = typeof route.query.tab === 'string' ? route.query.tab.toLowerCase() : ''
-  if (hash === 'device' || queryTab === 'device') {
-    return 'device'
-  }
-  if (hash === 'inspection' || queryTab === 'inspection') {
+  if (hash === 'inspection' || route.query.tab === 'inspection') {
     return 'inspection'
   }
   return 'accounts'
@@ -203,7 +222,7 @@ const oauthCallbackInput = ref('')
 const oauthDisplayName = ref('')
 const oauthLoading = ref(false)
 const oauthStartLoading = ref(false)
-const oauthProvider = ref<ProviderKind>('codex')
+const oauthProvider = ref<string>('codex')
 
 // 凭证导入弹窗
 const importModal = ref(false)
@@ -211,7 +230,7 @@ const importJsonText = ref('')
 const importFiles = ref<File[]>([])
 const importLoading = ref(false)
 const importFailures = ref<OAuthCredentialImportFailure[]>([])
-const importProvider = ref<ProviderKind>('codex')
+const importProvider = ref<string>('codex')
 
 const exportMode = ref(false)
 const selectedExportAccountIds = ref<string[]>([])
@@ -280,14 +299,23 @@ function invalidatePendingRefreshes(): void {
   inspectionRequestId++
 }
 
+async function loadDeviceVendors(): Promise<void> {
+  try {
+    deviceVendors.value = await fetchDeviceOAuthVendors()
+  } catch {
+    // 功能开关关闭时静默（登录下拉退化为五家内置厂商）。
+  }
+}
+
 async function loadAccounts(showError: boolean): Promise<void> {
   const requestId = ++accountsRequestId
   // Codex、Google、Kimi 与 xAI 账号合并展示；接口在功能开关关闭时返回 404。
-  const [codexResult, googleResult, kimiResult, xaiResult] = await Promise.allSettled([
+  const [codexResult, googleResult, kimiResult, xaiResult, deviceResult] = await Promise.allSettled([
     api.listOAuthAccounts(),
     api.listGoogleAccounts(),
     api.listKimiAccounts(),
-    api.listXaiAccounts()
+    api.listXaiAccounts(),
+    fetchDeviceOAuthAccounts()
   ])
   if (requestId !== accountsRequestId) return
 
@@ -321,7 +349,33 @@ async function loadAccounts(showError: boolean): Promise<void> {
     message.error(`Grok 账号加载失败：${(xaiResult.reason as Error).message}`)
   }
 
-  accounts.value = [...codexAccounts, ...googleAccounts, ...kimiAccounts, ...xaiAccounts].sort(
+  // 通用厂商账号：并入统一卡片（厂商标签用各自 label；额度窗口复用卡片进度条）。
+  const deviceAccounts: UnifiedAccount[] = deviceResult.status === 'fulfilled'
+    ? deviceResult.value.map(acc => ({
+        id: acc.id,
+        displayName: acc.displayName,
+        email: acc.email,
+        accountId: null,
+        planType: acc.planType,
+        isEnabled: acc.isEnabled,
+        isQuotaCooling: false,
+        quotaCoolingUntil: null,
+        lastQuotaCheckedAt: acc.lastQuotaCheckedAt,
+        tokenExpiresAt: acc.tokenExpiresAt,
+        createdAt: acc.createdAt,
+        windows: acc.windows.map(w => ({
+          label: w.label,
+          usedPercent: w.usedPercent,
+          resetLabel: w.resetLabel,
+          resetAtUtc: w.resetAtUtc
+        })),
+        provider: acc.vendorKey,
+        accountKind: acc.vendorLabel,
+        requiresReauth: acc.requiresReauth
+      } as unknown as UnifiedAccount))
+    : []
+
+  accounts.value = [...codexAccounts, ...googleAccounts, ...kimiAccounts, ...xaiAccounts, ...deviceAccounts].sort(
     (a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
   )
   featureDisabled.value = false
@@ -463,9 +517,24 @@ function clearXaiDeviceFlow(): void {
   xaiCountdown.value = 600
 }
 
+// 通用厂商登录会话（OAuth 弹窗内复用「授权链接 + 粘贴回调/轮询」区域）。
+const deviceSessionId = ref('')
+const deviceInstructions = ref('')
+let devicePollTimer: ReturnType<typeof setInterval> | null = null
+
+function clearDeviceFlow(): void {
+  if (devicePollTimer) {
+    clearInterval(devicePollTimer)
+    devicePollTimer = null
+  }
+  deviceSessionId.value = ''
+  deviceInstructions.value = ''
+}
+
 function clearAllDeviceFlows(): void {
   clearKimiDeviceFlow()
   clearXaiDeviceFlow()
+  clearDeviceFlow()
 }
 
 function formatSeconds(secs: number): string {
@@ -474,7 +543,7 @@ function formatSeconds(secs: number): string {
   return `${m}:${s < 10 ? '0' : ''}${s}`
 }
 
-function openOAuthModal(provider: ProviderKind = 'codex'): void {
+function openOAuthModal(provider: string = 'codex'): void {
   oauthProvider.value = provider
   oauthUrl.value = ''
   oauthCallbackInput.value = ''
@@ -487,7 +556,16 @@ async function handleStartOAuth(): Promise<void> {
   oauthStartLoading.value = true
   clearAllDeviceFlows()
   try {
-    if (oauthProvider.value === 'kimi') {
+    const deviceVendor = deviceVendorOf(oauthProvider.value)
+    if (deviceVendor) {
+      const result = await startDeviceOAuthSignIn(deviceVendor.vendorKey)
+      deviceSessionId.value = result.sessionId
+      deviceInstructions.value = result.instructions
+      oauthUrl.value = result.authorizeUrl
+      oauthCallbackInput.value = ''
+      // 3 秒自动轮询（粘贴回调流自动轮询无害：后端返回 pending）。
+      devicePollTimer = setInterval(() => void pollDeviceSignIn(false), 3000)
+    } else if (oauthProvider.value === 'kimi') {
       const result = await api.startKimiDeviceFlow()
       kimiDeviceCode.value = result.deviceCode
       kimiUserCode.value = result.userCode
@@ -579,6 +657,39 @@ async function handleStartOAuth(): Promise<void> {
   }
 }
 
+async function pollDeviceSignIn(manual: boolean): Promise<void> {
+  if (!deviceSessionId.value || !oauthModal.value) return
+  oauthLoading.value = true
+  try {
+    const result = await pollDeviceOAuthSignIn(
+      deviceSessionId.value,
+      oauthDisplayName.value.trim() || undefined,
+      oauthCallbackInput.value.trim() || undefined
+    )
+    if (result.status === 'pending' && result.nextUrl) {
+      // 多段登录（如 Kiro 的 AWS Builder ID）：换第二段授权地址。
+      oauthUrl.value = result.nextUrl
+      oauthCallbackInput.value = ''
+      if (result.message) message.info(result.message)
+      else message.info('请继续完成第二段授权')
+    } else if (result.status === 'success') {
+      clearDeviceFlow()
+      message.success('登录成功，账号已创建')
+      oauthModal.value = false
+      await load()
+    } else if (result.status === 'failed') {
+      clearDeviceFlow()
+      message.error(result.error || '登录失败')
+    } else if (manual) {
+      message.info('尚未完成授权，请继续')
+    }
+  } catch (e) {
+    if (manual) message.error((e as Error).message)
+  } finally {
+    oauthLoading.value = false
+  }
+}
+
 async function handleManualCheckDeviceAuth(): Promise<void> {
   const isXai = oauthProvider.value === 'xai'
   const deviceCode = isXai ? xaiDeviceCode.value : kimiDeviceCode.value
@@ -612,6 +723,10 @@ async function handleManualCheckDeviceAuth(): Promise<void> {
 }
 
 async function handleCompleteOAuth(): Promise<void> {
+  if (deviceVendorOf(oauthProvider.value)) {
+    await pollDeviceSignIn(true)
+    return
+  }
   if (oauthProvider.value === 'kimi' || oauthProvider.value === 'xai') {
     await handleManualCheckDeviceAuth()
     return
@@ -636,7 +751,9 @@ async function handleCompleteOAuth(): Promise<void> {
 
 async function handleToggle(acc: UnifiedAccount): Promise<void> {
   try {
-    if (acc.provider === 'codex') {
+    if (deviceVendorOf(acc.provider)) {
+      await toggleDeviceOAuthAccount(acc.id, !acc.isEnabled)
+    } else if (acc.provider === 'codex') {
       await api.toggleOAuthAccount(acc.id)
     } else if (acc.provider === 'antigravity') {
       await api.toggleGoogleAccount(acc.id, !acc.isEnabled)
@@ -650,7 +767,10 @@ async function handleToggle(acc: UnifiedAccount): Promise<void> {
 }
 async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
   try {
-    if (acc.provider === 'codex') {
+    if (deviceVendorOf(acc.provider)) {
+      await refreshDeviceOAuthQuota(acc.id)
+      message.success('已刷新额度')
+    } else if (acc.provider === 'codex') {
       await api.refreshOAuthQuota(acc.id)
       message.success('已刷新额度')
     } else if (acc.provider === 'antigravity') {
@@ -667,7 +787,9 @@ async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
   } catch (e) { message.error((e as Error).message) }
 }
 async function handleDelete(acc: UnifiedAccount): Promise<void> {
-  if (acc.provider === 'codex') {
+  if (deviceVendorOf(acc.provider)) {
+    await deleteDeviceOAuthAccount(acc.id)
+  } else if (acc.provider === 'codex') {
     await api.deleteOAuthAccount(acc.id)
   } else if (acc.provider === 'antigravity') {
     await api.deleteGoogleAccount(acc.id)
@@ -899,7 +1021,7 @@ async function handleImportModels(): Promise<void> {
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
 }
 
-function openImportCredential(provider: ProviderKind = 'codex'): void {
+function openImportCredential(provider: string = 'codex'): void {
   importProvider.value = provider
   importJsonText.value = ''
   importFiles.value = []
@@ -1140,12 +1262,14 @@ function inspectionRows(item: OAuthInspectionAccountResult): InspectionDisplayRo
 }
 
 function accountStatusLabel(acc: OAuthAccount): string {
+  if ((acc as UnifiedAccount).requiresReauth) return '需重新登录'
   if (acc.disabledByUpstream) return '上游403禁用'
   if (acc.isQuotaCooling) return '冷却中'
   return acc.isEnabled ? '正常' : '已禁用'
 }
 
-function accountStatusType(acc: OAuthAccount): 'success' | 'warning' | 'default' {
+function accountStatusType(acc: OAuthAccount): 'success' | 'warning' | 'default' | 'error' {
+  if ((acc as UnifiedAccount).requiresReauth) return 'error'
   if (acc.disabledByUpstream) return 'warning'
   if (acc.isQuotaCooling) return 'warning'
   return acc.isEnabled ? 'success' : 'default'
@@ -1160,7 +1284,7 @@ function quotaColor(percent: number | null | undefined): 'success' | 'warning' |
 }
 
 watch(activeTab, (tab) => {
-  const nextHash = tab === 'inspection' ? '#inspection' : tab === 'device' ? '#device' : '#accounts'
+  const nextHash = tab === 'inspection' ? '#inspection' : '#accounts'
   if (tab === 'inspection') {
     if (exportMode.value) cancelExportCredentials()
     void loadInspection(true)
@@ -1178,6 +1302,7 @@ watch(() => route.query.tab, () => {
 })
 
 onMounted(() => {
+  void loadDeviceVendors()
   load()
   pollTimer = setInterval(() => {
     if (document.visibilityState === 'visible') {
@@ -1434,14 +1559,11 @@ onUnmounted(() => {
             </NCard>
           </div>
         </NTabPane>
-            <NTabPane name="device" tab="通用账号（MiniMax / Qoder / ZCode / Copilot / Claude）">
-            <DeviceOAuthAccountsTab />
-            </NTabPane>
         </NTabs>
     </NSpin>
 
     <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序；按厂商展示对应流程。 -->
-    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${PROVIDER_LABELS[oauthProvider]}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearAllDeviceFlows">
+    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${providerLabelOf(oauthProvider)}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearAllDeviceFlows">
       <div class="oauth-form-group">
         <p class="oauth-form-label">账号显示名称（可选）</p>
         <NInput v-model:value="oauthDisplayName" :placeholder="oauthProvider === 'kimi' ? '留空则默认 Kimi 账号' : oauthProvider === 'xai' ? '留空则默认 Grok 账号' : '留空则用邮箱'" />
@@ -1480,11 +1602,14 @@ onUnmounted(() => {
         <NAlert type="info" :show-icon="false">
           <strong>操作步骤：</strong>
           <ol class="oauth-steps">
-            <li v-if="oauthProvider === 'codex'">点击下方链接，在新标签页中登录 OpenAI 账号。</li>
-            <li v-else>点击下方链接，在新标签页中登录 Google 账号并完成授权。</li>
-            <li>登录后浏览器跳转到 localhost 并显示无法访问是正常现象。</li>
-            <li>复制浏览器地址栏中的完整 URL，粘贴到下方输入框。</li>
-            <li>点击“完成登录”。</li>
+            <li v-if="deviceVendorOf(oauthProvider)">{{ deviceInstructions || '点击下方链接，在新标签页完成授权。' }}</li>
+            <template v-else>
+              <li v-if="oauthProvider === 'codex'">点击下方链接，在新标签页中登录 OpenAI 账号。</li>
+              <li v-else>点击下方链接，在新标签页中登录 Google 账号并完成授权。</li>
+              <li>登录后浏览器跳转到 localhost 并显示无法访问是正常现象。</li>
+            </template>
+            <li>回调式登录：复制浏览器地址栏完整 URL 粘贴到下方；轮询式登录：留空等待自动检测即可。</li>
+            <li>点击“完成登录”可立即检查。</li>
           </ol>
         </NAlert>
         <p class="oauth-form-label">授权链接</p>
@@ -1494,7 +1619,7 @@ onUnmounted(() => {
           <NButton tag="a" :href="oauthUrl" target="_blank" secondary type="primary">打开</NButton>
         </div>
         <p class="oauth-form-label">粘贴登录后跳转的完整 URL</p>
-        <NInput v-model:value="oauthCallbackInput" :placeholder="oauthProvider === 'codex' ? 'http://localhost:1455/auth/callback?code=...&state=...' : 'http://localhost:17891/?code=...&state=...'" type="textarea" :autosize="{ minRows: 3 }" />
+        <NInput v-model:value="oauthCallbackInput" :placeholder="deviceVendorOf(oauthProvider) ? '粘贴回跳地址（回调式登录）；轮询式留空即可' : oauthProvider === 'codex' ? 'http://localhost:1455/auth/callback?code=...&state=...' : 'http://localhost:17891/?code=...&state=...'" type="textarea" :autosize="{ minRows: 3 }" />
       </div>
       <template #footer>
         <NSpace justify="end">
@@ -1505,7 +1630,7 @@ onUnmounted(() => {
     </NModal>
 
     <!-- 导入凭证弹窗：Codex / Kimi 支持文件+JSON；Google 仅支持粘贴 gcli2api 凭证 JSON -->
-    <NModal v-model:show="importModal" :title="`导入 ${PROVIDER_LABELS[importProvider]} 凭证`" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
+    <NModal v-model:show="importModal" :title="`导入 ${providerLabelOf(importProvider)} 凭证`" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
       <template v-if="importProvider === 'codex' || importProvider === 'kimi'">
         <p class="credential-import-label">选择一个或多个 {{ importProvider === 'kimi' ? 'Kimi' : 'CPA' }} 凭证 JSON 文件：</p>
         <input class="credential-file-input" type="file" accept=".json,application/json" multiple @change="handleCredentialFiles">

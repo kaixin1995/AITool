@@ -58,7 +58,17 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             return BadRequest(ApiResponse.Fail($"未知厂商 {request.Vendor}", "unknown_vendor"));
         }
 
-        var start = await vendor.StartSignInAsync(ct);
+        DeviceOAuthStartResult start;
+        try
+        {
+            start = await vendor.StartSignInAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            // 发码失败（网络不可达/上游拒绝/响应畸形）返回业务错误而非无信息的 500。
+            return Ok(ApiResponse.Fail($"发起登录失败：{ex.Message}", "sign_in_start_failed"));
+        }
+
         var sessionId = Guid.NewGuid().ToString("N");
         Sessions[sessionId] = new PendingSession(vendor.VendorKey, start.SessionJson, DateTimeOffset.UtcNow.AddMinutes(15));
         PruneExpiredSessions();
