@@ -171,7 +171,12 @@ onBeforeUnmount(() => {
 
             <div v-if="key.windows.length > 0" class="site-quota-windows">
               <div v-for="w in key.windows" :key="w.id" class="site-quota-window">
-                <div class="site-quota-window-label">{{ w.label }}{{ w.isAside ? '（不参与调度）' : '' }}</div>
+                <div class="site-quota-window-label">
+                  <NTooltip trigger="hover" placement="top">
+                    <template #trigger>{{ w.label }}</template>
+                    非阻塞窗口：仅展示，不参与自动禁用与调度
+                  </NTooltip>
+                </div>
                 <NProgress
                   class="site-quota-window-bar"
                   :percentage="remainingPercent(w.usedPercent)"
