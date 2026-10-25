@@ -224,7 +224,7 @@ const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.valu
     shortLabel: windowShortLabel(w.label),
     usedPercent: w.usedPercent
   })),
-  tokenExpiry: acc.tokenExpiresAt ? formatDateTime(acc.tokenExpiresAt) : '',
+  tokenExpiry: acc.tokenExpiresAt ? formatTokenExpiryShort(acc.tokenExpiresAt) : '',
   isEnabled: acc.isEnabled,
   canFetchModels: canFetchModelsProvider(acc.provider),
   raw: acc
@@ -234,7 +234,7 @@ const accountTableColumns = [
   {
     title: '名称',
     key: 'name',
-    minWidth: 150,
+    minWidth: 220,
     render(row: AccountTableRow) {
       // 名称 + 套餐副行：省掉独立套餐列，窄屏不再挤爆。
       const nodes = [h('div', { class: 'oauth-table-name' }, row.name)]
@@ -258,30 +258,30 @@ const accountTableColumns = [
       if (row.windows.length === 0) return h('span', { class: 'oauth-table-sub' }, '—')
       return h('div', { class: 'oauth-table-windows' }, {
         default: () => row.windows.map(w => {
-          const pct = w.usedPercent == null ? 0 : Math.min(100, Math.max(0, w.usedPercent))
+          const used = w.usedPercent == null ? null : Math.min(100, Math.max(0, w.usedPercent))
           return h('div', { class: 'oauth-table-window-row' }, {
             default: () => [
               h('span', { class: 'oauth-table-window-name', title: w.label }, w.shortLabel),
-              h(NProgress, {
-                class: 'oauth-table-window-bar',
-                type: 'line',
-                percentage: pct,
-                status: quotaColor(w.usedPercent),
-                showIndicator: false,
-                height: 14,
-                borderRadius: 3
-              }, {
-                default: () => w.usedPercent == null
-                  ? ''
-                  : h('span', { class: 'oauth-table-window-pct' }, formatInspectionPercent(w.usedPercent))
-              })
+              used == null
+                ? h('span', { class: 'oauth-table-window-none' }, '—')
+                : h(NProgress, {
+                    class: 'oauth-table-window-bar',
+                    type: 'line',
+                    percentage: used,
+                    status: quotaColor(used),
+                    showIndicator: false,
+                    height: 14,
+                    borderRadius: 3
+                  }, {
+                    default: () => h('span', { class: 'oauth-table-window-pct' }, formatInspectionPercent(used))
+                  })
             ]
           })
         })
       })
     }
   },
-  { title: 'Token 到期', key: 'tokenExpiry', width: 96, render(row: AccountTableRow) { return h('span', { class: 'oauth-table-nowrap' }, row.tokenExpiry || '—') } },
+  { title: 'Token 到期', key: 'tokenExpiry', width: 110, render(row: AccountTableRow) { return h('span', { class: 'oauth-table-nowrap oauth-table-token' }, row.tokenExpiry || '—') } },
   {
     title: '操作',
     key: 'actions',
@@ -1359,6 +1359,14 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
+function formatTokenExpiryShort(value: string | null | undefined): string {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear() % 100}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '从未'
   return new Date(value).toLocaleString('zh-CN')
@@ -2426,15 +2434,38 @@ onUnmounted(() => {
 }
 .oauth-table-window-bar {
   flex: 1;
-  min-width: 120px;
+  min-width: 140px;
 }
-.oauth-table-window-bar :deep(.n-progress-graph-line-indicator) {
-  font-size: 11px;
+/* 条内百分比：绝对定位居中在填充条上（Naive 指示器已关） */
+.oauth-table-window-bar :deep(.n-progress) {
+  display: block;
+}
+.oauth-table-window-bar :deep(.n-progress-graph-line) {
+  padding: 0;
+}
+.oauth-table-window-bar :deep(.n-progress-graph-line-rail),
+.oauth-table-window-bar :deep(.n-progress-graph-line-fill) {
+  height: 14px !important;
+  border-radius: 3px;
+}
+.oauth-table-window-bar :deep(.n-progress-graph-line-rail) {
+  background: var(--bg-page, #f3f3f3);
 }
 .oauth-table-window-pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 11px;
   line-height: 14px;
-  color: var(--text-color-secondary, #666);
+  color: #fff;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.oauth-table-window-none {
+  font-size: 12px;
+  color: var(--text-color-secondary, #888);
 }
 .oauth-table-nowrap {
   white-space: nowrap;
