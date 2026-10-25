@@ -175,6 +175,12 @@ const providerFilterOptions = computed(() => {
   return [...staticOptions, ...deviceOptions]
 })
 // 表格视图行（复用卡片同源数据与操作；窗口合并为一列文本便于扫读）。
+interface AccountTableWindow {
+  label: string
+  shortLabel: string
+  usedPercent: number | null
+}
+
 interface AccountTableRow {
   id: string
   name: string
@@ -184,11 +190,24 @@ interface AccountTableRow {
   statusTag: 'success' | 'warning' | 'default' | 'error'
   plan: string
   email: string
-  windows: string
+  windows: AccountTableWindow[]
   tokenExpiry: string
-  createdAt: string
   isEnabled: boolean
+  canFetchModels: boolean
   raw: UnifiedAccount
+}
+
+const canFetchModelsProvider = (provider: string): boolean =>
+  provider === 'codex' || provider === 'antigravity' || provider === 'gemini-cli' || provider === 'kimi' || provider === 'xai'
+
+// 窗口短名：去掉「窗口/额度」等后缀，进度条左侧只留「5 小时/每周/MCP 月度」等核心词。
+function windowShortLabel(label: string): string {
+  return label
+    .replace('窗口', '')
+    .replace('额度', '')
+    .replace('区间', '')
+    .replace(/（.*?）/, '')
+    .trim() || label
 }
 
 const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.value.map(acc => ({
@@ -200,42 +219,91 @@ const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.valu
   statusTag: accountStatusType(acc),
   plan: [acc.planType, acc.creditAmount != null ? '积分 ' + acc.creditAmount : null].filter(Boolean).join(' · '),
   email: acc.email ?? '',
-  windows: (acc.windows ?? [])
-    .map(w => (w.usedPercent != null ? w.label + ' ' + formatInspectionPercent(w.usedPercent) : w.label))
-    .join('；'),
+  windows: (acc.windows ?? []).map(w => ({
+    label: w.label,
+    shortLabel: windowShortLabel(w.label),
+    usedPercent: w.usedPercent
+  })),
   tokenExpiry: acc.tokenExpiresAt ? formatDateTime(acc.tokenExpiresAt) : '',
-  createdAt: acc.createdAt ? formatDateTime(acc.createdAt) : '',
   isEnabled: acc.isEnabled,
+  canFetchModels: canFetchModelsProvider(acc.provider),
   raw: acc
 })))
 
 const accountTableColumns = [
-  { title: '名称', key: 'name', minWidth: 140, ellipsis: { tooltip: true } },
-  { title: '厂商', key: 'providerLabel', width: 120, render(row: AccountTableRow) { return h(NTag, { size: 'small', bordered: false, type: row.providerTag }, { default: () => row.providerLabel }) } },
-  { title: '状态', key: 'statusLabel', width: 100, render(row: AccountTableRow) { return h(NTag, { size: 'small', bordered: false, type: row.statusTag }, { default: () => row.statusLabel }) } },
-  { title: '套餐', key: 'plan', minWidth: 120, ellipsis: { tooltip: true } },
-  { title: '额度窗口', key: 'windows', minWidth: 200, ellipsis: { tooltip: true } },
-  { title: '邮箱', key: 'email', minWidth: 160, ellipsis: { tooltip: true } },
-  { title: 'Token 到期', key: 'tokenExpiry', width: 130 },
-  { title: '创建时间', key: 'createdAt', width: 130 },
+  {
+    title: '名称',
+    key: 'name',
+    minWidth: 150,
+    render(row: AccountTableRow) {
+      // 名称 + 套餐副行：省掉独立套餐列，窄屏不再挤爆。
+      const nodes = [h('div', { class: 'oauth-table-name' }, row.name)]
+      if (row.plan) {
+        nodes.push(h('div', { class: 'oauth-table-sub' }, row.plan))
+      }
+      if (row.email) {
+        nodes.push(h('div', { class: 'oauth-table-sub oauth-table-email' }, row.email))
+      }
+      return h('div', { class: 'oauth-table-name-cell' }, { default: () => nodes })
+    }
+  },
+  { title: '厂商', key: 'providerLabel', width: 100, render(row: AccountTableRow) { return h(NTag, { size: 'small', bordered: false, type: row.providerTag }, { default: () => row.providerLabel }) } },
+  { title: '状态', key: 'statusLabel', width: 92, render(row: AccountTableRow) { return h(NTag, { size: 'small', bordered: false, type: row.statusTag }, { default: () => row.statusLabel }) } },
+  {
+    // 额度窗口：每个窗口一行进度条（短名在左，百分比文字嵌在条内），竖排展示全部窗口。
+    title: '额度窗口',
+    key: 'windows',
+    minWidth: 260,
+    render(row: AccountTableRow) {
+      if (row.windows.length === 0) return h('span', { class: 'oauth-table-sub' }, '—')
+      return h('div', { class: 'oauth-table-windows' }, {
+        default: () => row.windows.map(w => {
+          const pct = w.usedPercent == null ? 0 : Math.min(100, Math.max(0, w.usedPercent))
+          return h('div', { class: 'oauth-table-window-row' }, {
+            default: () => [
+              h('span', { class: 'oauth-table-window-name', title: w.label }, w.shortLabel),
+              h(NProgress, {
+                class: 'oauth-table-window-bar',
+                type: 'line',
+                percentage: pct,
+                status: quotaColor(w.usedPercent),
+                showIndicator: false,
+                height: 14,
+                borderRadius: 3
+              }, {
+                default: () => w.usedPercent == null
+                  ? ''
+                  : h('span', { class: 'oauth-table-window-pct' }, formatInspectionPercent(w.usedPercent))
+              })
+            ]
+          })
+        })
+      })
+    }
+  },
+  { title: 'Token 到期', key: 'tokenExpiry', width: 96, render(row: AccountTableRow) { return h('span', { class: 'oauth-table-nowrap' }, row.tokenExpiry || '—') } },
   {
     title: '操作',
     key: 'actions',
-    width: 180,
+    width: 210,
     render(row: AccountTableRow) {
-      return h(NSpace, { size: 'small', wrap: false }, {
-        default: () => [
-          h(NButton, { size: 'tiny', secondary: true, onClick: () => handleRefreshQuota(row.raw) }, { default: () => '刷新' }),
-          h(NButton, { size: 'tiny', secondary: true, onClick: () => handleToggle(row.raw) }, { default: () => (row.isEnabled ? '禁用' : '启用') }),
-          h(NPopconfirm, { onPositiveClick: () => handleDelete(row.raw) }, {
-            trigger: () => h(NButton, { size: 'tiny', secondary: true, type: 'error' }, { default: () => '删除' }),
-            default: () => '确认删除该账号？'
-          })
-        ]
-      })
+      const buttons = [
+        h(NButton, { size: 'tiny', secondary: true, onClick: () => handleRefreshQuota(row.raw) }, { default: () => '刷新' }),
+        h(NButton, { size: 'tiny', secondary: true, onClick: () => openEdit(row.raw) }, { default: () => '编辑' })
+      ]
+      if (row.canFetchModels) {
+        buttons.push(h(NButton, { size: 'tiny', secondary: true, onClick: () => openFetchModels(row.raw) }, { default: () => '模型' }))
+      }
+      buttons.push(h(NButton, { size: 'tiny', secondary: true, onClick: () => handleToggle(row.raw) }, { default: () => (row.isEnabled ? '禁用' : '启用') }))
+      buttons.push(h(NPopconfirm, { onPositiveClick: () => handleDelete(row.raw) }, {
+        trigger: () => h(NButton, { size: 'tiny', secondary: true, type: 'error' }, { default: () => '删除' }),
+        default: () => '确认删除该账号？'
+      }))
+      return h(NSpace, { size: 'small', wrap: false }, { default: () => buttons })
     }
   }
 ]
+
 const providerFilterSelectOptions = computed(() => providerFilterOptions.value.map(option => ({
   label: `${option.label}（${option.count}）`,
   value: option.key
@@ -2315,6 +2383,61 @@ onUnmounted(() => {
 
 .oauth-status-filter :deep(.n-base-selection) {
   min-height: 28px;
+}
+
+/* 表格视图单元格 */
+.oauth-table-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.oauth-table-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-sub {
+  font-size: 12px;
+  color: var(--text-color-secondary, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-email { font-size: 11px; }
+.oauth-table-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.oauth-table-window-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.oauth-table-window-name {
+  flex-shrink: 0;
+  width: 64px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-window-bar {
+  flex: 1;
+  min-width: 120px;
+}
+.oauth-table-window-bar :deep(.n-progress-graph-line-indicator) {
+  font-size: 11px;
+}
+.oauth-table-window-pct {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--text-color-secondary, #666);
+}
+.oauth-table-nowrap {
+  white-space: nowrap;
 }
 
 .oauth-grid {
