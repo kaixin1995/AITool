@@ -236,6 +236,11 @@ const accountTableColumns = [
     }
   }
 ]
+const providerFilterSelectOptions = computed(() => providerFilterOptions.value.map(option => ({
+  label: `${option.label}（${option.count}）`,
+  value: option.key
+})))
+
 const filteredAccounts = computed(() => providerFilter.value === 'all'
   ? statusFilteredAccounts.value
   : statusFilteredAccounts.value.filter(acc => acc.provider === providerFilter.value))
@@ -1423,6 +1428,12 @@ onUnmounted(() => {
           </NButtonGroup>
 
           <NSelect
+            v-model:value="providerFilter"
+            :options="providerFilterSelectOptions"
+            size="small"
+            style="width: 170px"
+          />
+          <NSelect
             v-model:value="accountStatusFilter"
             :options="accountStatusFilterOptions"
             class="oauth-status-filter"
@@ -1452,22 +1463,6 @@ onUnmounted(() => {
             <NEmpty v-else-if="accounts.length === 0" description="暂无 OAuth 账号，可使用右上角 OAuth 登录或导入凭证" />
 
             <template v-else>
-              <div class="oauth-provider-filters" role="tablist" aria-label="账号厂商筛选">
-                <button
-                  v-for="filter in providerFilterOptions"
-                  :key="filter.key"
-                  type="button"
-                  class="oauth-provider-filter"
-                  :class="{ active: providerFilter === filter.key }"
-                  :data-provider="filter.key"
-                  role="tab"
-                  :aria-selected="providerFilter === filter.key"
-                  @click="providerFilter = filter.key"
-                >
-                  <span>{{ filter.label }}</span>
-                  <span class="oauth-provider-filter-count">{{ filter.count }}</span>
-                </button>
-              </div>
 
               <NEmpty v-if="filteredAccounts.length === 0" description="当前筛选条件暂无账号" />
               <!-- 表格视图：与卡片二选一（视图切换在顶部），操作与卡片同源 -->
@@ -2313,13 +2308,6 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.oauth-provider-filters {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
 
 .oauth-status-filter {
   flex-shrink: 0;
@@ -2327,59 +2315,6 @@ onUnmounted(() => {
 
 .oauth-status-filter :deep(.n-base-selection) {
   min-height: 28px;
-}
-
-.oauth-provider-filter {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 7px;
-  min-height: 32px;
-  padding: 5px 11px;
-  border: 1px solid var(--border-color-global);
-  border-radius: 999px;
-  background: var(--bg-card);
-  color: var(--text-color-secondary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
-}
-
-.oauth-provider-filter::before {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-color-secondary);
-  content: '';
-}
-
-.oauth-provider-filter[data-provider='codex']::before { background: #5b8ff9; }
-.oauth-provider-filter[data-provider='antigravity']::before { background: #f0a020; }
-
-.oauth-provider-filter:hover,
-.oauth-provider-filter:focus-visible {
-  border-color: var(--primary-color, #3b82f6);
-  color: var(--text-primary);
-  outline: none;
-}
-
-.oauth-provider-filter.active {
-  border-color: var(--primary-color, #3b82f6);
-  background: color-mix(in srgb, var(--primary-color, #3b82f6) 10%, var(--bg-card));
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.oauth-provider-filter-count {
-  min-width: 18px;
-  padding: 1px 5px;
-  border-radius: 999px;
-  background: var(--bg-page);
-  color: var(--text-color-secondary);
-  font-size: 11px;
-  line-height: 16px;
-  text-align: center;
 }
 
 .oauth-grid {
