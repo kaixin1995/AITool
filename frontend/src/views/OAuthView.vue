@@ -842,7 +842,7 @@ async function handleToggle(acc: UnifiedAccount): Promise<void> {
       await toggleDeviceOAuthAccount(acc.id, !acc.isEnabled)
     } else if (acc.provider === 'codex') {
       await api.toggleOAuthAccount(acc.id)
-    } else if (acc.provider === 'antigravity') {
+    } else if (acc.provider === 'antigravity' || acc.provider === 'gemini-cli') {
       await api.toggleGoogleAccount(acc.id, !acc.isEnabled)
     } else if (acc.provider === 'kimi') {
       await api.toggleKimiAccount(acc.id, !acc.isEnabled)
@@ -860,7 +860,7 @@ async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
     } else if (acc.provider === 'codex') {
       await api.refreshOAuthQuota(acc.id)
       message.success('已刷新额度')
-    } else if (acc.provider === 'antigravity') {
+    } else if (acc.provider === 'antigravity' || acc.provider === 'gemini-cli') {
       await api.refreshGoogleQuota(acc.id)
       message.success('已刷新额度')
     } else if (acc.provider === 'kimi') {
@@ -878,7 +878,7 @@ async function handleDelete(acc: UnifiedAccount): Promise<void> {
     await deleteDeviceOAuthAccount(acc.id)
   } else if (acc.provider === 'codex') {
     await api.deleteOAuthAccount(acc.id)
-  } else if (acc.provider === 'antigravity') {
+  } else if (acc.provider === 'antigravity' || acc.provider === 'gemini-cli') {
     await api.deleteGoogleAccount(acc.id)
   } else if (acc.provider === 'kimi') {
     await api.deleteKimiAccount(acc.id)
@@ -931,7 +931,7 @@ async function handleSaveEdit(): Promise<void> {
       } else {
         message.success('已更新')
       }
-    } else if (editAccount.value.provider === 'antigravity') {
+    } else if (editAccount.value.provider === 'antigravity' || editAccount.value.provider === 'gemini-cli') {
       await api.updateGoogleAccount(
         editAccount.value.id,
         editDisplayName.value.trim(),
