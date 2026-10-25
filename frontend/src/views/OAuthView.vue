@@ -24,7 +24,7 @@ import {
 } from './accountInspectionState'
 
 // 统一账号视图：Codex、Google（Antigravity）、Kimi (Moonshot AI) 与 xAI (Grok) 账号合入同一列表，用 provider 区分厂商。
-type ProviderKind = 'codex' | 'antigravity' | 'kimi' | 'xai'
+type ProviderKind = 'codex' | 'antigravity' | 'gemini-cli' | 'kimi' | 'xai'
 type ProviderFilter = 'all' | ProviderKind
 type AccountStatusFilter = 'enabled' | 'disabled' | 'all'
 type UnifiedAccount = OAuthAccount & {
@@ -37,6 +37,7 @@ type UnifiedAccount = OAuthAccount & {
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
   codex: 'Codex',
   antigravity: 'Antigravity',
+  'gemini-cli': 'Gemini CLI',
   kimi: 'Kimi',
   xai: 'Grok'
 }
@@ -168,9 +169,13 @@ const importPlaceholder = computed(() => {
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
-function getOAuthTabFromHash(): 'accounts' | 'inspection' {
+function getOAuthTabFromHash(): 'accounts' | 'inspection' | 'device' {
   const hash = route.hash.replace(/^#/, '').toLowerCase()
-  if (hash === 'inspection' || route.query.tab === 'inspection') {
+  const queryTab = typeof route.query.tab === 'string' ? route.query.tab.toLowerCase() : ''
+  if (hash === 'device' || queryTab === 'device') {
+    return 'device'
+  }
+  if (hash === 'inspection' || queryTab === 'inspection') {
     return 'inspection'
   }
   return 'accounts'
@@ -397,8 +402,8 @@ async function refreshSilently(force = false): Promise<void> {
   }
 }
 
-function googleKindOf(_provider?: ProviderKind): GoogleAccountKind {
-  return 'Antigravity'
+function googleKindOf(provider?: ProviderKind): GoogleAccountKind {
+  return provider === 'gemini-cli' ? 'GeminiCli' : 'Antigravity'
 }
 
 // Kimi 设备码授权状态
@@ -1154,7 +1159,7 @@ function quotaColor(percent: number | null | undefined): 'success' | 'warning' |
 }
 
 watch(activeTab, (tab) => {
-  const nextHash = tab === 'inspection' ? '#inspection' : '#accounts'
+  const nextHash = tab === 'inspection' ? '#inspection' : tab === 'device' ? '#device' : '#accounts'
   if (tab === 'inspection') {
     if (exportMode.value) cancelExportCredentials()
     void loadInspection(true)
@@ -1428,10 +1433,10 @@ onUnmounted(() => {
             </NCard>
           </div>
         </NTabPane>
-              <NTabPane name="device" tab="通用账号（MiniMax / Qoder / ZCode / Copilot / Claude）">
-          <DeviceOAuthAccountsTab />
-        </NTabPane>
-</NTabs>
+            <NTabPane name="device" tab="通用账号（MiniMax / Qoder / ZCode / Copilot / Claude）">
+            <DeviceOAuthAccountsTab />
+            </NTabPane>
+        </NTabs>
     </NSpin>
 
     <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序；按厂商展示对应流程。 -->
