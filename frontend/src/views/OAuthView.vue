@@ -430,6 +430,11 @@ async function loadAccounts(showError: boolean): Promise<void> {
   }
 
   // 通用厂商账号：并入统一卡片（厂商标签用各自 label；额度窗口复用卡片进度条）。
+  // 自愈：厂商清单挂载时拉取失败（静默）但设备账号列表拿到了——编辑/筛选依赖厂商清单，补拉一次。
+  if (deviceResult.status === 'fulfilled' && deviceVendors.value.length === 0) {
+    void loadDeviceVendors()
+  }
+
   const deviceAccounts: UnifiedAccount[] = deviceResult.status === 'fulfilled'
     ? deviceResult.value.map(acc => ({
         id: acc.id,
@@ -1035,7 +1040,8 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
       } else if (result.catalogRefreshed === false && result.catalogNote) {
         message.warning(result.catalogNote)
       }
-    } else if (acc.provider === 'antigravity') {
+    } else if (acc.provider === 'antigravity' || acc.provider === 'gemini-cli') {
+      // GeminiCli 与 Antigravity 同走 Google 模型端点（fetchAvailableModels 按 kind 分流）。
       models = await api.fetchGoogleModels(acc.id)
     } else if (acc.provider === 'kimi') {
       models = await api.fetchKimiModels(acc.id)
@@ -1095,7 +1101,7 @@ async function handleImportModels(): Promise<void> {
     }))
     if (modelAccount.value.provider === 'codex') {
       await api.importSelectedOAuthModels(modelAccount.value.id, selections)
-    } else if (modelAccount.value.provider === 'antigravity') {
+    } else if (modelAccount.value.provider === 'antigravity' || modelAccount.value.provider === 'gemini-cli') {
       await api.importSelectedGoogleModels(modelAccount.value.id, selections)
     } else if (modelAccount.value.provider === 'kimi') {
       await api.importSelectedKimiModels(modelAccount.value.id, selections)
@@ -1559,7 +1565,7 @@ onUnmounted(() => {
                     <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </NButton>
-                    <NButton v-if="acc.provider === 'codex' || acc.provider === 'antigravity' || acc.provider === 'kimi' || acc.provider === 'xai'" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
+                    <NButton v-if="acc.provider === 'codex' || acc.provider === 'antigravity' || acc.provider === 'gemini-cli' || acc.provider === 'kimi' || acc.provider === 'xai'" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                     </NButton>
                     <NPopconfirm @positive-click="handleDelete(acc)">
@@ -1782,7 +1788,7 @@ onUnmounted(() => {
             placeholder="粘贴新的 refresh_token，留空则不修改凭证"
             :autosize="{ minRows: 2, maxRows: 4 }"
           />
-          <p class="edit-hint">填入后会立即用新凭证刷新 access_token。token 过期或失效时可用此功能恢复。</p>
+          <p class="edit-hint">{{ deviceVendorOf(editAccount?.provider ?? '') ? '填入后保存为新 refresh_token，额度查询时按需重登恢复' : '填入后会立即用新凭证刷新 access_token' }}。token 过期或失效时可用此功能恢复。</p>
         </div>
         <div v-if="editAccount?.provider === 'codex' || editAccount?.provider === 'kimi'">
           <p class="edit-label">手动刷新 Token</p>
