@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -58,6 +59,130 @@ public sealed class MiniMaxOAuthVendor : IDeviceOAuthVendor
     ];
 
     public IReadOnlyList<(string Slug, string DisplayName)> DefaultModels => ModelList;
+
+    public bool SupportsModelFetch => true;
+
+    /// <summary>
+    /// Fetches MiniMax Code's live public model config, exactly as the mcode plugin does;
+    /// the endpoint is regional but does not require account credentials.
+    /// </summary>
+    public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(
+        DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
+    {
+        var url = _site.Llm + "/mavis/api/v1/models?region=" + (_site == Global ? "en" : "cn") + "&buildEnv=prod";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        if (!string.IsNullOrWhiteSpace(token.AccessToken))
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token.AccessToken.Trim());
+        }
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden && !string.IsNullOrWhiteSpace(token.AccessToken))
+        {
+            response.Dispose();
+            using var publicRequest = new HttpRequestMessage(HttpMethod.Get, url);
+            publicRequest.Headers.TryAddWithoutValidation("Accept", "application/json");
+            using var publicResponse = await _httpClient.SendAsync(publicRequest, cancellationToken);
+            return await ReadModelCatalogResponseAsync(publicResponse, cancellationToken);
+        }
+
+        return await ReadModelCatalogResponseAsync(response, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<DeviceOAuthRemoteModel>> ReadModelCatalogResponseAsync(
+        HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"MiniMax 模型列表 HTTP {(int)response.StatusCode}");
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(body);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("MiniMax 模型列表 JSON 无法解析", ex);
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException("MiniMax 模型列表根节点无效");
+            }
+
+            if (HasUnfetchedModelPage(root))
+            {
+                throw new InvalidOperationException("MiniMax 模型接口返回分页标记，但 mcode 参考端点未定义分页协议；拒绝导入不完整目录");
+            }
+
+            if (!root.TryGetProperty("providers", out var providers) || providers.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidOperationException("MiniMax 模型列表缺少 providers 数组");
+            }
+
+            JsonElement models = default;
+            JsonElement modelOrder = default;
+            foreach (var provider in providers.EnumerateArray())
+            {
+                if (provider.ValueKind != JsonValueKind.Object || GetString(provider, "providerId") != "minimax") continue;
+                if (provider.TryGetProperty("config", out var config) && config.ValueKind == JsonValueKind.Object)
+                {
+                    if (config.TryGetProperty("models", out var foundModels)) models = foundModels;
+                    if (config.TryGetProperty("model_order", out var foundOrder)) modelOrder = foundOrder;
+                }
+                break;
+            }
+
+            if (models.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException("MiniMax 目录中没有 minimax models 对象");
+            }
+
+            var ids = new List<string>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            if (modelOrder.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in modelOrder.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        var id = item.GetString()?.Trim();
+                        if (!string.IsNullOrEmpty(id) && models.TryGetProperty(id, out _) && seen.Add(id)) ids.Add(id);
+                    }
+                }
+            }
+            foreach (var property in models.EnumerateObject())
+            {
+                if (!string.IsNullOrWhiteSpace(property.Name) && seen.Add(property.Name)) ids.Add(property.Name);
+            }
+
+            var result = new List<DeviceOAuthRemoteModel>(ids.Count);
+            foreach (var id in ids)
+            {
+                if (!models.TryGetProperty(id, out var definition) || definition.ValueKind != JsonValueKind.Object) continue;
+                result.Add(new DeviceOAuthRemoteModel(id, GetString(definition, "name") ?? id));
+            }
+
+            if (result.Count == 0)
+            {
+                throw new InvalidOperationException("MiniMax 模型接口未返回任何有效模型");
+            }
+
+            return result;
+        }
+    }
+
+    private static bool HasUnfetchedModelPage(JsonElement root)
+        => (root.TryGetProperty("has_more", out var more) && more.ValueKind == JsonValueKind.True)
+           || (root.TryGetProperty("next_page", out var nextPage) && nextPage.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(nextPage.GetString()))
+           || (root.TryGetProperty("next_cursor", out var nextCursor) && nextCursor.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(nextCursor.GetString()));
 
     /// <summary>聊天站点：Anthropic 协议，{llm}/mavis/api/v1/llm/v1 基地址（含版本段）+ mcode 静态头。</summary>
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => new(

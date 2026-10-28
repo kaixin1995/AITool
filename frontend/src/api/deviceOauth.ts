@@ -7,6 +7,25 @@ export interface DeviceOAuthVendor {
   modelFetchSupported: boolean
 }
 
+const builtInModelProviders = new Set(['codex', 'antigravity', 'gemini-cli', 'kimi', 'xai'])
+
+// 卡片、表格与弹窗共用能力判断；未知/静态目录厂商不能冒充支持动态拉取。
+export function supportsOAuthModelFetch(provider: string, vendors: DeviceOAuthVendor[]): boolean {
+  return builtInModelProviders.has(provider)
+    || vendors.some(v => v.vendorKey === provider && v.modelFetchSupported)
+}
+
+export function supportsOAuthModelImport(
+  account: { provider: string; modelImportSupported?: boolean } | null,
+  vendors: DeviceOAuthVendor[]
+): boolean {
+  if (!account) return false
+  return builtInModelProviders.has(account.provider)
+    || (supportsOAuthModelFetch(account.provider, vendors)
+      && vendors.some(v => v.vendorKey === account.provider && v.chatSupported)
+      && account.modelImportSupported === true)
+}
+
 export interface DeviceOAuthWindow {
   id: string
   label: string
@@ -28,6 +47,7 @@ export interface DeviceOAuthAccount {
   requiresReauth: boolean
   tokenExpiresAt: string | null
   linkedSiteId: string
+  modelImportSupported: boolean
   createdAt: string
   lastQuotaCheckedAt: string | null
   planType: string | null

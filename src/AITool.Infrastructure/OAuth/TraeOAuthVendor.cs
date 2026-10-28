@@ -30,17 +30,27 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
         string ClientId,
         string PluginVersion,
         string IdeVersion,
-        int DeviceIdDigits)
+        int DeviceIdDigits,
+        string DefaultModelHost,
+        string AppId,
+        string ClientVersion,
+        string ClientVersionCode)
     {
         public static SiteSpec China { get; } = new(
             "trae-cn", "Trae CN",
             "https://www.trae.cn", "https://api.trae.cn",
-            "ono9krqynydwx5", "2.3.62834", "3.3.99", 16);
+            "ono9krqynydwx5", "2.3.62834", "3.3.99", 16,
+            "https://trae-api-cn.mchost.guru", "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8", "0.1.69", "20260917");
 
         public static SiteSpec Global { get; } = new(
             "trae-global", "Trae Global",
             "https://www.trae.ai", "https://growsg-normal.trae.ai",
-            "ono9krqynydwx5", "2.3.62834", "3.5.51", 19);
+            "ono9krqynydwx5", "2.3.62834", "3.5.51", 19,
+            "https://coresg-normal.trae.ai", "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8", "0.1.69", "20260917");
+
+        public bool IsGlobal => Key == "trae-global";
+        public IReadOnlyList<string> ModelFunctions { get; } =
+            ["chat_v3", "solo_work_lite", "solo_agent", "solo_agent_lite", "solo_coder"];
     }
 
     /// <summary>续期端点相对路径（DeviceProof 签名覆盖它）。</summary>
@@ -77,6 +87,305 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
 
     /// <summary>聊天走 IDE 专属 SSE 协议，暂不开放。</summary>
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => null;
+
+    public bool SupportsModelFetch => true;
+
+    /// <summary>
+    /// 拉取账号可用模型目录（对齐 magpie trae 插件 liveModels）：IDE API
+    /// /api/ide/v1/batch_get_detail_param 一次取全部 chat function 的列表，
+    /// 批量端点没给出任何列表时逐 function /api/ide/v1/get_detail_param 兜底。
+    /// 限制：DeviceOAuthRemoteModel 只有 Slug/DisplayName，无法携带「经由哪个
+    /// function 请求」与上游 __dev/__max 别名（model_detail_list），这些维度丢弃。
+    /// </summary>
+    public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(
+        DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
+    {
+        var extra = TryParseExtra(extraJson);
+        var host = ReadString(extra, "modelHost");
+        if (string.IsNullOrWhiteSpace(host) || !IsModelHost(host!, _site.IsGlobal))
+        {
+            host = _site.DefaultModelHost;
+        }
+
+        if (string.IsNullOrWhiteSpace(token.AccessToken))
+        {
+            throw new InvalidOperationException("Trae 模型目录请求缺少 access token（Cloud-IDE-JWT）");
+        }
+
+        var headers = IdeHeaders(token.AccessToken.Trim(), extra);
+        List<(string Fn, List<JsonElement> Entries)> lists;
+        try
+        {
+            lists = await FetchBatchListsAsync(host!, headers, cancellationToken)
+                    ?? await FetchPerFunctionListsAsync(host!, headers, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (TraeExchangeRefusedException ex)
+        {
+            throw new InvalidOperationException("Trae 模型目录获取失败：" + ex.Message, ex);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException)
+        {
+            throw new InvalidOperationException("Trae 模型目录获取失败：" + ex.Message, ex);
+        }
+
+        // 逐 function 过滤（对齐插件 chatModel）：custom_model 槽位、
+        // usage != chat_completion、config_switch=false、Global 隐藏 is_invisible_to_user。
+        var models = new List<DeviceOAuthRemoteModel>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (_, entries) in lists)
+        {
+            foreach (var entry in entries)
+            {
+                if (!IsChatModel(entry)) continue;
+                var id = GetString(entry, "config_name");
+                if (string.IsNullOrWhiteSpace(id) || !seen.Add(id!)) continue;
+                var name = EntryName(entry);
+                models.Add(new DeviceOAuthRemoteModel(id!, string.IsNullOrWhiteSpace(name) ? id! : name!));
+            }
+        }
+
+        if (models.Count == 0)
+        {
+            throw new InvalidOperationException("Trae 模型目录接口未返回任何可用模型");
+        }
+
+        return models;
+    }
+
+    /// <summary>展示名优先级（对齐插件 nameOf）：display_config.display_name → display_name → display_model_name。</summary>
+    private static string? EntryName(JsonElement entry)
+        => GetString(TryGet(entry, "display_config") ?? default, "display_name")
+           ?? GetString(entry, "display_name")
+           ?? GetString(entry, "display_model_name");
+
+    /// <summary>批量端点（站点全套 function 一次返回）；任何列表都没有时返回 null 走逐 function 兜底。</summary>
+    private async Task<List<(string Fn, List<JsonElement> Entries)>?> FetchBatchListsAsync(
+        string host, IReadOnlyDictionary<string, string> headers, CancellationToken cancellationToken)
+    {
+        var body = JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["functions"] = _site.ModelFunctions,
+            ["agent_type"] = string.Empty,
+            ["current_config_info"] = new Dictionary<string, object?> { ["config_name"] = string.Empty, ["is_custom_model"] = false },
+            ["mode_type"] = 0,
+            ["access_type"] = 0,
+            ["ab_force_vids"] = string.Empty,
+            ["ab_autotest_advanced_mode"] = 0,
+            ["show_custom_model"] = true,
+        });
+        var text = await SendIdePostAsync(host + "/api/ide/v1/batch_get_detail_param", headers, body, cancellationToken);
+        var root = ParseJson(text, "Trae batch_get_detail_param");
+        var groups = root.ValueKind == JsonValueKind.Object
+                     && (TryGet(root, "function_configs") ?? TryGet(root, "data.function_configs")) is { ValueKind: JsonValueKind.Array } configs
+            ? configs
+            : default;
+        if (groups.ValueKind != JsonValueKind.Array) return null;
+
+        var lists = new List<(string Fn, List<JsonElement> Entries)>();
+        foreach (var group in groups.EnumerateArray())
+        {
+            if (group.ValueKind != JsonValueKind.Object) continue;
+            var fn = GetString(group, "function");
+            if (string.IsNullOrWhiteSpace(fn) || !_site.ModelFunctions.Contains(fn!, StringComparer.Ordinal)) continue;
+            if ((TryGet(group, "config_info_list") ?? TryGet(group, "data.config_info_list")) is not { ValueKind: JsonValueKind.Array } entries) continue;
+            var list = entries.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.Object && !string.IsNullOrWhiteSpace(GetString(item, "config_name")))
+                .Select(item => item.Clone())
+                .ToList();
+            if (list.Count > 0)
+            {
+                lists.Add((fn!, list));
+            }
+        }
+
+        return lists;
+    }
+
+    /// <summary>逐 function 兜底（IDE 老形态 /api/ide/v1/get_detail_param）。</summary>
+    private async Task<List<(string Fn, List<JsonElement> Entries)>> FetchPerFunctionListsAsync(
+        string host, IReadOnlyDictionary<string, string> headers, CancellationToken cancellationToken)
+    {
+        var lists = new List<(string Fn, List<JsonElement> Entries)>();
+        var lastError = "无任何 function 返回列表";
+        foreach (var fn in _site.ModelFunctions)
+        {
+            var body = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["function"] = fn,
+                ["config_names"] = null,
+                ["need_prompt"] = false,
+                ["current_config_info"] = null,
+                ["poly_prompt"] = true,
+                ["mode_type"] = null,
+                ["agent_type"] = null,
+            });
+            try
+            {
+                var text = await SendIdePostAsync(host + "/api/ide/v1/get_detail_param", headers, body, cancellationToken);
+                var root = ParseJson(text, "Trae get_detail_param");
+                if (root.ValueKind != JsonValueKind.Object
+                    || (TryGet(root, "config_info_list") ?? TryGet(root, "data.config_info_list")) is not { ValueKind: JsonValueKind.Array } list)
+                {
+                    continue;
+                }
+
+                var entries = list.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.Object && !string.IsNullOrWhiteSpace(GetString(item, "config_name")))
+                    .Select(item => item.Clone())
+                    .ToList();
+                if (entries.Count > 0)
+                {
+                    lists.Add((fn, entries));
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException and not TraeExchangeRefusedException)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        if (lists.Count == 0)
+        {
+            throw new InvalidOperationException("Trae get_detail_param 兜底失败：" + lastError);
+        }
+
+        return lists;
+    }
+
+    private async Task<string> SendIdePostAsync(
+        string url, IReadOnlyDictionary<string, string> headers, string body, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        foreach (var (name, value) in headers)
+        {
+            request.Headers.TryAddWithoutValidation(name, value);
+        }
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            if ((int)response.StatusCode is 401 or 403
+                || text.Contains("\"code\":1001", StringComparison.Ordinal)
+                || text.Contains("\"code\":\"1001\"", StringComparison.Ordinal))
+            {
+                throw new TraeExchangeRefusedException($"Trae 登录已失效，请重新登录（HTTP {(int)response.StatusCode}）");
+            }
+
+            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Truncate(text)}");
+        }
+
+        return text;
+    }
+
+    /// <summary>IDE API 请求头（对齐插件 ideHeaders：JWT 三态 + 设备/版本；uid 缺失时置空）。</summary>
+    private IReadOnlyDictionary<string, string> IdeHeaders(string token, JsonElement? extra)
+    {
+        var uid = ReadString(extra, "uid") ?? string.Empty;
+        var deviceId = ReadString(extra, "deviceId") ?? string.Empty;
+        var machineId = ReadString(extra, "machineId") ?? string.Empty;
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Authorization"] = "Cloud-IDE-JWT " + token,
+            ["X-Cloudide-Token"] = token,
+            ["x-ide-token"] = token,
+            ["x-uid"] = uid,
+            ["x-app-id"] = _site.AppId,
+            ["x-device-id"] = deviceId,
+            ["x-machine-id"] = machineId,
+            ["x-app-version"] = _site.ClientVersion,
+            ["x-app-version-code"] = _site.ClientVersionCode,
+            ["x-ide-version"] = _site.ClientVersion,
+            ["x-ide-version-code"] = _site.ClientVersionCode,
+            ["x-ide-version-type"] = "stable",
+            ["x-device-cpu"] = "AMD",
+            ["x-device-brand"] = "ASUS TUF Gaming A15 FA507RM_FA507RM",
+            ["x-device-type"] = "windows",
+            ["x-os-version"] = "Windows 10",
+            ["x-system-type"] = "Windows",
+        };
+    }
+
+    /// <summary>模型条目是否为可对话模型（对齐插件 chatModel）。</summary>
+    private bool IsChatModel(JsonElement entry)
+    {
+        var id = GetString(entry, "config_name");
+        if (string.IsNullOrWhiteSpace(id) || id!.StartsWith("custom_model", StringComparison.OrdinalIgnoreCase)) return false;
+        var usage = GetString(entry, "usage");
+        if (!string.IsNullOrWhiteSpace(usage) && !string.Equals(usage, "chat_completion", StringComparison.OrdinalIgnoreCase)) return false;
+        if (entry.TryGetProperty("config_switch", out var switchValue) && switchValue.ValueKind == JsonValueKind.False) return false;
+        if (entry.TryGetProperty("is_custom_model", out var customValue) && customValue.ValueKind == JsonValueKind.True) return false;
+        if (TryGet(entry, "display_config.is_custom_model") is { ValueKind: JsonValueKind.True }) return false;
+        // Global 的列表把 Auto 通道与 pay-as-you-go 双子标记为对用户不可见（IDE 选择器同样隐藏）；
+        // CN 的列表整单呈现。
+        if (entry.TryGetProperty("is_invisible_to_user", out var invisible) && invisible.ValueKind == JsonValueKind.True) return !_site.IsGlobal;
+        if (TryGet(entry, "display_config.is_invisible_to_user") is { ValueKind: JsonValueKind.True }) return !_site.IsGlobal;
+        return true;
+    }
+
+    /// <summary>对象按路径取子元素（"a.b" 形式；缺失/Null 返回 null）。</summary>
+    private static JsonElement? TryGet(JsonElement element, string path)
+    {
+        if (element.ValueKind != JsonValueKind.Object) return null;
+        var current = element;
+        foreach (var segment in path.Split('.'))
+        {
+            if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out var next)
+                || next.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return null;
+            }
+
+            current = next;
+        }
+
+        return current;
+    }
+
+    private static JsonElement ParseJson(string text, string what)
+    {
+        try
+        {
+            return JsonDocument.Parse(text).RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException($"{what} 响应无法解析为 JSON", ex);
+        }
+    }
+
+    /// <summary>模型 host 识别（对齐插件 modelHost：trae.ai/mchost.guru/trae-api- 前缀；CN 另认非 www/api/grow 的 trae.cn）。</summary>
+    private static bool IsModelHost(string url, bool global)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) return false;
+        var host = uri.Host.ToLowerInvariant();
+        if (global)
+        {
+            return host == "trae.ai" || host.EndsWith(".trae.ai", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (host == "mchost.guru" || host.EndsWith(".mchost.guru", StringComparison.OrdinalIgnoreCase)
+            || host.StartsWith("trae-api-", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (host == "trae.cn" || host.EndsWith(".trae.cn", StringComparison.OrdinalIgnoreCase))
+        {
+            return !host.StartsWith("www.", StringComparison.Ordinal)
+                   && !host.StartsWith("api.", StringComparison.Ordinal)
+                   && !host.StartsWith("grow", StringComparison.Ordinal);
+        }
+
+        return false;
+    }
 
     public Task<DeviceOAuthStartResult> StartSignInAsync(CancellationToken cancellationToken)
     {
@@ -157,14 +466,22 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
             return new DeviceOAuthPollResult { Error = "回调缺少 userJwt/refreshToken，请重新发起登录" };
         }
 
-        var extra = JsonSerializer.Serialize(new
+        // 模型 host / region（如有）：userInfo.Host 可能是账号所属网关（如企业租户或
+        // US 部署 api-us-east.trae.ai），region（AIRegion）选择 Global 的 US 模型部署。
+        // 只收Trae 自己域名下的 host，登录回调当前通常不带——缺失时按 realm 默认网关。
+        var host = ReadCallbackHost(query.Get("host") ?? query.Get("api"));
+        var region = query.Get("region") ?? query.Get("aiRegion") ?? query.Get("AIRegion");
+        var extraMap = new Dictionary<string, string>
         {
-            deviceId = session.DeviceId,
-            machineId = session.MachineId,
-            devicePrivateKey = session.PrivateKeyPem,
-            devicePublicKey = session.PublicKeyPem,
-            uid = query.Get("uid") ?? string.Empty,
-        });
+            ["deviceId"] = session.DeviceId,
+            ["machineId"] = session.MachineId,
+            ["devicePrivateKey"] = session.PrivateKeyPem,
+            ["devicePublicKey"] = session.PublicKeyPem,
+            ["uid"] = query.Get("uid") ?? string.Empty,
+        };
+        if (!string.IsNullOrWhiteSpace(host)) extraMap["modelHost"] = host!;
+        if (!string.IsNullOrWhiteSpace(region)) extraMap["region"] = region!.Trim();
+        var extra = JsonSerializer.Serialize(extraMap);
         return new DeviceOAuthPollResult
         {
             Tokens = new DeviceOAuthTokenSet
@@ -176,6 +493,18 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
             ExternalUserId = query.Get("uid"),
             ExtraJson = extra,
         };
+    }
+
+    /// <summary>回调里 host/api 参数的trae 域校验（防串入任意地址）。</summary>
+    private static string? ReadCallbackHost(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) return null;
+        var host = uri.Host.ToLowerInvariant();
+        var ok = host == "trae.cn" || host.EndsWith(".trae.cn", StringComparison.OrdinalIgnoreCase)
+                 || host == "trae.ai" || host.EndsWith(".trae.ai", StringComparison.OrdinalIgnoreCase)
+                 || host.EndsWith(".mchost.guru", StringComparison.OrdinalIgnoreCase) || host == "mchost.guru";
+        return ok ? uri.GetLeftPart(UriPartial.Authority) : null;
     }
 
     public async Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, string? extraJson, CancellationToken cancellationToken)

@@ -299,71 +299,111 @@ public sealed class DeviceOAuthAccountProvisioner
         IReadOnlyList<(string Slug, string DisplayName, bool Selected)> models,
         CancellationToken ct)
     {
+        // 一个上游模型只处理一次，重复项以最后一次选择为准；空清单不能隐式改变映射。
+        var selections = models
+            .Where(m => !string.IsNullOrWhiteSpace(m.Slug))
+            .Select(m => (Slug: m.Slug.Trim(),
+                PublicName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.Slug.Trim() : m.DisplayName.Trim(),
+                m.Selected))
+            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
+            .Select(g =>
+            {
+                var last = g.Last();
+                return (Slug: g.First().Slug.Trim(), last.PublicName, last.Selected);
+            })
+            .ToList();
+        if (selections.Count == 0) throw new ArgumentException("未收到模型清单", nameof(models));
+
         using var client = _dbContext.Client.CopyNew();
-        var account = await client.Queryable<Domain.OAuth.DeviceOAuthAccount>().InSingleAsync(accountId)
-            ?? throw new InvalidOperationException("账号不存在");
-        if (account.LinkedSiteId == Guid.Empty)
-        {
-            throw new InvalidOperationException("该厂商不支持聊天转发，无站点可同步模型");
-        }
-
-        var existingMappings = await client.Queryable<Domain.SiteCatalog.SiteModelMapping>()
-            .Where(m => m.SiteId == account.LinkedSiteId)
-            .ToListAsync(ct);
-        var existingByName = existingMappings.ToLookup(m => m.RemoteModelName, StringComparer.OrdinalIgnoreCase);
-
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        client.Ado.BeginTran();
         var changed = 0;
-        var wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (slug, display, selected) in models)
+        try
         {
-            if (string.IsNullOrWhiteSpace(slug)) continue;
-            wanted.Add(slug);
-            var mapping = existingByName[slug].FirstOrDefault();
-            if (selected)
+            var account = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(accountId);
+            if (account is null || account.IsDeleted) throw new KeyNotFoundException("账号不存在");
+            if (account.LinkedSiteId == Guid.Empty
+                || await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId) is null)
             {
-                if (mapping is not null)
-                {
-                    if (!mapping.IsEnabled)
-                    {
-                        mapping.IsEnabled = true;
-                        await client.Updateable(mapping).UpdateColumns(x => new { x.IsEnabled }).ExecuteCommandAsync(ct);
-                        changed++;
-                    }
+                throw new InvalidOperationException("该账号无关联聊天站点，模型目录仅供查看");
+            }
 
-                    continue;
+            var existingMappings = await client.Queryable<Domain.SiteCatalog.SiteModelMapping>()
+                .Where(m => m.SiteId == account.LinkedSiteId)
+                .ToListAsync(ct);
+            var existingByName = existingMappings.ToLookup(m => m.RemoteModelName, StringComparer.OrdinalIgnoreCase);
+            var publicNames = selections.Where(m => m.Selected).Select(m => m.PublicName).Distinct().ToList();
+            var items = publicNames.Count == 0
+                ? new List<Domain.Models.ModelLibraryItem>()
+                : await client.Queryable<Domain.Models.ModelLibraryItem>()
+                    .Where(m => publicNames.Contains(m.ModelName)).ToListAsync(ct);
+            var itemsByName = items.ToDictionary(m => m.ModelName, StringComparer.Ordinal);
+            var newItems = new List<Domain.Models.ModelLibraryItem>();
+            var itemsToEnable = new List<Domain.Models.ModelLibraryItem>();
+            var itemsToEnableIds = new HashSet<Guid>();
+            var newMappings = new List<Domain.SiteCatalog.SiteModelMapping>();
+            var updates = new List<Domain.SiteCatalog.SiteModelMapping>();
+
+            foreach (var (slug, publicName, selected) in selections)
+            {
+                var mappings = existingByName[slug].ToList();
+                Domain.Models.ModelLibraryItem? item = null;
+                if (selected && !itemsByName.TryGetValue(publicName, out item))
+                {
+                    // 对外模型名是路由标识 ModelName，不是共享模型库项的展示文本。
+                    item = new Domain.Models.ModelLibraryItem { ModelName = publicName, DisplayName = publicName };
+                    itemsByName.Add(publicName, item);
+                    newItems.Add(item);
+                }
+                else if (selected && item is { IsEnabled: false })
+                {
+                    item.IsEnabled = true;
+                    if (itemsToEnableIds.Add(item.Id)) itemsToEnable.Add(item);
                 }
 
-                var item = await client.Queryable<Domain.Models.ModelLibraryItem>().FirstAsync(m => m.ModelName == slug, ct);
-                if (item is null)
+                if (selected && mappings.Count == 0)
                 {
-                    item = new Domain.Models.ModelLibraryItem
+                    newMappings.Add(new Domain.SiteCatalog.SiteModelMapping
                     {
-                        ModelName = slug,
-                        DisplayName = string.IsNullOrWhiteSpace(display) ? slug : display,
-                        IsEnabled = true,
-                    };
-                    await client.Insertable(item).ExecuteCommandAsync(ct);
+                        SiteId = account.LinkedSiteId,
+                        ModelLibraryItemId = item!.Id,
+                        RemoteModelName = slug,
+                    });
                 }
-
-                await client.Insertable(new Domain.SiteCatalog.SiteModelMapping
+                foreach (var mapping in mappings)
                 {
-                    SiteId = account.LinkedSiteId,
-                    ModelLibraryItemId = item.Id,
-                    RemoteModelName = slug,
-                    IsEnabled = true,
-                }).ExecuteCommandAsync(ct);
-                changed++;
+                    if (mapping.IsEnabled == selected && (!selected || mapping.ModelLibraryItemId == item!.Id)) continue;
+                    mapping.IsEnabled = selected;
+                    if (selected) mapping.ModelLibraryItemId = item!.Id;
+                    updates.Add(mapping);
+                }
             }
-            else if (mapping is { IsEnabled: true })
+
+            if (newItems.Count > 0) await client.Insertable(newItems).ExecuteCommandAsync(ct);
+            if (itemsToEnable.Count > 0)
             {
-                mapping.IsEnabled = false;
-                await client.Updateable(mapping).UpdateColumns(x => new { x.IsEnabled }).ExecuteCommandAsync(ct);
-                changed++;
+                await client.Updateable(itemsToEnable).UpdateColumns(item => new { item.IsEnabled }).ExecuteCommandAsync(ct);
             }
+            if (newMappings.Count > 0) await client.Insertable(newMappings).ExecuteCommandAsync(ct);
+            if (updates.Count > 0)
+            {
+                await client.Updateable(updates).UpdateColumns(m => new { m.IsEnabled, m.ModelLibraryItemId }).ExecuteCommandAsync(ct);
+            }
+            changed = newMappings.Count + updates.Count;
+            ct.ThrowIfCancellationRequested();
+            client.Ado.CommitTran();
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
         }
 
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateModelMetadata();
+        if (changed > 0)
+        {
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateModelMetadata();
+        }
         return changed;
     }
     private static async Task<DeviceOAuthAccount?> FindExistingAsync(

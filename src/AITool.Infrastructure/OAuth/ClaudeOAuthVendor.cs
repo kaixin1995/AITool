@@ -42,6 +42,8 @@ public sealed class ClaudeOAuthVendor : IDeviceOAuthVendor
         ("claude-haiku-4-5", "Claude Haiku 4.5"),
     ];
 
+    public bool SupportsModelFetch => true;
+
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => new(
         "https://api.anthropic.com",
         "Anthropic",
@@ -131,6 +133,83 @@ public sealed class ClaudeOAuthVendor : IDeviceOAuthVendor
         }
 
         return tokens.Value.Item1;
+    }
+
+    /// <summary>
+    /// Reads magpie's actual Claude catalog source (models.dev) without sending the
+    /// subscription token. Anthropic does not expose an account-scoped Claude
+    /// subscription model list; this is the public vendor catalog, not an account
+    /// entitlement check.
+    /// </summary>
+    public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(
+        DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://models.dev/api.json");
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        request.Headers.TryAddWithoutValidation("User-Agent", "AITool");
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Claude 公共模型目录 HTTP {(int)response.StatusCode}");
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(text);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("Claude 公共模型目录 JSON 无法解析", ex);
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("anthropic", out var anthropic)
+                || anthropic.ValueKind != JsonValueKind.Object
+                || !anthropic.TryGetProperty("models", out var catalogModels)
+                || catalogModels.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException("Claude 公共模型目录缺少 anthropic.models 对象");
+            }
+
+            var result = new List<DeviceOAuthRemoteModel>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in catalogModels.EnumerateObject())
+            {
+                var model = property.Value;
+                if (model.ValueKind != JsonValueKind.Object) continue;
+                var id = GetString(model, "id") ?? property.Name.Trim();
+                if (id.Length == 0 || !seen.Add(id)) continue;
+                if (model.TryGetProperty("modalities", out var modalities)
+                    && modalities.ValueKind == JsonValueKind.Object
+                    && modalities.TryGetProperty("output", out var output)
+                    && output.ValueKind == JsonValueKind.Array
+                    && !output.EnumerateArray().Any(value => value.ValueKind == JsonValueKind.String && value.GetString() == "text"))
+                {
+                    continue;
+                }
+
+                var lowered = id.ToLowerInvariant();
+                if (new[] { "embed", "-tts", "image", "audio", "-live", "robotics", "computer-use", "deep-research", "transcribe", "realtime", "moderation", "whisper", "dall-e", "sora" }
+                    .Any(excluded => lowered.Contains(excluded, StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                result.Add(new DeviceOAuthRemoteModel(id, GetString(model, "name") ?? id));
+            }
+
+            if (result.Count == 0)
+            {
+                throw new InvalidOperationException("Claude 公共模型目录没有可用文本模型");
+            }
+
+            return result;
+        }
     }
 
     public Task<DeviceOAuthQuotaResult> QueryQuotaAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)

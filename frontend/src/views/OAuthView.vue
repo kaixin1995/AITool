@@ -6,6 +6,8 @@ import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
 import {
   importSelectedDeviceModels,
+  supportsOAuthModelFetch,
+  supportsOAuthModelImport,
   fetchDeviceOAuthModels,
   deleteDeviceOAuthAccount,
   updateDeviceOAuthAccount,
@@ -45,6 +47,7 @@ type UnifiedAccount = OAuthAccount & {
   projectId?: string | null
   creditAmount?: number | null
   requiresReauth?: boolean
+  modelImportSupported?: boolean
 }
 
 function providerLabelOf(key: string): string {
@@ -73,8 +76,6 @@ const deviceVendors = ref<DeviceOAuthVendor[]>([])
 const deviceVendorOf = (key?: string): DeviceOAuthVendor | undefined =>
   deviceVendors.value.find(v => v.vendorKey === key)
 const deviceVendorLabel = (key: string): string => deviceVendorOf(key)?.label ?? key
-const deviceVendorModelFetch = (key: string): boolean =>
-  deviceVendors.value.find(v => v.vendorKey === key)?.modelFetchSupported === true
 
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
@@ -203,7 +204,7 @@ interface AccountTableRow {
 
 
 function canFetchModelsProvider(provider: string): boolean {
-  return provider === 'codex' || provider === 'antigravity' || provider === 'gemini-cli' || provider === 'kimi' || provider === 'xai'
+  return supportsOAuthModelFetch(provider, deviceVendors.value)
 }
 
 // 窗口短名：去掉「窗口/额度」等后缀，进度条左侧只留「5 小时/每周/MCP 月度」等核心词。
@@ -442,8 +443,9 @@ const someVisibleModelsChecked = computed(() => (
   visibleCheckedModelCount.value > 0
   && !allVisibleModelsChecked.value
 ))
+const canImportModels = computed(() => supportsOAuthModelImport(modelAccount.value, deviceVendors.value))
 const canSubmitModelSync = computed(() => (
-  modelList.value.length > 0
+  canImportModels.value && !modelLoading.value && modelList.value.length > 0
   && (modelAccount.value?.provider !== 'codex' || checkedModels.value.length > 0)
 ))
 
@@ -534,6 +536,7 @@ async function loadAccounts(showError: boolean): Promise<void> {
           resetAtUtc: w.resetAtUtc
         })),
         provider: acc.vendorKey,
+        modelImportSupported: acc.modelImportSupported,
         accountKind: acc.vendorLabel,
         requiresReauth: acc.requiresReauth
       } as unknown as UnifiedAccount))
@@ -1102,6 +1105,7 @@ async function handleConsumeResetCredit(): Promise<void> {
 
 // 拉取/导入模型
 async function openFetchModels(acc: UnifiedAccount): Promise<void> {
+  if (!canFetchModelsProvider(acc.provider)) return
   modelAccount.value = acc
   modelList.value = []
   checkedModels.value = []
@@ -1149,7 +1153,9 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
       ))
       .map(model => model.remoteModelName)
 
-    if (previouslyEnabled.length > 0) {
+    if (!canImportModels.value) {
+      checkedModels.value = []
+    } else if (previouslyEnabled.length > 0 || models.some(model => model.existingMappingId)) {
       checkedModels.value = previouslyEnabled
     } else {
       // 若当前没有任何已启用的映射，默认勾选全部拉取到的可用模型
@@ -1174,17 +1180,18 @@ function toggleVisibleModels(checked: boolean): void {
   }
 }
 async function handleImportModels(): Promise<void> {
-  if (!modelAccount.value || modelList.value.length === 0) { message.warning('暂无可同步的模型'); return }
-  if (checkedModels.value.length === 0) {
-    message.warning(modelAccount.value.provider === 'codex' ? '请选择要导入的模型' : '请至少选择一个要同步启用的模型')
+  if (!modelAccount.value || !canSubmitModelSync.value) { message.warning('暂无可同步的模型或账号无关联聊天站点'); return }
+  if (modelAccount.value.provider === 'codex' && checkedModels.value.length === 0) {
+    message.warning('请选择要导入的模型')
     return
   }
   modelLoading.value = true
   try {
+    const checked = new Set(checkedModels.value)
     const selections: OAuthModelSelection[] = modelList.value.map(model => ({
       remoteModelName: model.remoteModelName,
       displayName: model.alias.trim() || model.remoteModelName,
-      selected: checkedModels.value.includes(model.remoteModelName)
+      selected: checked.has(model.remoteModelName)
     }))
     if (deviceVendorOf(modelAccount.value.provider)) {
       await importSelectedDeviceModels(
@@ -1199,6 +1206,8 @@ async function handleImportModels(): Promise<void> {
       await api.importSelectedKimiModels(modelAccount.value.id, selections)
     } else if (modelAccount.value.provider === 'xai') {
       await api.importSelectedXaiModels(modelAccount.value.id, selections)
+    } else {
+      throw new Error('该厂商不支持导入模型')
     }
     message.success(modelAccount.value.provider === 'codex'
       ? `已导入 ${checkedModels.value.length} 个模型`
@@ -1655,7 +1664,7 @@ onUnmounted(() => {
                     <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </NButton>
-                    <NButton v-if="canFetchModelsProvider(acc.provider) || deviceVendorModelFetch(acc.provider)" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
+                    <NButton v-if="canFetchModelsProvider(acc.provider)" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                     </NButton>
                     <NPopconfirm @positive-click="handleDelete(acc)">
@@ -1947,7 +1956,6 @@ onUnmounted(() => {
     </NModal>
 
     <!-- 拉取/导入模型弹窗 -->
-    <!-- 拉取/导入模型弹窗 -->
     <NModal v-model:show="modelModal" :title="`拉取模型 - ${modelAccount?.displayName ?? ''}`" preset="card" style="width: 720px; max-width: 94vw">
       <NSpin :show="modelLoading">
         <NEmpty v-if="!modelLoading && modelList.length === 0" description="该账号无可用模型" size="small" />
@@ -1955,6 +1963,7 @@ onUnmounted(() => {
           <div class="oauth-model-toolbar">
             <NInput v-model:value="modelSearch" size="small" clearable placeholder="搜索模型" />
             <NCheckbox
+              v-if="canImportModels"
               :checked="allVisibleModelsChecked"
               :indeterminate="someVisibleModelsChecked"
               @update:checked="toggleVisibleModels"
@@ -1962,7 +1971,7 @@ onUnmounted(() => {
               已选 {{ visibleCheckedModelCount }} / {{ filteredModelList.length }} 个
             </NCheckbox>
           </div>
-          <div class="oauth-model-hint">模型目录会完整读取上游列表；只有勾选项会导入或启用，未勾选的既有映射会禁用。</div>
+          <div class="oauth-model-hint">{{ canImportModels ? '只有勾选项会导入或启用，本次清单内未勾选的既有映射会禁用；清单外映射保持不变。' : '该账号无关联聊天站点，远端模型目录仅供查看，不能导入或用于聊天转发。' }}</div>
           <div class="oauth-model-list-header">
             <span class="col-check"></span>
             <span class="col-remote">远端模型名</span>
@@ -1976,13 +1985,14 @@ onUnmounted(() => {
               class="oauth-model-row"
             >
               <NCheckbox
+                :disabled="!canImportModels"
                 :checked="checkedModels.includes(m.remoteModelName)"
                 @update:checked="(checked: boolean) => checked
                   ? checkedModels.push(m.remoteModelName)
                   : (checkedModels = checkedModels.filter(name => name !== m.remoteModelName))"
               />
               <code :title="m.remoteModelName">{{ m.remoteModelName }}</code>
-              <NInput v-model:value="m.alias" size="small" placeholder="对外模型名（留空用原始名）" />
+              <NInput v-model:value="m.alias" :disabled="!canImportModels" size="small" placeholder="对外模型名（留空用原始名）" />
               <NTag
                 size="tiny"
                 :type="m.existingMappingId ? (m.isEnabled ? 'success' : 'default') : 'info'"
@@ -1997,7 +2007,7 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="modelModal = false">取消</NButton>
-          <NButton type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
+          <NButton v-if="canImportModels" type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
             {{ modelAccount?.provider === 'codex' ? '导入选中' : '同步启用' }}（{{ checkedModels.length }}）
           </NButton>
         </NSpace>

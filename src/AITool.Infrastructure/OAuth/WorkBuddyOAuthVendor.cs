@@ -276,11 +276,64 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         => RefreshTokenAsync(refreshToken, null, cancellationToken);
 
     /// <summary>
-    /// 模型目录两级取数（对齐 workbuddy-manager fetch_models）：企业端点 + /v3/config
-    /// 依次探测合并（v3 为主、企业补缺）。国内版按 agents(name=cli) 白名单过滤并剔除
-    /// 非对话模型（nes-/completion-/codewise- 前缀、输出 ≤256、text-to-image）；
-    /// 国际版取全量。
+    /// 模型目录两级取数（对齐 workbuddy-manager fetch_models）：企业端点与 /v3/config 并发请求，
+    /// 合并时 v3 为主、企业补缺。国内版企业端点按 agents(name=cli) 白名单过滤；国内两路
+    /// 都剔除非对话模型（nes-/completion-/codewise- 前缀、输出 ≤256、text-to-image）；国际版取全量。
     /// </summary>
+    private sealed record ModelProbeResult(JsonElement? Data, string? Error);
+
+    /// <summary>
+    /// 按候选路径顺序取一路模型数据（如 Global 的 /v2 失败时回退 /console）。
+    /// 仅本路内部串行尝试路径；企业目录与 /v3/config 两路由调用方并发执行。
+    /// </summary>
+    private async Task<ModelProbeResult> ProbeModelEndpointAsync(
+        IReadOnlyList<string> paths,
+        Dictionary<string, string> headers,
+        CancellationToken cancellationToken)
+    {
+        string? lastError = null;
+        foreach (var path in paths)
+        {
+            try
+            {
+                var (status, body) = await CallAsync(
+                    HttpMethod.Get,
+                    _site.ChatBase + path,
+                    headers: headers,
+                    cancellationToken: cancellationToken);
+                if (status != 200)
+                {
+                    lastError = "HTTP " + status;
+                    continue;
+                }
+
+                var (code, root) = UnwrapEnvelope(JsonDocument.Parse(body).RootElement.Clone());
+                if (code != 0)
+                {
+                    lastError = "code=" + code;
+                    continue;
+                }
+
+                if (root.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                {
+                    return new ModelProbeResult(root, null);
+                }
+
+                lastError = "响应 data 不是模型目录对象或数组";
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        return new ModelProbeResult(null, lastError ?? "未知错误");
+    }
+
     public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
     {
         var uid = ReadStringExtra(extraJson, "uid");
@@ -292,62 +345,41 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             headers["X-User-Id"] = uid!;
         }
 
-        string[][] probePaths = _site == SiteSpec.Global
-            ?
-            [
-                ["/v2/enterprises/personal/models", "/console/enterprises/personal/models"],
-                ["/v3/config"],
-            ]
-            :
-            [
-                ["/console/enterprises/personal/models"],
-                ["/v3/config"],
-            ];
+        var enterprisePaths = _site == SiteSpec.Global
+            ? new[] { "/v2/enterprises/personal/models", "/console/enterprises/personal/models" }
+            : new[] { "/console/enterprises/personal/models" };
 
-        var payloads = new List<JsonElement>();
-        var errors = new List<string>();
-        foreach (var paths in probePaths)
+        // 企业目录与 v3/config 相互独立；并发请求使等待时间约等于较慢的一路，而不是两路延迟相加。
+        var enterpriseTask = ProbeModelEndpointAsync(enterprisePaths, headers, cancellationToken);
+        var v3Task = ProbeModelEndpointAsync(["/v3/config"], headers, cancellationToken);
+        var results = await Task.WhenAll(enterpriseTask, v3Task);
+        var enterprise = results[0];
+        var v3 = results[1];
+        if (enterprise.Data is null && v3.Data is null)
         {
-            string? lastError = null;
-            JsonElement? data = null;
-            foreach (var path in paths)
-            {
-                try
-                {
-                    var (status, body) = await CallAsync(HttpMethod.Get, _site.ChatBase + path, headers: headers, cancellationToken: cancellationToken);
-                    if (status != 200) { lastError = "HTTP " + status; continue; }
-                    var (code, root) = UnwrapEnvelope(JsonDocument.Parse(body).RootElement.Clone());
-                    if (code != 0) { lastError = "code=" + code; continue; }
-                    if (root.ValueKind is JsonValueKind.Object or JsonValueKind.Array) data = root;
-                    break;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    lastError = ex.Message;
-                }
-            }
-
-            if (data is { } d)
-            {
-                payloads.Add(d);
-            }
-            else
-            {
-                errors.Add(lastError ?? "未知错误");
-            }
+            throw new InvalidOperationException($"模型接口全部失败：企业目录 {enterprise.Error ?? "未知错误"}；/v3/config {v3.Error ?? "未知错误"}");
         }
 
-        if (payloads.Count == 0)
-        {
-            throw new InvalidOperationException("模型接口全部失败：" + string.Join("；", errors));
-        }
-
-        // 合并：v3 一路优先在前，企业路只补缺（同 id 时 v3 字段为准）。
         var merged = new List<DeviceOAuthRemoteModel>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        for (var i = payloads.Count - 1; i >= 0; i--)
+        // v3 配置优先（字段更完整），企业目录只补充 v3 没有的模型。
+        if (v3.Data is { } v3Data)
         {
-            foreach (var model in ParseModelPayload(payloads[i], applyCliFilter: i == 0 && _site == SiteSpec.China))
+            foreach (var model in ParseModelPayload(
+                         v3Data,
+                         applyCliFilter: false,
+                         applyNonChatFilter: _site == SiteSpec.China))
+            {
+                if (seen.Add(model.Slug)) merged.Add(model);
+            }
+        }
+
+        if (enterprise.Data is { } enterpriseData)
+        {
+            foreach (var model in ParseModelPayload(
+                         enterpriseData,
+                         applyCliFilter: _site == SiteSpec.China,
+                         applyNonChatFilter: _site == SiteSpec.China))
             {
                 if (seen.Add(model.Slug)) merged.Add(model);
             }
@@ -361,8 +393,11 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         return merged;
     }
 
-    /// <summary>解析单路响应为模型列表（对象列表与字符串窄表两种形态）。</summary>
-    internal static IReadOnlyList<DeviceOAuthRemoteModel> ParseModelPayload(JsonElement data, bool applyCliFilter)
+    /// <summary>
+    /// 解析单路响应为模型列表（对象列表与字符串窄表两种形态）。
+    /// applyCliFilter 仅控制 CN 企业目录的 agents.cli 白名单；applyNonChatFilter 控制国内版两路共有的非对话过滤。
+    /// </summary>
+    internal static IReadOnlyList<DeviceOAuthRemoteModel> ParseModelPayload(JsonElement data, bool applyCliFilter, bool applyNonChatFilter)
     {
         var outModels = new List<DeviceOAuthRemoteModel>();
         if (data.ValueKind == JsonValueKind.Array)
@@ -433,11 +468,14 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         foreach (var id in idsToEmit)
         {
             if (!info.TryGetValue(id, out var entry) || entry.Disabled) continue;
-            var low = id.ToLowerInvariant();
-            var isNonChat = low.StartsWith("nes-") || low.StartsWith("completion-") || low.StartsWith("codewise-")
-                || (entry.MaxOutput > 0 && entry.MaxOutput <= 256)
-                || entry.Tags.Any(t => t.Equals("text-to-image", StringComparison.OrdinalIgnoreCase));
-            if (isNonChat) continue;
+            if (applyNonChatFilter)
+            {
+                var low = id.ToLowerInvariant();
+                var isNonChat = low.StartsWith("nes-") || low.StartsWith("completion-") || low.StartsWith("codewise-")
+                    || (entry.MaxOutput > 0 && entry.MaxOutput <= 256)
+                    || entry.Tags.Any(t => t.Equals("text-to-image", StringComparison.OrdinalIgnoreCase));
+                if (isNonChat) continue;
+            }
             if (emitted.Add(id))
             {
                 outModels.Add(new DeviceOAuthRemoteModel(id, entry.Name));

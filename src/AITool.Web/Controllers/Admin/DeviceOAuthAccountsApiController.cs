@@ -177,7 +177,10 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             .ThenBy(a => a.CreatedAt)
             .ToListAsync(ct);
 
-        return Ok(ApiResponse.Ok(accounts.Select(ToSummary).ToList()));
+        var linkedSiteIds = accounts.Select(a => a.LinkedSiteId).Where(id => id != Guid.Empty).Distinct().ToList();
+        var existingSiteIds = linkedSiteIds.Count == 0 ? new HashSet<Guid>()
+            : (await _dbContext.Sites.Where(s => linkedSiteIds.Contains(s.Id)).Select(s => s.Id).ToListAsync(ct)).ToHashSet();
+        return Ok(ApiResponse.Ok(accounts.Select(a => ToSummary(a, existingSiteIds.Contains(a.LinkedSiteId))).ToList()));
     }
 
     /// <summary>启停账号。</summary>
@@ -232,22 +235,35 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             RefreshToken = account.RefreshToken,
             ExpiresAt = account.TokenExpiresAt,
         };
-        var models = await vendor.FetchModelsAsync(token, account.ExtraJson, ct);
+        IReadOnlyList<Application.OAuth.DeviceOAuthRemoteModel> models;
+        try
+        {
+            models = await vendor.FetchModelsAsync(token, account.ExtraJson, ct);
+        }
+        catch (NotSupportedException)
+        {
+            // 同一能力位可能在部署尚未提供实现；不可回退到静态 DefaultModels 冒充远端目录。
+            return BadRequest(ApiResponse.Fail("该厂商尚未实现动态模型拉取", "fetch_not_implemented"));
+        }
 
         // 既有映射状态合并进条目（existingDisplayName 供前端展示别名）。
-        var mappings = await _dbContext.SiteModelMappings
-            .Where(m => m.SiteId == account.LinkedSiteId)
-            .ToListAsync(ct);
+        // 无站点厂商也可查看远端目录，但不能把 Guid.Empty 下的孤儿映射视为本账号映射。
+        var hasSite = vendor.ChatSiteConfig is not null && account.LinkedSiteId != Guid.Empty
+            && await _dbContext.Sites.InSingleAsync(account.LinkedSiteId) is not null;
+        var mappings = hasSite
+            ? await _dbContext.SiteModelMappings.Where(m => m.SiteId == account.LinkedSiteId).ToListAsync(ct)
+            : new List<AITool.Domain.SiteCatalog.SiteModelMapping>();
+        var mappingsByName = mappings.ToLookup(m => m.RemoteModelName, StringComparer.OrdinalIgnoreCase);
         var itemIds = mappings.Select(m => m.ModelLibraryItemId).Distinct().ToList();
-        var items = (await _dbContext.ModelLibraryItems
-            .Where(m => itemIds.Contains(m.Id))
-            .ToListAsync(ct))
-            .ToDictionary(m => m.Id);
+        var items = itemIds.Count == 0 ? new Dictionary<Guid, AITool.Domain.Models.ModelLibraryItem>()
+            : (await _dbContext.ModelLibraryItems.Where(m => itemIds.Contains(m.Id)).ToListAsync(ct)).ToDictionary(m => m.Id);
 
-        var result = models.Select(m =>
+        var result = models.Where(m => !string.IsNullOrWhiteSpace(m.Slug))
+            .Select(m => m with { Slug = m.Slug.Trim() })
+            .DistinctBy(m => m.Slug, StringComparer.OrdinalIgnoreCase).Select(m =>
         {
-            var mapping = mappings.FirstOrDefault(x => x.RemoteModelName == m.Slug);
-            var itemName = mapping is not null && items.TryGetValue(mapping.ModelLibraryItemId, out var it) ? it.DisplayName : null;
+            var mapping = mappingsByName[m.Slug].FirstOrDefault();
+            var itemName = mapping is not null && items.TryGetValue(mapping.ModelLibraryItemId, out var it) ? it.ModelName : null;
             return new
             {
                 remoteModelName = m.Slug,
@@ -263,24 +279,60 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
 
     /// <summary>按选择同步模型映射（选中建立/启用，未选中禁用）。</summary>
     [HttpPost("accounts/{id:guid}/import-models")]
-    public async Task<IActionResult> ImportModels(Guid id, [FromBody] ImportDeviceModelsRequest request, CancellationToken ct)
+    public async Task<IActionResult> ImportModels(Guid id, [FromBody] ImportDeviceModelsRequest? request, CancellationToken ct)
     {
-        var selections = (request?.Models ?? new List<DeviceModelSelectionItem>())
-            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
+        var account = await _dbContext.DeviceOAuthAccounts.InSingleAsync(id);
+        if (account is null || account.IsDeleted)
+        {
+            return NotFound(ApiResponse.Fail("账号不存在", "account_not_found"));
+        }
+        var vendor = _registry.Find(account.VendorKey);
+        if (vendor is null || !vendor.SupportsModelFetch)
+        {
+            return BadRequest(ApiResponse.Fail("该厂商不支持拉取模型", "not_supported"));
+        }
+        if (vendor.ChatSiteConfig is null || account.LinkedSiteId == Guid.Empty
+            || await _dbContext.Sites.InSingleAsync(account.LinkedSiteId) is null)
+        {
+            return BadRequest(ApiResponse.Fail("该账号无关联聊天站点，模型目录仅供查看", "model_import_not_supported"));
+        }
+
+        var selections = (request?.Models ?? [])
+            .Where(m => m is not null && !string.IsNullOrWhiteSpace(m.RemoteModelName))
             .Select(m => (m.RemoteModelName!.Trim(), m.DisplayName ?? string.Empty, m.Selected))
             .ToList();
-        var changed = await _provisioner.SyncSelectedModelsAsync(id, selections, ct);
-        return Ok(ApiResponse.Ok(new { changed }));
+        if (selections.Count == 0)
+        {
+            return BadRequest(ApiResponse.Fail("未收到模型清单", "empty_models"));
+        }
+        try
+        {
+            var changed = await _provisioner.SyncSelectedModelsAsync(id, selections, ct);
+            return Ok(ApiResponse.Ok(new { changed }));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound(ApiResponse.Fail("账号不存在", "account_not_found"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, "model_import_not_supported"));
+        }
     }
     /// <summary>删除账号（级联删除隐藏站点）。</summary>
     [HttpDelete("accounts/{id:guid}")]
     public async Task<IActionResult> DeleteAccount(Guid id, CancellationToken ct)
     {
+        var account = await _dbContext.DeviceOAuthAccounts.InSingleAsync(id);
+        if (account is null || account.IsDeleted)
+        {
+            return NotFound(ApiResponse.Fail("账号不存在", "account_not_found"));
+        }
         await _provisioner.DeleteAsync(id, ct);
         return Ok(ApiResponse.Ok("已删除"));
     }
 
-    private object ToSummary(DeviceOAuthAccount account)
+    private object ToSummary(DeviceOAuthAccount account, bool hasSite)
     {
         var vendor = _registry.Find(account.VendorKey);
         var cached = vendor?.ParseCachedQuota(account.LastQuotaRawJson ?? string.Empty);
@@ -297,6 +349,7 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             requiresReauth = account.RequiresReauth,
             tokenExpiresAt = account.TokenExpiresAt,
             linkedSiteId = account.LinkedSiteId,
+            modelImportSupported = vendor?.SupportsModelFetch == true && vendor.ChatSiteConfig is not null && hasSite,
             createdAt = account.CreatedAt,
             lastQuotaCheckedAt = account.LastQuotaCheckedAt,
             planType = cached?.PlanType,

@@ -42,6 +42,8 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
         ("gemini-3-pro", "Gemini 3 Pro (Copilot)"),
     ];
 
+    public bool SupportsModelFetch => true;
+
     /// <summary>
 /// Copilot 会话令牌约 30 分钟。刷新扫描每 5 分钟一轮，提前量必须大于扫描间隔，
 /// 否则会出现「上一轮未到点、下一轮已过期」的空档（T-7 分钟刷新是安全下限）。
@@ -165,6 +167,140 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
             RefreshToken = refreshToken,
             ExpiresAt = exchange.ExpiresAt,
         };
+    }
+
+    /// <summary>
+    /// Copilot's account-scoped model catalog, as used by magpie's copilotModels:
+    /// GET {endpoints.api}/models with the short-lived Copilot session token.
+    /// </summary>
+    public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(
+        DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
+    {
+        var baseUrl = GetModelsBaseUrl(extraJson);
+        using var request = new HttpRequestMessage(HttpMethod.Get, baseUrl + "/models");
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token.AccessToken.Trim());
+        request.Headers.TryAddWithoutValidation("Editor-Version", "vscode/1.140.0");
+        request.Headers.TryAddWithoutValidation("Editor-Plugin-Version", "copilot-chat/0.68.0");
+        request.Headers.TryAddWithoutValidation("Copilot-Integration-Id", "vscode-chat");
+        request.Headers.TryAddWithoutValidation("User-Agent", "GitHubCopilotChat/0.68.0");
+        request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2026-01-09");
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            // 401/403 是会话令牌被明确拒绝（需刷新/重登），其余状态码按上游暂时失败报告。
+            throw new InvalidOperationException((int)response.StatusCode is 401 or 403
+                ? $"Copilot 会话令牌被拒绝（HTTP {(int)response.StatusCode}），请刷新账号凭证或重新登录后再拉取模型"
+                : $"Copilot 模型列表 HTTP {(int)response.StatusCode}");
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(text);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("Copilot 模型列表 JSON 无法解析", ex);
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidOperationException("Copilot 模型列表缺少 data 数组");
+            }
+
+            if (HasUnfetchedModelPage(root))
+            {
+                throw new InvalidOperationException("Copilot 模型接口返回分页标记，但 magpie 参考端点未定义分页协议；拒绝导入不完整目录");
+            }
+
+            var models = new List<DeviceOAuthRemoteModel>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var item in data.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object) continue;
+                var id = GetString(item, "id");
+                if (id is null || seen.Contains(id)) continue;
+                if (!item.TryGetProperty("capabilities", out var capabilities)
+                    || GetString(capabilities, "type") != "chat") continue;
+                if (GetString(item, "vendor") == "Experimental" || IsInternalCopilotModel(id)) continue;
+
+                var pickerEnabled = item.TryGetProperty("model_picker_enabled", out var picker)
+                    && picker.ValueKind == JsonValueKind.True;
+                var hasCategory = GetString(item, "model_picker_category") is not null;
+                if (!pickerEnabled && !hasCategory) continue;
+
+                var hasPolicy = item.TryGetProperty("policy", out var policy) && policy.ValueKind == JsonValueKind.Object;
+                var policyEnabled = hasPolicy && GetString(policy, "state") == "enabled";
+                var termsPending = hasPolicy && GetString(policy, "terms") is not null;
+                if (!policyEnabled && !(pickerEnabled && !hasPolicy) && !termsPending) continue;
+
+                if (seen.Add(id)) models.Add(new DeviceOAuthRemoteModel(id, GetString(item, "name") ?? id));
+            }
+
+            if (models.Count == 0)
+            {
+                throw new InvalidOperationException("Copilot 模型接口未返回可导入的聊天模型");
+            }
+
+            return models;
+        }
+    }
+
+    private static string GetModelsBaseUrl(string? extraJson)
+    {
+        if (!string.IsNullOrWhiteSpace(extraJson))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(extraJson);
+                if (document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("chatBaseUrl", out var value)
+                    && value.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(value.GetString()))
+                {
+                    var candidate = value.GetString()!.Trim();
+                    if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+                        && uri.Scheme == Uri.UriSchemeHttps
+                        && uri.UserInfo.Length == 0
+                        && uri.Query.Length == 0
+                        && uri.Fragment.Length == 0
+                        && (uri.Host.Equals("api.githubcopilot.com", StringComparison.OrdinalIgnoreCase)
+                            || uri.Host.EndsWith(".ghe.com", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return candidate.TrimEnd('/');
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Invalid metadata falls back to GitHub Copilot's fixed public API host.
+            }
+        }
+
+        return DefaultChatBase;
+    }
+
+    private static bool HasUnfetchedModelPage(JsonElement root)
+        => (root.TryGetProperty("has_more", out var more) && more.ValueKind == JsonValueKind.True)
+           || (root.TryGetProperty("next_page", out var nextPage) && nextPage.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(nextPage.GetString()))
+           || (root.TryGetProperty("next_cursor", out var nextCursor) && nextCursor.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(nextCursor.GetString()));
+
+    private static bool IsInternalCopilotModel(string id)
+    {
+        var lowered = id.ToLowerInvariant();
+        return lowered.StartsWith("copilot-search", StringComparison.Ordinal)
+               || lowered.StartsWith("exec-agent", StringComparison.Ordinal)
+               || lowered.StartsWith("trajectory", StringComparison.Ordinal)
+               || lowered.EndsWith("-secondary", StringComparison.Ordinal)
+               || lowered.EndsWith("-tertiary", StringComparison.Ordinal)
+               || lowered.EndsWith("-4th", StringComparison.Ordinal)
+               || lowered.EndsWith("-free-auto", StringComparison.Ordinal);
     }
 
     public async Task<DeviceOAuthQuotaResult> QueryQuotaAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)

@@ -28,6 +28,7 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
     private const string Portal = "https://app.kiro.dev";
     private const string AuthService = "https://prod.us-east-1.auth.desktop.kiro.dev";
     private const string DefaultRegion = "us-east-1";
+    private const string BuilderIdProfileArn = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
 
     /// <summary>回调地址（登录与换 token 时必须逐字节一致；本机无监听，用户粘贴回地址）。</summary>
     private const string CallbackBase = "http://127.0.0.1:17893";
@@ -59,6 +60,8 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
     [
         ("claude-sonnet-4-5", "Claude Sonnet 4.5 (Kiro)"),
     ];
+
+    public bool SupportsModelFetch => true;
 
     /// <summary>聊天需 AWS 事件流协议适配器，暂不开放。</summary>
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => null;
@@ -141,7 +144,7 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
                 GetNumber(token, "expiresIn"),
                 method: "idc",
                 region: session.Region!,
-                profileArn: null,
+                profileArn: session.IsBuilderId ? BuilderIdProfileArn : null,
                 clientId: session.AwsClientId,
                 awsClientSecret: session.AwsClientSecret);
         }
@@ -218,6 +221,7 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
                                + $"&state={Uri.EscapeDataString(awsState)}&code_challenge={Uri.EscapeDataString(awsChallenge)}&code_challenge_method=S256";
 
             session.Phase = KiroSessionPhase.Aws;
+            session.IsBuilderId = loginOption == "builderid";
             session.Region = region;
             session.AwsClientId = clientId;
             session.AwsClientSecret = clientSecret;
@@ -367,6 +371,110 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
 
     public DeviceOAuthQuotaResult? ParseCachedQuota(string rawJson) => KiroUsageParser.Parse(rawJson);
 
+    public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(
+        DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
+    {
+        var region = TryGetExtra(extraJson, "region");
+        var profileArn = TryGetExtra(extraJson, "profileArn");
+        if (string.IsNullOrWhiteSpace(region) && !string.IsNullOrWhiteSpace(profileArn))
+        {
+            region = profileArn!.Split(':').ElementAtOrDefault(3);
+        }
+        region = string.IsNullOrWhiteSpace(region) ? DefaultRegion : region.Trim();
+
+        if (string.IsNullOrWhiteSpace(token.AccessToken))
+        {
+            throw new InvalidOperationException("Kiro 模型目录请求缺少 access token");
+        }
+
+        if (string.IsNullOrWhiteSpace(profileArn))
+        {
+            var profileResponse = await SendManagementGetAsync(
+                region, "List-Available-Profiles", null, token.AccessToken, cancellationToken);
+            var profiles = profileResponse.ValueKind == JsonValueKind.Object
+                           && profileResponse.TryGetProperty("profiles", out var profilesValue)
+                           && profilesValue.ValueKind == JsonValueKind.Array
+                ? profilesValue.EnumerateArray()
+                    .Select(profile => GetString(profile, "arn"))
+                    .FirstOrDefault(arn => !string.IsNullOrWhiteSpace(arn))
+                : null;
+
+            if (string.IsNullOrWhiteSpace(profiles))
+            {
+                throw new InvalidOperationException("Kiro List-Available-Profiles 未返回可用 profile ARN");
+            }
+
+            profileArn = profiles;
+        }
+
+        var query = "origin=KIRO_CLI&profileArn=" + Uri.EscapeDataString(profileArn!);
+        var response = await SendManagementGetAsync(
+            region, "List-Available-Models", query, token.AccessToken, cancellationToken);
+        if (response.ValueKind != JsonValueKind.Object
+            || !response.TryGetProperty("models", out var modelsValue)
+            || modelsValue.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Kiro List-Available-Models 响应缺少 models 数组");
+        }
+
+        var defaultId = response.TryGetProperty("defaultModel", out var defaultValue)
+            ? GetString(defaultValue, "modelId")
+            : null;
+        var models = new List<DeviceOAuthRemoteModel>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in modelsValue.EnumerateArray())
+        {
+            var id = GetString(item, "modelId");
+            if (string.IsNullOrWhiteSpace(id) || !seen.Add(id)) continue;
+            var name = GetString(item, "modelName");
+            models.Add(new DeviceOAuthRemoteModel(id, string.IsNullOrWhiteSpace(name) ? id : name));
+        }
+
+        if (models.Count == 0)
+        {
+            throw new InvalidOperationException("Kiro List-Available-Models 未返回任何可用模型");
+        }
+
+        if (!string.IsNullOrWhiteSpace(defaultId))
+        {
+            var defaultIndex = models.FindIndex(model => string.Equals(model.Slug, defaultId, StringComparison.OrdinalIgnoreCase));
+            if (defaultIndex > 0)
+            {
+                var defaultModel = models[defaultIndex];
+                models.RemoveAt(defaultIndex);
+                models.Insert(0, defaultModel);
+            }
+        }
+
+        return models;
+    }
+
+    private async Task<JsonElement> SendManagementGetAsync(
+        string region, string operation, string? query, string accessToken, CancellationToken cancellationToken)
+    {
+        var url = $"https://management.{region}.kiro.dev/{operation}"
+                  + (string.IsNullOrEmpty(query) ? string.Empty : "?" + query);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("Accept", "application/json");
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + accessToken.Trim());
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(
+                $"Kiro {operation} 模型目录请求失败：HTTP {(int)response.StatusCode}: {Truncate(text)}");
+        }
+
+        try
+        {
+            return JsonDocument.Parse(text).RootElement.Clone();
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException($"Kiro {operation} 响应无法解析为 JSON", ex);
+        }
+    }
+
     private static DeviceOAuthPollResult Success(
         string accessToken, string? refreshToken, double? expiresIn,
         string method, string region, string? profileArn, string? clientId, string? awsClientSecret = null)
@@ -473,6 +581,7 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
     private sealed class KiroSession
     {
         public KiroSessionPhase Phase { get; set; }
+        public bool IsBuilderId { get; set; }
         public string Verifier { get; set; } = string.Empty;
         public string State { get; set; } = string.Empty;
         public string? Region { get; set; }
