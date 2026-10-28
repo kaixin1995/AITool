@@ -4,6 +4,7 @@ export interface DeviceOAuthVendor {
   vendorKey: string
   label: string
   chatSupported: boolean
+  modelFetchSupported: boolean
 }
 
 export interface DeviceOAuthWindow {
@@ -74,4 +75,23 @@ export async function refreshDeviceOAuthQuota(id: string): Promise<void> {
 
 export async function deleteDeviceOAuthAccount(id: string): Promise<void> {
   await httpDelete(`/api/admin/device-oauth/accounts/${id}`)
+}
+
+export interface DeviceOAuthRemoteModelItem {
+  remoteModelName: string
+  displayName: string
+  existingMappingId: string | null
+  isEnabled: boolean
+  existingDisplayName: string | null
+}
+
+export async function fetchDeviceOAuthModels(id: string): Promise<DeviceOAuthRemoteModelItem[]> {
+  return httpGet<DeviceOAuthRemoteModelItem[]>(`/api/admin/device-oauth/accounts/${id}/fetch-models`)
+}
+
+export async function importSelectedDeviceModels(
+  id: string,
+  selections: Array<{ remoteModelName: string; displayName: string; selected: boolean }>
+): Promise<void> {
+  await httpPost(`/api/admin/device-oauth/accounts/${id}/import-models`, { models: selections })
 }

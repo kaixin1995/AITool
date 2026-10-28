@@ -290,6 +290,82 @@ public sealed class DeviceOAuthAccountProvisioner
         }
     }
 
+    /// <summary>
+    /// 按用户选择同步关联站点的模型映射：选中的建立/启用，未选中的既有映射禁用。
+    /// Slug 为上游模型 ID；无关联站点（纯额度托管）时抛业务异常。
+    /// </summary>
+    public async Task<int> SyncSelectedModelsAsync(
+        Guid accountId,
+        IReadOnlyList<(string Slug, string DisplayName, bool Selected)> models,
+        CancellationToken ct)
+    {
+        using var client = _dbContext.Client.CopyNew();
+        var account = await client.Queryable<Domain.OAuth.DeviceOAuthAccount>().InSingleAsync(accountId)
+            ?? throw new InvalidOperationException("账号不存在");
+        if (account.LinkedSiteId == Guid.Empty)
+        {
+            throw new InvalidOperationException("该厂商不支持聊天转发，无站点可同步模型");
+        }
+
+        var existingMappings = await client.Queryable<Domain.SiteCatalog.SiteModelMapping>()
+            .Where(m => m.SiteId == account.LinkedSiteId)
+            .ToListAsync(ct);
+        var existingByName = existingMappings.ToLookup(m => m.RemoteModelName, StringComparer.OrdinalIgnoreCase);
+
+        var changed = 0;
+        var wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (slug, display, selected) in models)
+        {
+            if (string.IsNullOrWhiteSpace(slug)) continue;
+            wanted.Add(slug);
+            var mapping = existingByName[slug].FirstOrDefault();
+            if (selected)
+            {
+                if (mapping is not null)
+                {
+                    if (!mapping.IsEnabled)
+                    {
+                        mapping.IsEnabled = true;
+                        await client.Updateable(mapping).UpdateColumns(x => new { x.IsEnabled }).ExecuteCommandAsync(ct);
+                        changed++;
+                    }
+
+                    continue;
+                }
+
+                var item = await client.Queryable<Domain.Models.ModelLibraryItem>().FirstAsync(m => m.ModelName == slug, ct);
+                if (item is null)
+                {
+                    item = new Domain.Models.ModelLibraryItem
+                    {
+                        ModelName = slug,
+                        DisplayName = string.IsNullOrWhiteSpace(display) ? slug : display,
+                        IsEnabled = true,
+                    };
+                    await client.Insertable(item).ExecuteCommandAsync(ct);
+                }
+
+                await client.Insertable(new Domain.SiteCatalog.SiteModelMapping
+                {
+                    SiteId = account.LinkedSiteId,
+                    ModelLibraryItemId = item.Id,
+                    RemoteModelName = slug,
+                    IsEnabled = true,
+                }).ExecuteCommandAsync(ct);
+                changed++;
+            }
+            else if (mapping is { IsEnabled: true })
+            {
+                mapping.IsEnabled = false;
+                await client.Updateable(mapping).UpdateColumns(x => new { x.IsEnabled }).ExecuteCommandAsync(ct);
+                changed++;
+            }
+        }
+
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
+        return changed;
+    }
     private static async Task<DeviceOAuthAccount?> FindExistingAsync(
         SqlSugar.ISqlSugarClient client, string vendorKey, string? email, string? externalUserId, CancellationToken ct)
     {

@@ -40,8 +40,17 @@ public interface IDeviceOAuthVendor
     Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, string? extraJson, CancellationToken cancellationToken)
         => RefreshTokenAsync(refreshToken, cancellationToken);
 
+    /// <summary>该厂商是否支持拉取模型目录（默认不支持；支持的厂商覆写 FetchModelsAsync）。</summary>
+    bool SupportsModelFetch => false;
+
     /// <summary>
-    /// 携带完整当前 token 集的刷新（刷新请求需要旧 access token 参与鉴权的厂商覆写——
+    /// 拉取该账号可用的上游模型目录（供选择导入到关联站点）。
+    /// 仅 <see cref="SupportsModelFetch"/>=true 的厂商需要实现；默认返回空列表。
+    /// </summary>
+    Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<DeviceOAuthRemoteModel>>([]);
+
+    /// <summary>
     /// 如 WorkBuddy 的 X-Refresh-Token 流要求 Authorization 仍携带旧 access token）。
     /// 默认回落到 refresh_token + ExtraJson 形态，既有厂商零改动。
     /// </summary>
@@ -126,3 +135,6 @@ public sealed record DeviceOAuthChatSiteConfig(
     bool SupportsAnthropic,
     bool SupportsResponses,
     IReadOnlyDictionary<string, string> ExtraHeaders);
+
+/// <summary>上游模型目录条目（Slug=上游模型 ID，DisplayName=展示名，缺失时回退 ID）。</summary>
+public sealed record DeviceOAuthRemoteModel(string Slug, string DisplayName);

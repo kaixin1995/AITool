@@ -66,6 +66,8 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
     ];
 
     /// <summary>聊天站点：OpenAI 兼容 + 官方客户端静态头；每账号头（指纹/身份）由供给器从 ExtraJson.chatHeaders 合并。</summary>
+    public bool SupportsModelFetch => true;
+
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => new(
         _site.ChatBase + "/v2",
         "OpenAI",
@@ -272,6 +274,178 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
 
     public Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken)
         => RefreshTokenAsync(refreshToken, null, cancellationToken);
+
+    /// <summary>
+    /// 模型目录两级取数（对齐 workbuddy-manager fetch_models）：企业端点 + /v3/config
+    /// 依次探测合并（v3 为主、企业补缺）。国内版按 agents(name=cli) 白名单过滤并剔除
+    /// 非对话模型（nes-/completion-/codewise- 前缀、输出 ≤256、text-to-image）；
+    /// 国际版取全量。
+    /// </summary>
+    public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
+    {
+        var uid = ReadStringExtra(extraJson, "uid");
+        var headers = ChatHeaders(token.AccessToken.Trim());
+        if (!string.IsNullOrWhiteSpace(uid))
+        {
+            headers["X-Machine-ID"] = DeriveFingerprint("machine", uid!);
+            headers["X-Session-ID"] = DeriveFingerprint("session", uid!);
+            headers["X-User-Id"] = uid!;
+        }
+
+        string[][] probePaths = _site == SiteSpec.Global
+            ?
+            [
+                ["/v2/enterprises/personal/models", "/console/enterprises/personal/models"],
+                ["/v3/config"],
+            ]
+            :
+            [
+                ["/console/enterprises/personal/models"],
+                ["/v3/config"],
+            ];
+
+        var payloads = new List<JsonElement>();
+        var errors = new List<string>();
+        foreach (var paths in probePaths)
+        {
+            string? lastError = null;
+            JsonElement? data = null;
+            foreach (var path in paths)
+            {
+                try
+                {
+                    var (status, body) = await CallAsync(HttpMethod.Get, _site.ChatBase + path, headers: headers, cancellationToken: cancellationToken);
+                    if (status != 200) { lastError = "HTTP " + status; continue; }
+                    var (code, root) = UnwrapEnvelope(JsonDocument.Parse(body).RootElement.Clone());
+                    if (code != 0) { lastError = "code=" + code; continue; }
+                    if (root.ValueKind is JsonValueKind.Object or JsonValueKind.Array) data = root;
+                    break;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    lastError = ex.Message;
+                }
+            }
+
+            if (data is { } d)
+            {
+                payloads.Add(d);
+            }
+            else
+            {
+                errors.Add(lastError ?? "未知错误");
+            }
+        }
+
+        if (payloads.Count == 0)
+        {
+            throw new InvalidOperationException("模型接口全部失败：" + string.Join("；", errors));
+        }
+
+        // 合并：v3 一路优先在前，企业路只补缺（同 id 时 v3 字段为准）。
+        var merged = new List<DeviceOAuthRemoteModel>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = payloads.Count - 1; i >= 0; i--)
+        {
+            foreach (var model in ParseModelPayload(payloads[i], applyCliFilter: i == 0 && _site == SiteSpec.China))
+            {
+                if (seen.Add(model.Slug)) merged.Add(model);
+            }
+        }
+
+        if (merged.Count == 0)
+        {
+            throw new InvalidOperationException("模型接口未返回任何可用模型");
+        }
+
+        return merged;
+    }
+
+    /// <summary>解析单路响应为模型列表（对象列表与字符串窄表两种形态）。</summary>
+    internal static IReadOnlyList<DeviceOAuthRemoteModel> ParseModelPayload(JsonElement data, bool applyCliFilter)
+    {
+        var outModels = new List<DeviceOAuthRemoteModel>();
+        if (data.ValueKind == JsonValueKind.Array)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in data.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String) continue;
+                var mid = item.GetString()!.Trim();
+                if (mid.Length > 0 && seen.Add(mid)) outModels.Add(new DeviceOAuthRemoteModel(mid, mid));
+            }
+            return outModels;
+        }
+
+        if (data.ValueKind != JsonValueKind.Object) return outModels;
+        if (!data.TryGetProperty("models", out var models) || models.ValueKind != JsonValueKind.Array) return outModels;
+
+        // CN：agents(name=cli) 的 models 列表为白名单（为空=全量回退）。
+        var cliIds = new List<string>();
+        if (applyCliFilter && data.TryGetProperty("agents", out var agents) && agents.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var agent in agents.EnumerateArray())
+            {
+                if (agent.ValueKind != JsonValueKind.Object) continue;
+                var isCli = false;
+                if (agent.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                    && string.Equals(nameEl.GetString(), "cli", StringComparison.OrdinalIgnoreCase))
+                {
+                    isCli = true;
+                }
+                if (!isCli) continue;
+                if (agent.TryGetProperty("models", out var ids) && ids.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var id in ids.EnumerateArray())
+                    {
+                        if (id.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(id.GetString()))
+                        {
+                            cliIds.Add(id.GetString()!.Trim());
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        var info = new Dictionary<string, (string Name, bool Disabled, double MaxOutput, List<string> Tags)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in models.EnumerateArray())
+        {
+            if (m.ValueKind != JsonValueKind.Object) continue;
+            var mid = GetString(m, "id");
+            if (string.IsNullOrWhiteSpace(mid)) continue;
+            var maxOutput = GetNumber(m, "maxOutputTokens") ?? 0;
+            var tags = new List<string>();
+            if (m.TryGetProperty("tags", out var tagsEl) && tagsEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var tag in tagsEl.EnumerateArray())
+                {
+                    if (tag.ValueKind == JsonValueKind.String) tags.Add(tag.GetString() ?? string.Empty);
+                }
+            }
+
+            var disabled = m.TryGetProperty("disabled", out var disEl) && disEl.ValueKind == JsonValueKind.True;
+            info[mid!] = (GetString(m, "name") ?? mid!, disabled, maxOutput, tags);
+        }
+
+        var idsToEmit = cliIds.Count > 0 ? cliIds : info.Keys.ToList();
+        var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in idsToEmit)
+        {
+            if (!info.TryGetValue(id, out var entry) || entry.Disabled) continue;
+            var low = id.ToLowerInvariant();
+            var isNonChat = low.StartsWith("nes-") || low.StartsWith("completion-") || low.StartsWith("codewise-")
+                || (entry.MaxOutput > 0 && entry.MaxOutput <= 256)
+                || entry.Tags.Any(t => t.Equals("text-to-image", StringComparison.OrdinalIgnoreCase));
+            if (isNonChat) continue;
+            if (emitted.Add(id))
+            {
+                outModels.Add(new DeviceOAuthRemoteModel(id, entry.Name));
+            }
+        }
+
+        return outModels;
+    }
 
     public async Task<DeviceOAuthQuotaResult> QueryQuotaAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
     {

@@ -45,6 +45,7 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             vendorKey = v.VendorKey,
             label = v.Label,
             chatSupported = v.ChatSiteConfig is not null,
+            modelFetchSupported = v.SupportsModelFetch,
         })));
     }
 
@@ -209,6 +210,68 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
         }));
     }
 
+    /// <summary>拉取账号上游模型目录（含既有映射状态，供选择导入）。</summary>
+    [HttpGet("accounts/{id:guid}/fetch-models")]
+    public async Task<IActionResult> FetchModels(Guid id, CancellationToken ct)
+    {
+        var account = await _dbContext.DeviceOAuthAccounts.InSingleAsync(id);
+        if (account is null || account.IsDeleted)
+        {
+            return NotFound(ApiResponse.Fail("账号不存在", "account_not_found"));
+        }
+
+        var vendor = _registry.Find(account.VendorKey);
+        if (vendor is null || !vendor.SupportsModelFetch)
+        {
+            return BadRequest(ApiResponse.Fail("该厂商不支持拉取模型", "not_supported"));
+        }
+
+        var token = new Application.OAuth.DeviceOAuthTokenSet
+        {
+            AccessToken = account.AccessToken ?? string.Empty,
+            RefreshToken = account.RefreshToken,
+            ExpiresAt = account.TokenExpiresAt,
+        };
+        var models = await vendor.FetchModelsAsync(token, account.ExtraJson, ct);
+
+        // 既有映射状态合并进条目（existingDisplayName 供前端展示别名）。
+        var mappings = await _dbContext.SiteModelMappings
+            .Where(m => m.SiteId == account.LinkedSiteId)
+            .ToListAsync(ct);
+        var itemIds = mappings.Select(m => m.ModelLibraryItemId).Distinct().ToList();
+        var items = (await _dbContext.ModelLibraryItems
+            .Where(m => itemIds.Contains(m.Id))
+            .ToListAsync(ct))
+            .ToDictionary(m => m.Id);
+
+        var result = models.Select(m =>
+        {
+            var mapping = mappings.FirstOrDefault(x => x.RemoteModelName == m.Slug);
+            var itemName = mapping is not null && items.TryGetValue(mapping.ModelLibraryItemId, out var it) ? it.DisplayName : null;
+            return new
+            {
+                remoteModelName = m.Slug,
+                displayName = m.DisplayName,
+                existingMappingId = mapping is null ? (Guid?)null : mapping.Id,
+                isEnabled = mapping is not null && mapping.IsEnabled,
+                existingDisplayName = itemName,
+            };
+        }).ToList();
+
+        return Ok(ApiResponse.Ok(result));
+    }
+
+    /// <summary>按选择同步模型映射（选中建立/启用，未选中禁用）。</summary>
+    [HttpPost("accounts/{id:guid}/import-models")]
+    public async Task<IActionResult> ImportModels(Guid id, [FromBody] ImportDeviceModelsRequest request, CancellationToken ct)
+    {
+        var selections = (request?.Models ?? new List<DeviceModelSelectionItem>())
+            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
+            .Select(m => (m.RemoteModelName!.Trim(), m.DisplayName ?? string.Empty, m.Selected))
+            .ToList();
+        var changed = await _provisioner.SyncSelectedModelsAsync(id, selections, ct);
+        return Ok(ApiResponse.Ok(new { changed }));
+    }
     /// <summary>删除账号（级联删除隐藏站点）。</summary>
     [HttpDelete("accounts/{id:guid}")]
     public async Task<IActionResult> DeleteAccount(Guid id, CancellationToken ct)
@@ -272,6 +335,17 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
         public bool Enabled { get; set; }
     }
 
+    public sealed class DeviceModelSelectionItem
+    {
+        public string? RemoteModelName { get; set; }
+        public string? DisplayName { get; set; }
+        public bool Selected { get; set; }
+    }
+
+    public sealed class ImportDeviceModelsRequest
+    {
+        public List<DeviceModelSelectionItem> Models { get; set; } = new();
+    }
     public sealed class UpdateAccountRequest
     {
         public string? DisplayName { get; set; }

@@ -5,6 +5,8 @@ import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, 
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
 import {
+  importSelectedDeviceModels,
+  fetchDeviceOAuthModels,
   deleteDeviceOAuthAccount,
   updateDeviceOAuthAccount,
   fetchDeviceOAuthAccounts,
@@ -71,6 +73,8 @@ const deviceVendors = ref<DeviceOAuthVendor[]>([])
 const deviceVendorOf = (key?: string): DeviceOAuthVendor | undefined =>
   deviceVendors.value.find(v => v.vendorKey === key)
 const deviceVendorLabel = (key: string): string => deviceVendorOf(key)?.label ?? key
+const deviceVendorModelFetch = (key: string): boolean =>
+  deviceVendors.value.find(v => v.vendorKey === key)?.modelFetchSupported === true
 
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
@@ -197,8 +201,10 @@ interface AccountTableRow {
   raw: UnifiedAccount
 }
 
-const canFetchModelsProvider = (provider: string): boolean =>
-  provider === 'codex' || provider === 'antigravity' || provider === 'gemini-cli' || provider === 'kimi' || provider === 'xai'
+
+function canFetchModelsProvider(provider: string): boolean {
+  return provider === 'codex' || provider === 'antigravity' || provider === 'gemini-cli' || provider === 'kimi' || provider === 'xai'
+}
 
 // 窗口短名：去掉「窗口/额度」等后缀，进度条左侧只留「5 小时/每周/MCP 月度」等核心词。
 function windowShortLabel(label: string): string {
@@ -1104,7 +1110,15 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
   try {
     modelSearch.value = ''
     let models: OAuthRemoteModelItem[] = []
-    if (acc.provider === 'codex') {
+    if (deviceVendorOf(acc.provider)) {
+      models = (await fetchDeviceOAuthModels(acc.id)).map(m => ({
+        remoteModelName: m.remoteModelName,
+        displayName: m.displayName,
+        existingMappingId: m.existingMappingId,
+        isEnabled: m.isEnabled,
+        existingDisplayName: m.existingDisplayName
+      }))
+    } else if (acc.provider === 'codex') {
       const result = await api.fetchOAuthModels(acc.id)
       models = result.models
       // 远端分层目录刷新结果提示：变更成功提示；失败警告（不影响本次拉取）。
@@ -1172,7 +1186,12 @@ async function handleImportModels(): Promise<void> {
       displayName: model.alias.trim() || model.remoteModelName,
       selected: checkedModels.value.includes(model.remoteModelName)
     }))
-    if (modelAccount.value.provider === 'codex') {
+    if (deviceVendorOf(modelAccount.value.provider)) {
+      await importSelectedDeviceModels(
+        modelAccount.value.id,
+        selections.map(m => ({ remoteModelName: m.remoteModelName, displayName: m.displayName, selected: m.selected }))
+      )
+    } else if (modelAccount.value.provider === 'codex') {
       await api.importSelectedOAuthModels(modelAccount.value.id, selections)
     } else if (modelAccount.value.provider === 'antigravity' || modelAccount.value.provider === 'gemini-cli') {
       await api.importSelectedGoogleModels(modelAccount.value.id, selections)
@@ -1636,7 +1655,7 @@ onUnmounted(() => {
                     <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </NButton>
-                    <NButton v-if="acc.provider === 'codex' || acc.provider === 'antigravity' || acc.provider === 'gemini-cli' || acc.provider === 'kimi' || acc.provider === 'xai'" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
+                    <NButton v-if="canFetchModelsProvider(acc.provider) || deviceVendorModelFetch(acc.provider)" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                     </NButton>
                     <NPopconfirm @positive-click="handleDelete(acc)">
