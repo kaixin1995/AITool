@@ -333,11 +333,13 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
         return models;
     }
 
-    /// <summary>gift 模型的体验别名（对齐参考 giftID：目录内按目录拼写，外加 "-Trial" 后缀）。</summary>
+    /// <summary>gift 模型的体验别名（对齐参考 giftID：目录内按目录拼写，外加 "-Trial" 后缀）。
+    /// 注意 DefaultModels 元素为值元组，未命中时 default.Slug 为 null，必须判空后再拼别名。</summary>
     private string TrialId(string model)
-        => DefaultModels.FirstOrDefault(entry => string.Equals(entry.Slug, model, StringComparison.OrdinalIgnoreCase)) is { } canonical
-            ? canonical.Slug + "-Trial"
-            : model + "-Trial";
+    {
+        var match = DefaultModels.FirstOrDefault(entry => string.Equals(entry.Slug, model, StringComparison.OrdinalIgnoreCase));
+        return !string.IsNullOrEmpty(match.Slug) ? match.Slug + "-Trial" : model + "-Trial";
+    }
 
     /// <summary>
     /// 套餐 → 模型 ID（参考 modelsOf 的 ID 收集部分）：providerRules 里该 providerId 的 builtinModelIds，
