@@ -250,6 +250,16 @@ public sealed class ProxyForwardService : IProxyForwardService
             : request.PreparedRequestBody;
         var isStreaming = request.EnableStreaming || IsStreamingRequest(request.RequestBody);
 
+        // 站点标记强制上游流式（WorkBuddy code 11101 等）：客户端非流式时改写请求体加 stream:true，
+        // 响应 SSE 由下方聚合逻辑还原为完整 JSON，客户端无感知。
+        var forceUpstreamStream = !isStreaming
+            && request.ForwardHeaders.TryGetValue(ForceStreamHeader, out var forceStreamValue)
+            && string.Equals(forceStreamValue.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+        if (forceUpstreamStream)
+        {
+            requestBody = ForceStreamTrue(requestBody);
+        }
+
         await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: false);
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
@@ -388,13 +398,20 @@ public sealed class ProxyForwardService : IProxyForwardService
                 if (!isStreaming && IsSseContent(response, responseBody))
                 {
                     var aggregated = TryExtractResponsesCompletion(responseBody);
+                    if (string.IsNullOrEmpty(aggregated))
+                    {
+                        // OpenAI Chat Completions 格式的 SSE（WorkBuddy 等强制流式上游）：
+                        // 聚合 chat.completion.chunk 为完整 chat.completion 对象。
+                        aggregated = TryAggregateChatCompletionSse(responseBody);
+                    }
+
                     if (!string.IsNullOrEmpty(aggregated))
                     {
                         responseBody = aggregated;
                     }
                     else
                     {
-                        _logger.LogWarning("Failed to aggregate upstream SSE into response.completed JSON. Body head: {Head}",
+                        _logger.LogWarning("Failed to aggregate upstream SSE into response JSON. Body head: {Head}",
                             responseBody.Length > 800 ? responseBody[..800] : responseBody);
                     }
                 }
@@ -1142,6 +1159,12 @@ public sealed class ProxyForwardService : IProxyForwardService
                 continue;
             }
 
+            // 内部标记头（强制上游流式），不透传给上游。
+            if (string.Equals(header.Key, ForceStreamHeader, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase))
             {
                 httpRequest.Headers.Remove("Authorization");
@@ -1159,6 +1182,13 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// MiniMax Code、Z.ai /api/anthropic 等以 Bearer 为准的上游）。
     /// </summary>
     public const string AuthModeHeader = "X-AITool-Auth-Mode";
+
+    /// <summary>
+    /// 站点侧通过 ExtraHeadersJson 携带 <c>X-AITool-Force-Stream</c> 强制上游流式请求：
+    /// WorkBuddy 等上游只接受 stream:true（code 11101），客户端非流式时由转发层改写请求体
+    /// 强制 stream:true，并将返回的 SSE 聚合回完整 JSON。
+    /// </summary>
+    public const string ForceStreamHeader = "X-AITool-Force-Stream";
 
     /// <summary>解析 Anthropic 协议的鉴权头集合（key 形态：默认 x-api-key / bearer 形态：Authorization Bearer）。</summary>
     public static IEnumerable<(string Name, string Value)> ResolveAnthropicAuthHeaders(
@@ -1222,6 +1252,259 @@ public sealed class ProxyForwardService : IProxyForwardService
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 强制改写请求体为 stream:true（保留其余字段不变）。请求体不是合法 JSON 时返回原文（上游自行报错）。
+    /// </summary>
+    private static string ForceStreamTrue(string requestBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(requestBody);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return requestBody;
+            }
+
+            if (root.TryGetProperty("stream", out var streamEl)
+                && (streamEl.ValueKind == JsonValueKind.True
+                    || (streamEl.ValueKind == JsonValueKind.String && streamEl.GetString() == "true")))
+            {
+                return requestBody;
+            }
+
+            var node = System.Text.Json.Nodes.JsonNode.Parse(requestBody) as System.Text.Json.Nodes.JsonObject;
+            if (node is null)
+            {
+                return requestBody;
+            }
+
+            node["stream"] = true;
+            return node.ToJsonString();
+        }
+        catch (JsonException)
+        {
+            return requestBody;
+        }
+    }
+
+    /// <summary>
+    /// 把 OpenAI Chat Completions 的 SSE 流聚合回完整 chat.completion JSON：
+    /// 逐行解析 data: 前缀的 chat.completion.chunk，累积 delta 文本/role/tool_calls/usage，
+    /// 构造完整响应对象。无法解析时返回 null。
+    /// </summary>
+    internal static string? TryAggregateChatCompletionSse(string sseBody)
+    {
+        try
+        {
+            string? id = null, model = null, systemFingerprint = null, finishReason = null;
+            string? role = null;
+            var contentBuilder = new StringBuilder();
+            var reasoningBuilder = new StringBuilder();
+            long? promptTokens = null, completionTokens = null;
+            // tool_calls 跨 chunk 分片（arguments 逐段追加），按 index 合并为完整调用。
+            var toolCallsByIndex = new SortedDictionary<int, ToolCallAccumulator>();
+            var hasAnyChunk = false;
+
+            foreach (var rawLine in sseBody.Split('\n'))
+            {
+                var line = rawLine.TrimEnd('\r');
+                if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var payload = line["data:".Length..].Trim();
+                if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                using var doc = JsonDocument.Parse(payload);
+                var chunk = doc.RootElement;
+                if (chunk.ValueKind != JsonValueKind.Object
+                    || !chunk.TryGetProperty("object", out var objectEl)
+                    || !string.Equals(objectEl.GetString(), "chat.completion.chunk", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                hasAnyChunk = true;
+                if (chunk.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String) id ??= idEl.GetString();
+                if (chunk.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String) model ??= modelEl.GetString();
+                if (chunk.TryGetProperty("system_fingerprint", out var fpEl) && fpEl.ValueKind == JsonValueKind.String) systemFingerprint ??= fpEl.GetString();
+
+                if (chunk.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
+                {
+                    if (usageEl.TryGetProperty("prompt_tokens", out var pt) && pt.TryGetInt64(out var ptv)) promptTokens = ptv;
+                    if (usageEl.TryGetProperty("completion_tokens", out var ct) && ct.TryGetInt64(out var ctv)) completionTokens = ctv;
+                }
+
+                if (!chunk.TryGetProperty("choices", out var choicesEl) || choicesEl.ValueKind != JsonValueKind.Array || choicesEl.GetArrayLength() == 0)
+                {
+                    continue;
+                }
+
+                var choice = choicesEl[0];
+                if (choice.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (choice.TryGetProperty("finish_reason", out var frEl) && frEl.ValueKind == JsonValueKind.String)
+                {
+                    finishReason ??= frEl.GetString();
+                }
+
+                if (!choice.TryGetProperty("delta", out var deltaEl) || deltaEl.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (deltaEl.TryGetProperty("role", out var roleEl) && roleEl.ValueKind == JsonValueKind.String)
+                {
+                    role ??= roleEl.GetString();
+                }
+
+                if (deltaEl.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.String)
+                {
+                    contentBuilder.Append(contentEl.GetString());
+                }
+
+                if (deltaEl.TryGetProperty("reasoning_content", out var rcEl) && rcEl.ValueKind == JsonValueKind.String)
+                {
+                    reasoningBuilder.Append(rcEl.GetString());
+                }
+
+                if (deltaEl.TryGetProperty("tool_calls", out var tcEl) && tcEl.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var tc in tcEl.EnumerateArray())
+                    {
+                        if (tc.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        var callIndex = tc.TryGetProperty("index", out var idxEl)
+                                        && idxEl.ValueKind == JsonValueKind.Number
+                                        && idxEl.TryGetInt32(out var idx)
+                            ? idx
+                            : 0;
+                        if (!toolCallsByIndex.TryGetValue(callIndex, out var acc))
+                        {
+                            acc = new ToolCallAccumulator();
+                            toolCallsByIndex[callIndex] = acc;
+                        }
+
+                        // id/type/name 只在首个分片出现，取首个非空；arguments 逐段拼接。
+                        if (tc.TryGetProperty("id", out var tcId) && tcId.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tcId.GetString()))
+                        {
+                            acc.Id ??= tcId.GetString();
+                        }
+                        if (tc.TryGetProperty("type", out var tcType) && tcType.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tcType.GetString()))
+                        {
+                            acc.Type ??= tcType.GetString();
+                        }
+                        if (tc.TryGetProperty("function", out var fnEl) && fnEl.ValueKind == JsonValueKind.Object)
+                        {
+                            if (fnEl.TryGetProperty("name", out var fnName) && fnName.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(fnName.GetString()))
+                            {
+                                acc.Name ??= fnName.GetString();
+                            }
+                            if (fnEl.TryGetProperty("arguments", out var fnArgs) && fnArgs.ValueKind == JsonValueKind.String)
+                            {
+                                acc.Arguments.Append(fnArgs.GetString());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!hasAnyChunk)
+            {
+                return null;
+            }
+
+            var message = new System.Text.Json.Nodes.JsonObject
+            {
+                ["role"] = role ?? "assistant",
+                ["content"] = contentBuilder.Length > 0 ? contentBuilder.ToString() : null,
+            };
+            if (reasoningBuilder.Length > 0)
+            {
+                message["reasoning_content"] = reasoningBuilder.ToString();
+            }
+            if (toolCallsByIndex.Count > 0)
+            {
+                // 对齐非流式 chat.completion 的 tool_calls 形态（id/type/function，无 index 字段）。
+                var mergedToolCalls = new System.Text.Json.Nodes.JsonArray();
+                foreach (var acc in toolCallsByIndex.Values)
+                {
+                    var call = new System.Text.Json.Nodes.JsonObject();
+                    if (acc.Id is not null)
+                    {
+                        call["id"] = acc.Id;
+                    }
+                    if (acc.Type is not null)
+                    {
+                        call["type"] = acc.Type;
+                    }
+                    call["function"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["name"] = acc.Name ?? string.Empty,
+                        ["arguments"] = acc.Arguments.ToString(),
+                    };
+                    mergedToolCalls.Add(call);
+                }
+                message["tool_calls"] = mergedToolCalls;
+            }
+
+            var result = new System.Text.Json.Nodes.JsonObject
+            {
+                ["id"] = id ?? $"chatcmpl-{Guid.NewGuid():N}",
+                ["object"] = "chat.completion",
+                ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                ["model"] = model ?? "unknown",
+            };
+            if (!string.IsNullOrEmpty(systemFingerprint))
+            {
+                result["system_fingerprint"] = systemFingerprint;
+            }
+
+            result["choices"] = new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject
+            {
+                ["index"] = 0,
+                ["message"] = message,
+                ["finish_reason"] = finishReason ?? "stop",
+            });
+
+            if (promptTokens.HasValue || completionTokens.HasValue)
+            {
+                result["usage"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["prompt_tokens"] = promptTokens ?? 0,
+                    ["completion_tokens"] = completionTokens ?? 0,
+                    ["total_tokens"] = (promptTokens ?? 0) + (completionTokens ?? 0),
+                };
+            }
+
+            return result.ToJsonString();
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>流式 tool_calls 分片累积器：id/type/name 取首个非空，arguments 逐段拼接。</summary>
+    private sealed class ToolCallAccumulator
+    {
+        public string? Id { get; set; }
+        public string? Type { get; set; }
+        public string? Name { get; set; }
+        public StringBuilder Arguments { get; } = new();
     }
 
     /// <summary>

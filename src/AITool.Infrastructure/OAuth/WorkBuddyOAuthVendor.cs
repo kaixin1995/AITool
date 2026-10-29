@@ -81,6 +81,9 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             ["X-CodeBuddy-Request"] = "1",
             ["Origin"] = _site.Origin,
             ["Referer"] = _site.Origin + "/",
+            // 上游只接受流式请求（code 11101「Non-stream chat request is currently not supported」）。
+            // 转发层识别此标记后强制 stream:true，并在客户端非流式时把 SSE 聚合回完整 JSON。
+            ["X-AITool-Force-Stream"] = "true",
         });
 
     public async Task<DeviceOAuthStartResult> StartSignInAsync(CancellationToken cancellationToken)

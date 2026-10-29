@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AITool.ApplicationTests" />
+    <InternalsVisibleTo Include="AITool.IntegrationTests" />
   </ItemGroup>
 
   <ItemGroup>

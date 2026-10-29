@@ -75,6 +75,8 @@ public sealed class WorkBuddyVendorTests
         chat.BaseUrl.Should().Be("https://copilot.tencent.com/v2");
         chat.SupportsOpenAi.Should().BeTrue();
         chat.ExtraHeaders["X-Agent-Type"].Should().Be("main");
+        // 上游只接受流式（11101）：标记头驱动代理层强制 stream:true + SSE 聚合。
+        chat.ExtraHeaders["X-AITool-Force-Stream"].Should().Be("true");
     }
 
     [Fact]

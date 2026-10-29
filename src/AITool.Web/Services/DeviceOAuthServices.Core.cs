@@ -118,21 +118,7 @@ public sealed class DeviceOAuthAccountProvisioner
 
             // 厂商在 ExtraJson 里给 chatBaseUrl 时覆盖默认基地址（如 Copilot 个人版端点）。
             var chatBaseUrl = TryGetExtraString(extraJson, "chatBaseUrl");
-            // chatHeaders 为每账号稳定头（如 WorkBuddy 的设备指纹/身份头），合并进站点头。
-            var effectiveHeaders = new Dictionary<string, string>(chat.ExtraHeaders, StringComparer.OrdinalIgnoreCase);
-            if (TryGetExtraObject(extraJson, "chatHeaders") is { } perAccount)
-            {
-                foreach (var property in perAccount.EnumerateObject())
-                {
-                    if (!string.IsNullOrWhiteSpace(property.Name) && property.Value.ValueKind == System.Text.Json.JsonValueKind.String)
-                    {
-                        effectiveHeaders[property.Name] = property.Value.GetString()!;
-                    }
-                }
-            }
-
-            var mergedHeadersJson = System.Text.Json.JsonSerializer.Serialize(
-                effectiveHeaders, AITool.Application.Common.JsonSerializerPresets.Compact);
+            var mergedHeadersJson = ComputeChatHeadersJson(chat, extraJson);
             if (site is null)
             {
                 site = new Site
@@ -254,6 +240,28 @@ public sealed class DeviceOAuthAccountProvisioner
         await client.Deleteable<DeviceOAuthAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
+    }
+
+    /// <summary>
+    /// 站点自定义头 = 厂商 ChatSiteConfig.ExtraHeaders + ExtraJson.chatHeaders（每账号稳定头，后者优先）。
+    /// 供给与启动时的托管站点头同步共用，保证两处产出一致。
+    /// </summary>
+    internal static string ComputeChatHeadersJson(DeviceOAuthChatSiteConfig chat, string? extraJson)
+    {
+        var effectiveHeaders = new Dictionary<string, string>(chat.ExtraHeaders, StringComparer.OrdinalIgnoreCase);
+        if (TryGetExtraObject(extraJson, "chatHeaders") is { } perAccount)
+        {
+            foreach (var property in perAccount.EnumerateObject())
+            {
+                if (!string.IsNullOrWhiteSpace(property.Name) && property.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    effectiveHeaders[property.Name] = property.Value.GetString()!;
+                }
+            }
+        }
+
+        return System.Text.Json.JsonSerializer.Serialize(
+            effectiveHeaders, AITool.Application.Common.JsonSerializerPresets.Compact);
     }
 
     /// <summary>读取厂商 ExtraJson 的字符串字段。</summary>
@@ -489,6 +497,21 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // 启动时把厂商 ChatSiteConfig 当前定义的请求头同步到既有托管站点：
+        // 升级引入的新头（如 WorkBuddy 强制流式标记）无需重新登录即可生效。
+        try
+        {
+            await SyncManagedSiteHeadersAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // 关停中退出
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Device OAuth managed site header sync error");
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -515,9 +538,62 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
         }
     }
 
-    internal async Task RefreshDueAccountsAsync(CancellationToken ct)
+    /// <summary>
+    /// 把每个账号关联站点的 ExtraHeadersJson 对齐到厂商 ChatSiteConfig 当前定义 + 账号级 chatHeaders。
+    /// 头变更只来自代码升级（进程内配置静态，启动执行一次即可）；只回写有差异的站点，
+    /// 非托管（ManagedSource 不符）或用户自建站点不触碰。
+    /// </summary>
+    internal async Task SyncManagedSiteHeadersAsync(CancellationToken ct)
     {
         using var scope = _services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var registry = scope.ServiceProvider.GetRequiredService<DeviceOAuthVendorRegistry>();
+        var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+
+        var accounts = await db.DeviceOAuthAccounts
+            .Where(a => !a.IsDeleted && a.LinkedSiteId != Guid.Empty)
+            .ToListAsync(ct);
+        if (accounts.Count == 0) return;
+
+        var changed = false;
+        foreach (var account in accounts)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (registry.Find(account.VendorKey)?.ChatSiteConfig is not { } chat) continue;
+
+            try
+            {
+                var expected = DeviceOAuthAccountProvisioner.ComputeChatHeadersJson(chat, account.ExtraJson);
+                var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+                if (site is null
+                    || site.ManagedSource != DeviceOAuthAccountProvisioner.ManagedSource
+                    || site.ExtraHeadersJson == expected)
+                {
+                    continue;
+                }
+
+                site.ExtraHeadersJson = expected;
+                await db.Client.Updateable(site).UpdateColumns(s => new { s.ExtraHeadersJson }).ExecuteCommandAsync(ct);
+                changed = true;
+                _logger.LogInformation(
+                    "Device OAuth managed site {SiteId} headers synced for {Vendor} account {Id}",
+                    site.Id, account.VendorKey, account.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Device OAuth managed site header sync failed for account {Id}", account.Id);
+            }
+        }
+
+        if (changed)
+        {
+            // 路由目标缓存携带站点自定义头，变更后必须失效重建。
+            metadataCache.InvalidateRouteTargets();
+        }
+    }
+
+    internal async Task RefreshDueAccountsAsync(CancellationToken ct)
+    {        using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var registry = scope.ServiceProvider.GetRequiredService<DeviceOAuthVendorRegistry>();
         var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
