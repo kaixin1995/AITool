@@ -1255,7 +1255,9 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 强制改写请求体为 stream:true（保留其余字段不变）。请求体不是合法 JSON 时返回原文（上游自行报错）。
+    /// 强制改写请求体为 stream:true（保留其余字段不变），并要求上游在流尾附带 usage
+    /// （stream_options.include_usage，OpenAI 规范下流式默认不带 usage，聚合侧会拿不到计量）。
+    /// 请求体不是合法 JSON 时返回原文（上游自行报错）。
     /// </summary>
     private static string ForceStreamTrue(string requestBody)
     {
@@ -1282,6 +1284,15 @@ public sealed class ProxyForwardService : IProxyForwardService
             }
 
             node["stream"] = true;
+            // 兼容已有 stream_options：只补 include_usage，不覆盖其他选项。
+            if (node["stream_options"] is System.Text.Json.Nodes.JsonObject options)
+            {
+                options["include_usage"] = true;
+            }
+            else
+            {
+                node["stream_options"] = new System.Text.Json.Nodes.JsonObject { ["include_usage"] = true };
+            }
             return node.ToJsonString();
         }
         catch (JsonException)
@@ -1299,14 +1310,13 @@ public sealed class ProxyForwardService : IProxyForwardService
     {
         try
         {
-            string? id = null, model = null, systemFingerprint = null, finishReason = null;
-            string? role = null;
-            var contentBuilder = new StringBuilder();
-            var reasoningBuilder = new StringBuilder();
+            string? id = null, model = null, systemFingerprint = null;
             long? promptTokens = null, completionTokens = null;
-            // tool_calls 跨 chunk 分片（arguments 逐段追加），按 index 合并为完整调用。
-            var toolCallsByIndex = new SortedDictionary<int, ToolCallAccumulator>();
+            // 多 choice（客户端 n>1）按 choice.index 分桶聚合，不能只取 choices[0]。
+            var choicesByIndex = new SortedDictionary<int, ChoiceAccumulator>();
             var hasAnyChunk = false;
+            var sawDone = false;
+            var sawAnyFinishReason = false;
 
             foreach (var rawLine in sseBody.Split('\n'))
             {
@@ -1319,103 +1329,132 @@ public sealed class ProxyForwardService : IProxyForwardService
                 var payload = line["data:".Length..].Trim();
                 if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
+                    sawDone = true;
                     break;
                 }
 
-                using var doc = JsonDocument.Parse(payload);
-                var chunk = doc.RootElement;
-                if (chunk.ValueKind != JsonValueKind.Object
-                    || !chunk.TryGetProperty("object", out var objectEl)
-                    || !string.Equals(objectEl.GetString(), "chat.completion.chunk", StringComparison.Ordinal))
+                // SSE 允许 keep-alive 空 data: 行等非 JSON 噪音：逐行容错跳过，
+                // 不能让一条杂行把整个聚合判失败（那会把本可成功的请求变成硬错误）。
+                JsonDocument doc;
+                try
+                {
+                    doc = JsonDocument.Parse(payload);
+                }
+                catch (JsonException)
                 {
                     continue;
                 }
 
-                hasAnyChunk = true;
-                if (chunk.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String) id ??= idEl.GetString();
-                if (chunk.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String) model ??= modelEl.GetString();
-                if (chunk.TryGetProperty("system_fingerprint", out var fpEl) && fpEl.ValueKind == JsonValueKind.String) systemFingerprint ??= fpEl.GetString();
-
-                if (chunk.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
+                using (doc)
                 {
-                    if (usageEl.TryGetProperty("prompt_tokens", out var pt) && pt.TryGetInt64(out var ptv)) promptTokens = ptv;
-                    if (usageEl.TryGetProperty("completion_tokens", out var ct) && ct.TryGetInt64(out var ctv)) completionTokens = ctv;
-                }
-
-                if (!chunk.TryGetProperty("choices", out var choicesEl) || choicesEl.ValueKind != JsonValueKind.Array || choicesEl.GetArrayLength() == 0)
-                {
-                    continue;
-                }
-
-                var choice = choicesEl[0];
-                if (choice.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                if (choice.TryGetProperty("finish_reason", out var frEl) && frEl.ValueKind == JsonValueKind.String)
-                {
-                    finishReason ??= frEl.GetString();
-                }
-
-                if (!choice.TryGetProperty("delta", out var deltaEl) || deltaEl.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                if (deltaEl.TryGetProperty("role", out var roleEl) && roleEl.ValueKind == JsonValueKind.String)
-                {
-                    role ??= roleEl.GetString();
-                }
-
-                if (deltaEl.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.String)
-                {
-                    contentBuilder.Append(contentEl.GetString());
-                }
-
-                if (deltaEl.TryGetProperty("reasoning_content", out var rcEl) && rcEl.ValueKind == JsonValueKind.String)
-                {
-                    reasoningBuilder.Append(rcEl.GetString());
-                }
-
-                if (deltaEl.TryGetProperty("tool_calls", out var tcEl) && tcEl.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var tc in tcEl.EnumerateArray())
+                    var chunk = doc.RootElement;
+                    if (chunk.ValueKind != JsonValueKind.Object
+                        || !chunk.TryGetProperty("object", out var objectEl)
+                        || !string.Equals(objectEl.GetString(), "chat.completion.chunk", StringComparison.Ordinal))
                     {
-                        if (tc.ValueKind != JsonValueKind.Object)
+                        continue;
+                    }
+
+                    hasAnyChunk = true;
+                    if (chunk.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String) id ??= idEl.GetString();
+                    if (chunk.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String) model ??= modelEl.GetString();
+                    if (chunk.TryGetProperty("system_fingerprint", out var fpEl) && fpEl.ValueKind == JsonValueKind.String) systemFingerprint ??= fpEl.GetString();
+
+                    if (chunk.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (usageEl.TryGetProperty("prompt_tokens", out var pt) && pt.TryGetInt64(out var ptv)) promptTokens = ptv;
+                        if (usageEl.TryGetProperty("completion_tokens", out var ct) && ct.TryGetInt64(out var ctv)) completionTokens = ctv;
+                    }
+
+                    if (!chunk.TryGetProperty("choices", out var choicesEl) || choicesEl.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
+                    foreach (var choice in choicesEl.EnumerateArray())
+                    {
+                        if (choice.ValueKind != JsonValueKind.Object)
                         {
                             continue;
                         }
 
-                        var callIndex = tc.TryGetProperty("index", out var idxEl)
-                                        && idxEl.ValueKind == JsonValueKind.Number
-                                        && idxEl.TryGetInt32(out var idx)
-                            ? idx
+                        var choiceIndex = choice.TryGetProperty("index", out var cIdxEl)
+                                          && cIdxEl.ValueKind == JsonValueKind.Number
+                                          && cIdxEl.TryGetInt32(out var cIdx)
+                            ? cIdx
                             : 0;
-                        if (!toolCallsByIndex.TryGetValue(callIndex, out var acc))
+                        if (!choicesByIndex.TryGetValue(choiceIndex, out var acc))
                         {
-                            acc = new ToolCallAccumulator();
-                            toolCallsByIndex[callIndex] = acc;
+                            acc = new ChoiceAccumulator();
+                            choicesByIndex[choiceIndex] = acc;
                         }
 
-                        // id/type/name 只在首个分片出现，取首个非空；arguments 逐段拼接。
-                        if (tc.TryGetProperty("id", out var tcId) && tcId.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tcId.GetString()))
+                        if (choice.TryGetProperty("finish_reason", out var frEl) && frEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(frEl.GetString()))
                         {
-                            acc.Id ??= tcId.GetString();
+                            acc.FinishReason ??= frEl.GetString();
+                            sawAnyFinishReason = true;
                         }
-                        if (tc.TryGetProperty("type", out var tcType) && tcType.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tcType.GetString()))
+
+                        if (!choice.TryGetProperty("delta", out var deltaEl) || deltaEl.ValueKind != JsonValueKind.Object)
                         {
-                            acc.Type ??= tcType.GetString();
+                            continue;
                         }
-                        if (tc.TryGetProperty("function", out var fnEl) && fnEl.ValueKind == JsonValueKind.Object)
+
+                        if (deltaEl.TryGetProperty("role", out var roleEl) && roleEl.ValueKind == JsonValueKind.String)
                         {
-                            if (fnEl.TryGetProperty("name", out var fnName) && fnName.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(fnName.GetString()))
+                            acc.Role ??= roleEl.GetString();
+                        }
+
+                        if (deltaEl.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.String)
+                        {
+                            acc.Content.Append(contentEl.GetString());
+                        }
+
+                        if (deltaEl.TryGetProperty("reasoning_content", out var rcEl) && rcEl.ValueKind == JsonValueKind.String)
+                        {
+                            acc.Reasoning.Append(rcEl.GetString());
+                        }
+
+                        if (deltaEl.TryGetProperty("tool_calls", out var tcEl) && tcEl.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var tc in tcEl.EnumerateArray())
                             {
-                                acc.Name ??= fnName.GetString();
-                            }
-                            if (fnEl.TryGetProperty("arguments", out var fnArgs) && fnArgs.ValueKind == JsonValueKind.String)
-                            {
-                                acc.Arguments.Append(fnArgs.GetString());
+                                if (tc.ValueKind != JsonValueKind.Object)
+                                {
+                                    continue;
+                                }
+
+                                var callIndex = tc.TryGetProperty("index", out var idxEl)
+                                                && idxEl.ValueKind == JsonValueKind.Number
+                                                && idxEl.TryGetInt32(out var idx)
+                                    ? idx
+                                    : 0;
+                                if (!acc.ToolCallsByIndex.TryGetValue(callIndex, out var tcAcc))
+                                {
+                                    tcAcc = new ToolCallAccumulator();
+                                    acc.ToolCallsByIndex[callIndex] = tcAcc;
+                                }
+
+                                // id/type/name 只在首个分片出现，取首个非空；arguments 逐段拼接。
+                                if (tc.TryGetProperty("id", out var tcId) && tcId.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tcId.GetString()))
+                                {
+                                    tcAcc.Id ??= tcId.GetString();
+                                }
+                                if (tc.TryGetProperty("type", out var tcType) && tcType.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tcType.GetString()))
+                                {
+                                    tcAcc.Type ??= tcType.GetString();
+                                }
+                                if (tc.TryGetProperty("function", out var fnEl) && fnEl.ValueKind == JsonValueKind.Object)
+                                {
+                                    if (fnEl.TryGetProperty("name", out var fnName) && fnName.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(fnName.GetString()))
+                                    {
+                                        tcAcc.Name ??= fnName.GetString();
+                                    }
+                                    if (fnEl.TryGetProperty("arguments", out var fnArgs) && fnArgs.ValueKind == JsonValueKind.String)
+                                    {
+                                        tcAcc.Arguments.Append(fnArgs.GetString());
+                                    }
+                                }
                             }
                         }
                     }
@@ -1425,40 +1464,6 @@ public sealed class ProxyForwardService : IProxyForwardService
             if (!hasAnyChunk)
             {
                 return null;
-            }
-
-            var message = new System.Text.Json.Nodes.JsonObject
-            {
-                ["role"] = role ?? "assistant",
-                ["content"] = contentBuilder.Length > 0 ? contentBuilder.ToString() : null,
-            };
-            if (reasoningBuilder.Length > 0)
-            {
-                message["reasoning_content"] = reasoningBuilder.ToString();
-            }
-            if (toolCallsByIndex.Count > 0)
-            {
-                // 对齐非流式 chat.completion 的 tool_calls 形态（id/type/function，无 index 字段）。
-                var mergedToolCalls = new System.Text.Json.Nodes.JsonArray();
-                foreach (var acc in toolCallsByIndex.Values)
-                {
-                    var call = new System.Text.Json.Nodes.JsonObject();
-                    if (acc.Id is not null)
-                    {
-                        call["id"] = acc.Id;
-                    }
-                    if (acc.Type is not null)
-                    {
-                        call["type"] = acc.Type;
-                    }
-                    call["function"] = new System.Text.Json.Nodes.JsonObject
-                    {
-                        ["name"] = acc.Name ?? string.Empty,
-                        ["arguments"] = acc.Arguments.ToString(),
-                    };
-                    mergedToolCalls.Add(call);
-                }
-                message["tool_calls"] = mergedToolCalls;
             }
 
             var result = new System.Text.Json.Nodes.JsonObject
@@ -1473,12 +1478,55 @@ public sealed class ProxyForwardService : IProxyForwardService
                 result["system_fingerprint"] = systemFingerprint;
             }
 
-            result["choices"] = new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject
+            // 流正常收尾（见过 finish_reason 或 [DONE]）才允许 stop 兜底；
+            // 半途掐断的流保留 finish_reason=null，不把静默截断洗白成正常完成。
+            var fallbackFinishReason = sawDone || sawAnyFinishReason ? "stop" : null;
+
+            var choicesArray = new System.Text.Json.Nodes.JsonArray();
+            foreach (var (choiceIndex, acc) in choicesByIndex)
             {
-                ["index"] = 0,
-                ["message"] = message,
-                ["finish_reason"] = finishReason ?? "stop",
-            });
+                var message = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["role"] = acc.Role ?? "assistant",
+                    ["content"] = acc.Content.Length > 0 ? acc.Content.ToString() : null,
+                };
+                if (acc.Reasoning.Length > 0)
+                {
+                    message["reasoning_content"] = acc.Reasoning.ToString();
+                }
+                if (acc.ToolCallsByIndex.Count > 0)
+                {
+                    // 对齐非流式 chat.completion 的 tool_calls 形态（id/type/function，无 index 字段）。
+                    var mergedToolCalls = new System.Text.Json.Nodes.JsonArray();
+                    foreach (var tcAcc in acc.ToolCallsByIndex.Values)
+                    {
+                        var call = new System.Text.Json.Nodes.JsonObject();
+                        if (tcAcc.Id is not null)
+                        {
+                            call["id"] = tcAcc.Id;
+                        }
+                        if (tcAcc.Type is not null)
+                        {
+                            call["type"] = tcAcc.Type;
+                        }
+                        call["function"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["name"] = tcAcc.Name ?? string.Empty,
+                            ["arguments"] = tcAcc.Arguments.ToString(),
+                        };
+                        mergedToolCalls.Add(call);
+                    }
+                    message["tool_calls"] = mergedToolCalls;
+                }
+
+                choicesArray.Add(new System.Text.Json.Nodes.JsonObject
+                {
+                    ["index"] = choiceIndex,
+                    ["message"] = message,
+                    ["finish_reason"] = acc.FinishReason ?? fallbackFinishReason,
+                });
+            }
+            result["choices"] = choicesArray;
 
             if (promptTokens.HasValue || completionTokens.HasValue)
             {
@@ -1496,6 +1544,16 @@ public sealed class ProxyForwardService : IProxyForwardService
         {
             return null;
         }
+    }
+
+    /// <summary>单 choice 的流式聚合累积器：delta 文本/reasoning/role 与按 index 合并的 tool_calls。</summary>
+    private sealed class ChoiceAccumulator
+    {
+        public string? Role { get; set; }
+        public string? FinishReason { get; set; }
+        public StringBuilder Content { get; } = new();
+        public StringBuilder Reasoning { get; } = new();
+        public SortedDictionary<int, ToolCallAccumulator> ToolCallsByIndex { get; } = new();
     }
 
     /// <summary>流式 tool_calls 分片累积器：id/type/name 取首个非空，arguments 逐段拼接。</summary>

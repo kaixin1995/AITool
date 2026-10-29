@@ -126,6 +126,70 @@ public sealed class ForceStreamTests
         ProxyForwardService.TryAggregateChatCompletionSse("""data: {"type":"response.completed","response":{}}""").Should().BeNull();
     }
 
+    [Fact]
+    public void Aggregate_tolerates_keepalive_and_malformed_data_lines()
+    {
+        // SSE 规范允许空 data: keep-alive 行；杂行不能把整个聚合判失败（P1 回归）。
+        const string sse = """
+            data:
+
+            : stream starting
+
+            data: not-json-garbage
+
+            data: {"id":"c5","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":"stop"}]}
+
+            data: [DONE]
+            """;
+
+        var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
+        result.Should().NotBeNull("噪音行应被跳过而不是让聚合整体失败");
+        var obj = System.Text.Json.JsonDocument.Parse(result!);
+        obj.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("好");
+        obj.RootElement.GetProperty("choices")[0].GetProperty("finish_reason").GetString().Should().Be("stop");
+    }
+
+    [Fact]
+    public void Aggregate_truncated_stream_keeps_null_finish_reason()
+    {
+        // 流被上游半途掐断（无 finish_reason、无 [DONE]）：不能伪造 stop 把静默截断洗白成正常完成。
+        const string sse = """
+            data: {"id":"c6","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"部分回答"},"finish_reason":null}]}
+
+            """;
+
+        var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
+        result.Should().NotBeNull();
+        var obj = System.Text.Json.JsonDocument.Parse(result!);
+        var choice = obj.RootElement.GetProperty("choices")[0];
+        choice.GetProperty("message").GetProperty("content").GetString().Should().Be("部分回答");
+        choice.GetProperty("finish_reason").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null, "截断流保留 null 而非伪造 stop");
+    }
+
+    [Fact]
+    public void Aggregate_multiple_choices_by_index()
+    {
+        // 客户端 n=2 的合法请求经强制流式站点：两个 choice 都要聚合，不能丢第 2 个。
+        const string sse = """
+            data: {"id":"c7","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"甲"}},{"index":1,"delta":{"role":"assistant","content":"乙"}}]}
+
+            data: {"id":"c7","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"续"},"finish_reason":"stop"},{"index":1,"delta":{},"finish_reason":"length"}]}
+
+            data: [DONE]
+            """;
+
+        var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
+        result.Should().NotBeNull();
+        var choices = System.Text.Json.JsonDocument.Parse(result!).RootElement.GetProperty("choices");
+        choices.GetArrayLength().Should().Be(2);
+        choices[0].GetProperty("index").GetInt32().Should().Be(0);
+        choices[0].GetProperty("message").GetProperty("content").GetString().Should().Be("甲续");
+        choices[0].GetProperty("finish_reason").GetString().Should().Be("stop");
+        choices[1].GetProperty("index").GetInt32().Should().Be(1);
+        choices[1].GetProperty("message").GetProperty("content").GetString().Should().Be("乙");
+        choices[1].GetProperty("finish_reason").GetString().Should().Be("length");
+    }
+
     // ---- ForceStreamHeader 常量验证（BuildRequestMessage 剥离不上行） ----
 
     [Fact]

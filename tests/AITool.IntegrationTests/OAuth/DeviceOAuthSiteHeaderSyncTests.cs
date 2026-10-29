@@ -96,6 +96,60 @@ public sealed class DeviceOAuthSiteHeaderSyncTests : IDisposable
         headers.ContainsKey("X-AITool-Force-Stream").Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Legacy_default_names_are_normalized_but_custom_names_untouched()
+    {
+        const string legacy = "WorkBuddy（腾讯 CodeBuddy） 账号";
+        var vendor = new HeaderedVendor("workbuddy-cn");
+        var account = await ProvisionWithStaleHeadersAsync(vendor, staleJson: null);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+            account.DisplayName = legacy;
+            site!.Name = legacy;
+            await db.Client.Updateable(account).UpdateColumns(a => new { a.DisplayName }).ExecuteCommandAsync();
+            await db.Client.Updateable(site).UpdateColumns(s => new { s.Name }).ExecuteCommandAsync();
+        }
+
+        await CreateRefreshService().NormalizeLegacyDefaultNamesAsync(CancellationToken.None);
+
+        await using (var verify = _services.CreateAsyncScope())
+        {
+            var db = verify.ServiceProvider.GetRequiredService<AppDbContext>();
+            var refreshed = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
+            refreshed!.DisplayName.Should().Be("WorkBuddy 账号", "旧默认名精确替换为新默认名");
+            (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("WorkBuddy 账号");
+        }
+
+        // 用户自定义名不包含旧默认名精确匹配 → 原样保留。
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var account2 = await ProvisionCustomNamedAccountAsync();
+            await CreateRefreshService().NormalizeLegacyDefaultNamesAsync(CancellationToken.None);
+            (await db.DeviceOAuthAccounts.InSingleAsync(account2.Id))!.DisplayName.Should().Be("我的 WorkBuddy（腾讯 CodeBuddy） 测试号");
+        }
+    }
+
+    private async Task<DeviceOAuthAccount> ProvisionCustomNamedAccountAsync()
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var provisioner = new DeviceOAuthAccountProvisioner(
+            db,
+            new ProxyRequestMetadataCache(_services.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(),
+                new ServiceScopeFactoryAdapter(_services)),
+            new SiteCascadeDeleter(db),
+            NullLogger<DeviceOAuthAccountProvisioner>.Instance);
+        var account = await provisioner.ProvisionAsync(
+            new HeaderedVendor("workbuddy-cn"), "我的 WorkBuddy（腾讯 CodeBuddy） 测试号", null, $"u-{Guid.NewGuid():N}",
+            new DeviceOAuthTokenSet { AccessToken = "at" }, null, CancellationToken.None);
+        account.LinkedSiteId.Should().NotBe(Guid.Empty);
+        return account;
+    }
+
     private DeviceOAuthTokenRefreshService CreateRefreshService()
     {
         if (_vendors.Count == 0)

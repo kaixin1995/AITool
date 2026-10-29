@@ -2484,7 +2484,8 @@ onUnmounted(() => {
 }
 .oauth-table-window-name {
   flex-shrink: 0;
-  width: 64px;
+  /* 数值型窗口（企业周期（已用 8/100）、积分（3/10）等）短名按内容自适应，超长省略悬浮看全 */
+  max-width: 150px;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2736,6 +2737,11 @@ onUnmounted(() => {
   grid-template-columns: 1fr auto;
 }
 
+/* 两列网格下重置时间不越界到隐式第三列 */
+.oauth-window.no-progress .oauth-window-reset {
+  grid-column: 2;
+}
+
 .oauth-window:last-child {
   border-bottom: none;
 }
@@ -2873,6 +2879,15 @@ onUnmounted(() => {
   }
 
   .oauth-window-reset {
+    grid-column: 1;
+  }
+
+  /* no-progress 双列规则特异性更高，窄屏同样收敛为单列 */
+  .oauth-window.no-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .oauth-window.no-progress .oauth-window-reset {
     grid-column: 1;
   }
 

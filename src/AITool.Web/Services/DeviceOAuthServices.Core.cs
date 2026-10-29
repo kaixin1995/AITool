@@ -264,7 +264,6 @@ public sealed class DeviceOAuthAccountProvisioner
             effectiveHeaders, AITool.Application.Common.JsonSerializerPresets.Compact);
     }
 
-    /// <summary>读取厂商 ExtraJson 的字符串字段。</summary>
     /// <summary>读取厂商 ExtraJson 的对象字段（如 chatHeaders）。</summary>
     private static System.Text.Json.JsonElement? TryGetExtraObject(string? extraJson, string name)
     {
@@ -512,6 +511,19 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
             _logger.LogError(ex, "Device OAuth managed site header sync error");
         }
 
+        try
+        {
+            await NormalizeLegacyDefaultNamesAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // 关停中退出
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Device OAuth legacy default name normalization error");
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -588,6 +600,74 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
         if (changed)
         {
             // 路由目标缓存携带站点自定义头，变更后必须失效重建。
+            metadataCache.InvalidateRouteTargets();
+        }
+    }
+
+    /// <summary>
+    /// 厂商 Label 精简历史沿革（默认名 "{Label} 账号" 按登录时的 Label 落库）：
+    /// 启动时把精确匹配的旧默认名规整为新名；用户自定义名不含其中、绝不触碰。
+    /// </summary>
+    private static readonly (string LegacyLabel, string CurrentLabel)[] LegacyLabelRenames =
+    [
+        ("WorkBuddy（腾讯 CodeBuddy）", "WorkBuddy"),
+    ];
+
+    /// <summary>把旧 Label 时代落库的默认账号名/站点名精确替换为新默认名（启动执行一次）。</summary>
+    internal async Task NormalizeLegacyDefaultNamesAsync(CancellationToken ct)
+    {
+        using var scope = _services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+
+        var accounts = await db.DeviceOAuthAccounts
+            .Where(a => !a.IsDeleted)
+            .ToListAsync(ct);
+        if (accounts.Count == 0) return;
+
+        var changed = false;
+        foreach (var account in accounts)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach (var (legacy, current) in LegacyLabelRenames)
+            {
+                var legacyDefault = $"{legacy} 账号";
+                var currentDefault = $"{current} 账号";
+                try
+                {
+                    if (account.DisplayName == legacyDefault)
+                    {
+                        account.DisplayName = currentDefault;
+                        await db.Client.Updateable(account).UpdateColumns(a => new { a.DisplayName }).ExecuteCommandAsync(ct);
+                        changed = true;
+                    }
+
+                    if (account.LinkedSiteId != Guid.Empty)
+                    {
+                        var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+                        if (site is not null && site.ManagedSource == DeviceOAuthAccountProvisioner.ManagedSource && site.Name == legacyDefault)
+                        {
+                            site.Name = currentDefault;
+                            await db.Client.Updateable(site).UpdateColumns(s => new { s.Name }).ExecuteCommandAsync(ct);
+                            changed = true;
+                        }
+                    }
+
+                    if (changed)
+                    {
+                        _logger.LogInformation("Device OAuth account {Id} legacy default name normalized for {Vendor}", account.Id, account.VendorKey);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Device OAuth legacy name normalization failed for account {Id}", account.Id);
+                }
+            }
+        }
+
+        if (changed)
+        {
+            // 路由目标缓存携带站点展示名，改名后失效重建。
             metadataCache.InvalidateRouteTargets();
         }
     }
