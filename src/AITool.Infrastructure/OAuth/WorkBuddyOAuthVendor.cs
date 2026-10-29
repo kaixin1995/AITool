@@ -29,7 +29,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
     private sealed record SiteSpec(string Key, string Label, string ChatBase, string BillingBase, string Origin, string Language, string PlatformSegment)
     {
         public static SiteSpec China { get; } = new(
-            "workbuddy-cn", "WorkBuddy（腾讯 CodeBuddy）",
+            "workbuddy-cn", "WorkBuddy",
             "https://copilot.tencent.com", "https://www.codebuddy.cn",
             "https://www.codebuddy.cn", "zh-CN", "WorkBuddy");
 
@@ -109,7 +109,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             State = state!,
             DeadlineUtc = DateTimeOffset.UtcNow.AddMinutes(15),
         });
-        return new DeviceOAuthStartResult(authUrl!, null, "请在打开的页面扫码授权 WorkBuddy（CodeBuddy）账号", session);
+        return new DeviceOAuthStartResult(authUrl!, null, "请在打开的页面扫码授权 WorkBuddy 账号", session);
     }
 
     public async Task<DeviceOAuthPollResult> PollSignInAsync(string sessionJson, CancellationToken cancellationToken)

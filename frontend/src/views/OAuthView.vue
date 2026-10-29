@@ -207,13 +207,14 @@ function canFetchModelsProvider(provider: string): boolean {
   return supportsOAuthModelFetch(provider, deviceVendors.value)
 }
 
-// 窗口短名：去掉「窗口/额度」等后缀，进度条左侧只留「5 小时/每周/MCP 月度」等核心词。
+// 窗口短名：去掉「窗口/额度」及特定提示后缀，只留「5 小时/每周/MCP 月度」等核心词；保留业务数值括号（如资源包积分）。
 function windowShortLabel(label: string): string {
   return label
+    .replace('（不参与调度）', '')
+    .replace('(不参与调度)', '')
     .replace('窗口', '')
     .replace('额度', '')
     .replace('区间', '')
-    .replace(/（.*?）/, '')
     .trim() || label
 }
 
@@ -238,49 +239,64 @@ const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.valu
 })))
 
 const accountTableColumns = [
-  { title: '套餐', key: 'plan', width: 110, render(row: AccountTableRow) { return row.plan ? h(NTag, { size: 'small', bordered: false, class: 'oauth-table-plan-tag' }, { default: () => row.plan }) : h('span', { class: 'oauth-table-sub' }, '—') } },
-  { title: '名称 / 套餐', key: 'name',
-    minWidth: 170,
+  {
+    title: '名称',
+    key: 'name',
+    minWidth: 190,
     render(row: AccountTableRow) {
-      // 名称 + 套餐副行：省掉独立套餐列，窄屏不再挤爆。
       const nodes = [h('div', { class: 'oauth-table-name' }, row.name)]
-      if (row.plan) {
-        nodes.push(h('div', { class: 'oauth-table-plan-sub' }, row.plan))
-      }
-      if (row.email) {
-        nodes.push(h('div', { class: 'oauth-table-sub oauth-table-email' }, row.email))
+      const subs = [row.plan, row.email].filter(Boolean)
+      if (subs.length > 0) {
+        nodes.push(h('div', { class: 'oauth-table-sub' }, subs.join(' · ')))
       }
       return h('div', { class: 'oauth-table-name-cell' }, { default: () => nodes })
     }
   },
-  { title: '厂商', key: 'providerLabel', width: 100, render(row: AccountTableRow) { return h(NTag, { size: 'small', bordered: false, type: row.providerTag }, { default: () => row.providerLabel }) } },
-  { title: '状态', key: 'statusLabel', width: 92, render(row: AccountTableRow) { return h(NTag, { size: 'small', bordered: false, type: row.statusTag }, { default: () => row.statusLabel }) } },
   {
-    // 额度窗口：每个窗口一行进度条（短名在左，百分比文字嵌在条内），竖排展示全部窗口。
+    title: '厂商',
+    key: 'providerLabel',
+    width: 110,
+    render(row: AccountTableRow) {
+      return h(NTag, { size: 'small', bordered: false, type: row.providerTag }, { default: () => row.providerLabel })
+    }
+  },
+  {
+    title: '状态',
+    key: 'statusLabel',
+    width: 88,
+    render(row: AccountTableRow) {
+      return h(NTag, { size: 'small', bordered: false, type: row.statusTag }, { default: () => row.statusLabel })
+    }
+  },
+  {
+    // 额度窗口：有百分比的显示进度条；无百分比的（积分资源包等）直接显示文本，不画伪造满条。
     title: '额度窗口',
     key: 'windows',
-    minWidth: 240,
+    minWidth: 260,
     render(row: AccountTableRow) {
       if (row.windows.length === 0) return h('span', { class: 'oauth-table-sub' }, '—')
       return h('div', { class: 'oauth-table-windows' }, {
         default: () => row.windows.map(w => {
+          if (w.usedPercent == null) {
+            return h('div', { class: 'oauth-table-window-row' }, {
+              default: () => [h('span', { class: 'oauth-table-window-label-only', title: w.label }, w.label)]
+            })
+          }
           // 填充口径与卡片一致：显示「剩余 %」（used 100% → 空条，剩余 100% → 满绿条）。
-          const remaining = w.usedPercent == null ? null : Math.min(100, Math.max(0, 100 - w.usedPercent))
-          const pctText = remaining == null ? '' : Math.round(remaining) + '%'
+          const remaining = Math.min(100, Math.max(0, 100 - w.usedPercent))
+          const pctText = Math.round(remaining) + '%'
           return h('div', { class: 'oauth-table-window-row' }, {
             default: () => [
               h('span', { class: 'oauth-table-window-name', title: w.label }, w.shortLabel),
-              remaining == null
-                ? h('span', { class: 'oauth-table-window-none' }, '—')
-                : h(NProgress, {
-                    class: 'oauth-table-window-bar',
-                    type: 'line',
-                    percentage: remaining,
-                    status: quotaColor(remaining),
-                    showIndicator: false,
-                    height: 10,
-                    borderRadius: 3
-                  }),
+              h(NProgress, {
+                class: 'oauth-table-window-bar',
+                type: 'line',
+                percentage: remaining,
+                status: quotaColor(remaining),
+                showIndicator: false,
+                height: 10,
+                borderRadius: 3
+              }),
               h('span', { class: 'oauth-table-window-pct' }, pctText),
             ]
           })
@@ -288,11 +304,18 @@ const accountTableColumns = [
       })
     }
   },
-  { title: 'Token 到期', key: 'tokenExpiry', width: 110, render(row: AccountTableRow) { return h('span', { class: 'oauth-table-nowrap oauth-table-token' }, row.tokenExpiry || '—') } },
+  {
+    title: 'Token 到期',
+    key: 'tokenExpiry',
+    width: 125,
+    render(row: AccountTableRow) {
+      return h('span', { class: 'oauth-table-nowrap oauth-table-token' }, row.tokenExpiry || '—')
+    }
+  },
   {
     title: '操作',
     key: 'actions',
-    width: 210,
+    width: 220,
     render(row: AccountTableRow) {
       const buttons = [
         h(NButton, { size: 'tiny', secondary: true, onClick: () => handleRefreshQuota(row.raw) }, { default: () => '刷新' }),
@@ -1572,13 +1595,14 @@ onUnmounted(() => {
               <!-- 表格视图：与卡片二选一（视图切换在顶部），操作与卡片同源 -->
               <NDataTable
                 v-else-if="accountViewMode === 'table'"
+                class="oauth-data-table"
                 :columns="accountTableColumns"
                 :data="accountTableRows"
                 :row-key="(row: AccountTableRow) => row.id"
                 size="small"
                 :bordered="false"
                 :max-height="640"
-                :scroll-x="1200"
+                :scroll-x="1050"
               />
               <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
               <article
@@ -1632,16 +1656,21 @@ onUnmounted(() => {
                 </div>
 
                 <div v-if="acc.windows && acc.windows.length > 0" class="oauth-windows-container">
-                  <div v-for="w in acc.windows" :key="w.id" class="oauth-window">
+                  <div v-for="w in acc.windows" :key="w.id" class="oauth-window" :class="{ 'no-progress': w.usedPercent == null }">
                     <div class="oauth-window-label">{{ w.label }}</div>
-                    <NProgress
-                      :percentage="Math.max(0, 100 - Math.round(Number(w.usedPercent ?? 0)))"
-                      :status="quotaColor(100 - Number(w.usedPercent ?? 0))"
-                      :show-indicator="false"
-                      :height="6"
-                      :border-radius="3"
-                    />
-                    <span class="oauth-window-percent">{{ Math.max(0, 100 - Math.round(Number(w.usedPercent ?? 0))) }}%</span>
+                    <template v-if="w.usedPercent != null">
+                      <NProgress
+                        :percentage="Math.max(0, 100 - Math.round(Number(w.usedPercent)))"
+                        :status="quotaColor(100 - Number(w.usedPercent))"
+                        :show-indicator="false"
+                        :height="6"
+                        :border-radius="3"
+                      />
+                      <span class="oauth-window-percent">{{ Math.max(0, 100 - Math.round(Number(w.usedPercent))) }}%</span>
+                    </template>
+                    <template v-else>
+                      <span class="oauth-window-percent oauth-window-no-bar">—</span>
+                    </template>
                     <div v-if="w.resetLabel" class="oauth-window-reset">于 {{ w.resetLabel }}</div>
                   </div>
                 </div>
@@ -2492,20 +2521,24 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--text-color-secondary, #888);
 }
+.oauth-table-window-label-only {
+  font-size: 12px;
+  color: var(--text-color-secondary, #666);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .oauth-table-nowrap {
   white-space: nowrap;
 }
 
-
-/* 表格：套餐小标记（弱化样式，不与厂商标签抢视觉） */
-.oauth-table-plan-tag {
-  max-width: 96px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* 表格：覆盖全局过宽的内边距，给内容腾出呼吸空间 */
+.oauth-data-table :deep(.n-data-table-th) {
+  padding: 10px 12px !important;
 }
-.oauth-table-plan-sub {
-  font-size: 12px;
-  color: var(--text-color-secondary, #888);
+.oauth-data-table :deep(.n-data-table-td) {
+  padding: 10px 12px !important;
 }
 
 /* 表格：Token 列不折行 */
@@ -2699,6 +2732,10 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--border-color-soft);
 }
 
+.oauth-window.no-progress {
+  grid-template-columns: 1fr auto;
+}
+
 .oauth-window:last-child {
   border-bottom: none;
 }
@@ -2718,6 +2755,11 @@ onUnmounted(() => {
   font-size: 13px;
   font-weight: 600;
   text-align: right;
+}
+
+.oauth-window-no-bar {
+  font-weight: 400;
+  color: var(--text-color-secondary);
 }
 
 .oauth-window-reset {
