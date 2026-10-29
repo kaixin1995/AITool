@@ -38,7 +38,7 @@ import {
 } from './accountInspectionState'
 
 // 统一账号视图：Codex、Google（Antigravity）、Kimi (Moonshot AI) 与 xAI (Grok) 账号合入同一列表，用 provider 区分厂商。
-type ProviderKind = 'codex' | 'antigravity' | 'gemini-cli' | 'kimi' | 'xai' | (string & {})
+type ProviderKind = 'codex' | 'antigravity' | 'kimi' | 'xai' | (string & {})
 type ProviderFilter = 'all' | ProviderKind
 type AccountStatusFilter = 'enabled' | 'disabled' | 'all'
 type UnifiedAccount = OAuthAccount & {
@@ -57,7 +57,6 @@ function providerLabelOf(key: string): string {
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
   codex: 'Codex',
   antigravity: 'Antigravity',
-  'gemini-cli': 'Gemini CLI',
   kimi: 'Kimi',
   xai: 'Grok'
 }
@@ -66,7 +65,6 @@ const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'codex', label: PROVIDER_LABELS.codex },
   { key: 'antigravity', label: PROVIDER_LABELS.antigravity },
-  { key: 'gemini-cli', label: PROVIDER_LABELS['gemini-cli'] },
   { key: 'kimi', label: PROVIDER_LABELS.kimi },
   { key: 'xai', label: PROVIDER_LABELS.xai }
 ]
@@ -80,7 +78,6 @@ const deviceVendorLabel = (key: string): string => deviceVendorOf(key)?.label ??
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
   { key: 'antigravity', label: 'Antigravity' },
-  { key: 'gemini-cli', label: 'Gemini CLI' },
   { key: 'kimi', label: 'Kimi' },
   { key: 'xai', label: 'Grok (xAI)' }
 ] as const
@@ -88,10 +85,11 @@ const PROVIDER_LOGIN_OPTIONS = [
 const PROVIDER_IMPORT_OPTIONS = PROVIDER_LOGIN_OPTIONS
 
 // Google 账号摘要映射为统一卡片结构（planType 复用订阅等级槽位）。
+// 历史 GeminiCli 接入已下线，存量账号一并按 Antigravity 展示与操作。
 function toUnifiedGoogleAccount(acc: GoogleAccountSummary): UnifiedAccount {
   return {
     ...acc,
-    provider: acc.accountKind === 'GeminiCli' ? 'gemini-cli' : 'antigravity',
+    provider: 'antigravity',
     accountKind: acc.accountKind,
     accountId: null,
     planType: acc.subscriptionTier,
@@ -647,8 +645,9 @@ async function refreshSilently(force = false): Promise<void> {
   }
 }
 
-function googleKindOf(provider?: ProviderKind): GoogleAccountKind {
-  return provider === 'gemini-cli' ? 'GeminiCli' : 'Antigravity'
+function googleKindOf(_provider?: ProviderKind): GoogleAccountKind {
+  // GeminiCli 接入已下线，Google 账号仅剩 Antigravity 一种接入方式。
+  return 'Antigravity'
 }
 
 // Kimi 设备码授权状态
@@ -947,7 +946,7 @@ async function handleToggle(acc: UnifiedAccount): Promise<void> {
       await toggleDeviceOAuthAccount(acc.id, !acc.isEnabled)
     } else if (acc.provider === 'codex') {
       await api.toggleOAuthAccount(acc.id)
-    } else if (acc.provider === 'antigravity' || acc.provider === 'gemini-cli') {
+    } else if (acc.provider === 'antigravity') {
       await api.toggleGoogleAccount(acc.id, !acc.isEnabled)
     } else if (acc.provider === 'kimi') {
       await api.toggleKimiAccount(acc.id, !acc.isEnabled)
@@ -965,7 +964,7 @@ async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
     } else if (acc.provider === 'codex') {
       await api.refreshOAuthQuota(acc.id)
       message.success('已刷新额度')
-    } else if (acc.provider === 'antigravity' || acc.provider === 'gemini-cli') {
+    } else if (acc.provider === 'antigravity') {
       await api.refreshGoogleQuota(acc.id)
       message.success('已刷新额度')
     } else if (acc.provider === 'kimi') {
@@ -983,7 +982,7 @@ async function handleDelete(acc: UnifiedAccount): Promise<void> {
     await deleteDeviceOAuthAccount(acc.id)
   } else if (acc.provider === 'codex') {
     await api.deleteOAuthAccount(acc.id)
-  } else if (acc.provider === 'antigravity' || acc.provider === 'gemini-cli') {
+  } else if (acc.provider === 'antigravity') {
     await api.deleteGoogleAccount(acc.id)
   } else if (acc.provider === 'kimi') {
     await api.deleteKimiAccount(acc.id)
@@ -1036,7 +1035,7 @@ async function handleSaveEdit(): Promise<void> {
       } else {
         message.success('已更新')
       }
-    } else if (editAccount.value.provider === 'antigravity' || editAccount.value.provider === 'gemini-cli') {
+    } else if (editAccount.value.provider === 'antigravity') {
       await api.updateGoogleAccount(
         editAccount.value.id,
         editDisplayName.value.trim(),
@@ -1154,8 +1153,7 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
       } else if (result.catalogRefreshed === false && result.catalogNote) {
         message.warning(result.catalogNote)
       }
-    } else if (acc.provider === 'antigravity' || acc.provider === 'gemini-cli') {
-      // GeminiCli 与 Antigravity 同走 Google 模型端点（fetchAvailableModels 按 kind 分流）。
+    } else if (acc.provider === 'antigravity') {
       models = await api.fetchGoogleModels(acc.id)
     } else if (acc.provider === 'kimi') {
       models = await api.fetchKimiModels(acc.id)
@@ -1223,7 +1221,7 @@ async function handleImportModels(): Promise<void> {
       )
     } else if (modelAccount.value.provider === 'codex') {
       await api.importSelectedOAuthModels(modelAccount.value.id, selections)
-    } else if (modelAccount.value.provider === 'antigravity' || modelAccount.value.provider === 'gemini-cli') {
+    } else if (modelAccount.value.provider === 'antigravity') {
       await api.importSelectedGoogleModels(modelAccount.value.id, selections)
     } else if (modelAccount.value.provider === 'kimi') {
       await api.importSelectedKimiModels(modelAccount.value.id, selections)

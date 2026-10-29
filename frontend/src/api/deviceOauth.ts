@@ -7,7 +7,7 @@ export interface DeviceOAuthVendor {
   modelFetchSupported: boolean
 }
 
-const builtInModelProviders = new Set(['codex', 'antigravity', 'gemini-cli', 'kimi', 'xai'])
+const builtInModelProviders = new Set(['codex', 'antigravity', 'kimi', 'xai'])
 
 // 卡片、表格与弹窗共用能力判断；未知/静态目录厂商不能冒充支持动态拉取。
 export function supportsOAuthModelFetch(provider: string, vendors: DeviceOAuthVendor[]): boolean {
