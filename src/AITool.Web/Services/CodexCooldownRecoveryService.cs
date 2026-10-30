@@ -50,7 +50,7 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
         }
     }
 
-    private async Task RecoverDueAsync(CancellationToken ct)
+    internal async Task RecoverDueAsync(CancellationToken ct)
     {
         using var scope = _services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();

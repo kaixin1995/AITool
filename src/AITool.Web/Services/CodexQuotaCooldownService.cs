@@ -85,12 +85,16 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             ?? throw new InvalidOperationException($"Codex account {codexAccountId} not found");
 
         // 1. 刷新 token（HTTP，锁外）；列限定写回——期间后台刷新/供给可能并发写其他列，整行写会互相回滚。
+        // 刷新请求一旦返回，旧 refresh_token 已被上游消费：写库段改用独立超时令牌与调用方取消隔离
+        //（管理员中途关页不得丢已轮换的新 token，对齐 CodexCredentialRefreshService 的关键段范式）。
         var tokenRefreshed = false;
         if (!string.IsNullOrEmpty(account.RefreshToken))
         {
             try
             {
                 var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
+                using var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var pct = persistCts.Token;
                 // 空响应不回写：避免清空有效凭证导致账号永久无法刷新（与 CodexTokenRefreshService 的防护一致）。
                 if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
                 {
@@ -109,9 +113,13 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                     if (site != null)
                     {
                         site.ApiKey = tokens.AccessToken;
-                        await queryClient.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(ct);
+                        await queryClient.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
                     }
                 }
+            }
+            catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Quota reset canceled before persistence for account {Id}", codexAccountId);
             }
             catch (Exception ex)
             {
@@ -119,27 +127,38 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             }
         }
 
-        if (tokenRefreshed)
+        using (var persistCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
         {
+            var pct2 = persistCts2.Token;
+            if (tokenRefreshed)
+            {
+                await queryClient.Updateable(account)
+                    .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
+                    .ExecuteCommandAsync(pct2);
+            }
+
+            // 2. 清冷却（列限定写回）。不越权改 IsEnabled——重置额度只负责冷却，
+            //    手动禁用/阈值自动禁用/总开关禁用不因重置被拉回（与冷却恢复路径语义一致）。
+            account.IsQuotaCooling = false;
+            account.QuotaCoolingUntil = null;
             await queryClient.Updateable(account)
-                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                .ExecuteCommandAsync(ct);
-        }
+                .UpdateColumns(a => new { a.IsQuotaCooling, a.QuotaCoolingUntil })
+                .ExecuteCommandAsync(pct2);
 
-        // 2. 清冷却 + 恢复启用（列限定写回）
-        account.IsQuotaCooling = false;
-        account.QuotaCoolingUntil = null;
-        account.IsEnabled = true;
-        await queryClient.Updateable(account)
-            .UpdateColumns(a => new { a.IsQuotaCooling, a.QuotaCoolingUntil, a.IsEnabled })
-            .ExecuteCommandAsync(ct);
-
-        // 3. 恢复 Site（列限定写回）
-        var linkedSite = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
-        if (linkedSite != null && !linkedSite.IsEnabled)
-        {
-            linkedSite.IsEnabled = true;
-            await queryClient.Updateable(linkedSite).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(ct);
+            // 3. 恢复 Site：写前重读实时启用状态，被禁用的账号不拉回路由。
+            var currentEnabled = (await queryClient.Queryable<Domain.Codex.CodexAccount>()
+                .Where(a => a.Id == codexAccountId)
+                .Select(a => a.IsEnabled)
+                .ToListAsync(pct2)).FirstOrDefault();
+            if (currentEnabled)
+            {
+                var linkedSite = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
+                if (linkedSite != null && !linkedSite.IsEnabled)
+                {
+                    linkedSite.IsEnabled = true;
+                    await queryClient.Updateable(linkedSite).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(pct2);
+                }
+            }
         }
 
         _metadataCache.InvalidateRouteTargets();
