@@ -303,7 +303,7 @@ public sealed class CodexApiController : ControllerBase
                     {
                         account.RefreshToken = tokens.RefreshToken;
                     }
-                    if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
+                    if (!string.IsNullOrWhiteSpace(tokens.IdToken)) account.IdToken = tokens.IdToken;
                     account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
                     account.LastRefreshAt = DateTimeOffset.UtcNow;
                     // 列限定写回（token 五列）：整行写会把供给刚升级的名称/邮箱/plan 回滚成读取时的旧快照。
@@ -373,7 +373,7 @@ public sealed class CodexApiController : ControllerBase
             {
                 account.RefreshToken = tokens.RefreshToken;
             }
-            if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
+            if (!string.IsNullOrWhiteSpace(tokens.IdToken)) account.IdToken = tokens.IdToken;
             account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
             account.LastRefreshAt = DateTimeOffset.UtcNow;
             // 列限定写回（token 五列）：整行写会把供给刚升级的名称/邮箱/plan 回滚成读取时的旧快照。

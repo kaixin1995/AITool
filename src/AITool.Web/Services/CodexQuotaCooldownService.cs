@@ -107,8 +107,9 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             }
 
             // 段 B：落盘（独立 30s 超时令牌，与调用方取消隔离）。
-            // 空响应不回写：避免清空有效凭证导致账号永久无法刷新（与 CodexTokenRefreshService 的防护一致）。
-            if (tokens is { AccessToken: { Length: > 0 } })
+            // 空响应/空白响应不回写：避免用无效值覆盖有效凭证导致账号永久无法刷新
+            //（与 CodexTokenRefreshService/CodexCredentialRefreshService 的 IsNullOrWhiteSpace 防护一致）。
+            if (tokens is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
             {
                 using var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 var pct = persistCts.Token;
@@ -120,7 +121,7 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                     {
                         account.RefreshToken = tokens.RefreshToken;
                     }
-                    if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
+                    if (!string.IsNullOrWhiteSpace(tokens.IdToken)) account.IdToken = tokens.IdToken;
                     account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
                     account.LastRefreshAt = DateTimeOffset.UtcNow;
 

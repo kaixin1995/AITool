@@ -152,6 +152,26 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
     }
 
     [Fact]
+    public async Task Reset_ignores_whitespace_access_token_response()
+    {
+        // 上游 2xx 但 access_token 为纯空白：不得用空白值覆盖有效凭证（段 B 跳过），冷却清理照常。
+        var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
+        var oauth = new StubOAuthClient(new CodexTokenSet { AccessToken = " ", RefreshToken = "rt-new", ExpiresIn = 3600 });
+
+        await CreateResetService(oauth).ResetAsync(accountId, CancellationToken.None);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.CodexAccounts.InSingleAsync(accountId);
+            row!.AccessToken.Should().Be("old-at", "空白 access_token 不覆盖有效凭证");
+            row.RefreshToken.Should().Be("rt-keep", "段 B 整体跳过，refresh_token 也不动");
+            row.IsQuotaCooling.Should().BeFalse("跳过落盘不阻断冷却清理");
+            (await db.Sites.InSingleAsync(siteId))!.ApiKey.Should().Be("old-at");
+        }
+    }
+
+    [Fact]
     public async Task Reset_does_not_reenable_manually_disabled_account()
     {
         // 重置额度只清冷却，不越权启用：手动禁用（或阈值自动禁用）的账号不因重置被拉回路由。

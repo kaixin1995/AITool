@@ -151,7 +151,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
                 {
                     account.RefreshToken = tokens.RefreshToken;
                 }
-                if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
+                if (!string.IsNullOrWhiteSpace(tokens.IdToken)) account.IdToken = tokens.IdToken;
                 account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
                 account.LastRefreshAt = DateTimeOffset.UtcNow;
                 // 列限定写回（token 五列）：account 是扫描时的快照，整行写回会把供给期间
