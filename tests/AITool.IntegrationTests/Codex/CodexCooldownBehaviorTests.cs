@@ -67,6 +67,63 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
     }
 
     [Fact]
+    public async Task Reset_completes_cooldown_cleanup_when_http_canceled_midflight()
+    {
+        // 管理员点重置后中途关页（HTTP 阶段取消）：清冷却+站点恢复仍要完成（取消只作用于上游刷新）。
+        var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
+        using var cts = new CancellationTokenSource();
+        var oauth = new StubOAuthClient(onBeforeRefresh: cts.Cancel);
+
+        await CreateResetService(oauth).ResetAsync(accountId, cts.Token);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.CodexAccounts.InSingleAsync(accountId);
+            row!.IsQuotaCooling.Should().BeFalse("取消不得中断本地冷却清理");
+            (await db.Sites.InSingleAsync(siteId))!.IsEnabled.Should().BeTrue("启用账号的站点照常恢复");
+        }
+    }
+
+    [Fact]
+    public async Task Reset_persists_tokens_before_site_write()
+    {
+        // site 行缺失（异常形态）：账号 token 五列仍必须先落库（写序=账号先/site 后，
+        // 偏态永远落在可自愈的"账号新/site 旧"侧）。
+        var accountId = await SeedCoolingAccountWithoutSiteAsync();
+        var oauth = new StubOAuthClient(new CodexTokenSet { AccessToken = "new-at", RefreshToken = "rt-new", ExpiresIn = 3600 });
+
+        await CreateResetService(oauth).ResetAsync(accountId, CancellationToken.None);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.CodexAccounts.InSingleAsync(accountId);
+            row!.AccessToken.Should().Be("new-at", "site 缺失不阻断账号 token 落库");
+            row.RefreshToken.Should().Be("rt-new");
+        }
+    }
+
+    private async Task<Guid> SeedCoolingAccountWithoutSiteAsync()
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var account = new CodexAccount
+        {
+            DisplayName = "no-site-account",
+            Email = "dev@example.com",
+            AccessToken = "old-at",
+            RefreshToken = "rt-keep",
+            LinkedSiteId = Guid.NewGuid(), // 不存在的 site
+            IsEnabled = true,
+            IsQuotaCooling = true,
+            QuotaCoolingUntil = DateTimeOffset.UtcNow.AddMinutes(-1),
+        };
+        await db.Client.Insertable(account).ExecuteCommandAsync();
+        return account.Id;
+    }
+
+    [Fact]
     public async Task Reset_does_not_reenable_manually_disabled_account()
     {
         // 重置额度只清冷却，不越权启用：手动禁用（或阈值自动禁用）的账号不因重置被拉回路由。
@@ -183,10 +240,15 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
         public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = default!;
     }
 
-    private sealed class StubOAuthClient(CodexTokenSet tokens) : ICodexOAuthClient
+    private sealed class StubOAuthClient(CodexTokenSet? tokens = null, Action? onBeforeRefresh = null) : ICodexOAuthClient
     {
         public Task<CodexTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken)
-            => Task.FromResult(tokens);
+        {
+            // 模拟"刷新进行到一半时管理员关页"：先触发调用方取消，再抛 OCE。
+            onBeforeRefresh?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(tokens ?? new CodexTokenSet());
+        }
         public Task<CodexTokenSet> ExchangeCodeAsync(string code, string verifier, CancellationToken cancellationToken)
             => throw new NotSupportedException();
         public (string State, string Verifier) CreateOAuthSession() => throw new NotSupportedException();

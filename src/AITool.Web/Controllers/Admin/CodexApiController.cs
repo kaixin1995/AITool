@@ -322,6 +322,11 @@ public sealed class CodexApiController : ControllerBase
                     _metadataCache.InvalidateRouteTargets();
                     _metadataCache.InvalidateCodexAccounts();
                 }
+                catch (OperationCanceledException)
+                {
+                    // 凭证已更新、刷新已发出，但结果落盘超时：token 是否持久化取决于中断点。
+                    return Ok(ToSummary(account, "凭证已更新，但刷新结果落盘超时——请稍后手动刷新一次确认 token 状态"));
+                }
                 catch (Exception ex)
                 {
                     // 凭证已更新但刷新失败，返回提示让用户知道凭证可能无效。
@@ -383,6 +388,10 @@ public sealed class CodexApiController : ControllerBase
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
             return Ok(ToSummary(account));
+        }
+        catch (OperationCanceledException)
+        {
+            return BadRequest(new { message = "刷新已发出，但结果落盘超时——请稍后重试并确认 token 状态" });
         }
         catch (Exception ex)
         {
