@@ -101,7 +101,12 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
         var refreshed = await provisioner.ProvisionFromTokensAsync(Input(accountId: null, email: "old@example.com", plan: null, token: "at-old-2"), CancellationToken.None);
         refreshed.Id.Should().Be(legacy.Id);
 
-        // ② 带 accountId 的登录（同邮箱另一 workspace）→ 绝不覆盖已带身份的记录，新建独立账号。
+        // ② 带 accountId 的登录（同 workspace 重新授权）→ 认领该唯一无身份存量，原位补写身份。
+        var claimed = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-old", email: "old@example.com", plan: "plus", token: "at-old-3"), CancellationToken.None);
+        claimed.Id.Should().Be(legacy.Id);
+
+        // ③ 再以另一 workspace（acc-new）登录同邮箱 → 已无无身份行可认领，新建独立账号，
+        //    已带身份的记录绝不被覆盖。
         var withId = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-new", email: "old@example.com", plan: "team", token: "at-new"), CancellationToken.None);
         withId.Id.Should().NotBe(legacy.Id);
 
@@ -110,9 +115,102 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var accounts = await db.CodexAccounts.ToListAsync();
             accounts.Count.Should().Be(2);
-            accounts.Single(a => a.Id == legacy.Id).AccessToken.Should().Be("at-old-2");
+            var legacyRow = accounts.Single(a => a.Id == legacy.Id);
+            legacyRow.AccountId.Should().Be("acc-old");
+            legacyRow.AccessToken.Should().Be("at-old-3");
             accounts.Single(a => a.Id == withId.Id).AccessToken.Should().Be("at-new");
         }
+    }
+
+    [Fact]
+    public async Task Login_with_account_id_claims_the_single_legacy_row_of_same_email()
+    {
+        var provisioner = CreateProvisioner();
+
+        // 存量：老版本登录落库的无 accountId 行（refresh_token 即将被重新授权轮换掉）。
+        var legacy = await provisioner.ProvisionFromTokensAsync(Input(accountId: null, email: "dev@example.com", plan: null, token: "at-old"), CancellationToken.None);
+
+        // 同一 workspace 重新授权（这次解析出了 accountId）：应认领存量行原位更新，
+        // 而不是另建第二条、让存量行变成刷新必败的孤儿死凭证。
+        var claimed = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-plus", email: "dev@example.com", plan: "plus", token: "at-new"), CancellationToken.None);
+
+        claimed.Id.Should().Be(legacy.Id, "同邮箱唯一无身份存量应被带身份登录认领");
+        claimed.LinkedSiteId.Should().Be(legacy.LinkedSiteId);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            (await db.CodexAccounts.ToListAsync()).Count.Should().Be(1);
+            var row = await db.CodexAccounts.InSingleAsync(legacy.Id);
+            row!.AccountId.Should().Be("acc-plus", "认领后补写身份");
+            row.AccessToken.Should().Be("at-new");
+        }
+    }
+
+    [Fact]
+    public async Task Ambiguous_legacy_rows_are_not_claimed()
+    {
+        var provisioner = CreateProvisioner();
+
+        // 两条同邮箱无身份存量（历史重复）+ 一条别的邮箱无身份存量。
+        await provisioner.ProvisionFromTokensAsync(Input(accountId: null, email: "dev@example.com", plan: null, token: "at-a"), CancellationToken.None);
+        await SeedLegacyRowAsync("dev@example.com", "at-b");
+        await SeedLegacyRowAsync("other@example.com", "at-c");
+
+        // 同邮箱无身份行不唯一 → 不认领（避免随机合并），新建独立账号。
+        var fresh = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-x", email: "dev@example.com", plan: "team", token: "at-new"), CancellationToken.None);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var rows = await db.CodexAccounts.ToListAsync();
+            rows.Count.Should().Be(4, "两条历史重复 + 另一邮箱存量 + 新建");
+            rows.Count(a => a.AccountId == "acc-x").Should().Be(1);
+            rows.Where(a => string.IsNullOrEmpty(a.AccountId)).Should().HaveCount(3, "存量行原样保留，不被随机合并");
+        }
+    }
+
+    [Fact]
+    public async Task Concurrent_provisions_of_same_account_produce_single_row()
+    {
+        // OAuth 回调双击/并发导入：同 accountId 并发供给必须串行化，
+        // 否则两条同身份账号的刷新循环共用同一个会被轮换的 refresh_token 互相作废。
+        var provisioner = CreateProvisioner();
+
+        var tasks = Enumerable.Range(0, 6).Select(i => provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-race", email: "race@example.com", plan: "plus", token: "at-" + i), CancellationToken.None));
+        var results = await Task.WhenAll(tasks);
+
+        results.Select(r => r.Id).Distinct().Should().HaveCount(1, "并发供给收敛到同一条账号");
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            (await db.CodexAccounts.ToListAsync()).Count.Should().Be(1);
+            (await db.Sites.Where(s => s.ManagedSource == "Codex").ToListAsync()).Count.Should().Be(1, "隐藏 Site 也只有一个");
+        }
+    }
+
+    private async Task SeedLegacyRowAsync(string email, string token)
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = new Site
+        {
+            Name = email,
+            BaseUrl = "https://chatgpt.com/backend-api/codex",
+            ApiKey = token,
+            SupportsResponses = true,
+            ProtocolType = "Responses",
+            ManagedSource = "Codex",
+        };
+        await db.Client.Insertable(site).ExecuteCommandAsync();
+        await db.Client.Insertable(new CodexAccount
+        {
+            Email = email,
+            AccessToken = token,
+            RefreshToken = "rt-" + token,
+            LinkedSiteId = site.Id,
+        }).ExecuteCommandAsync();
     }
 
     private CodexAccountProvisioner CreateProvisioner()

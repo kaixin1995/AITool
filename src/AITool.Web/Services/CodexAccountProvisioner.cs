@@ -28,6 +28,9 @@ public sealed class CodexAccountProvisioner
     private readonly SiteCascadeDeleter _cascadeDeleter;
     private readonly ILogger<CodexAccountProvisioner> _logger;
 
+    /// <summary>按身份键串行化供给（check-then-insert 原子性），键量级=账号数，常驻无清理可接受。</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _provisionGates = new();
+
     public CodexAccountProvisioner(
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
@@ -44,8 +47,28 @@ public sealed class CodexAccountProvisioner
 
     /// <summary>
     /// 用 token 创建或更新 Codex 账号（含隐藏 Site + 模型映射）。同 AccountId 二次供给视为更新。
+    /// <para>按身份键（accountId，兜底 email）全程串行化：OAuth 回调双击/并发导入若并发执行
+    /// check-then-insert 会落两条同身份账号，两个刷新循环共用同一个会被轮换的 refresh_token
+    /// 互相踩踏，最终该 workspace 凭证被上游永久作废。</para>
     /// </summary>
     public async Task<CodexAccount> ProvisionFromTokensAsync(CodexProvisionInput input, CancellationToken ct)
+    {
+        var identity = input.AccountId is { Length: > 0 } ? "acc:" + input.AccountId
+            : input.Email is { Length: > 0 } ? "email:" + input.Email
+            : "anon:" + Guid.NewGuid(); // 无身份无邮箱的并发供给无法互相同步（极罕见），退化为无锁
+        var gate = _provisionGates.GetOrAdd(identity, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            return await ProvisionFromTokensCoreAsync(input, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<CodexAccount> ProvisionFromTokensCoreAsync(CodexProvisionInput input, CancellationToken ct)
     {
         // 用 CopyNew 独立连接做所有 DB 操作
         using var client = _dbContext.Client.CopyNew();
@@ -197,16 +220,30 @@ public sealed class CodexAccountProvisioner
     /// 去重匹配（对齐 CLIProxyAPI 的身份键方案）：chatgpt_account_id 是账号身份——
     /// 同一邮箱可属于多个 workspace（如个人 plus + 组织 team），各自持有不同 account_id，
     /// 必须作为两条独立账号共存，绝不能按邮箱折叠覆盖。
-    /// accountId 为空（早期无 AccountId 的存量/JWT 解析失败）时才回落邮箱，
-    /// 且只允许命中库里同样没有 AccountId 的账号，防止覆盖已带身份的记录。
+    /// <para>认领规则：accountId 未命中但同邮箱恰好存在一条「无 accountId 的存量行」（老版本登录落库）时
+    /// 认领该行原位更新——否则同一 workspace 重登会另建新行，存量行变成刷新必败的孤儿死凭证参与路由；
+    /// 存量不唯一时不认领（避免随机合并），仍走新建。</para>
     /// </summary>
     private async Task<CodexAccount?> FindExistingAsync(string? accountId, string? email, CancellationToken ct)
     {
         if (!string.IsNullOrEmpty(accountId))
         {
-            return (await _dbContext.CodexAccounts
+            var byAccount = (await _dbContext.CodexAccounts
                 .Where(a => a.AccountId == accountId)
                 .ToListAsync(ct)).FirstOrDefault();
+            if (byAccount != null) return byAccount;
+
+            if (!string.IsNullOrEmpty(email))
+            {
+                // 拉回内存筛无身份行（账号量级小）；恰好一条才认领。
+                var claimable = (await _dbContext.CodexAccounts
+                    .Where(a => a.Email == email)
+                    .ToListAsync(ct))
+                    .Where(a => string.IsNullOrEmpty(a.AccountId))
+                    .ToList();
+                if (claimable.Count == 1) return claimable[0];
+            }
+            return null;
         }
         if (!string.IsNullOrEmpty(email))
         {

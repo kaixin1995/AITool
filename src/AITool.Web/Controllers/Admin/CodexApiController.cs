@@ -126,7 +126,9 @@ public sealed class CodexApiController : ControllerBase
         var claims = CodexJwtParser.Parse(tokens.IdToken);
         var input = new CodexProvisionInput
         {
-            DisplayName = !string.IsNullOrWhiteSpace(req.DisplayName) ? req.DisplayName : (claims?.Email ?? "OAuth 账号"),
+            // 未自定义名时传 null：默认名统一由 provisioner 生成（邮箱 + plan 后缀），
+            // 同邮箱多 workspace（plus + team）的两条账号在列表里一眼可分。
+            DisplayName = !string.IsNullOrWhiteSpace(req.DisplayName) ? req.DisplayName.Trim() : null,
             AccessToken = tokens.AccessToken,
             RefreshToken = tokens.RefreshToken,
             IdToken = tokens.IdToken,
@@ -167,7 +169,9 @@ public sealed class CodexApiController : ControllerBase
         {
             var input = new CodexProvisionInput
             {
-                DisplayName = r.DisplayName ?? "OAuth 账号",
+                // 默认名统一由 provisioner 生成（邮箱 + plan 后缀），同邮箱多 workspace 一眼可分；
+                // parser 解析出的 DisplayName 不再作为供给默认名。
+                DisplayName = null,
                 AccessToken = r.AccessToken ?? string.Empty,
                 RefreshToken = r.RefreshToken ?? string.Empty,
                 IdToken = r.IdToken ?? string.Empty,

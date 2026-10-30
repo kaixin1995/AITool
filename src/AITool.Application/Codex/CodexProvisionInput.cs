@@ -5,7 +5,8 @@ namespace AITool.Application.Codex;
 /// </summary>
 public sealed class CodexProvisionInput
 {
-    public string DisplayName { get; set; } = string.Empty;
+    /// <summary>用户自定义名；null/空白表示未自定义，默认名由供给器按「邮箱 (plan)」生成。</summary>
+    public string? DisplayName { get; set; }
 
     public string AccessToken { get; set; } = string.Empty;
 
