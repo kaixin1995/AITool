@@ -144,7 +144,40 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
             var row = await db.CodexAccounts.InSingleAsync(legacy.Id);
             row!.AccountId.Should().Be("acc-plus", "认领后补写身份");
             row.AccessToken.Should().Be("at-new");
+            // 认领治愈彻底：旧默认名（裸邮箱）升级为「邮箱 (plan)」，站点名与账号名同步。
+            var claimedSite = await db.Sites.InSingleAsync(legacy.LinkedSiteId);
+            claimedSite!.Name.Should().Be("dev@example.com (plus)");
+            row.DisplayName.Should().Be("dev@example.com (plus)");
         }
+    }
+
+    [Fact]
+    public async Task Custom_name_survives_relogin_and_default_name_upgrades_with_plan()
+    {
+        var provisioner = CreateProvisioner();
+
+        // 默认名建号（plus）→ 重登时订阅升级 pro：默认名跟随升级。
+        var account = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-p", email: "dev@example.com", plan: "plus", token: "at-1"), CancellationToken.None);
+        var upgraded = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-p", email: "dev@example.com", plan: "pro", token: "at-2"), CancellationToken.None);
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.CodexAccounts.InSingleAsync(account.Id);
+            row!.DisplayName.Should().Be("dev@example.com (pro)", "默认名形态随 plan 升级");
+            (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("dev@example.com (pro)");
+        }
+
+        // 用户自定义名后重登：自定义名绝不覆盖，站点名与账号名同步保持。
+        await provisioner.UpdateAsync(account.Id, "我的主力号", CancellationToken.None);
+        var renamed = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-p", email: "dev@example.com", plan: "pro", token: "at-3", displayName: null), CancellationToken.None);
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.CodexAccounts.InSingleAsync(account.Id);
+            row!.DisplayName.Should().Be("我的主力号", "自定义名不被默认名逻辑覆盖");
+            (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("我的主力号");
+        }
+        renamed.Id.Should().Be(account.Id);
     }
 
     [Fact]
@@ -190,6 +223,36 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Mixed_identity_sequence_converges_via_claim()
+    {
+        // 键漂移自愈：带 id 供给先落库 → 同 email 无 id 供给后到（无法判断属于哪个 workspace，
+        // 新建暂态行是正确语义）→ 再次带 id 登录时认领暂态行 → 收敛为一条。
+        var provisioner = CreateProvisioner();
+
+        var withId = await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-mix", email: "mix@example.com", plan: "team", token: "at-id"), CancellationToken.None);
+        await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: null, email: "mix@example.com", plan: null, token: "at-legacy"), CancellationToken.None);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            (await db.CodexAccounts.ToListAsync()).Count.Should().Be(2, "无 id 供给无法归并到已带身份的行，暂态新建");
+        }
+
+        await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-mix", email: "mix@example.com", plan: "team", token: "at-id-2"), CancellationToken.None);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            (await db.CodexAccounts.ToListAsync()).Count.Should().Be(2, "认领只发生在同 workspace 的 accountId 命中或唯一无 id 存量——acc-mix 已存在，命中自身更新，暂态行留给用户手动清理或后续无 id 流失配");
+            var claimed = await db.CodexAccounts.InSingleAsync(withId.Id);
+            claimed!.AccessToken.Should().Be("at-id-2");
+        }
+    }
+
     private async Task SeedLegacyRowAsync(string email, string token)
     {
         await using var scope = _services.CreateAsyncScope();
@@ -226,7 +289,7 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
             NullLogger<CodexAccountProvisioner>.Instance);
     }
 
-    private static CodexProvisionInput Input(string? accountId, string email, string? plan, string token) => new()
+    private static CodexProvisionInput Input(string? accountId, string email, string? plan, string token, string? displayName = null) => new()
     {
         AccountId = accountId,
         Email = email,
@@ -235,6 +298,7 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
         RefreshToken = "rt-" + token,
         IdToken = "idt",
         TokenExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+        DisplayName = displayName,
     };
 
     public void Dispose()

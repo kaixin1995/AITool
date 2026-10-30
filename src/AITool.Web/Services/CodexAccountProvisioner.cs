@@ -28,9 +28,6 @@ public sealed class CodexAccountProvisioner
     private readonly SiteCascadeDeleter _cascadeDeleter;
     private readonly ILogger<CodexAccountProvisioner> _logger;
 
-    /// <summary>按身份键串行化供给（check-then-insert 原子性），键量级=账号数，常驻无清理可接受。</summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _provisionGates = new();
-
     public CodexAccountProvisioner(
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
@@ -47,24 +44,23 @@ public sealed class CodexAccountProvisioner
 
     /// <summary>
     /// 用 token 创建或更新 Codex 账号（含隐藏 Site + 模型映射）。同 AccountId 二次供给视为更新。
-    /// <para>按身份键（accountId，兜底 email）全程串行化：OAuth 回调双击/并发导入若并发执行
-    /// check-then-insert 会落两条同身份账号，两个刷新循环共用同一个会被轮换的 refresh_token
-    /// 互相踩踏，最终该 workspace 凭证被上游永久作废。</para>
+    /// <para>供给全程全局串行化：OAuth 回调双击/并发导入若并发执行 check-then-insert 会落重复账号，
+    /// 两个刷新循环共用同一个会被轮换的 refresh_token 互相踩踏，最终该 workspace 凭证被上游永久作废。
+    /// 供给仅由人工登录/导入触发（频率极低），全局单锁的代价可忽略，且彻底规避
+    /// 按身份键加锁的键漂移（同一身份先无 id、后带 id 登录时 email:/acc: 键不互斥）。</para>
     /// </summary>
+    private static readonly SemaphoreSlim _provisionGate = new(1, 1);
+
     public async Task<CodexAccount> ProvisionFromTokensAsync(CodexProvisionInput input, CancellationToken ct)
     {
-        var identity = input.AccountId is { Length: > 0 } ? "acc:" + input.AccountId
-            : input.Email is { Length: > 0 } ? "email:" + input.Email
-            : "anon:" + Guid.NewGuid(); // 无身份无邮箱的并发供给无法互相同步（极罕见），退化为无锁
-        var gate = _provisionGates.GetOrAdd(identity, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct);
+        await _provisionGate.WaitAsync(ct);
         try
         {
             return await ProvisionFromTokensCoreAsync(input, ct);
         }
         finally
         {
-            gate.Release();
+            _provisionGate.Release();
         }
     }
 
@@ -97,7 +93,22 @@ public sealed class CodexAccountProvisioner
             if (!string.IsNullOrEmpty(input.PlanType)) account.PlanType = input.PlanType;
 
             site.ApiKey = input.AccessToken;
-            if (!string.IsNullOrWhiteSpace(input.DisplayName)) site.Name = input.DisplayName;
+            if (!string.IsNullOrWhiteSpace(input.DisplayName))
+            {
+                // 用户自定义名：站点名与账号显示名同步更新，避免账号列表与调度/熔断面板名称脱节。
+                site.Name = input.DisplayName;
+                account.DisplayName = input.DisplayName;
+            }
+            else if (IsDefaultDisplayName(site.Name, account.Email))
+            {
+                // 站点名仍是默认名形态（裸邮箱或旧版「邮箱 (plan)」）：认领/订阅变化时升级到当前默认名。
+                var upgraded = BuildDefaultDisplayName(null, account.Email, account.PlanType);
+                if (!string.Equals(upgraded, site.Name, StringComparison.Ordinal))
+                {
+                    site.Name = upgraded;
+                    account.DisplayName = upgraded;
+                }
+            }
             UpdateSiteExtraHeaders(site, account.AccountId ?? input.AccountId);
 
             await client.Updateable(account).ExecuteCommandAsync(ct);
@@ -327,6 +338,19 @@ public sealed class CodexAccountProvisioner
         if (!string.IsNullOrWhiteSpace(displayName)) return displayName;
         var baseName = string.IsNullOrWhiteSpace(email) ? "Codex 账号" : email!;
         return string.IsNullOrWhiteSpace(planType) ? baseName : $"{baseName} ({planType.Trim()})";
+    }
+
+    /// <summary>
+    /// 判断站点名是否仍是默认名形态（裸邮箱、旧兜底名或历史「邮箱 (plan)」），
+    /// 仅默认名才允许在重登时升级重命名，用户自定义名绝不覆盖。
+    /// </summary>
+    private static bool IsDefaultDisplayName(string siteName, string? email)
+    {
+        if (string.IsNullOrWhiteSpace(siteName)) return false;
+        if (siteName is "Codex 账号" or "OAuth 账号") return true;
+        if (string.IsNullOrWhiteSpace(email)) return false;
+        return string.Equals(siteName, email, StringComparison.OrdinalIgnoreCase)
+               || (siteName.StartsWith(email + " (", StringComparison.OrdinalIgnoreCase) && siteName.EndsWith(')'));
     }
 
     private static void UpdateSiteExtraHeaders(Site site, string? accountId)
