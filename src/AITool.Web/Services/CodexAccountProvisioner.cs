@@ -85,7 +85,8 @@ public sealed class CodexAccountProvisioner
             // 新建隐藏 Site + CodexAccount
             site = new Site
             {
-                Name = string.IsNullOrWhiteSpace(input.DisplayName) ? (input.Email ?? "Codex 账号") : input.DisplayName,
+                // 同一邮箱可属于多个 workspace（plus + team），默认名带 plan 后缀区分（对齐 CPA 凭证文件名含 plan）。
+                Name = BuildDefaultDisplayName(input.DisplayName, input.Email, input.PlanType),
                 BaseUrl = CodexBaseUrl,
                 EndpointPathMode = "versioned-base",
                 ApiKey = input.AccessToken,
@@ -192,20 +193,28 @@ public sealed class CodexAccountProvisioner
 
     // —— 私有 ——
 
+    /// <summary>
+    /// 去重匹配（对齐 CLIProxyAPI 的身份键方案）：chatgpt_account_id 是账号身份——
+    /// 同一邮箱可属于多个 workspace（如个人 plus + 组织 team），各自持有不同 account_id，
+    /// 必须作为两条独立账号共存，绝不能按邮箱折叠覆盖。
+    /// accountId 为空（早期无 AccountId 的存量/JWT 解析失败）时才回落邮箱，
+    /// 且只允许命中库里同样没有 AccountId 的账号，防止覆盖已带身份的记录。
+    /// </summary>
     private async Task<CodexAccount?> FindExistingAsync(string? accountId, string? email, CancellationToken ct)
     {
         if (!string.IsNullOrEmpty(accountId))
         {
-            var byAccount = (await _dbContext.CodexAccounts
+            return (await _dbContext.CodexAccounts
                 .Where(a => a.AccountId == accountId)
                 .ToListAsync(ct)).FirstOrDefault();
-            if (byAccount != null) return byAccount;
         }
         if (!string.IsNullOrEmpty(email))
         {
+            // 拉回内存再筛（账号量级小）：只允许命中同样没有 AccountId 的存量账号。
             return (await _dbContext.CodexAccounts
                 .Where(a => a.Email == email)
-                .ToListAsync(ct)).FirstOrDefault();
+                .ToListAsync(ct))
+                .FirstOrDefault(a => string.IsNullOrEmpty(a.AccountId));
         }
         return null;
     }
@@ -270,6 +279,17 @@ public sealed class CodexAccountProvisioner
                 ClientEmulation = ClientEmulationConstants.CodexCli,
             });
         }
+    }
+
+    /// <summary>
+    /// 默认显示名：优先自定义名；无自定义名时取邮箱（无邮箱则"Codex 账号"），
+    /// 且 plan 非空时追加后缀——同邮箱多 workspace 的两条账号在列表里一眼可分。
+    /// </summary>
+    private static string BuildDefaultDisplayName(string? displayName, string? email, string? planType)
+    {
+        if (!string.IsNullOrWhiteSpace(displayName)) return displayName;
+        var baseName = string.IsNullOrWhiteSpace(email) ? "Codex 账号" : email!;
+        return string.IsNullOrWhiteSpace(planType) ? baseName : $"{baseName} ({planType.Trim()})";
     }
 
     private static void UpdateSiteExtraHeaders(Site site, string? accountId)
