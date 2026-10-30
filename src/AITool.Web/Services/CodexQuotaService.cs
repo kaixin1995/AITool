@@ -402,7 +402,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         if (site != null && site.IsEnabled)
         {
             site.IsEnabled = false;
-            await client.Updateable(site).ExecuteCommandAsync(ct);
+            // 列限定写回：整行写会把后台刷新刚写入的 site.ApiKey 回滚成读取时的旧快照。
+            await client.Updateable(site).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(ct);
         }
 
         _metadataCache.InvalidateRouteTargets();

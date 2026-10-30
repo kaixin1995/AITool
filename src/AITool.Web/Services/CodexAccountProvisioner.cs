@@ -116,8 +116,14 @@ public sealed class CodexAccountProvisioner
             }
             UpdateSiteExtraHeaders(site, account.AccountId ?? input.AccountId);
 
-            await client.Updateable(account).ExecuteCommandAsync(ct);
-            await client.Updateable(site).ExecuteCommandAsync(ct);
+            // 列限定写回：供给锁只覆盖供给/改名/删除/模型映射，后台 token 刷新不持该锁——
+            // 整行写回会把刷新刚写入的 token 回滚成锁内读取的旧快照。
+            await client.Updateable(account).UpdateColumns(a => new
+            {
+                a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt,
+                a.AccountId, a.Email, a.PlanType, a.DisplayName, a.IsDisplayNameCustom,
+            }).ExecuteCommandAsync(ct);
+            await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name, s.ExtraHeadersJson }).ExecuteCommandAsync(ct);
         }
         else
         {
@@ -241,10 +247,11 @@ public sealed class CodexAccountProvisioner
             if (site != null)
             {
                 site.Name = displayName;
-                await client.Updateable(site).ExecuteCommandAsync(ct);
+                // 列限定写回（同供给）：防把后台刷新刚写入的 token 整行回滚。
+                await client.Updateable(site).UpdateColumns(s => s.Name).ExecuteCommandAsync(ct);
             }
+            await client.Updateable(account).UpdateColumns(a => new { a.DisplayName, a.IsDisplayNameCustom }).ExecuteCommandAsync(ct);
         }
-        await client.Updateable(account).ExecuteCommandAsync(ct);
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateCodexAccounts();

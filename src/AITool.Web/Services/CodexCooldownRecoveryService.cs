@@ -90,16 +90,24 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
             {
                 account.IsQuotaCooling = false;
                 account.QuotaCoolingUntil = null;
-                await dbContext.UpdateAsync(account, ct);
+                // 列限定写回：整行写会把供给/后台刷新刚更新的 token、名称等列回滚成读取时的旧快照。
+                await dbContext.Client.Updateable(account)
+                    .UpdateColumns(a => new { a.IsQuotaCooling, a.QuotaCoolingUntil })
+                    .ExecuteCommandAsync(ct);
 
-                // 仅当账号本身启用（非手动禁用）才恢复 Site
-                if (account.IsEnabled)
+                // 仅当账号当前仍启用（非手动禁用）才恢复 Site——重读实时值，
+                // 防按扫描快照把冷却期间被用户手动禁用的账号重新拉回路由。
+                var currentEnabled = (await dbContext.CodexAccounts
+                    .Where(a => a.Id == account.Id)
+                    .Select(a => a.IsEnabled)
+                    .ToListAsync(ct)).FirstOrDefault();
+                if (currentEnabled)
                 {
                     var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
                     if (site != null && !site.IsEnabled)
                     {
                         site.IsEnabled = true;
-                        await dbContext.UpdateAsync(site, ct);
+                        await dbContext.Client.Updateable(site).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(ct);
                         anyRecovered = true;
                     }
                 }

@@ -106,13 +106,19 @@ public sealed class CodexCredentialRefreshService
             account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(
                 tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
             account.LastRefreshAt = DateTimeOffset.UtcNow;
-            await _dbContext.UpdateAsync(account, cancellationToken);
+            // 列限定写回（token 五列）：account 是转发路径的快照，整行写回会把供给刚
+            // 升级的 DisplayName/Email/PlanType/AccountId 回滚成旧值。
+            // 已知残余：token 五列与其他刷新写者 last-writer-wins——HTTP 窗口内用户重登写入的
+            // 新凭证可能被本请求轮换出的（通常仍有效的）凭证整组替换，低概率且凭证可用，接受。
+            await _dbContext.Client.Updateable(account)
+                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
+                .ExecuteCommandAsync(cancellationToken);
 
             var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
             if (site is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
             {
                 site.ApiKey = tokens.AccessToken;
-                await _dbContext.UpdateAsync(site, cancellationToken);
+                await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(cancellationToken);
             }
         }, cancellationToken);
 

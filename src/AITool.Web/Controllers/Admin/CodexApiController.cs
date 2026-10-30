@@ -239,13 +239,16 @@ public sealed class CodexApiController : ControllerBase
         // 手动禁用打标记，避免巡检「额度恢复」时误自动启用；
         // 手动启用则清除标记，恢复巡检的自动恢复能力。
         account.ManuallyDisabled = !account.IsEnabled;
-        await _dbContext.UpdateAsync(account, ct);
+        // 列限定写回：整行写会把供给/后台刷新刚更新的 token、名称等列回滚成读取时的旧快照。
+        await _dbContext.Client.Updateable(account)
+            .UpdateColumns(a => new { a.IsEnabled, a.ManuallyDisabled })
+            .ExecuteCommandAsync(ct);
 
         var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
         if (site != null)
         {
             site.IsEnabled = account.IsEnabled;
-            await _dbContext.UpdateAsync(site, ct);
+            await _dbContext.Client.Updateable(site).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(ct);
         }
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateCodexAccounts();
@@ -282,7 +285,7 @@ public sealed class CodexApiController : ControllerBase
                 if (account == null) return NotFound(new { message = "账号不存在" });
 
                 account.RefreshToken = req.RefreshToken;
-                await _dbContext.UpdateAsync(account, ct);
+                await _dbContext.Client.Updateable(account).UpdateColumns(a => a.RefreshToken).ExecuteCommandAsync(ct);
 
                 // 立即用新 refresh_token 刷新 access_token。
                 try
@@ -300,13 +303,16 @@ public sealed class CodexApiController : ControllerBase
                     if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
                     account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
                     account.LastRefreshAt = DateTimeOffset.UtcNow;
-                    await _dbContext.UpdateAsync(account, ct);
+                    // 列限定写回（token 五列）：整行写会把供给刚升级的名称/邮箱/plan 回滚成读取时的旧快照。
+                    await _dbContext.Client.Updateable(account)
+                        .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
+                        .ExecuteCommandAsync(ct);
 
                     var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
                     if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
                     {
                         site.ApiKey = tokens.AccessToken;
-                        await _dbContext.UpdateAsync(site, ct);
+                        await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(ct);
                     }
                     _metadataCache.InvalidateRouteTargets();
                     _metadataCache.InvalidateCodexAccounts();
@@ -353,13 +359,16 @@ public sealed class CodexApiController : ControllerBase
             if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
             account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
             account.LastRefreshAt = DateTimeOffset.UtcNow;
-            await _dbContext.UpdateAsync(account, ct);
+            // 列限定写回（token 五列）：整行写会把供给刚升级的名称/邮箱/plan 回滚成读取时的旧快照。
+            await _dbContext.Client.Updateable(account)
+                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
+                .ExecuteCommandAsync(ct);
 
             var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
             if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
             {
                 site.ApiKey = tokens.AccessToken;
-                await _dbContext.UpdateAsync(site, ct);
+                await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(ct);
             }
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
