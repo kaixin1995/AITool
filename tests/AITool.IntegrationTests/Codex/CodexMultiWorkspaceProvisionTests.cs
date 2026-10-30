@@ -224,10 +224,55 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
     }
 
     [Fact]
-    public async Task Mixed_identity_sequence_converges_via_claim()
+    public async Task Custom_name_of_default_shape_is_never_overwritten()
     {
-        // 键漂移自愈：带 id 供给先落库 → 同 email 无 id 供给后到（无法判断属于哪个 workspace，
-        // 新建暂态行是正确语义）→ 再次带 id 登录时认领暂态行 → 收敛为一条。
+        // 反审 P2：用户对默认名就地微调（如「email (公司主力)」）与默认名形态无法靠字符串区分——
+        // 自定义标记置位后，供给的默认名升级逻辑绝不触碰该名。
+        var provisioner = CreateProvisioner();
+        var account = await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-c", email: "dev@example.com", plan: "team", token: "at-1"), CancellationToken.None);
+
+        await provisioner.UpdateAsync(account.Id, "dev@example.com (公司主力)", CancellationToken.None);
+        var relogin = await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-c", email: "dev@example.com", plan: "team", token: "at-2"), CancellationToken.None);
+
+        relogin.Id.Should().Be(account.Id);
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.CodexAccounts.InSingleAsync(account.Id);
+            row!.DisplayName.Should().Be("dev@example.com (公司主力)", "同形态自定义名不被默认名升级覆盖");
+            (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("dev@example.com (公司主力)");
+        }
+    }
+
+    [Fact]
+    public async Task Email_change_upgrades_name_identified_by_previous_email()
+    {
+        // 反审 P2：上游改邮箱后重登——旧名「旧邮箱 (plan)」按旧邮箱识别，升级目标用新邮箱。
+        var provisioner = CreateProvisioner();
+        var account = await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-e", email: "old@example.com", plan: "plus", token: "at-1"), CancellationToken.None);
+
+        await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-e", email: "new@example.com", plan: "plus", token: "at-2"), CancellationToken.None);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.CodexAccounts.InSingleAsync(account.Id);
+            row!.Email.Should().Be("new@example.com");
+            row.DisplayName.Should().Be("new@example.com (plus)", "旧邮箱默认名按旧邮箱识别后升级为新邮箱默认名");
+            (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("new@example.com (plus)");
+        }
+    }
+
+    [Fact]
+    public async Task Mixed_identity_sequence_leaves_transient_row_unclaimed()
+    {
+        // 键漂移时序：带 id 供给先落库 → 同 email 无 id 供给后到——无法判断属于哪个 workspace，
+        // 新建暂态行是正确语义（不认领已带身份的行）；再次带 id 登录命中自身更新，
+        // 暂态行留存（可手动删除），不会与带身份行合并。
         var provisioner = CreateProvisioner();
 
         var withId = await provisioner.ProvisionFromTokensAsync(

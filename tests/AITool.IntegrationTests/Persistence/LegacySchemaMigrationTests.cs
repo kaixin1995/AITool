@@ -125,6 +125,65 @@ public sealed class LegacySchemaMigrationTests : IDisposable
     }
 
 
+    /// <summary>
+    /// CodexAccounts 加列升级专项（IsDisplayNameCustom 非空 bool 列）：
+    /// SQLite 对有数据表加 NOT NULL 列必须带默认值，否则 ALTER 失败导致应用启动崩溃；
+    /// 旧行标记默认 false（由形态启发兜底识别默认名）。
+    /// </summary>
+    [Fact]
+    public async Task Codex_accounts_table_upgrades_with_display_name_custom_flag()
+    {
+        var dbFile = _databasePath;
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbFile}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE CodexAccounts (
+                    Id TEXT PRIMARY KEY,
+                    DisplayName TEXT NOT NULL,
+                    Email TEXT,
+                    AccountId TEXT,
+                    PlanType TEXT,
+                    AccessToken TEXT,
+                    RefreshToken TEXT,
+                    IdToken TEXT,
+                    TokenExpiresAt TEXT,
+                    LastRefreshAt TEXT,
+                    LinkedSiteId TEXT NOT NULL,
+                    IsEnabled INTEGER NOT NULL DEFAULT 1,
+                    DisabledByFeatureToggle INTEGER NOT NULL DEFAULT 0,
+                    ManuallyDisabled INTEGER NOT NULL DEFAULT 0,
+                    AutoDisableThreshold TEXT,
+                    IsQuotaCooling INTEGER NOT NULL DEFAULT 0,
+                    QuotaCoolingUntil TEXT,
+                    LastQuotaRawJson TEXT,
+                    LastQuotaCheckedAt TEXT,
+                    CreatedAt TEXT NOT NULL
+                );
+                INSERT INTO CodexAccounts (Id, DisplayName, Email, AccessToken, RefreshToken, LinkedSiteId, CreatedAt)
+                    VALUES ('33333333-3333-3333-3333-333333333333', '旧Codex账号', 'dev@example.com', 'at', 'rt', '44444444-4444-4444-4444-444444444444', '2026-01-01T00:00:00+00:00');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        var services = new ServiceCollection();
+        services.AddSqlSugar($"Data Source={dbFile}");
+        var provider = services.BuildServiceProvider();
+        SqlSugarSetup.InitializeDatabase(provider.GetRequiredService<SqlSugar.ISqlSugarClient>());
+
+        using (var scope = provider.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var account = await db.CodexAccounts.InSingleAsync(Guid.Parse("33333333-3333-3333-3333-333333333333"));
+            account.Should().NotBeNull("旧 Codex 账号必须原样保留");
+            account!.IsDisplayNameCustom.Should().BeFalse("升级后旧行标记默认 false（形态启发兜底）");
+            account.DisplayName.Should().Be("旧Codex账号");
+        }
+
+        provider.Dispose();
+    }
+
     public void Dispose()
     {
         TryDelete(_databasePath);

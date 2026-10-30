@@ -33,6 +33,14 @@ public sealed class CodexAccount
     public string DisplayName { get; set; } = string.Empty;
 
     /// <summary>
+    /// 显示名是否为用户自定义：供给器只在非自定义时才允许默认名升级重命名，
+    /// 与形态启发（裸邮箱/「邮箱 (plan)」）双保险——防止用户恰好取了默认名形态的自定义名被重登覆盖。
+    /// 存量行默认 false（无标记），由形态启发兜底识别。
+    /// </summary>
+    [SugarColumn(IsNullable = false)]
+    public bool IsDisplayNameCustom { get; set; }
+
+    /// <summary>
     /// 从 id_token JWT 解析的邮箱，用于展示与去重兜底。
     /// </summary>
     [SugarColumn(Length = 200, IsNullable = true)]

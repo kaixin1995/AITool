@@ -89,6 +89,7 @@ public sealed class CodexAccountProvisioner
             account.TokenExpiresAt = input.TokenExpiresAt;
             account.LastRefreshAt = DateTimeOffset.UtcNow;
             if (!string.IsNullOrEmpty(input.AccountId)) account.AccountId = input.AccountId;
+            var previousEmail = account.Email;
             if (!string.IsNullOrEmpty(input.Email)) account.Email = input.Email;
             if (!string.IsNullOrEmpty(input.PlanType)) account.PlanType = input.PlanType;
 
@@ -98,15 +99,19 @@ public sealed class CodexAccountProvisioner
                 // 用户自定义名：站点名与账号显示名同步更新，避免账号列表与调度/熔断面板名称脱节。
                 site.Name = input.DisplayName;
                 account.DisplayName = input.DisplayName;
+                account.IsDisplayNameCustom = true;
             }
-            else if (IsDefaultDisplayName(site.Name, account.Email))
+            else if (!account.IsDisplayNameCustom && IsDefaultDisplayName(site.Name, previousEmail))
             {
-                // 站点名仍是默认名形态（裸邮箱或旧版「邮箱 (plan)」）：认领/订阅变化时升级到当前默认名。
+                // 站点名仍是默认名形态（识别用旧邮箱，防 email 变更后失配；升级目标用新值）：
+                // 认领/订阅变化时升级到当前默认名。自定义标记 + 形态启发双保险，
+                // 防止用户恰好取了默认名形态的自定义名被覆盖。
                 var upgraded = BuildDefaultDisplayName(null, account.Email, account.PlanType);
                 if (!string.Equals(upgraded, site.Name, StringComparison.Ordinal))
                 {
                     site.Name = upgraded;
                     account.DisplayName = upgraded;
+                    account.IsDisplayNameCustom = false;
                 }
             }
             UpdateSiteExtraHeaders(site, account.AccountId ?? input.AccountId);
@@ -137,6 +142,7 @@ public sealed class CodexAccountProvisioner
             account = new CodexAccount
             {
                 DisplayName = site.Name,
+                IsDisplayNameCustom = !string.IsNullOrWhiteSpace(input.DisplayName),
                 Email = input.Email,
                 AccountId = input.AccountId,
                 PlanType = input.PlanType,
@@ -165,8 +171,22 @@ public sealed class CodexAccountProvisioner
 
     /// <summary>
     /// 级联删除 Codex 账号：删 CodexAccount + 隐藏 Site（含映射/路由/空壳入口）。
+    /// 复用供给全局锁：防供给持读快照期间删除完成、为已删 Site 追加孤儿映射。
     /// </summary>
     public async Task DeprovisionAsync(Guid codexAccountId, CancellationToken ct)
+    {
+        await _provisionGate.WaitAsync(ct);
+        try
+        {
+            await DeprovisionCoreAsync(codexAccountId, ct);
+        }
+        finally
+        {
+            _provisionGate.Release();
+        }
+    }
+
+    private async Task DeprovisionCoreAsync(Guid codexAccountId, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
@@ -190,8 +210,22 @@ public sealed class CodexAccountProvisioner
 
     /// <summary>
     /// 编辑 Codex 账号（当前仅支持 DisplayName），同步隐藏 Site 名称。
+    /// 复用供给全局锁：防用户改名被供给的旧实体快照整行覆盖（丢更新）。
     /// </summary>
     public async Task UpdateAsync(Guid codexAccountId, string? displayName, CancellationToken ct)
+    {
+        await _provisionGate.WaitAsync(ct);
+        try
+        {
+            await UpdateCoreAsync(codexAccountId, displayName, ct);
+        }
+        finally
+        {
+            _provisionGate.Release();
+        }
+    }
+
+    private async Task UpdateCoreAsync(Guid codexAccountId, string? displayName, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
@@ -201,6 +235,8 @@ public sealed class CodexAccountProvisioner
         if (!string.IsNullOrWhiteSpace(displayName))
         {
             account.DisplayName = displayName;
+            // 用户改名即视为自定义名：此后供给的默认名升级逻辑不再触碰该名。
+            account.IsDisplayNameCustom = true;
             var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
             if (site != null)
             {
@@ -216,13 +252,22 @@ public sealed class CodexAccountProvisioner
 
     /// <summary>
     /// 为指定隐藏 Site 追加模型映射（动态拉取结果复用）。已存在的 RemoteModelName 跳过。
+    /// 复用供给全局锁：与供给的同 Site 写入互斥。
     /// </summary>
     public async Task UpsertRemoteModelsAsync(Guid linkedSiteId, IEnumerable<(string Slug, string DisplayName)> models, CancellationToken ct)
     {
-        await UpsertModelMappingsCoreAsync(linkedSiteId, models, ct);
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateModelMetadata();
-        _metadataCache.InvalidateCodexAccounts();
+        await _provisionGate.WaitAsync(ct);
+        try
+        {
+            await UpsertModelMappingsCoreAsync(linkedSiteId, models, ct);
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateModelMetadata();
+            _metadataCache.InvalidateCodexAccounts();
+        }
+        finally
+        {
+            _provisionGate.Release();
+        }
     }
 
     // —— 私有 ——
@@ -341,16 +386,30 @@ public sealed class CodexAccountProvisioner
     }
 
     /// <summary>
-    /// 判断站点名是否仍是默认名形态（裸邮箱、旧兜底名或历史「邮箱 (plan)」），
-    /// 仅默认名才允许在重登时升级重命名，用户自定义名绝不覆盖。
+    /// 判断站点名是否仍是默认名形态（裸邮箱、旧兜底名、或二者的「… (plan)」后缀形态），
+    /// 仅默认名才允许在重登时升级重命名。与 <c>IsDisplayNameCustom</c> 标记双保险：
+    /// 标记防「用户取了同形态自定义名」，形态启发兜底无标记的存量行。
     /// </summary>
     private static bool IsDefaultDisplayName(string siteName, string? email)
     {
         if (string.IsNullOrWhiteSpace(siteName)) return false;
-        if (siteName is "Codex 账号" or "OAuth 账号") return true;
-        if (string.IsNullOrWhiteSpace(email)) return false;
-        return string.Equals(siteName, email, StringComparison.OrdinalIgnoreCase)
-               || (siteName.StartsWith(email + " (", StringComparison.OrdinalIgnoreCase) && siteName.EndsWith(')'));
+        if (!string.IsNullOrWhiteSpace(email) && MatchesDefaultBase(siteName, email))
+        {
+            return true;
+        }
+        // 无邮箱账号的默认名 base（及其 (plan) 后缀形态）。
+        return MatchesDefaultBase(siteName, "Codex 账号") || MatchesDefaultBase(siteName, "OAuth 账号");
+    }
+
+    /// <summary>匹配裸 {base} 或「{base} (任意后缀)」形态（base 为邮箱或兜底名）。</summary>
+    private static bool MatchesDefaultBase(string siteName, string baseName)
+    {
+        if (string.Equals(siteName, baseName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return siteName.StartsWith(baseName + " (", StringComparison.OrdinalIgnoreCase)
+               && siteName.EndsWith(')');
     }
 
     private static void UpdateSiteExtraHeaders(Site site, string? accountId)

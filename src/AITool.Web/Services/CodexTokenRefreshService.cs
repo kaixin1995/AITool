@@ -154,13 +154,17 @@ public sealed class CodexTokenRefreshService : BackgroundService
                 if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
                 account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
                 account.LastRefreshAt = DateTimeOffset.UtcNow;
-                await db.UpdateAsync(account, ct);
+                // 列限定写回（token 五列）：account 是扫描时的快照，整行写回会把供给期间
+                // 升级的 DisplayName/Email/PlanType/AccountId 回滚成旧值。
+                await db.Client.Updateable(account)
+                    .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
+                    .ExecuteCommandAsync(ct);
 
                 var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
                 if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
                 {
                     site.ApiKey = tokens.AccessToken;
-                    await db.UpdateAsync(site, ct);
+                    await db.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(ct);
                 }
             }, ct);
 
