@@ -104,6 +104,34 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Reset_account_write_survives_site_write_failure()
+    {
+        // 真正锁定写序：site 表 UPDATE 被触发器强制失败——账号 token 五列必须已先行落库
+        //（若写序为 site 先/账号后，账号写会因同一异常中断，AccessToken 仍是旧值）。
+        var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: true);
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TRIGGER block_site_apikey_update BEFORE UPDATE OF ApiKey ON Sites BEGIN SELECT RAISE(ABORT, 'injected site failure'); END;";
+            command.ExecuteNonQuery();
+        }
+
+        var oauth = new StubOAuthClient(new CodexTokenSet { AccessToken = "new-at", RefreshToken = "rt-new", ExpiresIn = 3600 });
+        await CreateResetService(oauth).ResetAsync(accountId, CancellationToken.None);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.CodexAccounts.InSingleAsync(accountId);
+            row!.AccessToken.Should().Be("new-at", "账号五列在 site 写之前已落库（写序锁定的核心断言）");
+            row.RefreshToken.Should().Be("rt-new");
+            row.IsQuotaCooling.Should().BeFalse("site 写失败不阻断冷却清理");
+            (await db.Sites.InSingleAsync(siteId))!.ApiKey.Should().Be("old-at", "site 写被注入失败，保持旧值（可自愈偏态）");
+        }
+    }
+
     private async Task<Guid> SeedCoolingAccountWithoutSiteAsync()
     {
         await using var scope = _services.CreateAsyncScope();

@@ -85,19 +85,34 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             ?? throw new InvalidOperationException($"Codex account {codexAccountId} not found");
 
         // 1. 刷新 token（HTTP，锁外）；列限定写回——期间后台刷新/供给可能并发写其他列，整行写会互相回滚。
-        // 刷新请求一旦返回，旧 refresh_token 已被上游消费：写库段改用独立超时令牌与调用方取消隔离
+        // 刷新请求一旦返回，旧 refresh_token 已被上游消费：落盘段改用独立超时令牌与调用方取消隔离
         //（管理员中途关页不得丢已轮换的新 token，对齐 CodexCredentialRefreshService 的关键段范式）。
         // 写序：账号 token 五列先写、site.ApiKey 后写——中途失败的偏态必须落在"账号新/site 旧"侧
         //（首个 401 触发凭证刷新即秒级自愈），反之 site 新/账号旧 RT 已死则永久无法刷新。
         if (!string.IsNullOrEmpty(account.RefreshToken))
         {
+            // 段 A：上游刷新（HTTP，随调用方取消）。
+            CodexTokenSet? tokens = null;
             try
             {
-                var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
+                tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
+            }
+            catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Quota reset canceled before persistence for account {Id}", codexAccountId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Token refresh during quota reset failed for account {Id}", codexAccountId);
+            }
+
+            // 段 B：落盘（独立 30s 超时令牌，与调用方取消隔离）。
+            // 空响应不回写：避免清空有效凭证导致账号永久无法刷新（与 CodexTokenRefreshService 的防护一致）。
+            if (tokens is { AccessToken: { Length: > 0 } })
+            {
                 using var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 var pct = persistCts.Token;
-                // 空响应不回写：避免清空有效凭证导致账号永久无法刷新（与 CodexTokenRefreshService 的防护一致）。
-                if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
+                try
                 {
                     account.AccessToken = tokens.AccessToken;
                     // 上游可能不回传新 refresh_token（此时保留旧值，清空将导致永久无法刷新）。
@@ -120,19 +135,16 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                         await queryClient.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
                     }
                 }
-            }
-            catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
-            {
-                _logger.LogWarning(ex, "Quota reset canceled before persistence for account {Id}", codexAccountId);
-            }
-            catch (OperationCanceledException ex)
-            {
-                // 落盘段 30s 超时（调用方未取消）：token 是否落库取决于中断点，账号行由下方兜底写不回滚。
-                _logger.LogWarning(ex, "Token persistence timeout during quota reset for account {Id}", codexAccountId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Token refresh during quota reset failed for account {Id}", codexAccountId);
+                catch (OperationCanceledException ex) when (persistCts.IsCancellationRequested)
+                {
+                    // 仅落盘超时进入此分支（HTTP 阶段已在段 A 处理）。
+                    _logger.LogWarning(ex, "Token persistence timeout during quota reset for account {Id}", codexAccountId);
+                }
+                catch (Exception ex)
+                {
+                    // 账号五列若已写成功则偏态在自愈侧；site 写失败（如 DB busy）不阻断冷却清理。
+                    _logger.LogWarning(ex, "Token persistence during quota reset partially failed for account {Id}", codexAccountId);
+                }
             }
         }
 

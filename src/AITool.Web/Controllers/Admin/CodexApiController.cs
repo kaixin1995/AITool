@@ -288,6 +288,9 @@ public sealed class CodexApiController : ControllerBase
                 await _dbContext.Client.Updateable(account).UpdateColumns(a => a.RefreshToken).ExecuteCommandAsync(ct);
 
                 // 立即用新 refresh_token 刷新 access_token。
+                // 落盘令牌声明在 try 外：catch 按其取消状态区分「落盘超时」与「上游/调用方取消」，
+                // 防止 HTTP 阶段的取消/超时被误报为落盘问题。
+                CancellationTokenSource? persistCts = null;
                 try
                 {
                     var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
@@ -305,32 +308,34 @@ public sealed class CodexApiController : ControllerBase
                     account.LastRefreshAt = DateTimeOffset.UtcNow;
                     // 列限定写回（token 五列）：整行写会把供给刚升级的名称/邮箱/plan 回滚成读取时的旧快照。
                     // 写库用独立超时令牌：刷新已发出即轮换旧 token，管理员中途关页不得丢新凭证。
-                    using (var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
-                    {
-                        var pct = persistCts.Token;
-                        await _dbContext.Client.Updateable(account)
-                            .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                            .ExecuteCommandAsync(pct);
+                    persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    var pct = persistCts.Token;
+                    await _dbContext.Client.Updateable(account)
+                        .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
+                        .ExecuteCommandAsync(pct);
 
-                        var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                        if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                        {
-                            site.ApiKey = tokens.AccessToken;
-                            await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
-                        }
+                    var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+                    if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
+                    {
+                        site.ApiKey = tokens.AccessToken;
+                        await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
                     }
                     _metadataCache.InvalidateRouteTargets();
                     _metadataCache.InvalidateCodexAccounts();
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (persistCts?.IsCancellationRequested == true)
                 {
-                    // 凭证已更新、刷新已发出，但结果落盘超时：token 是否持久化取决于中断点。
+                    // 仅落盘超时进入此分支：凭证已更新、刷新已发出，token 是否持久化取决于中断点。
                     return Ok(ToSummary(account, "凭证已更新，但刷新结果落盘超时——请稍后手动刷新一次确认 token 状态"));
                 }
                 catch (Exception ex)
                 {
-                    // 凭证已更新但刷新失败，返回提示让用户知道凭证可能无效。
+                    // 凭证已更新但刷新失败（含上游超时/调用方取消），返回提示让用户知道凭证可能无效。
                     return Ok(ToSummary(account, $"凭证已更新，但立即刷新失败：{ex.Message}"));
+                }
+                finally
+                {
+                    persistCts?.Dispose();
                 }
             }
 
@@ -354,6 +359,8 @@ public sealed class CodexApiController : ControllerBase
             return BadRequest(new { message = "账号无 refresh_token" });
         }
 
+        // 落盘令牌声明在 try 外：catch 按其取消状态区分「落盘超时」与「上游/调用方取消」。
+        CancellationTokenSource? persistCts = null;
         try
         {
             var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
@@ -371,31 +378,33 @@ public sealed class CodexApiController : ControllerBase
             account.LastRefreshAt = DateTimeOffset.UtcNow;
             // 列限定写回（token 五列）：整行写会把供给刚升级的名称/邮箱/plan 回滚成读取时的旧快照。
             // 写库用独立超时令牌：刷新已发出即轮换旧 token，管理员中途关页不得丢新凭证。
-            using (var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
-            {
-                var pct = persistCts.Token;
-                await _dbContext.Client.Updateable(account)
-                    .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                    .ExecuteCommandAsync(pct);
+            persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var pct = persistCts.Token;
+            await _dbContext.Client.Updateable(account)
+                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
+                .ExecuteCommandAsync(pct);
 
-                var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    site.ApiKey = tokens.AccessToken;
-                    await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
-                }
+            var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+            if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
+            {
+                site.ApiKey = tokens.AccessToken;
+                await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
             }
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
             return Ok(ToSummary(account));
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (persistCts?.IsCancellationRequested == true)
         {
             return BadRequest(new { message = "刷新已发出，但结果落盘超时——请稍后重试并确认 token 状态" });
         }
         catch (Exception ex)
         {
             return BadRequest(new { message = "刷新失败：" + ex.Message });
+        }
+        finally
+        {
+            persistCts?.Dispose();
         }
     }
 
