@@ -353,15 +353,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var account = await GetAccountAsync(id, ct);
         if (account == null) return NotFound(new { message = "账号不存在" });
 
-        var selections = (req.Models ?? [])
-            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
-            .Select(m => (
-                Slug: m.RemoteModelName!.Trim(),
-                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
-                Selected: m.Selected ?? true))
-            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.Last())
-            .ToList();
+        var selections = NormalizeSelections(req.Models);
         if (selections.Count == 0)
         {
             return BadRequest(new { message = "未收到模型清单" });
@@ -373,6 +365,67 @@ public sealed class GoogleAccountsApiController : ControllerBase
             imported = selections.Count(m => m.Selected),
             disabled = selections.Count(m => !m.Selected)
         });
+    }
+
+    /// <summary>
+    /// 批量应用模型选择到全部 Google（Antigravity）账号：同厂商模型清单一致，
+    /// 任一账号拉取一次、勾选结果应用到整组（与单账号导入同语义：选中建立/启用，未选中禁用）。
+    /// 逐账号顺序应用，单账号失败不中断整组。
+    /// </summary>
+    [HttpPost("accounts/batch-apply-models")]
+    public async Task<IActionResult> BatchApplyModels([FromBody] GoogleBatchApplyModelsRequest? req, CancellationToken ct)
+    {
+        if (req is null || req.SourceAccountId == Guid.Empty)
+        {
+            return BadRequest(new { message = "缺少源账号" });
+        }
+        var source = await GetAccountAsync(req.SourceAccountId, ct);
+        if (source == null) return NotFound(new { message = "源账号不存在" });
+
+        var selections = NormalizeSelections(req.Models);
+        if (selections.Count == 0)
+        {
+            return BadRequest(new { message = "未收到模型清单" });
+        }
+
+        var members = await _dbContext.GoogleAccounts.ToListAsync(ct);
+        var results = new List<GoogleBatchApplyResult>(members.Count);
+        foreach (var member in members)
+        {
+            try
+            {
+                await _provisioner.SyncRemoteModelsAsync(member.LinkedSiteId, selections, ct);
+                results.Add(new GoogleBatchApplyResult(member.Id, member.DisplayName, true, null));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                results.Add(new GoogleBatchApplyResult(member.Id, member.DisplayName, false, ex.Message));
+            }
+        }
+
+        return Ok(new
+        {
+            results,
+            succeeded = results.Count(r => r.Ok),
+            failed = results.Count(r => !r.Ok),
+        });
+    }
+
+    private static List<(string Slug, string DisplayName, bool Selected)> NormalizeSelections(List<GoogleImportModelItem>? rawList)
+    {
+        return (rawList ?? [])
+            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
+            .Select(m => (
+                Slug: m.RemoteModelName!.Trim(),
+                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
+                Selected: m.Selected ?? true))
+            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
+            .ToList();
     }
 
     // —— 私有 ——
@@ -531,6 +584,14 @@ public sealed class GoogleImportModelsRequest
 {
     public List<GoogleImportModelItem>? Models { get; set; }
 }
+
+public sealed class GoogleBatchApplyModelsRequest
+{
+    public Guid SourceAccountId { get; set; }
+    public List<GoogleImportModelItem>? Models { get; set; }
+}
+
+public sealed record GoogleBatchApplyResult(Guid AccountId, string? DisplayName, bool Ok, string? Error);
 
 public sealed class GoogleImportModelItem
 {

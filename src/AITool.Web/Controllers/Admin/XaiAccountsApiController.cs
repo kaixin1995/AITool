@@ -55,6 +55,15 @@ public sealed class XaiImportModelsRequest
     public List<XaiModelSelectionDto>? Selections { get; set; }
 }
 
+public sealed class XaiBatchApplyModelsRequest
+{
+    public Guid SourceAccountId { get; set; }
+    public List<XaiModelSelectionDto>? Models { get; set; }
+    public List<XaiModelSelectionDto>? Selections { get; set; }
+}
+
+public sealed record XaiBatchApplyResult(Guid AccountId, string? DisplayName, bool Ok, string? Error);
+
 /// <summary>
 /// xAI (Grok) 账号管理 API 控制器。
 /// 提供 RFC 8628 设备码授权登录、凭证导入（支持 ~/.grok/auth.json 形态）、模型拉取、
@@ -351,16 +360,7 @@ public sealed class XaiAccountsApiController : ControllerBase
             return NotFound(new { message = "账号不存在" });
         }
 
-        var rawList = req.Models ?? req.Selections ?? new();
-        var selections = rawList
-            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
-            .Select(m => (
-                Slug: m.RemoteModelName!.Trim(),
-                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
-                Selected: m.Selected ?? true))
-            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.Last())
-            .ToList();
+        var selections = NormalizeSelections(req.Models ?? req.Selections);
 
         if (selections.Count == 0)
         {
@@ -369,6 +369,64 @@ public sealed class XaiAccountsApiController : ControllerBase
 
         await _provisioner.SyncRemoteModelsAsync(account.LinkedSiteId, selections, ct);
         return Ok(new { success = true });
+    }
+
+    /// <summary>
+    /// 批量应用模型选择到全部 xAI 账号：同厂商模型清单一致，任一账号拉取一次、
+    /// 勾选结果应用到整组（与单账号导入同语义）。逐账号顺序应用，单账号失败不中断整组。
+    /// </summary>
+    [HttpPost("accounts/batch-apply-models")]
+    public async Task<IActionResult> BatchApplyModels([FromBody] XaiBatchApplyModelsRequest? req, CancellationToken ct)
+    {
+        if (req is null || req.SourceAccountId == Guid.Empty)
+        {
+            return BadRequest(new { message = "缺少源账号" });
+        }
+        var source = await _dbContext.XaiAccounts.InSingleAsync(req.SourceAccountId);
+        if (source == null || source.IsDeleted)
+        {
+            return NotFound(new { message = "源账号不存在" });
+        }
+
+        var selections = NormalizeSelections(req.Models ?? req.Selections);
+        if (selections.Count == 0)
+        {
+            return BadRequest(new { message = "未收到模型清单" });
+        }
+
+        var members = await _dbContext.XaiAccounts.Where(a => !a.IsDeleted).ToListAsync(ct);
+        var results = new List<XaiBatchApplyResult>(members.Count);
+        foreach (var member in members)
+        {
+            try
+            {
+                await _provisioner.SyncRemoteModelsAsync(member.LinkedSiteId, selections, ct);
+                results.Add(new XaiBatchApplyResult(member.Id, member.DisplayName, true, null));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                results.Add(new XaiBatchApplyResult(member.Id, member.DisplayName, false, ex.Message));
+            }
+        }
+
+        return Ok(new { results, succeeded = results.Count(r => r.Ok), failed = results.Count(r => !r.Ok) });
+    }
+
+    private static List<(string Slug, string DisplayName, bool Selected)> NormalizeSelections(List<XaiModelSelectionDto>? rawList)
+    {
+        return (rawList ?? [])
+            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
+            .Select(m => (
+                Slug: m.RemoteModelName!.Trim(),
+                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
+                Selected: m.Selected ?? true))
+            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
+            .ToList();
     }
 
     /// <summary>

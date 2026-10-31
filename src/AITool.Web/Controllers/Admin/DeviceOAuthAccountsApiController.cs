@@ -321,6 +321,65 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             return BadRequest(ApiResponse.Fail(ex.Message, "model_import_not_supported"));
         }
     }
+
+    /// <summary>
+    /// 批量应用模型选择到同厂商全部账号：同厂商模型清单一致，组内任一账号拉取一次、
+    /// 勾选结果应用到整组（选中建立/启用，未选中禁用——与单账号导入同语义）。
+    /// 逐账号顺序应用，单账号失败不中断整组，返回逐账号结果。
+    /// </summary>
+    [HttpPost("accounts/batch-apply-models")]
+    public async Task<IActionResult> BatchApplyModels([FromBody] BatchApplyDeviceModelsRequest? request, CancellationToken ct)
+    {
+        if (request is null || request.SourceAccountId == Guid.Empty)
+        {
+            return BadRequest(ApiResponse.Fail("缺少源账号", "missing_source"));
+        }
+        var source = await _dbContext.DeviceOAuthAccounts.InSingleAsync(request.SourceAccountId);
+        if (source is null || source.IsDeleted)
+        {
+            return NotFound(ApiResponse.Fail("源账号不存在", "account_not_found"));
+        }
+
+        var selections = (request.Models ?? [])
+            .Where(m => m is not null && !string.IsNullOrWhiteSpace(m.RemoteModelName))
+            .Select(m => (m.RemoteModelName!.Trim(), m.DisplayName ?? string.Empty, m.Selected))
+            .ToList();
+        if (selections.Count == 0)
+        {
+            return BadRequest(ApiResponse.Fail("未收到模型清单", "empty_models"));
+        }
+
+        // 同厂商分组（设备厂商账号无套餐维度；隐藏站点无 Key，模型清单由厂商目录决定）。
+        var groupMembers = await _dbContext.DeviceOAuthAccounts
+            .Where(a => !a.IsDeleted && a.VendorKey == source.VendorKey)
+            .ToListAsync(ct);
+
+        var results = new List<DeviceBatchApplyResult>(groupMembers.Count);
+        foreach (var member in groupMembers)
+        {
+            try
+            {
+                var changed = await _provisioner.SyncSelectedModelsAsync(member.Id, selections, ct);
+                results.Add(new DeviceBatchApplyResult(member.Id, member.DisplayName, true, changed, null));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                results.Add(new DeviceBatchApplyResult(member.Id, member.DisplayName, false, 0, ex.Message));
+            }
+        }
+
+        return Ok(ApiResponse.Ok(new
+        {
+            results,
+            succeeded = results.Count(r => r.Ok),
+            failed = results.Count(r => !r.Ok),
+        }));
+    }
+
     /// <summary>删除账号（级联删除隐藏站点）。</summary>
     [HttpDelete("accounts/{id:guid}")]
     public async Task<IActionResult> DeleteAccount(Guid id, CancellationToken ct)
@@ -401,6 +460,14 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
     {
         public List<DeviceModelSelectionItem> Models { get; set; } = new();
     }
+
+    public sealed class BatchApplyDeviceModelsRequest
+    {
+        public Guid SourceAccountId { get; set; }
+        public List<DeviceModelSelectionItem> Models { get; set; } = new();
+    }
+
+    public sealed record DeviceBatchApplyResult(Guid AccountId, string DisplayName, bool Ok, int Changed, string? Error);
     public sealed class UpdateAccountRequest
     {
         public string? DisplayName { get; set; }

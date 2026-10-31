@@ -222,6 +222,7 @@
 | POST | `/accounts/{id}/refresh-token` | 手动刷新 access_token |
 | GET | `/accounts/{id}/fetch-models` | 拉取账号可用模型 |
 | POST | `/accounts/{id}/import-selected-models` | 导入勾选模型 |
+| POST | `/accounts/batch-apply-models` | 批量应用模型到同套餐全部账号（组内拉一次、应用到全组；逐账号结果，单账号失败不中断） |
 | POST | `/inspection/run?force=` | 手动巡检（巡检开关关闭时 404） |
 | GET | `/inspection/status` / `/inspection/last-run` / `/inspection/logs` | 巡检状态/上次结果/日志 |
 | GET | `/accounts/{id}/reset-credits` | 查询剩余重置 credits |
@@ -246,6 +247,7 @@ SuperGrok 设备码登录与账号管理（详见 [xai-accounts.md](xai-accounts
 | DELETE | `/accounts/{id}` | 删除（级联清理隐藏站点） |
 | GET | `/accounts/{id}/fetch-models` | 拉取 api.x.ai/v1/models 模型清单 |
 | POST | `/accounts/{id}/import-selected-models` | 导入勾选模型 |
+| POST | `/accounts/batch-apply-models` | 批量应用模型到全部账号（组内拉一次、应用到全组；逐账号结果） |
 | POST | `/import-credential` | 导入凭证 JSON（`~/.grok/auth.json` 形态或平铺 token） |
 
 ## 19. Hangfire 仪表盘

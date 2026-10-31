@@ -525,6 +525,44 @@ public sealed class CodexApiController : ControllerBase
         public bool Selected { get; set; }
     }
 
+    /// <summary>
+    /// 批量应用模型选择到同套餐全部账号：同 plan 的上游模型清单一致（用户实证），
+    /// 组内任一账号拉取一次、勾选结果应用到整组——不必逐账号真实拉取。
+    /// </summary>
+    [HttpPost("accounts/batch-apply-models")]
+    public async Task<IActionResult> BatchApplyModels([FromBody] BatchApplyCodexModelsRequest request, CancellationToken ct)
+    {
+        var selected = (request?.Selections ?? []).Where(s => s is not null && s.Selected).ToList();
+        if (selected.Count == 0) return BadRequest(new { message = "请至少选择一个模型" });
+        var modelsToImport = selected
+            .Select(s => (RemoteModelName: s.RemoteModelName?.Trim() ?? string.Empty,
+                DisplayName: string.IsNullOrWhiteSpace(s.DisplayName) ? s.RemoteModelName?.Trim() ?? string.Empty : s.DisplayName!.Trim()))
+            .Where(m => !string.IsNullOrEmpty(m.RemoteModelName))
+            .ToList();
+        if (modelsToImport.Count == 0) return BadRequest(new { message = "请至少选择一个模型" });
+
+        try
+        {
+            var results = await _provisioner.BatchUpsertRemoteModelsAsync(request!.SourceAccountId, modelsToImport, ct);
+            return Ok(new
+            {
+                results,
+                succeeded = results.Count(r => r.Ok),
+                failed = results.Count(r => !r.Ok),
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            return NotFound(new { message = "源账号不存在" });
+        }
+    }
+
+    public sealed class BatchApplyCodexModelsRequest
+    {
+        public Guid SourceAccountId { get; set; }
+        public List<CodexModelSelection> Selections { get; set; } = [];
+    }
+
     // —— 巡检 ——
 
     /// <summary>触发一轮巡检。force=true 强制真实刷新全部账号；false 允许命中缓存。</summary>

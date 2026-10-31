@@ -240,6 +240,19 @@ export interface OAuthResetCreditsInfo {
 export async function importSelectedOAuthModels(id: string, selections: OAuthModelSelection[]): Promise<void> {
   await httpPost(`/api/admin/oauth/accounts/${id}/import-selected-models`, { selections })
 }
+
+/** 批量应用模型选择的逐账号结果（同组账号）。 */
+export interface BatchApplyResult {
+  results: Array<{ accountId: string; displayName: string | null; ok: boolean; error: string | null; importedCount?: number | null; changed?: number }>
+  succeeded: number
+  failed: number
+}
+
+/** Codex：把勾选的模型批量应用到源账号同套餐全部账号（组内拉一次、应用到全组）。 */
+export async function batchApplyOAuthModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
+  return httpPost<BatchApplyResult>('/api/admin/oauth/accounts/batch-apply-models', { sourceAccountId, selections })
+}
+
 // 重置额度信用（rate_limit_reset_credits）。
 export async function getResetCredits(id: string): Promise<OAuthResetCreditsInfo> {
   return httpGet<OAuthResetCreditsInfo>(`/api/admin/oauth/accounts/${id}/reset-credits`)
@@ -329,6 +342,11 @@ export async function importSelectedGoogleModels(
   selections: OAuthModelSelection[]
 ): Promise<void> {
   await httpPost(`/api/admin/google-accounts/accounts/${id}/import-selected-models`, { models: selections })
+}
+
+/** Google（Antigravity）：把勾选的模型批量应用到全部账号。 */
+export async function batchApplyGoogleModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
+  return httpPost<BatchApplyResult>('/api/admin/google-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
 }
 
 // —— Kimi 账号 (Moonshot AI) ——
@@ -432,6 +450,11 @@ export async function importSelectedKimiModels(
   selections: OAuthModelSelection[]
 ): Promise<void> {
   await httpPost(`/api/admin/kimi-accounts/accounts/${id}/import-selected-models`, { models: selections })
+}
+
+/** Kimi：把勾选的模型批量应用到全部账号。 */
+export async function batchApplyKimiModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
+  return httpPost<BatchApplyResult>('/api/admin/kimi-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
 }
 
 export async function importKimiCredential(
@@ -569,6 +592,11 @@ export async function importSelectedXaiModels(
   selections: OAuthModelSelection[]
 ): Promise<void> {
   await httpPost(`/api/admin/xai-accounts/accounts/${id}/import-selected-models`, { models: selections })
+}
+
+/** xAI（Grok）：把勾选的模型批量应用到全部账号。 */
+export async function batchApplyXaiModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
+  return httpPost<BatchApplyResult>('/api/admin/xai-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
 }
 
 export async function importXaiCredential(

@@ -277,6 +277,55 @@ public sealed class CodexAccountProvisioner
         }
     }
 
+    /// <summary>
+    /// 批量应用模型选择到源账号同套餐的全部账号：同 plan 的上游模型清单一致（用户实证），
+    /// 组内任一账号拉取一次、勾选结果应用到整组。逐账号顺序应用（供给全局锁天然串行，
+    /// 同 team 多成员共享 workspace 上游防限流），单账号失败不中断整组，返回逐账号结果。
+    /// </summary>
+    public async Task<List<CodexBatchApplyResult>> BatchUpsertRemoteModelsAsync(
+        Guid sourceAccountId,
+        IReadOnlyList<(string RemoteModelName, string DisplayName)> models,
+        CancellationToken ct)
+    {
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var allAccounts = await client.Queryable<CodexAccount>().ToListAsync(ct);
+        var source = allAccounts.FirstOrDefault(a => a.Id == sourceAccountId)
+            ?? throw new InvalidOperationException($"Codex account {sourceAccountId} not found");
+
+        // 同套餐分组（plan 可能为 null——内存按序数语义比较，null 与 null 同组）。
+        var groupMembers = allAccounts
+            .Where(a => string.Equals(a.PlanType, source.PlanType, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var results = new List<CodexBatchApplyResult>(groupMembers.Count);
+        foreach (var member in groupMembers)
+        {
+            try
+            {
+                var site = await client.Queryable<Site>().InSingleAsync(member.LinkedSiteId);
+                if (site == null)
+                {
+                    results.Add(new CodexBatchApplyResult(member.Id, member.DisplayName, false, "关联站点缺失", null));
+                    continue;
+                }
+
+                await UpsertRemoteModelsAsync(member.LinkedSiteId, models, ct);
+                results.Add(new CodexBatchApplyResult(member.Id, member.DisplayName, true, null, models.Count));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                results.Add(new CodexBatchApplyResult(member.Id, member.DisplayName, false, ex.Message, null));
+            }
+        }
+
+        return results;
+    }
+
     // —— 私有 ——
 
     /// <summary>
@@ -443,3 +492,11 @@ public sealed class CodexAccountProvisioner
             : null;
     }
 }
+
+/// <summary>批量应用模型选择的逐账号结果（同套餐组）。</summary>
+public sealed record CodexBatchApplyResult(
+    Guid AccountId,
+    string DisplayName,
+    bool Ok,
+    string? Error,
+    int? ImportedCount);

@@ -365,6 +365,44 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Batch_apply_models_targets_same_plan_group_only_and_isolates_member_failures()
+    {
+        // 批量模型应用（拉一次应用到全组）：同 plan 账号各自建立映射，异 plan 不受影响；
+        // 组内成员站点缺失只记该账号失败，不中断整组。
+        var provisioner = CreateProvisioner();
+        var teamA = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-b1", email: "a@example.com", plan: "team", token: "at-1"), CancellationToken.None);
+        var teamB = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-b2", email: "b@example.com", plan: "team", token: "at-2"), CancellationToken.None);
+        var plus = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-b3", email: "c@example.com", plan: "plus", token: "at-3"), CancellationToken.None);
+
+        // 破坏 B 的关联站点（模拟存量脏数据）：该成员应失败，A 照常成功。
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var siteB = await db.Sites.InSingleAsync(teamB.LinkedSiteId);
+            await db.Client.Deleteable<Domain.Sites.Site>().Where(s => s.Id == siteB!.Id).ExecuteCommandAsync();
+        }
+
+        var results = await provisioner.BatchUpsertRemoteModelsAsync(
+            teamA.Id,
+            [("gpt-5", "gpt-5"), ("gpt-5-codex", "gpt-5-codex")],
+            CancellationToken.None);
+
+        results.Should().HaveCount(2, "只作用于同 plan（team）账号，plus 不在组内");
+        results.Single(r => r.AccountId == teamA.Id).Ok.Should().BeTrue();
+        results.Single(r => r.AccountId == teamB.Id).Ok.Should().BeFalse("站点缺失的成员记失败");
+        results.Single(r => r.AccountId == teamB.Id).Error.Should().Contain("站点");
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var mappingsA = await db.SiteModelMappings.Where(m => m.SiteId == teamA.LinkedSiteId).ToListAsync();
+            mappingsA.Select(m => m.RemoteModelName).Should().Contain(["gpt-5", "gpt-5-codex"], "勾选的模型映射到组内健康成员");
+            var mappingsPlus = await db.SiteModelMappings.Where(m => m.SiteId == plus.LinkedSiteId).ToListAsync();
+            mappingsPlus.Select(m => m.RemoteModelName).Should().NotContain("gpt-5-codex", "plus 账号不被批量波及（模型清单按 plan 分组）");
+        }
+    }
+
     private async Task SeedLegacyRowAsync(string email, string token)
     {
         await using var scope = _services.CreateAsyncScope();

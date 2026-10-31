@@ -6,6 +6,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
 import {
   importSelectedDeviceModels,
+  batchApplyDeviceModels,
   supportsOAuthModelFetch,
   supportsOAuthModelImport,
   fetchDeviceOAuthModels,
@@ -469,6 +470,21 @@ const canSubmitModelSync = computed(() => (
   canImportModels.value && !modelLoading.value && modelList.value.length > 0
   && (modelAccount.value?.provider !== 'codex' || checkedModels.value.length > 0)
 ))
+
+// —— 批量应用到同组 ——
+// 同组账号共用一份模型清单（Codex 同套餐、其余同厂商）：组内任一账号拉取一次，
+// 勾选结果可一键应用到组内全部账号，免去逐账号重复操作。
+const applyToGroup = ref(true)
+const modelGroupAccounts = computed<UnifiedAccount[]>(() => {
+  const acc = modelAccount.value
+  if (!acc) return []
+  return accounts.value.filter(x => (
+    x.provider === acc.provider
+    && (acc.provider !== 'codex' || (x.planType ?? '') === (acc.planType ?? ''))
+  ))
+})
+const modelGroupCount = computed(() => modelGroupAccounts.value.length)
+const modelGroupMode = computed(() => applyToGroup.value && modelGroupCount.value > 1 && canImportModels.value)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const pollingIntervalMs = 10_000
@@ -1131,6 +1147,7 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
   modelAccount.value = acc
   modelList.value = []
   checkedModels.value = []
+  applyToGroup.value = true
   modelModal.value = true
   modelLoading.value = true
   try {
@@ -1214,25 +1231,51 @@ async function handleImportModels(): Promise<void> {
       displayName: model.alias.trim() || model.remoteModelName,
       selected: checked.has(model.remoteModelName)
     }))
-    if (deviceVendorOf(modelAccount.value.provider)) {
+    if (modelGroupMode.value) {
+      // 组模式：勾选结果批量应用到同组全部账号（单账号失败不中断整组，逐账号结果汇总提示）。
+      let summary: { succeeded: number; failed: number }
+      if (deviceVendorOf(modelAccount.value.provider)) {
+        summary = await batchApplyDeviceModels(
+          modelAccount.value.id,
+          selections.map(m => ({ remoteModelName: m.remoteModelName, displayName: m.displayName, selected: m.selected }))
+        )
+      } else if (modelAccount.value.provider === 'codex') {
+        summary = await api.batchApplyOAuthModels(modelAccount.value.id, selections)
+      } else if (modelAccount.value.provider === 'antigravity') {
+        summary = await api.batchApplyGoogleModels(modelAccount.value.id, selections)
+      } else if (modelAccount.value.provider === 'kimi') {
+        summary = await api.batchApplyKimiModels(modelAccount.value.id, selections)
+      } else if (modelAccount.value.provider === 'xai') {
+        summary = await api.batchApplyXaiModels(modelAccount.value.id, selections)
+      } else {
+        throw new Error('该厂商不支持导入模型')
+      }
+      if (summary.failed > 0) {
+        message.warning(`已应用到 ${summary.succeeded} 个账号，${summary.failed} 个失败（该账号模型未同步）`)
+      } else {
+        message.success(`已应用到 ${summary.succeeded} 个账号`)
+      }
+    } else if (deviceVendorOf(modelAccount.value.provider)) {
       await importSelectedDeviceModels(
         modelAccount.value.id,
         selections.map(m => ({ remoteModelName: m.remoteModelName, displayName: m.displayName, selected: m.selected }))
       )
+      message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
     } else if (modelAccount.value.provider === 'codex') {
       await api.importSelectedOAuthModels(modelAccount.value.id, selections)
+      message.success(`已导入 ${checkedModels.value.length} 个模型`)
     } else if (modelAccount.value.provider === 'antigravity') {
       await api.importSelectedGoogleModels(modelAccount.value.id, selections)
+      message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
     } else if (modelAccount.value.provider === 'kimi') {
       await api.importSelectedKimiModels(modelAccount.value.id, selections)
+      message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
     } else if (modelAccount.value.provider === 'xai') {
       await api.importSelectedXaiModels(modelAccount.value.id, selections)
+      message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
     } else {
       throw new Error('该厂商不支持导入模型')
     }
-    message.success(modelAccount.value.provider === 'codex'
-      ? `已导入 ${checkedModels.value.length} 个模型`
-      : `已同步 ${checkedModels.value.length} 个启用模型`)
     modelModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
@@ -1999,6 +2042,11 @@ onUnmounted(() => {
             </NCheckbox>
           </div>
           <div class="oauth-model-hint">{{ canImportModels ? '只有勾选项会导入或启用，本次清单内未勾选的既有映射会禁用；清单外映射保持不变。' : '该账号无关联聊天站点，远端模型目录仅供查看，不能导入或用于聊天转发。' }}</div>
+          <div v-if="canImportModels && modelGroupCount > 1" class="oauth-model-group-apply">
+            <NCheckbox v-model:checked="applyToGroup">
+              同时应用到同组全部 {{ modelGroupCount }} 个账号{{ modelAccount?.provider === 'codex' ? `（Codex · ${modelAccount?.planType || '未知套餐'}，同套餐模型清单一致）` : '' }}
+            </NCheckbox>
+          </div>
           <div class="oauth-model-list-header">
             <span class="col-check"></span>
             <span class="col-remote">远端模型名</span>
@@ -2035,7 +2083,8 @@ onUnmounted(() => {
         <NSpace justify="end">
           <NButton @click="modelModal = false">取消</NButton>
           <NButton v-if="canImportModels" type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
-            {{ modelAccount?.provider === 'codex' ? '导入选中' : '同步启用' }}（{{ checkedModels.length }}）
+            <template v-if="modelGroupMode">应用到组（{{ modelGroupCount }} 个账号）</template>
+            <template v-else>{{ modelAccount?.provider === 'codex' ? '导入选中' : '同步启用' }}（{{ checkedModels.length }}）</template>
           </NButton>
         </NSpace>
       </template>
@@ -2056,6 +2105,11 @@ onUnmounted(() => {
   color: var(--text-color-secondary);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.oauth-model-group-apply {
+  margin: -4px 0 10px;
+  font-size: 12px;
 }
 
 .oauth-model-toolbar :deep(.n-input) {

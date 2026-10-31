@@ -115,3 +115,18 @@ export async function importSelectedDeviceModels(
 ): Promise<void> {
   await httpPost(`/api/admin/device-oauth/accounts/${id}/import-models`, { models: selections })
 }
+
+/** 批量应用模型选择的逐账号结果（同组账号）。 */
+export interface DeviceBatchApplyResult {
+  results: Array<{ accountId: string; displayName: string | null; ok: boolean; changed: number; error: string | null }>
+  succeeded: number
+  failed: number
+}
+
+/** 设备 OAuth：把勾选的模型批量应用到源账号同厂商全部账号（组内拉一次、应用到全组）。 */
+export async function batchApplyDeviceModels(
+  sourceAccountId: string,
+  selections: Array<{ remoteModelName: string; displayName: string; selected: boolean }>
+): Promise<DeviceBatchApplyResult> {
+  return httpPost<DeviceBatchApplyResult>('/api/admin/device-oauth/accounts/batch-apply-models', { sourceAccountId, models: selections })
+}
