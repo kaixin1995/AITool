@@ -158,7 +158,9 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             ? poll.DisplayName ?? poll.Email
             : request.DisplayName!.Trim();
         var account = await _provisioner.ProvisionAsync(
-            vendor, displayName, poll.Email, poll.ExternalUserId, poll.Tokens, poll.ExtraJson, ct);
+            vendor, displayName, poll.Email, poll.ExternalUserId, poll.Tokens, poll.ExtraJson, ct,
+            // 请求体里用户明确命名才算自定义名；上游昵称/邮箱兜底名跟随重登刷新。
+            isUserSuppliedName: !string.IsNullOrWhiteSpace(request.DisplayName));
 
         return Ok(ApiResponse.Ok(new
         {

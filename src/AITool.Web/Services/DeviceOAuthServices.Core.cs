@@ -62,7 +62,8 @@ public sealed class DeviceOAuthAccountProvisioner
         string? externalUserId,
         DeviceOAuthTokenSet tokens,
         string? extraJson,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool isUserSuppliedName = false)
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
@@ -74,6 +75,26 @@ public sealed class DeviceOAuthAccountProvisioner
         var label = string.IsNullOrWhiteSpace(displayName)
             ? email ?? $"{vendor.Label} 账号"
             : displayName!.Trim();
+
+        // 名称策略（对齐 CodexAccountProvisioner 的 IsDisplayNameCustom 语义）：
+        // 用户自定义名（登录时命名/事后改名）绝不因重登被上游昵称/邮箱冲掉；
+        // 非自定义默认名跟随上游刷新（上游改名要能在面板看到）。
+        bool renameOnProvision;
+        if (existing is null)
+        {
+            renameOnProvision = true;
+        }
+        else if (isUserSuppliedName)
+        {
+            renameOnProvision = !string.Equals(existing.DisplayName, label, StringComparison.Ordinal)
+                || !existing.IsDisplayNameCustom;
+        }
+        else
+        {
+            renameOnProvision = !existing.IsDisplayNameCustom
+                && !string.IsNullOrWhiteSpace(displayName)
+                && !string.Equals(existing.DisplayName, label, StringComparison.Ordinal);
+        }
 
         if (existing is not null)
         {
@@ -87,7 +108,11 @@ public sealed class DeviceOAuthAccountProvisioner
             if (!string.IsNullOrEmpty(email)) account.Email = email;
             if (!string.IsNullOrEmpty(externalUserId)) account.ExternalUserId = externalUserId;
             if (!string.IsNullOrWhiteSpace(extraJson)) account.ExtraJson = extraJson;
-            if (!string.IsNullOrWhiteSpace(displayName)) account.DisplayName = label;
+            if (renameOnProvision)
+            {
+                account.DisplayName = label;
+                account.IsDisplayNameCustom = isUserSuppliedName;
+            }
             account.IsEnabled = true;
             account.ManuallyDisabled = false;
             account.DisabledByFeatureToggle = false;
@@ -100,6 +125,7 @@ public sealed class DeviceOAuthAccountProvisioner
             {
                 VendorKey = vendor.VendorKey,
                 DisplayName = label,
+                IsDisplayNameCustom = isUserSuppliedName,
                 Email = email,
                 ExternalUserId = externalUserId,
                 AccessToken = tokens.AccessToken,
@@ -142,7 +168,8 @@ public sealed class DeviceOAuthAccountProvisioner
             else
             {
                 site.ApiKey = tokens.AccessToken;
-                site.Name = label;
+                // 站点名与账号名同步：仅在账号名本轮变更时跟随（自定义名保持时站点名不动）。
+                if (renameOnProvision) site.Name = label;
                 site.BaseUrl = chatBaseUrl ?? chat.BaseUrl;
                 site.ExtraHeadersJson = mergedHeadersJson;
                 site.IsEnabled = true;
@@ -205,6 +232,8 @@ public sealed class DeviceOAuthAccountProvisioner
         }
 
         account.DisplayName = displayName.Trim();
+        // 用户改名即视为自定义名：此后供给的上游昵称刷新不再触碰该名。
+        account.IsDisplayNameCustom = true;
         account.UpdatedAt = DateTimeOffset.UtcNow;
         if (!string.IsNullOrWhiteSpace(refreshToken))
         {

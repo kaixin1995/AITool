@@ -184,6 +184,65 @@ public sealed class LegacySchemaMigrationTests : IDisposable
         provider.Dispose();
     }
 
+    /// <summary>
+    /// DeviceOAuthAccounts 加列升级专项（IsDisplayNameCustom 非空 bool 列）：
+    /// SQLite 对有数据表加 NOT NULL 列必须带默认值，否则 ALTER 失败导致应用启动崩溃；
+    /// 旧行标记默认 false（保持修复前「上游昵称刷新」语义，用户改名后即置 true）。
+    /// </summary>
+    [Fact]
+    public async Task Device_oauth_accounts_table_upgrades_with_display_name_custom_flag()
+    {
+        var dbFile = _databasePath;
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbFile}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE DeviceOAuthAccounts (
+                    Id TEXT PRIMARY KEY,
+                    VendorKey TEXT NOT NULL,
+                    DisplayName TEXT NOT NULL,
+                    Email TEXT,
+                    ExternalUserId TEXT,
+                    AccessToken TEXT,
+                    RefreshToken TEXT,
+                    TokenExpiresAt TEXT,
+                    LastRefreshAt TEXT,
+                    RequiresReauth INTEGER NOT NULL DEFAULT 0,
+                    ExtraJson TEXT,
+                    LinkedSiteId TEXT NOT NULL,
+                    IsEnabled INTEGER NOT NULL DEFAULT 1,
+                    DisabledByFeatureToggle INTEGER NOT NULL DEFAULT 0,
+                    ManuallyDisabled INTEGER NOT NULL DEFAULT 0,
+                    IsDeleted INTEGER NOT NULL DEFAULT 0,
+                    LastQuotaRawJson TEXT,
+                    LastQuotaCheckedAt TEXT,
+                    CreatedAt TEXT NOT NULL,
+                    UpdatedAt TEXT NOT NULL
+                );
+                INSERT INTO DeviceOAuthAccounts (Id, VendorKey, DisplayName, AccessToken, RefreshToken, LinkedSiteId, CreatedAt, UpdatedAt)
+                    VALUES ('55555555-5555-5555-5555-555555555555', 'zcode', '旧设备账号', 'at', 'rt', '66666666-6666-6666-6666-666666666666', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        var services = new ServiceCollection();
+        services.AddSqlSugar($"Data Source={dbFile}");
+        var provider = services.BuildServiceProvider();
+        SqlSugarSetup.InitializeDatabase(provider.GetRequiredService<SqlSugar.ISqlSugarClient>());
+
+        using (var scope = provider.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var account = await db.DeviceOAuthAccounts.InSingleAsync(Guid.Parse("55555555-5555-5555-5555-555555555555"));
+            account.Should().NotBeNull("旧设备 OAuth 账号必须原样保留");
+            account!.IsDisplayNameCustom.Should().BeFalse("升级后旧行标记默认 false（保持上游昵称刷新语义）");
+            account.DisplayName.Should().Be("旧设备账号");
+        }
+
+        provider.Dispose();
+    }
+
     public void Dispose()
     {
         TryDelete(_databasePath);
