@@ -1,6 +1,5 @@
 using AITool.Application.Codex;
 using AITool.Domain.Proxy;
-using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
@@ -11,9 +10,11 @@ using Xunit;
 namespace AITool.IntegrationTests.Proxy;
 
 /// <summary>
-/// 号池同步（生成式）回归：池成员展开成普通路由规则（ExternalModelName=池名），
-/// 托管标记挂路由条目；自动纳入/排除位/名称碰撞保护（绝不覆盖手工路由）/
-/// 删除解除托管保留规则/映射变更后再同步幂等。
+/// 号池同步（生成式）回归。核心语义：对外照常按模型名调用——每个成员模型生成一个
+/// 托管路由入口（ExternalModelName=模型名，ManagedByPoolId=池 Id），池做账号扇出：
+/// 请求 gpt-5 时候选=持有 gpt-5 的全部成员（InstancePriority=池内静态顺序，运行时
+/// 叠加配额排序/冷却）。池名只是管理标签，不占用路由命名空间。碰撞模型（已被手工
+/// 路由占用）跳过不阻塞整池；成员映射变化后陈旧入口被清理；删池解除全部托管。
 /// </summary>
 public sealed class AccountPoolSyncTests : IDisposable
 {
@@ -32,12 +33,12 @@ public sealed class AccountPoolSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task Manual_pool_generates_rules_per_model_per_member()
+    public async Task Pool_exposes_each_model_as_managed_entry_with_member_fanout()
     {
         var (provisioner, sync, db) = CreateServices();
         var teamA = await provisioner.ProvisionFromTokensAsync(Input("acc-p1", "a@p.com", "team", "at-1"), CancellationToken.None);
         var teamB = await provisioner.ProvisionFromTokensAsync(Input("acc-p2", "b@p.com", "team", "at-2"), CancellationToken.None);
-        // A、B 都有 m1；只有 A 有 m2（模型只路由到持有它的成员）。
+        // A、B 都有 m1；只有 A 有 m2。
         await provisioner.UpsertRemoteModelsAsync(teamA.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], CancellationToken.None);
         await provisioner.UpsertRemoteModelsAsync(teamB.LinkedSiteId, [("m1", "m1")], CancellationToken.None);
 
@@ -54,18 +55,26 @@ public sealed class AccountPoolSyncTests : IDisposable
         result.MemberCount.Should().Be(2);
         result.ModelCount.Should().Be(2);
         result.RuleCount.Should().Be(3, "m1×2 成员 + m2×1 成员");
+        result.SkippedModels.Should().BeEmpty();
 
-        var rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "gpt-team-pool").ToListAsync();
-        rules.Should().HaveCount(3);
-        var entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "gpt-team-pool");
-        entry.ManagedByPoolId.Should().Be(pool.Id, "生成的入口挂池托管标记");
+        // 每个模型一个托管入口（不是池名入口）。
+        var m1Entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
+        var m2Entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m2");
+        m1Entry.ManagedByPoolId.Should().Be(pool.Id);
+        m2Entry.ManagedByPoolId.Should().Be(pool.Id);
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "gpt-team-pool")).Should()
+            .BeFalse("池名只是管理标签，不占用路由命名空间");
 
-        var m1Rules = rules.Where(r => r.UpstreamModelName == "m1").ToList();
+        // 请求 m1：候选=两个成员（B 优先）；请求 m2：候选=仅 A。请求池名：无候选。
+        var m1Rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
         m1Rules.Should().HaveCount(2);
-        m1Rules.Single(r => r.SiteId == teamB.LinkedSiteId).InstancePriority.Should().Be(0, "池内静态顺序=InstancePriority 基线（B 优先）");
+        m1Rules.Single(r => r.SiteId == teamB.LinkedSiteId).InstancePriority.Should().Be(0, "池内静态顺序=InstancePriority 基线");
         m1Rules.Single(r => r.SiteId == teamA.LinkedSiteId).InstancePriority.Should().Be(1);
-        rules.Should().ContainSingle(r => r.UpstreamModelName == "m2" && r.SiteId == teamA.LinkedSiteId, "m2 只路由到持有它的成员");
-        rules.All(r => r.SiteModelName == r.UpstreamModelName).Should().BeTrue("对外名透出上游名");
+        m1Rules.All(r => r.UpstreamModelName == "m1" && r.SiteModelName == "m1").Should().BeTrue("对外名=上游名（透出）");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m2").ToListAsync())
+            .Should().ContainSingle(r => r.SiteId == teamA.LinkedSiteId, "m2 只扇出到持有它的成员");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "gpt-team-pool").ToListAsync())
+            .Should().BeEmpty("绝不产生跨模型回退的池名别名");
     }
 
     [Fact]
@@ -83,53 +92,59 @@ public sealed class AccountPoolSyncTests : IDisposable
 
         // 新登录的同套餐账号：下次同步自动入池；异套餐不入。
         var second = await provisioner.ProvisionFromTokensAsync(Input("acc-p2", "b@p.com", "team", "at-2"), CancellationToken.None);
-        var plusAcc = await provisioner.ProvisionFromTokensAsync(Input("acc-p3", "c@p.com", "plus", "at-3"), CancellationToken.None);
+        await provisioner.ProvisionFromTokensAsync(Input("acc-p3", "c@p.com", "plus", "at-3"), CancellationToken.None);
         await provisioner.UpsertRemoteModelsAsync(second.LinkedSiteId, [("m1", "m1")], CancellationToken.None);
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
 
         var rows = await db.AccountPoolMembers.Where(m => m.PoolId == pool.Id).ToListAsync();
         rows.Select(m => m.AccountRefId).Should().BeEquivalentTo([first.Id, second.Id], "plus 账号不进 team 池");
 
-        // 排除位：排除 second 后同步，规则只剩 first；再同步也不会把排除的补回。
+        // 排除位：排除 second 后同步，m1 只扇出到 first；排除行保留可恢复。
         var secondRow = rows.Single(m => m.AccountRefId == second.Id);
         secondRow.Excluded = true;
         await db.Client.Updateable(secondRow).UpdateColumns(m => m.Excluded).ExecuteCommandAsync();
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
 
-        var rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "auto-pool").ToListAsync();
-        rules.Should().OnlyContain(r => r.SiteId == first.LinkedSiteId, "排除成员不参与路由");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
+            .Should().OnlyContain(r => r.SiteId == first.LinkedSiteId, "排除成员不参与扇出");
         (await db.AccountPoolMembers.Where(m => m.PoolId == pool.Id && m.AccountRefId == second.Id).ToListAsync())
             .Single().Excluded.Should().BeTrue("排除行保留（可恢复）");
     }
 
     [Fact]
-    public async Task Manual_route_name_collision_is_rejected()
+    public async Task Models_occupied_by_manual_routes_are_skipped_not_overwritten()
     {
         var (provisioner, sync, db) = CreateServices();
         var acc = await provisioner.ProvisionFromTokensAsync(Input("acc-c1", "c@p.com", "team", "at-1"), CancellationToken.None);
+        await provisioner.UpsertRemoteModelsAsync(acc.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], CancellationToken.None);
 
-        // 手工路由已占用名称（入口无托管标记）。
-        await db.Client.Insertable(new ProxyRouteEntry { EntryName = "taken-name" }).ExecuteCommandAsync();
+        // 手工路由已占用 m1（入口无托管标记 + 一条规则）。
+        await db.Client.Insertable(new ProxyRouteEntry { EntryName = "m1" }).ExecuteCommandAsync();
         await db.Client.Insertable(new ProxyRouteRule
         {
-            ExternalModelName = "taken-name",
-            UpstreamModelName = "x",
+            ExternalModelName = "m1",
+            UpstreamModelName = "m1",
             SiteId = acc.LinkedSiteId,
-            SiteModelName = "x",
+            SiteModelName = "m1",
         }).ExecuteCommandAsync();
 
-        var pool = new AccountPool { Name = "taken-name", VendorKey = "codex" };
+        var pool = new AccountPool { Name = "mixed-pool", VendorKey = "codex", AutoIncludeMembers = true };
         await db.Client.Insertable(pool).ExecuteCommandAsync();
+        var result = await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
 
-        var act = () => sync.SyncPoolAsync(pool.Id, CancellationToken.None);
-        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*手工路由*");
+        result.SkippedModels.Should().BeEquivalentTo(["m1"], "被手工路由占用的模型跳过");
+        result.ModelCount.Should().Be(1, "m2 照常托管，跳过不阻塞整池");
 
-        var rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "taken-name").ToListAsync();
-        rules.Should().HaveCount(1, "手工规则绝不被池覆盖");
+        var manualEntry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
+        manualEntry.ManagedByPoolId.Should().BeNull("手工入口不被接管");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
+            .Should().HaveCount(1, "手工规则绝不被池覆盖");
+        var m2Entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m2");
+        m2Entry.ManagedByPoolId.Should().Be(pool.Id);
     }
 
     [Fact]
-    public async Task Delete_pool_unmanages_entry_and_keeps_rules()
+    public async Task Delete_pool_unmanages_all_entries_and_keeps_rules()
     {
         var (provisioner, sync, db) = CreateServices();
         var acc = await provisioner.ProvisionFromTokensAsync(Input("acc-d1", "d@p.com", "team", "at-1"), CancellationToken.None);
@@ -138,20 +153,20 @@ public sealed class AccountPoolSyncTests : IDisposable
         var pool = new AccountPool { Name = "del-pool", VendorKey = "codex", AutoIncludeMembers = true };
         await db.Client.Insertable(pool).ExecuteCommandAsync();
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
-        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "del-pool").ToListAsync()).Should().HaveCount(1);
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().HaveCount(1);
 
         await sync.DeletePoolAsync(pool.Id, CancellationToken.None);
 
         (await db.AccountPools.ToListAsync()).Should().BeEmpty();
         (await db.AccountPoolMembers.ToListAsync()).Should().BeEmpty();
-        var entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "del-pool");
-        entry.ManagedByPoolId.Should().BeNull("删除池=解除托管");
-        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "del-pool").ToListAsync())
+        var entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
+        entry.ManagedByPoolId.Should().BeNull("删除池=解除该池全部入口托管");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
             .Should().HaveCount(1, "生成规则保留，可继续手工维护");
     }
 
     [Fact]
-    public async Task Sync_after_mapping_changes_regenerates_idempotently()
+    public async Task Sync_after_mapping_changes_regenerates_and_cleans_stale_entries()
     {
         var (provisioner, sync, db) = CreateServices();
         var a = await provisioner.ProvisionFromTokensAsync(Input("acc-i1", "i@p.com", "team", "at-1"), CancellationToken.None);
@@ -160,15 +175,25 @@ public sealed class AccountPoolSyncTests : IDisposable
         var pool = new AccountPool { Name = "grow-pool", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
         await db.Client.Insertable(pool).ExecuteCommandAsync();
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
-        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "grow-pool").ToListAsync()).Should().BeEmpty("尚无映射→无规则");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName.StartsWith("m")).ToListAsync()).Should().BeEmpty("尚无映射→无规则");
 
-        // 批量导入（P1）后同步：两个成员都拿到 m1/m2，规则长出来且不重复。
+        // 批量导入（P1）后同步：两个成员都拿到 m1/m2。
         await provisioner.BatchUpsertRemoteModelsAsync(a.Id, [("m1", "m1"), ("m2", "m2")], CancellationToken.None);
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
 
-        var rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "grow-pool").ToListAsync();
-        rules.Should().HaveCount(4, "2 模型 × 2 成员，重复同步不产生重复规则");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().HaveCount(2, "重复同步不产生重复规则");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m2").ToListAsync()).Should().HaveCount(2);
+
+        // 成员映射收缩（m2 被移除）：再同步后 m2 的托管入口与规则被清理，m1 完好。
+        await db.Client.Deleteable<Domain.SiteCatalog.SiteModelMapping>()
+            .Where(m => m.RemoteModelName == "m2").ExecuteCommandAsync();
+        await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
+
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m2").ToListAsync()).Should().BeEmpty("消失模型的规则被清理");
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m2" && e.ManagedByPoolId == pool.Id)).Should()
+            .BeFalse("消失模型的托管入口被清理");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().HaveCount(2);
     }
 
     private (CodexAccountProvisioner Provisioner, AccountPoolSyncService Sync, AppDbContext Db) CreateServices()

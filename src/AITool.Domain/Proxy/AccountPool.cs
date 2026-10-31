@@ -3,16 +3,17 @@ using SqlSugar;
 namespace AITool.Domain.Proxy;
 
 /// <summary>
-/// 账号号池：把多个同厂商 OAuth 账号打包成一个对外路由入口（生成式）。
+/// 账号号池：把多个同厂商 OAuth 账号打包成一组托管路由入口（生成式）。
 /// <para>
-/// 池本身不参与转发——由 <c>AccountPoolSyncService</c> 把成员展开成普通的
-/// <see cref="ProxyRouteRule"/>（ExternalModelName = 池名），托管标记挂在
-/// <see cref="ProxyRouteEntry.ManagedByPoolId"/> 上。转发热路径、优先级/熔断/
-/// 分级冷却/会话亲和/配额排序等既有机制全部原样复用，删除池仅解除托管（规则保留）。
+/// 池本身不参与转发——由 <c>AccountPoolSyncService</c> 按成员模型生成普通的
+/// <see cref="ProxyRouteRule"/>（ExternalModelName=模型名，对外照常按模型名调用，
+/// 池做账号扇出），入口经 <see cref="ProxyRouteEntry.ManagedByPoolId"/> 认领。
+/// 转发热路径、优先级/熔断/分级冷却/会话亲和/配额排序等既有机制全部原样复用，
+/// 删除池仅解除托管（规则保留）。
 /// </para>
 /// <para>
-/// 成员模型：对外暴露的模型 = 全体成员已启用映射的并集（每个模型只路由到持有它的成员），
-/// 对外名透出上游名。同厂商同套餐的模型清单一致（用户实证）。</para>
+/// 池名只是管理标签（不占用路由命名空间，创建后不可改——改不了的实质是
+/// 管理标识稳定性）。同厂商同套餐的模型清单一致（用户实证）。</para>
 /// </summary>
 [SugarTable("AccountPools")]
 [SugarIndex("UX_AccountPools_Name", nameof(Name), OrderByType.Asc, true)]
@@ -24,8 +25,8 @@ public sealed class AccountPool
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
-    /// 池名 = 对外路由条目名（ExternalModelName 命名空间）。创建后不可改：
-    /// 改名需连带迁移既有规则与调用方，V1 不支持。
+    /// 池名（管理标签，不占用路由命名空间）。创建后不可改——作为成员行与
+    /// 托管入口之外的管理标识需保持稳定。
     /// </summary>
     [SugarColumn(Length = 200, IsNullable = false)]
     public string Name { get; set; } = string.Empty;

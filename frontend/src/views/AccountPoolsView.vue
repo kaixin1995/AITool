@@ -8,7 +8,7 @@ import {
 import {
   createAccountPool, deleteAccountPool, fetchAccountPools, fetchPoolCandidates,
   replacePoolMembers, syncAccountPool,
-  type AccountPoolCandidate, type AccountPoolSummary
+  type AccountPoolCandidate, type AccountPoolSummary, type AccountPoolSyncSummary
 } from '@/api/accountPools'
 import { fetchDeviceOAuthVendors } from '@/api/deviceOauth'
 
@@ -109,13 +109,23 @@ async function handleCreate(): Promise<void> {
       autoIncludeMembers: newAutoInclude.value,
       memberAccountIds: newAutoInclude.value ? undefined : newMemberIds.value,
     })
-    message.success(`号池已创建：成员 ${sync.memberCount} · 模型 ${sync.modelCount} · 规则 ${sync.ruleCount}`)
+    showSyncResult('号池已创建', sync)
     createModal.value = false
     await load()
   } catch (e) {
     message.error((e as Error).message)
   } finally {
     creating.value = false
+  }
+}
+
+/** 同步结果统一提示：跳过的模型（被手工路由占用）单独警告。 */
+function showSyncResult(prefix: string, sync: AccountPoolSyncSummary): void {
+  const base = `${prefix}：成员 ${sync.memberCount} · 模型 ${sync.modelCount} · 规则 ${sync.ruleCount}`
+  if (sync.skippedModels?.length) {
+    message.warning(`${base}；跳过 ${sync.skippedModels.length} 个被手工路由占用的模型（${sync.skippedModels.join('、')}）`)
+  } else {
+    message.success(base)
   }
 }
 
@@ -143,9 +153,6 @@ function openMembers(pool: AccountPoolSummary): void {
 
 async function handleSaveMembers(): Promise<void> {
   if (!memberPool.value) return
-  // 顺序 = 当前弹窗列表顺序（勾选且未排除的成员按显示顺序即优先级）。
-  const ordered = Object.keys(memberChecked.value)
-    .filter(id => memberChecked.value[id] && !memberExcluded.value[id])
   savingMembers.value = true
   try {
     const sync = await replacePoolMembers(
@@ -154,7 +161,7 @@ async function handleSaveMembers(): Promise<void> {
         .filter(id => memberChecked.value[id])
         .map(id => ({ accountRefId: id, excluded: memberExcluded.value[id] }))
     )
-    message.success(`成员已更新：成员 ${sync.memberCount} · 模型 ${sync.modelCount} · 规则 ${sync.ruleCount}（生效顺序 ${ordered.length} 个）`)
+    showSyncResult('成员已更新', sync)
     memberModal.value = false
     await load()
   } catch (e) {
@@ -168,7 +175,7 @@ async function handleSync(pool: AccountPoolSummary): Promise<void> {
   syncBusyId.value = pool.id
   try {
     const sync = await syncAccountPool(pool.id)
-    message.success(`已同步「${pool.name}」：成员 ${sync.memberCount} · 模型 ${sync.modelCount} · 规则 ${sync.ruleCount}`)
+    showSyncResult(`已同步「${pool.name}」`, sync)
     await load()
   } catch (e) {
     message.error((e as Error).message)
@@ -209,9 +216,10 @@ onMounted(load)
         <NButton type="primary" size="small" @click="openCreate">新建号池</NButton>
       </template>
       <div class="account-pools-hint">
-        号池把多个同厂商（Codex 需同套餐）账号打包成一个路由入口：池名即对外模型入口名，
-        成员的已启用模型并集透出；池内顺序是静态基线，运行时叠加「配额感知排序 / 分级冷却 / 熔断」
-        自动优先剩余额度多/最早重置的账号并跳过耗尽账号。删除池仅解除托管，已生成规则保留。
+        号池把多个同厂商（Codex 需同套餐）账号打包：每个成员模型生成一个托管路由入口，
+        对外照常按模型名调用（如 gpt-5），池在背后扇出到全部持有该模型的成员；池内顺序是静态基线，
+        运行时叠加「配额感知排序 / 分级冷却 / 熔断」自动优先剩余额度多/最早重置的账号并跳过耗尽账号。
+        被手工路由占用的模型名自动跳过；删除池仅解除托管，已生成规则保留。
       </div>
       <NSpin :show="loading">
         <NEmpty v-if="!loading && pools.length === 0" description="还没有号池，点「新建号池」把同组账号打包成一个入口" size="small" />
@@ -222,8 +230,8 @@ onMounted(load)
                 <strong>{{ pool.name }}</strong>
                 <NTag size="tiny" :bordered="false">{{ pool.vendorLabel }}{{ pool.planType ? ` · ${pool.planType}` : '' }}</NTag>
                 <NTag v-if="pool.autoIncludeMembers" size="tiny" type="info" :bordered="false">自动纳入</NTag>
-                <NTag size="tiny" :type="pool.managed ? 'success' : 'warning'" :bordered="false">
-                  {{ pool.managed ? '已托管' : '未托管' }}
+                <NTag size="tiny" :type="pool.managedEntryCount > 0 ? 'success' : 'warning'" :bordered="false">
+                  托管 {{ pool.managedEntryCount }} 个入口
                 </NTag>
               </div>
               <div class="pool-meta">

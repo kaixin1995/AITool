@@ -43,12 +43,11 @@ public sealed class AccountPoolsApiController : ControllerBase
                 .Where(m => poolIds.Contains(m.PoolId))
                 .OrderBy(m => m.Priority)
                 .ToListAsync(ct);
-        var entryNames = pools.Select(p => p.Name).ToList();
-        var entries = entryNames.Count == 0
-            ? []
-            : await _dbContext.ProxyRouteEntries
-                .Where(e => entryNames.Contains(e.EntryName))
-                .ToListAsync(ct);
+        // 池认领的托管入口计数（每个成员模型一个入口）。
+        var managedCounts = (await _dbContext.ProxyRouteEntries.ToListAsync(ct))
+            .Where(e => e.ManagedByPoolId != null && poolIds.Contains(e.ManagedByPoolId!.Value))
+            .GroupBy(e => e.ManagedByPoolId!.Value)
+            .ToDictionary(g => g.Key, g => g.Count());
 
         var candidates = await ResolveCandidateNamesAsync(members, ct);
 
@@ -60,7 +59,7 @@ public sealed class AccountPoolsApiController : ControllerBase
             vendorLabel = VendorLabelOf(p.VendorKey),
             planType = p.PlanType,
             autoIncludeMembers = p.AutoIncludeMembers,
-            managed = entries.FirstOrDefault(e => e.EntryName == p.Name)?.ManagedByPoolId == p.Id,
+            managedEntryCount = managedCounts.GetValueOrDefault(p.Id, 0),
             createdAt = p.CreatedAt,
             updatedAt = p.UpdatedAt,
             members = members
@@ -89,7 +88,8 @@ public sealed class AccountPoolsApiController : ControllerBase
         return Ok(ApiResponse.Ok(accounts));
     }
 
-    /// <summary>建池：名称即对外路由条目名（创建后不可改）；自动池立即物化成员，手动池按勾选建行。</summary>
+    /// <summary>建池：池名为管理标签（池间唯一）；自动池立即物化成员，手动池按勾选建行。
+    /// 同步按成员模型生成托管入口——被手工路由占用的模型自动跳过（结果里列出）。</summary>
     [HttpPost]
     public async Task<IActionResult> CreatePool([FromBody] CreatePoolRequest? request, CancellationToken ct)
     {
@@ -108,18 +108,10 @@ public sealed class AccountPoolsApiController : ControllerBase
             return BadRequest(ApiResponse.Fail("未知厂商", "unknown_vendor"));
         }
 
-        // 名称占用检查：池名与任何既有池名/路由条目名冲突都拒绝（路由条目名唯一索引兜底重复创建）。
+        // 名称占用检查：池名在池之间唯一即可（管理标签，不占用路由命名空间）。
         if (await _dbContext.AccountPools.AnyAsync(p => p.Name == name, ct))
         {
             return BadRequest(ApiResponse.Fail($"池名「{name}」已被使用", "name_taken"));
-        }
-        if (await _dbContext.ProxyRouteEntries.AnyAsync(e => e.EntryName == name, ct))
-        {
-            return BadRequest(ApiResponse.Fail($"路由入口「{name}」已存在，池名不可与其重名", "name_taken"));
-        }
-        if (await _dbContext.ProxyRouteRules.AnyAsync(r => r.ExternalModelName == name, ct))
-        {
-            return BadRequest(ApiResponse.Fail($"名称「{name}」已被路由规则占用，请换一个池名", "name_taken"));
         }
 
         var pool = new AccountPool
@@ -162,7 +154,7 @@ public sealed class AccountPoolsApiController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
-            // 同步保护失败（名称冲突等）：回滚新建的池，避免留下空壳。
+            // 同步意外失败：回滚新建的池，避免留下空壳。
             await _syncService.DeletePoolAsync(pool.Id, ct);
             return BadRequest(ApiResponse.Fail(ex.Message, "sync_rejected"));
         }

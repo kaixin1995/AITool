@@ -17,7 +17,8 @@ export interface AccountPoolSummary {
   vendorLabel: string
   planType: string | null
   autoIncludeMembers: boolean
-  managed: boolean
+  /** 池认领的托管路由入口数（每个成员模型一个入口）。 */
+  managedEntryCount: number
   createdAt: string
   updatedAt: string
   members: AccountPoolMemberSummary[]
@@ -39,13 +40,14 @@ export interface AccountPoolCandidate {
   linkedSiteId: string
 }
 
-/** 一次池同步的结果摘要。 */
+/** 一次池同步的结果摘要（skippedModels：被手工路由占用而跳过的模型）。 */
 export interface AccountPoolSyncSummary {
   poolId: string
   name: string
   memberCount: number
   modelCount: number
   ruleCount: number
+  skippedModels: string[]
 }
 
 export function fetchAccountPools(): Promise<AccountPoolSummary[]> {

@@ -6,16 +6,17 @@ using SqlSugar;
 namespace AITool.Web.Services;
 
 /// <summary>
-/// 号池同步服务（生成式）：把池成员展开成普通 <see cref="ProxyRouteRule"/>
-/// （ExternalModelName = 池名），托管标记挂在路由条目的 ManagedByPoolId 上。
+/// 号池同步服务（生成式）：把池成员展开成普通 <see cref="ProxyRouteRule"/>——
+/// <b>每个成员模型一个托管路由入口</b>（ExternalModelName=模型名、对外名透出上游名），
+/// 入口经 <see cref="ProxyRouteEntry.ManagedByPoolId"/> 认领。客户端照常按模型名调用，
+/// 池在背后做账号扇出：请求 gpt-5 的候选=持有 gpt-5 的全部成员。
 /// <para>
-/// 设计要点：转发热路径零改动——池规则就是普通规则，优先级/熔断/分级冷却/
-/// 会话亲和/配额排序（P0 已对 OAuth 账号贯通）全部原样生效。池内静态顺序 =
-/// InstancePriority 基线；对外暴露的模型 = 全体成员已启用映射的并集，
-/// 每个模型只路由到持有它的成员；对外名透出上游名。
+/// 设计要点：转发热路径零改动——池规则就是普通规则，池内静态顺序 =
+/// InstancePriority 基线；运行时叠加配额感知排序 / 分级冷却 / 熔断 / 会话亲和
+/// （P0 已对 OAuth 账号贯通巡检数据）。池名只是管理标签，不占用路由命名空间。
 /// </para>
-/// <para>保护：池名与任何非本池托管的路由条目/规则冲突时拒绝同步（绝不覆盖手工路由）；
-/// 删除池仅清除托管标记（规则保留，可继续手工维护）。</para>
+/// <para>保护：模型名被手工路由（或其它池）占用时跳过该模型（记入 SkippedModels），
+/// 绝不覆盖；删除池=解除该池全部入口托管（规则保留，可继续手工维护）。</para>
 /// </summary>
 public sealed class AccountPoolSyncService
 {
@@ -33,7 +34,7 @@ public sealed class AccountPoolSyncService
         _logger = logger;
     }
 
-    /// <summary>同步单个池：物化自动成员 → 重生成该池名的全部路由规则。</summary>
+    /// <summary>同步单个池：物化自动成员 → 按模型重生成托管入口与规则。</summary>
     public async Task<AccountPoolSyncResult> SyncPoolAsync(Guid poolId, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
@@ -76,67 +77,90 @@ public sealed class AccountPoolSyncService
             }
         }
 
-        // ③ 托管保护：同名条目被别的池托管、或同名规则属于手工路由 → 拒绝（绝不覆盖手工路由）。
-        var entry = (await client.Queryable<ProxyRouteEntry>()
-            .Where(e => e.EntryName == pool.Name)
-            .ToListAsync(ct)).FirstOrDefault();
-        if (entry is { ManagedByPoolId: { } owner } && owner != pool.Id)
+        // ③ 碰撞检测：模型名已被手工路由（或其它池）占用 → 跳过该模型，不阻塞整池。
+        // 池按 ManagedByPoolId 认领入口（不是按名字——池名只是管理标签）。
+        // 本池入口名下的既有规则是上一轮同步的产物，不算占用（幂等重生成的前提）。
+        var allEntries = await client.Queryable<ProxyRouteEntry>().ToListAsync(ct);
+        var entryByName = allEntries.ToDictionary(e => e.EntryName, e => e, StringComparer.Ordinal);
+        var allRuleNames = (await client.Queryable<ProxyRouteRule>()
+                .Select(r => r.ExternalModelName)
+                .ToListAsync(ct))
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct()
+            .ToHashSet(StringComparer.Ordinal);
+        var skippedModels = new List<string>();
+        var keptModels = new List<string>();
+        foreach (var modelName in exposedModels)
         {
-            throw new InvalidOperationException($"路由入口「{pool.Name}」已被其它号池托管");
+            entryByName.TryGetValue(modelName, out var existing);
+            var ownedByThisPool = existing is { ManagedByPoolId: { } owner } && owner == pool.Id;
+            var occupied = !ownedByThisPool
+                && (allRuleNames.Contains(modelName) || existing != null);
+            if (occupied)
+            {
+                skippedModels.Add(modelName);
+            }
+            else
+            {
+                keptModels.Add(modelName);
+            }
         }
 
-        var existingRules = await client.Queryable<ProxyRouteRule>()
-            .Where(r => r.ExternalModelName == pool.Name)
-            .ToListAsync(ct);
-        if (existingRules.Count > 0 && (entry == null || entry.ManagedByPoolId == null))
-        {
-            throw new InvalidOperationException($"路由入口「{pool.Name}」已被手工路由占用，请换一个池名");
-        }
+        // ④ 重生成（事务保护）。池当前认领的全部入口为基准：不在保留集里的入口（模型
+        //    消失/被跳过）连同规则清理；保留集里的入口重生成成员扇出规则。
+        var keptSet = keptModels.ToHashSet(StringComparer.Ordinal);
+        var poolOwnedEntries = allEntries.Where(e => e.ManagedByPoolId == pool.Id).ToList();
+        var staleEntries = poolOwnedEntries.Where(e => !keptSet.Contains(e.EntryName)).ToList();
 
-        // ④ 重生成（事务保护：删旧→建条目→插新原子完成，中途失败不丢既有规则）。
         var newRules = new List<ProxyRouteRule>();
-        var ruleIndex = 0;
-        for (var modelIndex = 0; modelIndex < exposedModels.Count; modelIndex++)
+        foreach (var modelName in keptModels)
         {
-            var modelName = exposedModels[modelIndex];
+            var ruleIndex = 0;
             foreach (var member in members)
             {
                 if (!mappingsBySite[member.LinkedSiteId].Any(m => m.RemoteModelName == modelName))
                 {
-                    continue; // 该成员没有此模型：模型只路由到持有它的成员。
+                    continue; // 该成员没有此模型：模型只扇出到持有它的成员。
                 }
 
                 newRules.Add(new ProxyRouteRule
                 {
-                    ExternalModelName = pool.Name,
+                    ExternalModelName = modelName,
                     UpstreamModelName = modelName,
                     SiteId = member.LinkedSiteId,
                     SiteModelName = modelName,
                     Priority = ruleIndex++,
-                    ModelPriority = modelIndex,
+                    ModelPriority = 0,
                     InstancePriority = member.Priority,
                     IsEnabled = true,
                 });
             }
         }
 
-        var entryRef = entry;
         await client.Ado.UseTranAsync(async () =>
         {
-            if (existingRules.Count > 0)
+            // 陈旧入口：删其名下规则 + 入口本身（入口由池创建，规则由池生成）。
+            foreach (var stale in staleEntries)
             {
-                await client.Deleteable<ProxyRouteRule>().Where(r => r.ExternalModelName == pool.Name).ExecuteCommandAsync(ct);
+                await client.Deleteable<ProxyRouteRule>()
+                    .Where(r => r.ExternalModelName == stale.EntryName)
+                    .ExecuteCommandAsync(ct);
+                await client.Deleteable<ProxyRouteEntry>()
+                    .Where(e => e.Id == stale.Id)
+                    .ExecuteCommandAsync(ct);
             }
 
-            if (entryRef == null)
+            // 保留模型：清旧规则 → 入口认领 → 插成员扇出规则。
+            foreach (var modelName in keptModels)
             {
-                entryRef = new ProxyRouteEntry { EntryName = pool.Name, ManagedByPoolId = pool.Id };
-                await client.Insertable(entryRef).ExecuteCommandAsync(ct);
-            }
-            else if (entryRef.ManagedByPoolId == null)
-            {
-                entryRef.ManagedByPoolId = pool.Id;
-                await client.Updateable(entryRef).UpdateColumns(e => e.ManagedByPoolId).ExecuteCommandAsync(ct);
+                await client.Deleteable<ProxyRouteRule>()
+                    .Where(r => r.ExternalModelName == modelName)
+                    .ExecuteCommandAsync(ct);
+                if (!entryByName.ContainsKey(modelName))
+                {
+                    await client.Insertable(new ProxyRouteEntry { EntryName = modelName, ManagedByPoolId = pool.Id })
+                        .ExecuteCommandAsync(ct);
+                }
             }
 
             if (newRules.Count > 0)
@@ -155,8 +179,9 @@ public sealed class AccountPoolSyncService
             pool.Id,
             pool.Name,
             members.Count,
-            exposedModels.Count,
-            newRules.Count);
+            keptModels.Count,
+            newRules.Count,
+            skippedModels);
     }
 
     /// <summary>同步全部池（成员映射变更后的统一收口；逐池容错，单池失败不中断）。</summary>
@@ -183,7 +208,7 @@ public sealed class AccountPoolSyncService
         return results;
     }
 
-    /// <summary>删除池：删成员行 + 清除条目托管标记（规则保留，转手工维护）。</summary>
+    /// <summary>删除池：删成员行 + 解除该池认领的全部入口托管（规则保留）。</summary>
     public async Task DeletePoolAsync(Guid poolId, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
@@ -196,10 +221,10 @@ public sealed class AccountPoolSyncService
         await client.Deleteable<AccountPoolMember>().Where(m => m.PoolId == poolId).ExecuteCommandAsync(ct);
         await client.Deleteable<AccountPool>().Where(p => p.Id == poolId).ExecuteCommandAsync(ct);
 
-        var entry = (await client.Queryable<ProxyRouteEntry>()
-            .Where(e => e.EntryName == pool.Name)
-            .ToListAsync(ct)).FirstOrDefault();
-        if (entry is { ManagedByPoolId: { } owner } && owner == poolId)
+        var ownedEntries = await client.Queryable<ProxyRouteEntry>()
+            .Where(e => e.ManagedByPoolId == poolId)
+            .ToListAsync(ct);
+        foreach (var entry in ownedEntries)
         {
             entry.ManagedByPoolId = null;
             await client.Updateable(entry).UpdateColumns(e => e.ManagedByPoolId).ExecuteCommandAsync(ct);
@@ -351,8 +376,14 @@ public sealed class AccountPoolSyncService
     }
 }
 
-/// <summary>一次池同步的结果摘要。</summary>
-public sealed record AccountPoolSyncResult(Guid PoolId, string Name, int MemberCount, int ModelCount, int RuleCount);
+/// <summary>一次池同步的结果摘要（skipped：被手工路由占用而跳过的模型）。</summary>
+public sealed record AccountPoolSyncResult(
+    Guid PoolId,
+    string Name,
+    int MemberCount,
+    int ModelCount,
+    int RuleCount,
+    IReadOnlyList<string> SkippedModels);
 
 /// <summary>厂商账号候选（成员勾选用）。</summary>
 public sealed record AccountPoolCandidate(Guid AccountId, string DisplayName, Guid LinkedSiteId);
