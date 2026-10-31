@@ -34,7 +34,7 @@
 - `ExchangeCodeAsync(code, verifier)`：authorization_code 换 token
 - `RefreshTokenAsync(refreshToken)`：**single-flight**（同一 refresh_token 用 SemaphoreSlim 串行，空闲清理防 token 轮换泄漏）
 
-**登录流程（前端）**：规范 API 为 `POST /api/admin/oauth/start-oauth` → 用户浏览器登录 → 粘贴回调 URL → `POST /api/admin/oauth/complete-oauth` 交换并建账号；旧 `/api/admin/codex` 仅作为兼容别名。也可上传 CPA 格式凭证 JSON（`import-credential`，多文件 multipart）——解析在 **`CodexCredentialParser.Parse`**（`Infrastructure/Codex/CodexCredentialParser.cs`）：type=codex 校验（缺失宽松推断）、JWT claims 权威回退顶层字段、过期时间优先 `expired` 再 JWT exp；`ParseMany` 单文件失败不中断。JWT 解析在 **`CodexJwtParser.Parse`**（`CodexJwtParser.cs`）：无验签解析 id_token → email/chatgpt_account_id/chatgpt_plan_type/订阅窗口（取自 `https://api.openai.com/auth` claim），按 token 内容缓存。`AccountId`（chatgpt_account_id）是去重首选依据。
+**登录流程（前端）**：规范 API 为 `POST /api/admin/oauth/start-oauth` → 用户浏览器登录 → 粘贴回调 URL → `POST /api/admin/oauth/complete-oauth` 交换并建账号；旧 `/api/admin/codex` 仅作为兼容别名。也可上传 CPA 格式凭证 JSON（`import-credential`，多文件 multipart）——解析在 **`CodexCredentialParser.Parse`**（`Infrastructure/Codex/CodexCredentialParser.cs`）：type=codex 校验（缺失宽松推断）、JWT claims 权威回退顶层字段、过期时间优先 `expired` 再 JWT exp；`ParseMany` 单文件失败不中断。JWT 解析在 **`CodexJwtParser.Parse`**（`CodexJwtParser.cs`）：无验签解析 id_token → email/chatgpt_account_id/chatgpt_plan_type/订阅窗口（取自 `https://api.openai.com/auth` claim），按 token 内容缓存。去重身份键是 `AccountId`（chatgpt_account_id）+ `Email` 复合——chatgpt_account_id 标识 workspace 而非用户：同一邮箱可分属 plus/team 多个 workspace（同邮箱不同 account_id 共存），同一 team workspace 的多个成员（不同邮箱）又共享同一 account_id（同 account_id 不同邮箱同样共存），任一维度单键折叠都会互相覆盖（对齐 CPA 凭证文件名键 hash8(account_id)+email）。
 
 **凭证导出**：`POST /api/admin/oauth/accounts/export-credentials` 勾选多账号导出 OAuth 凭证 JSON；管理端生成的文件名使用 `oauth_credential_` / `oauth_credentials_` 前缀。
 

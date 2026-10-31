@@ -424,7 +424,7 @@ sealed class SystemRuntimeSettings
 
 **SqlMigrationExecution**（`Domain/Operations/SqlMigrationExecution.cs`）：`Id`、`FileName`（≤255）、`FileHash`（SHA256，64）、`DryRun`、`Success`、`RowsAffected`、`StatementCount`、`DurationMs`、`ErrorMessage`、`OperatorIp`、`ExecutedAt`；(FileName, ExecutedAt) 索引。每次执行（含试运行）一条审计。
 
-**CodexAccount**（`Domain/Codex/CodexAccount.cs`）：`Id`、`DisplayName`、`Email?`、`AccountId?`（chatgpt_account_id，去重首选）、`PlanType?`（free/plus/team/pro）、`AccessToken?`（同步写回隐藏 Site.ApiKey，≤2000）、`RefreshToken?`（≤4000）、`IdToken?`、`TokenExpiresAt?`、`LastRefreshAt?`、`LinkedSiteId`、`IsEnabled`、`DisabledByFeatureToggle`、`ManuallyDisabled`、`AutoDisableThreshold?`（账号级）、`IsQuotaCooling`、`QuotaCoolingUntil?`、`LastQuotaRawJson?`（≤4000）、`LastQuotaCheckedAt?`、`CreatedAt`；LinkedSiteId/TokenExpiresAt 索引。
+**CodexAccount**（`Domain/Codex/CodexAccount.cs`）：`Id`、`DisplayName`、`Email?`、`AccountId?`（chatgpt_account_id，与 Email 组成复合去重键——它标识 workspace，同 team 成员共享）、`PlanType?`（free/plus/team/pro）、`AccessToken?`（同步写回隐藏 Site.ApiKey，≤2000）、`RefreshToken?`（≤4000）、`IdToken?`、`TokenExpiresAt?`、`LastRefreshAt?`、`LinkedSiteId`、`IsEnabled`、`DisabledByFeatureToggle`、`ManuallyDisabled`、`AutoDisableThreshold?`（账号级）、`IsQuotaCooling`、`QuotaCoolingUntil?`、`LastQuotaRawJson?`（≤4000）、`LastQuotaCheckedAt?`、`CreatedAt`；LinkedSiteId/TokenExpiresAt 索引。
 
 **RefreshTokenRecord**（`Domain/Auth/RefreshTokenRecord.cs`）：`Token`（string 主键）、`SubjectId`、`ExpiresAt`、`CreatedAt`。
 

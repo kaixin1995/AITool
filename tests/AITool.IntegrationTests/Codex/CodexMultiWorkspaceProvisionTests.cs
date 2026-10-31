@@ -11,9 +11,13 @@ using Xunit;
 namespace AITool.IntegrationTests.Codex;
 
 /// <summary>
-/// Codex 同邮箱多 workspace 供给回归：同一邮箱可同时属于个人 plus 空间与组织 team 空间，
-/// 两边 chatgpt_account_id 不同，必须作为两条独立账号共存（对齐 CLIProxyAPI 的身份键方案），
-/// 绝不能按邮箱折叠覆盖。accountId 缺失时邮箱兜底只允许命中同样无 accountId 的存量。
+/// Codex 多身份共存供给回归，身份键 = (chatgpt_account_id, email) 复合（对齐 CLIProxyAPI 的
+/// 凭证文件名键 hash8(account_id)+email）。两个维度缺一不可：
+/// <para>chatgpt_account_id 标识 workspace 而非用户——同一邮箱可同时属于个人 plus 空间与组织
+/// team 空间（同邮箱不同 account_id，两条账号）；同一 team workspace 的多个成员（不同邮箱）
+/// 共享同一个 account_id（同 account_id 不同邮箱，同样必须两条账号）。</para>
+/// <para>任一维度单键折叠都会互相覆盖：按邮箱折叠吞掉多 workspace，按 account_id 折叠吞掉
+/// 同 workspace 的其它成员。accountId 缺失时邮箱兜底只允许命中同样无 accountId 的存量。</para>
 /// </summary>
 public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
 {
@@ -247,23 +251,86 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
     }
 
     [Fact]
-    public async Task Email_change_upgrades_name_identified_by_previous_email()
+    public async Task Same_account_id_different_emails_coexist_as_two_accounts()
     {
-        // 反审 P2：上游改邮箱后重登——旧名「旧邮箱 (plan)」按旧邮箱识别，升级目标用新邮箱。
+        // chatgpt_account_id 标识 workspace：同一 team 的多个成员（不同邮箱）共享同一 account_id，
+        // 单按 account_id 匹配会令后导入的成员覆盖先导入的成员（线上实际发生的覆盖 bug）。
         var provisioner = CreateProvisioner();
-        var account = await provisioner.ProvisionFromTokensAsync(
-            Input(accountId: "acc-e", email: "old@example.com", plan: "plus", token: "at-1"), CancellationToken.None);
 
-        await provisioner.ProvisionFromTokensAsync(
-            Input(accountId: "acc-e", email: "new@example.com", plan: "plus", token: "at-2"), CancellationToken.None);
+        var memberA = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-ws1", email: "a@example.com", plan: "team", token: "at-a"), CancellationToken.None);
+        var memberB = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-ws1", email: "b@example.com", plan: "team", token: "at-b"), CancellationToken.None);
+
+        memberA.Id.Should().NotBe(memberB.Id, "同 workspace 不同成员是两条凭证");
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var accounts = await db.CodexAccounts.ToListAsync();
+            accounts.Count.Should().Be(2, "同 account_id 不同邮箱不得折叠覆盖");
+
+            var rowA = accounts.Single(a => a.Email == "a@example.com");
+            rowA.AccountId.Should().Be("acc-ws1");
+            rowA.AccessToken.Should().Be("at-a", "后导入的成员 b 不得覆盖成员 a 的凭证");
+            rowA.DisplayName.Should().Be("a@example.com (team)");
+
+            var rowB = accounts.Single(a => a.Email == "b@example.com");
+            rowB.AccountId.Should().Be("acc-ws1", "两个成员的 workspace 头一致");
+            rowB.AccessToken.Should().Be("at-b");
+            rowB.LinkedSiteId.Should().NotBe(rowA.LinkedSiteId, "各自持有独立隐藏 Site");
+        }
+    }
+
+    [Fact]
+    public async Task Team_members_and_personal_workspace_mixed_import_keeps_all_rows()
+    {
+        // 线上事故完整复现：四份凭证 = 同邮箱 plus+team 双空间 + 同 team 另两个不同邮箱成员，
+        // 全部导入后必须四条俱在（此前按 account_id 单键折叠只剩两条）。
+        var provisioner = CreateProvisioner();
+
+        await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-plus", email: "dev@example.com", plan: "plus", token: "at-plus"), CancellationToken.None);
+        await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-ws1", email: "dev@example.com", plan: "team", token: "at-dev-team"), CancellationToken.None);
+        await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-ws1", email: "mate1@example.com", plan: "team", token: "at-mate1"), CancellationToken.None);
+        await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-ws1", email: "mate2@example.com", plan: "team", token: "at-mate2"), CancellationToken.None);
 
         await using (var scope = _services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var row = await db.CodexAccounts.InSingleAsync(account.Id);
-            row!.Email.Should().Be("new@example.com");
-            row.DisplayName.Should().Be("new@example.com (plus)", "旧邮箱默认名按旧邮箱识别后升级为新邮箱默认名");
-            (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("new@example.com (plus)");
+            var accounts = await db.CodexAccounts.ToListAsync();
+            accounts.Count.Should().Be(4, "四份凭证四条账号，任何两次导入之间都不得互相覆盖");
+            accounts.Single(a => a.AccountId == "acc-plus").AccessToken.Should().Be("at-plus");
+            accounts.Single(a => a.Email == "dev@example.com" && a.AccountId == "acc-ws1").AccessToken.Should().Be("at-dev-team", "同邮箱的 team 行不被同 workspace 其它成员覆盖");
+            accounts.Single(a => a.Email == "mate1@example.com").AccessToken.Should().Be("at-mate1");
+            accounts.Single(a => a.Email == "mate2@example.com").AccessToken.Should().Be("at-mate2");
+            (await db.Sites.Where(s => s.ManagedSource == "Codex").ToListAsync()).Count.Should().Be(4);
+        }
+    }
+
+    [Fact]
+    public async Task Email_change_creates_separate_credential_like_cpa()
+    {
+        // 上游改邮箱后重登：same account_id + 不同 email 与「同 workspace 另一成员登录」不可区分，
+        // 按 CPA 语义新建独立凭证、旧行原样保留（其 refresh_token 已被新登录轮换掉，由用户手动删除），
+        // 绝不能原位改写旧行的邮箱（那正是同 workspace 成员互相覆盖的路径）。
+        var provisioner = CreateProvisioner();
+        var first = await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-e", email: "old@example.com", plan: "plus", token: "at-1"), CancellationToken.None);
+
+        var second = await provisioner.ProvisionFromTokensAsync(
+            Input(accountId: "acc-e", email: "new@example.com", plan: "plus", token: "at-2"), CancellationToken.None);
+
+        second.Id.Should().NotBe(first.Id, "不同 email 即不同身份键，新建凭证");
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var accounts = await db.CodexAccounts.ToListAsync();
+            accounts.Count.Should().Be(2);
+            var oldRow = accounts.Single(a => a.Id == first.Id);
+            oldRow.Email.Should().Be("old@example.com", "旧行不被改写邮箱");
+            oldRow.AccessToken.Should().Be("at-1");
+            oldRow.DisplayName.Should().Be("old@example.com (plus)", "旓名保持默认名形态");
+            var newRow = accounts.Single(a => a.Id == second.Id);
+            newRow.Email.Should().Be("new@example.com");
+            newRow.AccessToken.Should().Be("at-2");
+            newRow.DisplayName.Should().Be("new@example.com (plus)");
         }
     }
 

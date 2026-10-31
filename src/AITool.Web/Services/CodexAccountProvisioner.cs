@@ -280,27 +280,35 @@ public sealed class CodexAccountProvisioner
     // —— 私有 ——
 
     /// <summary>
-    /// 去重匹配（对齐 CLIProxyAPI 的身份键方案）：chatgpt_account_id 是账号身份——
-    /// 同一邮箱可属于多个 workspace（如个人 plus + 组织 team），各自持有不同 account_id，
-    /// 必须作为两条独立账号共存，绝不能按邮箱折叠覆盖。
-    /// <para>认领规则：accountId 未命中但同邮箱恰好存在一条「无 accountId 的存量行」（老版本登录落库）时
+    /// 去重匹配（对齐 CLIProxyAPI 的凭证注册键 hash8(account_id)+email）：身份键是
+    /// (chatgpt_account_id, email) 复合——chatgpt_account_id 标识 workspace 而非用户，
+    /// 同一邮箱可属于多个 workspace（各自 account_id 不同），同一 team workspace 的多个成员
+    /// （不同邮箱）又共享同一个 account_id。任一维度单键折叠都会互相覆盖：
+    /// 按邮箱折叠吞掉多 workspace，按 account_id 折叠吞掉同 workspace 的其它成员。
+    /// <para>认领规则：复合键未命中但同邮箱恰好存在一条「无 accountId 的存量行」（老版本登录落库）时
     /// 认领该行原位更新——否则同一 workspace 重登会另建新行，存量行变成刷新必败的孤儿死凭证参与路由；
     /// 存量不唯一时不认领（避免随机合并），仍走新建。</para>
     /// </summary>
     private async Task<CodexAccount?> FindExistingAsync(string? accountId, string? email, CancellationToken ct)
     {
-        if (!string.IsNullOrEmpty(accountId))
-        {
-            var byAccount = (await _dbContext.CodexAccounts
-                .Where(a => a.AccountId == accountId)
-                .ToListAsync(ct)).FirstOrDefault();
-            if (byAccount != null) return byAccount;
+        var acc = NormalizeKey(accountId);
+        var mail = NormalizeKey(email);
 
-            if (!string.IsNullOrEmpty(email))
+        if (acc != null)
+        {
+            // 复合键精确匹配：email 为 null 时只命中同样无 email 的行（对齐 CPA 的 codex-{hash}.json
+            // 确定性文件名），绝不落入其它成员的行。
+            var sameAccount = await _dbContext.CodexAccounts
+                .Where(a => a.AccountId == acc)
+                .ToListAsync(ct);
+            var exact = sameAccount.FirstOrDefault(a => NormalizeKey(a.Email) == mail);
+            if (exact != null) return exact;
+
+            if (mail != null)
             {
                 // 拉回内存筛无身份行（账号量级小）；恰好一条才认领。
                 var claimable = (await _dbContext.CodexAccounts
-                    .Where(a => a.Email == email)
+                    .Where(a => a.Email == mail)
                     .ToListAsync(ct))
                     .Where(a => string.IsNullOrEmpty(a.AccountId))
                     .ToList();
@@ -308,16 +316,20 @@ public sealed class CodexAccountProvisioner
             }
             return null;
         }
-        if (!string.IsNullOrEmpty(email))
+        if (mail != null)
         {
             // 拉回内存再筛（账号量级小）：只允许命中同样没有 AccountId 的存量账号。
             return (await _dbContext.CodexAccounts
-                .Where(a => a.Email == email)
+                .Where(a => a.Email == mail)
                 .ToListAsync(ct))
                 .FirstOrDefault(a => string.IsNullOrEmpty(a.AccountId));
         }
         return null;
     }
+
+    /// <summary>身份键归一：空白视为无值，其余去首尾空白（对齐 CPA 文件名的 TrimSpace）。</summary>
+    private static string? NormalizeKey(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private async Task UpsertModelMappingsAsync(Guid siteId, string? planType, CancellationToken ct)
     {
