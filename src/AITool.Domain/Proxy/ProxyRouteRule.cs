@@ -28,9 +28,19 @@ public sealed class ProxyRouteRule
     [SugarColumn(Length = 200, IsNullable = false)]
     public string UpstreamModelName { get; set; } = string.Empty;
 
-    /// <summary>
-    /// 目标站点标识，用于确定该规则最终会将请求转发到哪个站点。
-    /// </summary>
+    /// <summary>Site (legacy default) or RouteEntry. Empty legacy values normalize to Site.</summary>
+    [SugarColumn(Length = 50, IsNullable = false, DefaultValue = "Site")]
+    public string TargetKind { get; set; } = "Site";
+
+    /// <summary>Stable referenced entry identity; never resolve a deleted identity by its old name.</summary>
+    [SugarColumn(IsNullable = true)]
+    public Guid? TargetRouteEntryId { get; set; }
+
+    /// <summary>Diagnostic name snapshot only, not a lookup key.</summary>
+    [SugarColumn(Length = 200, IsNullable = true)]
+    public string? TargetRouteEntryName { get; set; }
+
+    /// <summary>Direct site identity; RouteEntry rules use Guid.Empty for schema compatibility.</summary>
     public Guid SiteId { get; set; }
 
     /// <summary>

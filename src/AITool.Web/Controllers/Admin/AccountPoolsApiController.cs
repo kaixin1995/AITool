@@ -123,41 +123,14 @@ public sealed class AccountPoolsApiController : ControllerBase
             AutoIncludeMembers = request.AutoIncludeMembers,
             ExposedModelsJson = SerializeModelsJson(request.ExposedModels),
         };
-        await _dbContext.Client.Insertable(pool).ExecuteCommandAsync(ct);
-
-        // 手动池按勾选建成员行；自动池交给同步物化。
-        if (!pool.AutoIncludeMembers && request.MemberAccountIds is { Count: > 0 })
-        {
-            var candidates = await _syncService.ListVendorAccountsAsync(pool.VendorKey, pool.PlanType, ct);
-            var byId = candidates.ToDictionary(c => c.AccountId);
-            var priority = 0;
-            var rows = new List<AccountPoolMember>();
-            foreach (var accountId in request.MemberAccountIds.Where(id => byId.ContainsKey(id)))
-            {
-                rows.Add(new AccountPoolMember
-                {
-                    PoolId = pool.Id,
-                    AccountRefId = accountId,
-                    LinkedSiteId = byId[accountId].LinkedSiteId,
-                    Priority = priority++,
-                });
-            }
-
-            if (rows.Count > 0)
-            {
-                await _dbContext.Client.Insertable(rows).ExecuteCommandAsync(ct);
-            }
-        }
-
         try
         {
-            var result = await _syncService.SyncPoolAsync(pool.Id, ct);
+            var result = await _syncService.CreatePoolAsync(pool, request.MemberAccountIds, ct);
             return Ok(ApiResponse.Ok(new { poolId = pool.Id, sync = result }));
         }
         catch (InvalidOperationException ex)
         {
-            // 同步意外失败：回滚新建的池，避免留下空壳。
-            await _syncService.DeletePoolAsync(pool.Id, ct);
+            // Service transaction already rolled back the pool, members and generated graph.
             return BadRequest(ApiResponse.Fail(ex.Message, "sync_rejected"));
         }
     }
@@ -166,41 +139,17 @@ public sealed class AccountPoolsApiController : ControllerBase
     [HttpPut("{id:guid}/members")]
     public async Task<IActionResult> ReplaceMembers(Guid id, [FromBody] ReplaceMembersRequest? request, CancellationToken ct)
     {
-        var pool = (await _dbContext.AccountPools.Where(p => p.Id == id).ToListAsync(ct)).FirstOrDefault();
-        if (pool is null)
+        try
+        {
+            var members = (request?.Members ?? []).Where(m => m != null)
+                .Select(m => (m.AccountRefId, m.Excluded)).ToList();
+            var result = await _syncService.ReplaceMembersAsync(id, members, ct);
+            return Ok(ApiResponse.Ok(new { sync = result }));
+        }
+        catch (KeyNotFoundException)
         {
             return NotFound(ApiResponse.Fail("号池不存在", "pool_not_found"));
         }
-
-        var candidates = await _syncService.ListVendorAccountsAsync(pool.VendorKey, pool.PlanType, ct);
-        var byId = candidates.ToDictionary(c => c.AccountId);
-        var priority = 0;
-        var rows = new List<AccountPoolMember>();
-        foreach (var member in request?.Members ?? [])
-        {
-            if (member?.AccountRefId == null || !byId.ContainsKey(member.AccountRefId))
-            {
-                continue; // 非本厂商（+套餐）账号不允许入池。
-            }
-
-            rows.Add(new AccountPoolMember
-            {
-                PoolId = pool.Id,
-                AccountRefId = member.AccountRefId,
-                LinkedSiteId = byId[member.AccountRefId].LinkedSiteId,
-                Priority = priority++,
-                Excluded = member.Excluded,
-            });
-        }
-
-        await _dbContext.Client.Deleteable<AccountPoolMember>().Where(m => m.PoolId == pool.Id).ExecuteCommandAsync(ct);
-        if (rows.Count > 0)
-        {
-            await _dbContext.Client.Insertable(rows).ExecuteCommandAsync(ct);
-        }
-
-        var result = await _syncService.SyncPoolAsync(pool.Id, ct);
-        return Ok(ApiResponse.Ok(new { sync = result }));
     }
 
     /// <summary>手动同步（成员映射变更后刷新生成规则）。</summary>
@@ -259,21 +208,13 @@ public sealed class AccountPoolsApiController : ControllerBase
     [HttpPut("{id:guid}/models")]
     public async Task<IActionResult> UpdateModels(Guid id, [FromBody] UpdateModelsRequest? request, CancellationToken ct)
     {
-        var pool = (await _dbContext.AccountPools.Where(p => p.Id == id).ToListAsync(ct)).FirstOrDefault();
-        if (pool is null)
-        {
-            return NotFound(ApiResponse.Fail("号池不存在", "pool_not_found"));
-        }
-
-        pool.ExposedModelsJson = SerializeModelsJson(request?.ExposedModels);
-        pool.UpdatedAt = DateTimeOffset.UtcNow;
-        await _dbContext.Client.Updateable(pool)
-            .UpdateColumns(p => new { p.ExposedModelsJson, p.UpdatedAt })
-            .ExecuteCommandAsync(ct);
-
         try
         {
-            return Ok(ApiResponse.Ok(new { sync = await _syncService.SyncPoolAsync(id, ct) }));
+            return Ok(ApiResponse.Ok(new { sync = await _syncService.UpdateModelsAsync(id, SerializeModelsJson(request?.ExposedModels), ct) }));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound(ApiResponse.Fail("号池不存在", "pool_not_found"));
         }
         catch (InvalidOperationException ex)
         {

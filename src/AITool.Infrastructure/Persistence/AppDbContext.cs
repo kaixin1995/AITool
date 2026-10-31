@@ -301,6 +301,18 @@ public static class SqlSugarSetup
             logger?.LogWarning(ex, "Failed to align ModelLibraryItems DisplayName with ModelName");
         }
 
+        // CodeFirst supplies the Site default when adding the discriminator to populated legacy tables.
+        // Normalize pre-release/null values too, then give legacy rule-only names a stable identity once.
+        db.Ado.ExecuteCommand("UPDATE ProxyRouteRules SET TargetKind = 'Site' WHERE TargetKind IS NULL OR trim(TargetKind) = '';");
+        var existingNames = db.Queryable<ProxyRouteEntry>().ToList()
+            .Select(x => x.EntryName).ToHashSet(StringComparer.Ordinal);
+        var legacyNames = db.Queryable<ProxyRouteRule>().Select(x => x.ExternalModelName).ToList();
+        foreach (var name in legacyNames.Distinct(StringComparer.Ordinal))
+        {
+            if (!string.IsNullOrWhiteSpace(name) && existingNames.Add(name))
+                db.Insertable(new ProxyRouteEntry { EntryName = name }).ExecuteCommand();
+        }
+
         SanitizeAccountQuotaTimestamps(db, logger);
     }
 

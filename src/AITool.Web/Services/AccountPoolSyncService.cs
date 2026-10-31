@@ -43,12 +43,90 @@ public sealed class AccountPoolSyncService
     private static readonly SemaphoreSlim _syncGate = new(1, 1);
 
     /// <summary>同步单个池：物化自动成员 → 按模型重生成托管入口与规则（全局串行化）。</summary>
-    public async Task<AccountPoolSyncResult> SyncPoolAsync(Guid poolId, CancellationToken ct)
+    public Task<AccountPoolSyncResult> SyncPoolAsync(Guid poolId, CancellationToken ct)
+        => MutateAsync(client => SyncPoolCoreAsync(client, poolId, ct), ct);
+
+    /// <summary>Create the pool, members and generated graph in one serialized transaction.</summary>
+    public Task<AccountPoolSyncResult> CreatePoolAsync(AccountPool pool, IReadOnlyList<Guid>? memberIds, CancellationToken ct)
+        => MutateAsync(async client =>
+        {
+            if (await client.Queryable<AccountPool>().AnyAsync(p => p.Name == pool.Name, ct))
+                throw new InvalidOperationException($"池名「{pool.Name}」已被使用");
+            await client.Insertable(pool).ExecuteCommandAsync(ct);
+            if (!pool.AutoIncludeMembers && memberIds is { Count: > 0 })
+                await ReplaceMemberRowsAsync(client, pool, memberIds.Select(id => (id, false)).ToList(), ct);
+            return await SyncPoolCoreAsync(client, pool.Id, ct);
+        }, ct);
+
+    /// <summary>Replace member settings and regenerate without exposing a partially edited graph.</summary>
+    public Task<AccountPoolSyncResult> ReplaceMembersAsync(Guid poolId, IReadOnlyList<(Guid AccountId, bool Excluded)> members, CancellationToken ct)
+        => MutateAsync(async client =>
+        {
+            var pool = await FindPoolAsync(client, poolId, ct);
+            await ReplaceMemberRowsAsync(client, pool, members, ct);
+            return await SyncPoolCoreAsync(client, poolId, ct);
+        }, ct);
+
+    /// <summary>Update the whitelist and regenerate atomically under the same gates as synchronization.</summary>
+    public Task<AccountPoolSyncResult> UpdateModelsAsync(Guid poolId, string? exposedModelsJson, CancellationToken ct)
+        => MutateAsync(async client =>
+        {
+            var pool = await FindPoolAsync(client, poolId, ct);
+            pool.ExposedModelsJson = exposedModelsJson;
+            await client.Updateable(pool).UpdateColumns(p => p.ExposedModelsJson).ExecuteCommandAsync(ct);
+            return await SyncPoolCoreAsync(client, poolId, ct);
+        }, ct);
+
+    private async Task ReplaceMemberRowsAsync(ISqlSugarClient client, AccountPool pool,
+        IReadOnlyList<(Guid AccountId, bool Excluded)> members, CancellationToken ct)
+    {
+        var candidates = (await ListVendorAccountsAsync(client, pool.VendorKey, pool.PlanType, ct)).ToDictionary(a => a.AccountId);
+        var rows = members.Where(m => candidates.ContainsKey(m.AccountId))
+            .DistinctBy(m => m.AccountId)
+            .Select((m, priority) => new AccountPoolMember
+            {
+                PoolId = pool.Id,
+                AccountRefId = m.AccountId,
+                LinkedSiteId = candidates[m.AccountId].LinkedSiteId,
+                Priority = priority,
+                Excluded = m.Excluded,
+            }).ToList();
+        await client.Deleteable<AccountPoolMember>().Where(m => m.PoolId == pool.Id).ExecuteCommandAsync(ct);
+        if (rows.Count > 0) await client.Insertable(rows).ExecuteCommandAsync(ct);
+    }
+
+    private async Task<T> MutateAsync<T>(Func<ISqlSugarClient, Task<T>> mutation, CancellationToken ct)
     {
         await _syncGate.WaitAsync(ct);
         try
         {
-            return await SyncPoolCoreAsync(poolId, ct);
+            using var graphLease = await RouteGraphMutationGate.AcquireAsync(ct);
+            using var client = _dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+            await client.Ado.BeginTranAsync();
+            T result;
+            List<string> destructiveSources;
+            try
+            {
+                var before = await client.Queryable<ProxyRouteEntry>().ToListAsync(ct);
+                var beforeRules = await client.Queryable<ProxyRouteRule>().ToListAsync(ct);
+                result = await mutation(client);
+                var remainingIds = (await client.Queryable<ProxyRouteEntry>().Select(e => e.Id).ToListAsync(ct)).ToHashSet();
+                var remainingRuleIds = (await client.Queryable<ProxyRouteRule>().Select(r => r.Id).ToListAsync(ct)).ToHashSet();
+                destructiveSources = before.Where(e => !remainingIds.Contains(e.Id)).Select(e => e.EntryName)
+                    .Concat(beforeRules.Where(r => !remainingRuleIds.Contains(r.Id)).Select(r => r.ExternalModelName))
+                    .Distinct(StringComparer.Ordinal).ToList();
+                await client.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await client.Ado.RollbackTranAsync();
+                throw;
+            }
+            foreach (var entryName in destructiveSources) _metadataCache.InvalidateDeletedRouteEntry(entryName);
+            _metadataCache.InvalidateAdminRouteMetadata();
+            _metadataCache.InvalidateRuntimeRouteTargets();
+            return result;
         }
         finally
         {
@@ -56,11 +134,12 @@ public sealed class AccountPoolSyncService
         }
     }
 
-    private async Task<AccountPoolSyncResult> SyncPoolCoreAsync(Guid poolId, CancellationToken ct)
-    {
-        using var client = _dbContext.Client.CopyNew();
-        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+    private static async Task<AccountPool> FindPoolAsync(ISqlSugarClient client, Guid poolId, CancellationToken ct)
+        => (await client.Queryable<AccountPool>().Where(p => p.Id == poolId).ToListAsync(ct)).FirstOrDefault()
+            ?? throw new KeyNotFoundException("号池不存在");
 
+    private async Task<AccountPoolSyncResult> SyncPoolCoreAsync(ISqlSugarClient client, Guid poolId, CancellationToken ct)
+    {
         var pool = (await client.Queryable<AccountPool>()
             .Where(p => p.Id == poolId)
             .ToListAsync(ct)).FirstOrDefault()
@@ -166,8 +245,8 @@ public sealed class AccountPoolSyncService
             }
         }
 
-        await client.Ado.UseTranAsync(async () =>
         {
+            // Delete only outgoing rows by owner name; incoming references retain the deleted target ID.
             // 陈旧入口：删其名下规则 + 入口本身（入口由池创建，规则由池生成）。
             foreach (var stale in staleEntries)
             {
@@ -196,13 +275,10 @@ public sealed class AccountPoolSyncService
             {
                 await client.Insertable(newRules).ExecuteCommandAsync(ct);
             }
-        });
+        }
 
         pool.UpdatedAt = DateTimeOffset.UtcNow;
         await client.Updateable(pool).UpdateColumns(p => p.UpdatedAt).ExecuteCommandAsync(ct);
-
-        _metadataCache.InvalidateAdminRouteMetadata();
-        _metadataCache.InvalidateRuntimeRouteTargets();
 
         return new AccountPoolSyncResult(
             pool.Id,
@@ -242,22 +318,14 @@ public sealed class AccountPoolSyncService
     /// 生命周期随池；手工路由不受影响——池从不认领手工入口）。与同步互斥。
     /// </summary>
     public async Task DeletePoolAsync(Guid poolId, CancellationToken ct)
-    {
-        await _syncGate.WaitAsync(ct);
-        try
+        => await MutateAsync(async client =>
         {
-            await DeletePoolCoreAsync(poolId, ct);
-        }
-        finally
-        {
-            _syncGate.Release();
-        }
-    }
+            await DeletePoolCoreAsync(client, poolId, ct);
+            return true;
+        }, ct);
 
-    private async Task DeletePoolCoreAsync(Guid poolId, CancellationToken ct)
+    private async Task DeletePoolCoreAsync(ISqlSugarClient client, Guid poolId, CancellationToken ct)
     {
-        using var client = _dbContext.Client.CopyNew();
-        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var pool = (await client.Queryable<AccountPool>()
             .Where(p => p.Id == poolId)
             .ToListAsync(ct)).FirstOrDefault()
@@ -267,7 +335,6 @@ public sealed class AccountPoolSyncService
             .Where(e => e.ManagedByPoolId == poolId)
             .ToListAsync(ct);
 
-        await client.Ado.UseTranAsync(async () =>
         {
             await client.Deleteable<AccountPoolMember>().Where(m => m.PoolId == poolId).ExecuteCommandAsync(ct);
             await client.Deleteable<AccountPool>().Where(p => p.Id == poolId).ExecuteCommandAsync(ct);
@@ -282,10 +349,7 @@ public sealed class AccountPoolSyncService
                     .Where(e => e.Id == entry.Id)
                     .ExecuteCommandAsync(ct);
             }
-        });
-
-        _metadataCache.InvalidateAdminRouteMetadata();
-        _metadataCache.InvalidateRuntimeRouteTargets();
+        }
     }
 
     /// <summary>解析池的白名单 JSON；空/非法 = null（不限，全部生成）。</summary>
@@ -312,14 +376,17 @@ public sealed class AccountPoolSyncService
     /// 返回 (账号行 Id, 展示名, 隐藏站点 Id)。设备厂商按 VendorKey 过滤，
     /// 四个垂直厂商按固定键分发。
     /// </summary>
-    public async Task<List<AccountPoolCandidate>> ListVendorAccountsAsync(string vendorKey, string? planType, CancellationToken ct)
+    public Task<List<AccountPoolCandidate>> ListVendorAccountsAsync(string vendorKey, string? planType, CancellationToken ct)
+        => ListVendorAccountsAsync(_dbContext.Client, vendorKey, planType, ct);
+
+    private static async Task<List<AccountPoolCandidate>> ListVendorAccountsAsync(ISqlSugarClient client, string vendorKey, string? planType, CancellationToken ct)
     {
         var key = vendorKey?.Trim() ?? string.Empty;
         switch (key)
         {
             case "codex":
             {
-                var accounts = await _dbContext.CodexAccounts.ToListAsync(ct);
+                var accounts = await client.Queryable<Domain.Codex.CodexAccount>().ToListAsync(ct);
                 return accounts
                     .Where(a => planType == null || string.Equals(a.PlanType, planType, StringComparison.OrdinalIgnoreCase))
                     .Select(a => new AccountPoolCandidate(a.Id, a.DisplayName, a.LinkedSiteId))
@@ -328,7 +395,7 @@ public sealed class AccountPoolSyncService
 
             case "antigravity":
             {
-                var accounts = await _dbContext.GoogleAccounts.ToListAsync(ct);
+                var accounts = await client.Queryable<Domain.Google.GoogleAccount>().ToListAsync(ct);
                 return accounts
                     .Select(a => new AccountPoolCandidate(a.Id, a.DisplayName, a.LinkedSiteId))
                     .ToList();
@@ -336,7 +403,7 @@ public sealed class AccountPoolSyncService
 
             case "kimi":
             {
-                var accounts = await _dbContext.KimiAccounts.Where(a => !a.IsDeleted).ToListAsync(ct);
+                var accounts = await client.Queryable<Domain.Kimi.KimiAccount>().Where(a => !a.IsDeleted).ToListAsync(ct);
                 return accounts
                     .Select(a => new AccountPoolCandidate(a.Id, a.DisplayName ?? a.Email ?? a.Id.ToString(), a.LinkedSiteId))
                     .ToList();
@@ -344,7 +411,7 @@ public sealed class AccountPoolSyncService
 
             case "xai":
             {
-                var accounts = await _dbContext.XaiAccounts.Where(a => !a.IsDeleted).ToListAsync(ct);
+                var accounts = await client.Queryable<Domain.Xai.XaiAccount>().Where(a => !a.IsDeleted).ToListAsync(ct);
                 return accounts
                     .Select(a => new AccountPoolCandidate(a.Id, a.DisplayName ?? a.Email ?? a.Id.ToString(), a.LinkedSiteId))
                     .ToList();
@@ -353,7 +420,7 @@ public sealed class AccountPoolSyncService
             default:
             {
                 // 设备 OAuth 厂商：VendorKey 精确匹配（软删过滤）。
-                var accounts = await _dbContext.DeviceOAuthAccounts
+                var accounts = await client.Queryable<Domain.OAuth.DeviceOAuthAccount>()
                     .Where(a => !a.IsDeleted && a.VendorKey == key)
                     .ToListAsync(ct);
                 return accounts

@@ -23,7 +23,7 @@ public sealed class ProxyRouteEntry
 
     /// <summary>
     /// 号池托管标记：由 <see cref="AccountPool"/> 生成并维护规则的路由入口。
-    /// null = 手工路由（号池同步绝不触碰）；删除池时仅清除本标记（解除托管，规则保留）。
+    /// null = 手工路由（号池同步绝不触碰）；池删除/同步移除时物理删除托管入口，外部引用保持失效。
     /// </summary>
     [SugarColumn(IsNullable = true)]
     public Guid? ManagedByPoolId { get; set; }

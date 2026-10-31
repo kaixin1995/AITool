@@ -56,6 +56,35 @@ public sealed class RouteCandidatePolicyService
         string? conversationKey,
         CancellationToken cancellationToken)
     {
+        // 引用入口是父队列中的一个整体：亲和与配额只能重排组内叶子，不能跨过前面的候选组。
+        if (routes.Any(route => route.FallbackGroupId.HasValue))
+        {
+            var groupedResets = quotaOrderingEnabled
+                ? await LoadResetsBatchAsync(routes.ToList(), cancellationToken)
+                : [];
+            var resetByRoute = groupedResets.GroupBy(item => item.Route)
+                .ToDictionary(group => group.Key, group => group.First().Reset);
+            var grouped = new List<CachedProxyRouteTarget>(routes.Count);
+            foreach (var group in routes.GroupBy(route => route.FallbackGroupId)
+                .OrderBy(group => group.Min(route => route.FallbackGroupOrder)))
+            {
+                var members = group.ToList();
+                if (!string.IsNullOrWhiteSpace(conversationKey)
+                    && _sessionAffinity.TryOrderForConversation(members, conversationKey))
+                {
+                    grouped.AddRange(members);
+                    continue;
+                }
+
+                grouped.AddRange(quotaOrderingEnabled
+                    ? members.OrderBy(route => resetByRoute.GetValueOrDefault(route).HasValue ? 0 : 1)
+                        .ThenBy(route => resetByRoute.GetValueOrDefault(route) ?? DateTimeOffset.MaxValue)
+                    : members);
+            }
+
+            return grouped;
+        }
+
         // 性能：两个开关都关闭时零拷贝零解析原样返回（每个代理请求都会经过这里）；
         // 仅在确有会话亲和键或启用配额排序时才拷贝重排。
         if (string.IsNullOrWhiteSpace(conversationKey) && !quotaOrderingEnabled)

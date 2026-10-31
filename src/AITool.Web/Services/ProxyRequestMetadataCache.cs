@@ -353,7 +353,7 @@ public sealed class ProxyRequestMetadataCache
         string externalModelName,
         CancellationToken cancellationToken)
     {
-        var routes = await GetEffectiveRouteTargetsAsync(externalModelName, cancellationToken);
+        var routes = await CaptureEffectiveRouteTargetsAsync(externalModelName, cancellationToken);
         return SortRouteTargets(routes)
             .Where(x => x.IsAvailableAt(TimeOnly.FromDateTime(DateTime.Now)))
             .ToList();
@@ -366,7 +366,7 @@ public sealed class ProxyRequestMetadataCache
         string externalModelName,
         CancellationToken cancellationToken)
     {
-        var routes = await GetEffectiveRouteTargetsAsync(externalModelName, cancellationToken);
+        var routes = await CaptureEffectiveRouteTargetsAsync(externalModelName, cancellationToken);
         return SortRouteTargets(routes)
             .Where(x => x.IsAvailableAt(TimeOnly.FromDateTime(DateTime.Now)))
             .ToList();
@@ -612,19 +612,17 @@ public sealed class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var candidateCounts = (await dbContext.ProxyRouteRules.ToListAsync(cancellationToken))
+                    var allRules = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var candidateCounts = allRules
                         .GroupBy(x => x.ExternalModelName)
                         .Select(g => new { EntryName = g.Key, CandidateCount = g.Count() })
                         .ToList();
 
-                    var storedEntries = await dbContext.ProxyRouteEntries
-                        
-                        .OrderBy(x => x.EntryName)
-                        .Select(x => x.EntryName)
-                        .ToListAsync(cancellationToken);
+                    var storedEntries = await dbContext.ProxyRouteEntries.ToListAsync(cancellationToken);
+                    var entriesByName = storedEntries.ToDictionary(x => x.EntryName, StringComparer.Ordinal);
 
                     var countsByName = candidateCounts.ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
-                    var entryNames = storedEntries
+                    var entryNames = storedEntries.Select(x => x.EntryName)
                         .Concat(candidateCounts.Select(x => x.EntryName))
                         .Distinct(StringComparer.Ordinal)
                         .OrderBy(x => x, StringComparer.Ordinal)
@@ -639,6 +637,9 @@ public sealed class ProxyRequestMetadataCache
                         .Select(entryName => new RouteEntryListItem
                         {
                             EntryName = entryName,
+                            EntryId = entriesByName.GetValueOrDefault(entryName)?.Id,
+                            ManagedByPoolId = entriesByName.GetValueOrDefault(entryName)?.ManagedByPoolId,
+                            HasRouteReferences = allRules.Any(r => r.ExternalModelName == entryName && IsRouteEntryReference(r)),
                             DisplayName = displayNameByEntry.GetValueOrDefault(entryName),
                             CandidateCount = countsByName.GetValueOrDefault(entryName, 0)
                         })
@@ -848,24 +849,8 @@ public sealed class ProxyRequestMetadataCache
                             .Select(m => new { m.ModelName })
                             .ToListAsync(cancellationToken))
                         .ToDictionary(x => x.ModelName, x => x.ModelName, StringComparer.Ordinal);
-                    var rules = await dbContext.ProxyRouteRules
-                        
-                        .OrderBy(r => r.Priority)
-                        .Select(r => new
-                        {
-                            r.ExternalModelName,
-                            r.Id,
-                            r.SiteId,
-                            r.UpstreamModelName,
-                            r.SiteModelName,
-                            r.Priority,
-                            r.ModelPriority,
-                            r.InstancePriority,
-                            r.IsEnabled,
-                            r.AvailabilityMode,
-                            r.TimeRangesJson
-                        })
-                        .ToListAsync(cancellationToken);
+                    var rules = await dbContext.ProxyRouteRules.OrderBy(r => r.Priority).ToListAsync(cancellationToken);
+                    var entries = (await dbContext.ProxyRouteEntries.ToListAsync(cancellationToken)).ToDictionary(x => x.Id);
 
                     return rules
                         .GroupBy(r => r.ExternalModelName, StringComparer.Ordinal)
@@ -874,6 +859,10 @@ public sealed class ProxyRequestMetadataCache
                             g => g.Select(r => new RouteRuleListItem
                             {
                                 RuleId = r.Id,
+                                TargetKind = IsRouteEntryReference(r) ? "RouteEntry" : (string.IsNullOrWhiteSpace(r.TargetKind) ? "Site" : r.TargetKind),
+                                TargetRouteEntryId = r.TargetRouteEntryId,
+                                TargetRouteEntryName = r.TargetRouteEntryId is Guid targetId && entries.TryGetValue(targetId, out var targetEntry) ? targetEntry.EntryName : r.TargetRouteEntryName,
+                                ReferenceStatus = GetReferenceStatus(r, entries, rules),
                                 SiteId = r.SiteId,
                                 SiteName = sites.TryGetValue(r.SiteId, out var siteName) ? siteName : "(已删除站点)",
                                 SiteEnabled = siteEnabledMap.TryGetValue(r.SiteId, out var enabled) && enabled,
@@ -1136,6 +1125,28 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// Forget deferred source and dependent-parent overrides after deleting an entry.
+    /// Already-captured request lists are detached and remain valid for their current request;
+    /// future requests must not revive a deleted source or its credentials.
+    /// Call after the deletion commits, once for each deleted entry name.
+    /// </summary>
+    public void InvalidateDeletedRouteEntry(string entryName)
+    {
+        var normalizedName = (entryName ?? string.Empty).Trim();
+        lock (_deferredRouteTargetsLock)
+        {
+            foreach (var item in _deferredRouteTargetsByModel.ToList())
+            {
+                if (item.Key == normalizedName || item.Value.PreviousRoutes.Any(x => x.SourceRouteEntryName == normalizedName))
+                {
+                    _deferredRouteTargetsByModel.Remove(item.Key);
+                }
+            }
+        }
+        InvalidateRouteTargets();
+    }
+
+    /// <summary>
     /// 清除后台路由配置页使用的管理缓存。
     /// </summary>
     public void InvalidateAdminRouteMetadata()
@@ -1149,12 +1160,90 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// Capture the source and complete dependent-parent plans before a graph mutation.
+    /// The caller owns this bounded token; cache eviction after capture cannot lose dependencies.
+    /// Serialize graph writes around capture/commit/deferral with RouteGraphMutationGate.
+    /// </summary>
+    public async Task<RouteTargetsMutationSnapshot> CaptureMutationSnapshotAsync(string sourceEntryName, CancellationToken cancellationToken)
+    {
+        var name = sourceEntryName.Trim();
+        // Structural edges remain dependencies even when the source currently expands
+        // to zero leaves. Read them before the caller writes, under its mutation gate;
+        // use only the edges, never raw rules to reconstruct the protected runtime plans.
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var sourceEntries = await dbContext.ProxyRouteEntries.Where(x => x.EntryName == name).ToListAsync(cancellationToken);
+        var sourceIds = sourceEntries.Select(x => x.Id).ToHashSet();
+        var prewriteRules = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+        var structuralParents = prewriteRules
+            .Where(x => x.IsEnabled && IsRouteEntryReference(x) && x.TargetRouteEntryId is Guid id && sourceIds.Contains(id))
+            .Select(x => x.ExternalModelName).ToHashSet(StringComparer.Ordinal);
+        var published = await GetRouteTargetsAsync(cancellationToken);
+        lock (_deferredRouteTargetsLock)
+        {
+            var plans = published.GroupBy(x => x.ExternalModelName, StringComparer.Ordinal)
+                .ToDictionary(x => x.Key, x => (IReadOnlyList<CachedProxyRouteTarget>)x.ToList(), StringComparer.Ordinal);
+            foreach (var deferred in _deferredRouteTargetsByModel)
+            {
+                plans[deferred.Key] = deferred.Value.PreviousRoutes;
+            }
+            var selected = plans.Where(x => x.Key == name || structuralParents.Contains(x.Key) || x.Value.Any(t => t.SourceRouteEntryName == name))
+                .ToDictionary(x => x.Key, x => (IReadOnlyList<CachedProxyRouteTarget>)x.Value.Select(t => t.Clone()).ToList().AsReadOnly(), StringComparer.Ordinal);
+            selected.TryAdd(name, Array.Empty<CachedProxyRouteTarget>());
+            foreach (var parent in structuralParents)
+            {
+                selected.TryAdd(parent, Array.Empty<CachedProxyRouteTarget>());
+            }
+            return new RouteTargetsMutationSnapshot(name, selected);
+        }
+    }
+
+    /// <summary>
+    /// Include direct siblings of dependent parents: their requests also hold the parent's
+    /// old fallback ordering, even when the source leaf itself is currently idle.
+    /// </summary>
+    internal IReadOnlyCollection<RouteTargetIdentity> IncludeDependentRouteTargets(
+        string externalModelName, IReadOnlyCollection<RouteTargetIdentity> affectedRouteTargets)
+    {
+        var identities = affectedRouteTargets.ToHashSet(RouteTargetIdentityComparer.Instance);
+        lock (_deferredRouteTargetsLock)
+        {
+            var published = new List<CachedProxyRouteTarget>();
+            if (_memoryCache.TryGetValue(RouteTargetsCacheKeyPrefix + "all", out IReadOnlyList<CachedProxyRouteTarget>? cached)
+                && cached is not null) published.AddRange(cached);
+            published.AddRange(_deferredRouteTargetsByModel.Values.SelectMany(x => x.PreviousRoutes));
+            var parents = published.Where(x => x.SourceRouteEntryName == externalModelName)
+                .Select(x => x.ExternalModelName).ToHashSet(StringComparer.Ordinal);
+            foreach (var target in published.Where(x => parents.Contains(x.ExternalModelName)))
+            {
+                identities.Add(new RouteTargetIdentity(target.SiteKeyId ?? target.SiteId, target.SiteModelName));
+            }
+        }
+        return identities;
+    }
+
+    /// <summary>
     /// 在指定模型仍有活跃调用时保留旧路由快照，等调用结束后再让新顺序进入运行时。
     /// </summary>
     public void DeferRuntimeRouteTargetsRefresh(
         string externalModelName,
         IReadOnlyCollection<ActiveRouteTargetSnapshot> activeRouteTargets,
         IReadOnlyList<CachedProxyRouteTarget> previousRoutes)
+    {
+        DeferRuntimeRouteTargetsRefresh(externalModelName, activeRouteTargets, previousRoutes, null);
+    }
+
+    internal void DeferRuntimeRouteTargetsRefresh(
+        RouteTargetsMutationSnapshot snapshot, IReadOnlyCollection<ActiveRouteTargetSnapshot> activeRouteTargets)
+    {
+        DeferRuntimeRouteTargetsRefresh(snapshot.SourceEntryName, activeRouteTargets, snapshot.PreviousRoutes, snapshot.Plans);
+    }
+
+    private void DeferRuntimeRouteTargetsRefresh(
+        string externalModelName,
+        IReadOnlyCollection<ActiveRouteTargetSnapshot> activeRouteTargets,
+        IReadOnlyList<CachedProxyRouteTarget> previousRoutes,
+        IReadOnlyDictionary<string, IReadOnlyList<CachedProxyRouteTarget>>? capturedPlans)
     {
         var normalizedModelName = (externalModelName ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(normalizedModelName) || activeRouteTargets.Count == 0)
@@ -1172,29 +1261,55 @@ public sealed class ProxyRequestMetadataCache
 
         lock (_deferredRouteTargetsLock)
         {
-            if (_deferredRouteTargetsByModel.TryGetValue(normalizedModelName, out var existingRefresh))
+            // Freeze already-published parents too: a source edit must not reshuffle their
+            // direct siblings while a request is using the old source generation.
+            var snapshots = capturedPlans is null
+                ? new Dictionary<string, IReadOnlyList<CachedProxyRouteTarget>>(StringComparer.Ordinal)
+                : capturedPlans.ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+            snapshots[normalizedModelName] = previousRoutes;
+            if (capturedPlans is null
+                && _memoryCache.TryGetValue(RouteTargetsCacheKeyPrefix + "all", out IReadOnlyList<CachedProxyRouteTarget>? cachedRoutes)
+                && cachedRoutes is not null)
             {
-                foreach (var pendingSlot in pendingSlots)
+                foreach (var parent in cachedRoutes
+                    .Where(x => string.Equals(x.SourceRouteEntryName, normalizedModelName, StringComparison.Ordinal))
+                    .Select(x => x.ExternalModelName).Distinct(StringComparer.Ordinal))
                 {
-                    if (!existingRefresh.PendingActiveSlots.TryGetValue(pendingSlot.Key, out var existingSlots))
-                    {
-                        existingRefresh.PendingActiveSlots[pendingSlot.Key] = pendingSlot.Value;
-                        continue;
-                    }
-
-                    foreach (var slotId in pendingSlot.Value)
-                    {
-                        existingSlots.Add(slotId);
-                    }
+                    snapshots.TryAdd(parent, cachedRoutes.Where(x => x.ExternalModelName == parent).ToList());
                 }
             }
-            else
+
+            foreach (var deferred in _deferredRouteTargetsByModel)
             {
-                _deferredRouteTargetsByModel[normalizedModelName] = new DeferredRouteTargetsRefresh
+                if (deferred.Value.PreviousRoutes.Any(x => x.SourceRouteEntryName == normalizedModelName))
                 {
-                    PendingActiveSlots = pendingSlots,
-                    PreviousRoutes = previousRoutes.ToList()
-                };
+                    snapshots.TryAdd(deferred.Key, deferred.Value.PreviousRoutes);
+                }
+            }
+
+            foreach (var snapshot in snapshots)
+            {
+                if (_deferredRouteTargetsByModel.TryGetValue(snapshot.Key, out var existingRefresh))
+                {
+                    foreach (var pendingSlot in pendingSlots)
+                    {
+                        if (!existingRefresh.PendingActiveSlots.TryGetValue(pendingSlot.Key, out var existingSlots))
+                        {
+                            existingRefresh.PendingActiveSlots[pendingSlot.Key] = pendingSlot.Value.ToHashSet();
+                            continue;
+                        }
+
+                        existingSlots.UnionWith(pendingSlot.Value);
+                    }
+                }
+                else
+                {
+                    _deferredRouteTargetsByModel[snapshot.Key] = new DeferredRouteTargetsRefresh
+                    {
+                        PendingActiveSlots = pendingSlots.ToDictionary(x => x.Key, x => x.Value.ToHashSet(), RouteTargetIdentityComparer.Instance),
+                        PreviousRoutes = snapshot.Value.Select(x => x.Clone()).ToList().AsReadOnly()
+                    };
+                }
             }
         }
 
@@ -1216,18 +1331,11 @@ public sealed class ProxyRequestMetadataCache
         {
             foreach (var item in _deferredRouteTargetsByModel.ToList())
             {
-                // 找到包含该 slotId 的任何 target 并移除（兼容 siteId 传入 SiteKeyId 或 SiteId 的情况）
-                foreach (var pendingTarget in item.Value.PendingActiveSlots.Keys.ToList())
+                var identity = new RouteTargetIdentity(siteId, siteModelName);
+                if (item.Value.PendingActiveSlots.TryGetValue(identity, out var pendingSlots)
+                    && pendingSlots.Remove(activeSlotId) && pendingSlots.Count == 0)
                 {
-                    if (string.Equals(pendingTarget.SiteModelName, siteModelName, StringComparison.Ordinal)
-                        && item.Value.PendingActiveSlots.TryGetValue(pendingTarget, out var pendingSlots)
-                        && pendingSlots.Remove(activeSlotId))
-                    {
-                        if (pendingSlots.Count == 0)
-                        {
-                            item.Value.PendingActiveSlots.Remove(pendingTarget);
-                        }
-                    }
+                    item.Value.PendingActiveSlots.Remove(identity);
                 }
 
                 if (item.Value.PendingActiveSlots.Count == 0)
@@ -1257,7 +1365,11 @@ public sealed class ProxyRequestMetadataCache
                 continue;
             }
 
-            pendingSlots[activeRouteTarget.RouteTarget] = activeRouteTarget.ActiveSlotIds.ToHashSet();
+            if (!pendingSlots.TryGetValue(activeRouteTarget.RouteTarget, out var slots))
+            {
+                pendingSlots[activeRouteTarget.RouteTarget] = slots = [];
+            }
+            slots.UnionWith(activeRouteTarget.ActiveSlotIds);
         }
 
         return pendingSlots;
@@ -1266,7 +1378,7 @@ public sealed class ProxyRequestMetadataCache
     /// <summary>
     /// 获取指定模型当前对运行时可见的路由快照。
     /// </summary>
-    private async Task<IReadOnlyList<CachedProxyRouteTarget>> GetEffectiveRouteTargetsAsync(string externalModelName, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<CachedProxyRouteTarget>> CaptureEffectiveRouteTargetsAsync(string externalModelName, CancellationToken cancellationToken)
     {
         var normalizedModelName = (externalModelName ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(normalizedModelName))
@@ -1280,9 +1392,14 @@ public sealed class ProxyRequestMetadataCache
         }
 
         var routes = await GetRouteTargetsAsync(cancellationToken);
-        return routes
-            .Where(x => string.Equals(x.ExternalModelName, normalizedModelName, StringComparison.Ordinal))
-            .ToList();
+        // A save can install a deferred snapshot while the cold loader is awaiting IO.
+        if (TryGetDeferredRouteTargets(normalizedModelName, out deferredRoutes))
+        {
+            return deferredRoutes;
+        }
+
+        return SortRouteTargets(routes.Where(x => string.Equals(x.ExternalModelName, normalizedModelName, StringComparison.Ordinal)))
+            .Select(x => x.Clone()).ToList().AsReadOnly();
     }
 
     /// <summary>
@@ -1294,7 +1411,7 @@ public sealed class ProxyRequestMetadataCache
         {
             if (_deferredRouteTargetsByModel.TryGetValue(externalModelName, out var deferredRefresh))
             {
-                routes = deferredRefresh.PreviousRoutes.ToList();
+                routes = deferredRefresh.PreviousRoutes.Select(x => x.Clone()).ToList().AsReadOnly();
                 return true;
             }
         }
@@ -1309,7 +1426,10 @@ public sealed class ProxyRequestMetadataCache
     private static IOrderedEnumerable<CachedProxyRouteTarget> SortRouteTargets(IEnumerable<CachedProxyRouteTarget> routes)
     {
         return routes
-            .OrderBy(x => x.ModelPriority)
+            .OrderBy(x => x.FallbackGroupId.HasValue ? x.FallbackGroupOrder : x.ModelPriority)
+            .ThenBy(x => x.FallbackGroupId.HasValue ? 0 : x.InstancePriority)
+            .ThenBy(x => x.FallbackGroupId.HasValue ? 0 : x.Priority)
+            .ThenBy(x => x.ModelPriority)
             .ThenBy(x => x.InstancePriority)
             .ThenBy(x => x.Priority);
     }
@@ -1372,6 +1492,7 @@ public sealed class ProxyRequestMetadataCache
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
                     var routes = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var routeEntries = (await dbContext.ProxyRouteEntries.ToListAsync(cancellationToken)).ToDictionary(x => x.Id);
                     var sites = await dbContext.Sites.ToListAsync(cancellationToken);
                     var models = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
                     var mappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
@@ -1416,7 +1537,7 @@ public sealed class ProxyRequestMetadataCache
                             join site in sites on route.SiteId equals site.Id
                             join model in models on route.UpstreamModelName equals model.ModelName into modelGroup
                             from model in modelGroup.DefaultIfEmpty()
-                            where route.IsEnabled && site.IsEnabled
+                            where route.IsEnabled && site.IsEnabled && IsSiteTarget(route)
                             select new
                             {
                                 route, site, model
@@ -1493,9 +1614,81 @@ public sealed class ProxyRequestMetadataCache
                         }
                     }
 
-                    return expanded;
+                    var physicalLeaves = expanded.ToLookup(x => x.RouteId);
+                    var effective = new List<CachedProxyRouteTarget>();
+                    foreach (var root in routes.GroupBy(x => x.ExternalModelName, StringComparer.Ordinal))
+                    {
+                        var grouped = root.Any(IsRouteEntryReference);
+                        var outerOrder = 0;
+                        foreach (var rule in root.OrderBy(x => x.Priority))
+                        {
+                            var groupOrder = outerOrder++;
+                            if (!rule.IsEnabled) continue;
+                            if (IsSiteTarget(rule))
+                            {
+                                foreach (var leaf in physicalLeaves[rule.Id])
+                                {
+                                    var target = leaf.Clone();
+                                    if (grouped)
+                                    {
+                                        target.FallbackGroupId = rule.Id;
+                                        target.FallbackGroupOrder = groupOrder;
+                                    }
+                                    effective.Add(target);
+                                }
+                                continue;
+                            }
+
+                            if (!IsRouteEntryReference(rule) || GetReferenceStatus(rule, routeEntries, routes) != "Valid") continue;
+                            var source = routeEntries[rule.TargetRouteEntryId!.Value];
+                            IReadOnlyList<CachedProxyRouteTarget> sourceLeaves;
+                            if (!TryGetDeferredRouteTargets(source.EntryName, out sourceLeaves))
+                            {
+                                sourceLeaves = expanded.Where(x => x.ExternalModelName == source.EntryName).ToList();
+                            }
+                            // The current persisted graph may already be direct-only while
+                            // this source still exposes a protected older reference-bearing
+                            // snapshot. Never flatten that effective second layer or overwrite
+                            // its provenance/parent schedule. Keep old source requests intact;
+                            // the new parent group becomes executable after protection ends.
+                            if (sourceLeaves.Any(HasReferenceExpansionMetadata)) continue;
+                            foreach (var leaf in SortRouteTargets(sourceLeaves))
+                            {
+                                var target = leaf.Clone();
+                                target.ExternalModelName = root.Key;
+                                target.FallbackGroupId = rule.Id;
+                                target.FallbackGroupOrder = groupOrder;
+                                target.SourceRouteEntryId = source.Id;
+                                target.SourceRouteEntryName = source.EntryName;
+                                target.SourcePoolId = source.ManagedByPoolId;
+                                target.ParentAvailabilityMode = NormalizeAvailabilityMode(rule.AvailabilityMode);
+                                target.ParentTimeRangesJson = NormalizeTimeRangesJson(rule.AvailabilityMode, rule.TimeRangesJson);
+                                effective.Add(target);
+                            }
+                        }
+                    }
+                    return (IReadOnlyList<CachedProxyRouteTarget>)effective.AsReadOnly();
                 }, cancellationToken)
             ?? [];
+    }
+
+    private static bool HasReferenceExpansionMetadata(CachedProxyRouteTarget target) =>
+        target.FallbackGroupId.HasValue || target.FallbackGroupOrder != 0
+        || target.SourceRouteEntryId.HasValue || target.SourceRouteEntryName is not null
+        || target.SourcePoolId.HasValue || target.ParentAvailabilityMode is not null
+        || target.ParentTimeRangesJson is not null;
+
+    private static bool IsRouteEntryReference(ProxyRouteRule rule) => string.Equals(rule.TargetKind, "RouteEntry", StringComparison.Ordinal);
+
+    private static bool IsSiteTarget(ProxyRouteRule rule) => string.IsNullOrWhiteSpace(rule.TargetKind) || string.Equals(rule.TargetKind, "Site", StringComparison.Ordinal);
+
+    private static string? GetReferenceStatus(ProxyRouteRule rule, IReadOnlyDictionary<Guid, ProxyRouteEntry> entries, IReadOnlyList<ProxyRouteRule> rules)
+    {
+        if (!IsRouteEntryReference(rule)) return IsSiteTarget(rule) ? null : "Invalid";
+        if (rule.TargetRouteEntryId is not Guid id || !entries.TryGetValue(id, out var source)) return "Missing";
+        if (source.EntryName == rule.ExternalModelName) return "Invalid";
+        if (rules.Any(x => x.ExternalModelName == source.EntryName && !IsSiteTarget(x))) return "Nested";
+        return "Valid";
     }
 
     /// <summary>
@@ -1994,6 +2187,23 @@ internal sealed class CachedSiteSnapshot
 /// <summary>
 /// 延迟刷新路由目标时保留的旧快照。
 /// </summary>
+public sealed class RouteTargetsMutationSnapshot
+{
+    public string SourceEntryName { get; }
+    public IReadOnlyList<CachedProxyRouteTarget> PreviousRoutes => Plans[SourceEntryName].Select(x => x.Clone()).ToList().AsReadOnly();
+    internal IReadOnlyDictionary<string, IReadOnlyList<CachedProxyRouteTarget>> Plans { get; }
+    internal IReadOnlyCollection<RouteTargetIdentity> AffectedTargets { get; }
+
+    internal RouteTargetsMutationSnapshot(string sourceEntryName, IReadOnlyDictionary<string, IReadOnlyList<CachedProxyRouteTarget>> plans)
+    {
+        SourceEntryName = sourceEntryName;
+        Plans = plans;
+        AffectedTargets = plans.Values.SelectMany(x => x)
+            .Select(x => new RouteTargetIdentity(x.SiteKeyId ?? x.SiteId, x.SiteModelName))
+            .Distinct(RouteTargetIdentityComparer.Instance).ToList().AsReadOnly();
+    }
+}
+
 internal sealed class DeferredRouteTargetsRefresh
 {
     /// <summary>
@@ -2209,6 +2419,29 @@ internal sealed class CachedRouteTimeRange
 /// </summary>
 public sealed class CachedProxyRouteTarget
 {
+    /// <summary>Outer rule identity; null for legacy direct-only roots.</summary>
+    public Guid? FallbackGroupId { get; set; }
+    /// <summary>Contiguous outer-rule order, independent of source leaf priorities.</summary>
+    public int FallbackGroupOrder { get; set; }
+    public Guid? SourceRouteEntryId { get; set; }
+    public string? SourceRouteEntryName { get; set; }
+    public Guid? SourcePoolId { get; set; }
+    public string? ParentAvailabilityMode { get; set; }
+    public string? ParentTimeRangesJson { get; set; }
+
+    /// <summary>Copy all routing metadata and detach mutable header/compatibility collections.</summary>
+    public CachedProxyRouteTarget Clone()
+    {
+        var copy = (CachedProxyRouteTarget)MemberwiseClone();
+        copy.ExtraHeaders = new Dictionary<string, string>(ExtraHeaders, StringComparer.OrdinalIgnoreCase);
+        copy.CompatibilityRules = CompatibilityRules.Select(x => new CompatibilityRule
+        {
+            Op = x.Op, Target = x.Target, From = x.From, To = x.To,
+            Key = x.Key, Value = x.Value, Scope = x.Scope
+        }).ToList().AsReadOnly();
+        return copy;
+    }
+
     /// <summary>
     /// 路由标识。
     /// </summary>
@@ -2329,8 +2562,14 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public bool IsAvailableAt(TimeOnly currentTime)
     {
-        var mode = ProxyRequestMetadataCache.NormalizeAvailabilityMode(AvailabilityMode);
-        var timeRangesJson = ProxyRequestMetadataCache.NormalizeTimeRangesJson(mode, TimeRangesJson);
+        return IsScheduleAvailableAt(currentTime, AvailabilityMode, TimeRangesJson)
+            && IsScheduleAvailableAt(currentTime, ParentAvailabilityMode, ParentTimeRangesJson);
+    }
+
+    private static bool IsScheduleAvailableAt(TimeOnly currentTime, string? availabilityMode, string? rangesJson)
+    {
+        var mode = ProxyRequestMetadataCache.NormalizeAvailabilityMode(availabilityMode);
+        var timeRangesJson = ProxyRequestMetadataCache.NormalizeTimeRangesJson(mode, rangesJson);
         if (mode == "AllDay" || string.IsNullOrWhiteSpace(timeRangesJson))
         {
             return true;

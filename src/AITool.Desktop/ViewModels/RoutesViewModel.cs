@@ -13,6 +13,9 @@ public partial class RoutesViewModel : ViewModelBase
 {
     private readonly ApiService _apiService;
     private bool _pendingSaveAfterCurrent;
+    private int _latestRulesLoadToken;
+    private bool _isLoadingRules;
+    private string? _loadedRulesEntryName;
 
     [ObservableProperty]
     private ObservableCollection<RouteEntry> _entries = new();
@@ -78,7 +81,15 @@ public partial class RoutesViewModel : ViewModelBase
     public bool HasSiteInstances => FilteredSiteInstances.Any();
     public bool HasNoSiteInstances => !HasSiteInstances;
     public bool CanCreate => !IsCreating && !IsSavingRules;
-    public bool CanEdit => HasSelectedEntry && !IsLoading && !IsSavingRules;
+    public bool IsReadOnlyEntry => SelectedEntry is not null
+        && (!string.IsNullOrWhiteSpace(SelectedEntry.ManagedByPoolId)
+            || SelectedEntry.HasRouteReferences
+            || Rules.Any(rule => rule.IsRouteReference));
+    public string ReadOnlyEntryMessage => !string.IsNullOrWhiteSpace(SelectedEntry?.ManagedByPoolId)
+        ? "此入口由号池管理，桌面端只读。请前往网页端号池页面修改。"
+        : "此入口包含路由引用，桌面端只读。请在网页端管理候选组。";
+    public bool CanEdit => HasSelectedEntry && _loadedRulesEntryName == SelectedEntry?.EntryName
+        && !IsReadOnlyEntry && !IsLoading && !_isLoadingRules && !IsSavingRules;
     public bool CanAddCandidate => CanEdit && SelectedSiteInstance is not null;
     public bool CanSaveRules => CanEdit && IsDirty;
     public bool CanRefreshPool => !IsRefreshingPool && !IsSavingRules;
@@ -105,12 +116,9 @@ public partial class RoutesViewModel : ViewModelBase
 
             Entries = new ObservableCollection<RouteEntry>(await entriesTask);
             SiteInstances = new ObservableCollection<SiteInstanceItem>(await instancesTask);
-            if (SelectedEntry is not null && Entries.All(entry => entry.EntryName != SelectedEntry.EntryName))
-            {
-                SelectedEntry = null;
-            }
-
-            SelectedEntry ??= Entries.FirstOrDefault();
+            // Rebind refreshed metadata, including pool ownership and reference flags.
+            SelectedEntry = Entries.FirstOrDefault(entry => entry.EntryName == SelectedEntry?.EntryName)
+                ?? Entries.FirstOrDefault();
             await LoadRulesAsync();
         }
         catch (Exception exception)
@@ -128,7 +136,7 @@ public partial class RoutesViewModel : ViewModelBase
 
     public async Task SelectEntryAsync(RouteEntry? entry)
     {
-        if (entry is null || SelectedEntry?.EntryName == entry.EntryName) return;
+        if (IsSavingRules || entry is null || SelectedEntry?.EntryName == entry.EntryName) return;
         SelectedEntry = entry;
         await LoadRulesAsync();
     }
@@ -345,7 +353,7 @@ public partial class RoutesViewModel : ViewModelBase
     [RelayCommand]
     private async Task ToggleRuleAsync(RouteRuleItem? rule)
     {
-        if (rule is null) return;
+        if (!CanEdit || rule is null || rule.IsRouteReference || !Rules.Contains(rule)) return;
         try
         {
             await _apiService.SendAsync<object>(HttpMethod.Post, $"/api/admin/route-rules/toggle/{rule.RuleId}", null);
@@ -360,7 +368,7 @@ public partial class RoutesViewModel : ViewModelBase
     [RelayCommand]
     private async Task DeleteRuleAsync(RouteRuleItem? rule)
     {
-        if (rule is null) return;
+        if (!CanEdit || rule is null || rule.IsRouteReference || !Rules.Contains(rule)) return;
         try
         {
             await _apiService.SendAsync<object>(HttpMethod.Post, $"/api/admin/route-rules/delete/{rule.RuleId}", null);
@@ -374,8 +382,14 @@ public partial class RoutesViewModel : ViewModelBase
 
     private async Task LoadRulesAsync()
     {
+        var token = ++_latestRulesLoadToken;
+        var entryName = SelectedEntry?.EntryName;
+        _isLoadingRules = true;
+        _loadedRulesEntryName = null;
+        NotifyEditProperties();
         if (SelectedEntry is null)
         {
+            _isLoadingRules = false;
             Rules = new ObservableCollection<RouteRuleItem>();
             IsDirty = false;
             UpdateRulePositions();
@@ -389,7 +403,9 @@ public partial class RoutesViewModel : ViewModelBase
                 HttpMethod.Get,
                 $"/api/admin/route-rules/list?modelName={Uri.EscapeDataString(SelectedEntry.EntryName)}",
                 null);
+            if (token != _latestRulesLoadToken || entryName != SelectedEntry?.EntryName) return;
             Rules = new ObservableCollection<RouteRuleItem>(rules.OrderBy(rule => rule.Priority));
+            _loadedRulesEntryName = entryName;
             IsDirty = false;
             UpdateRulePositions();
         }
@@ -399,7 +415,11 @@ public partial class RoutesViewModel : ViewModelBase
         }
         finally
         {
-            NotifyEditProperties();
+            if (token == _latestRulesLoadToken)
+            {
+                _isLoadingRules = false;
+                NotifyEditProperties();
+            }
         }
     }
 
@@ -418,6 +438,7 @@ public partial class RoutesViewModel : ViewModelBase
 
     private void MarkDirty()
     {
+        if (!CanEdit) return;
         IsDirty = true;
         Message = string.Empty;
         ErrorMessage = string.Empty;
@@ -470,6 +491,8 @@ public partial class RoutesViewModel : ViewModelBase
 
     private void NotifyEditProperties()
     {
+        OnPropertyChanged(nameof(IsReadOnlyEntry));
+        OnPropertyChanged(nameof(ReadOnlyEntryMessage));
         OnPropertyChanged(nameof(CanCreate));
         OnPropertyChanged(nameof(CanEdit));
         OnPropertyChanged(nameof(CanAddCandidate));

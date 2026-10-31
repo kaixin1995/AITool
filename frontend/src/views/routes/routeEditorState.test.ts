@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type {
   RouteEntry,
+  RouteReferenceTarget,
   RouteRuleItem,
   SiteInstanceItem
 } from '@/api/routes'
 import {
   appendCandidate,
+  appendReferenceCandidate,
+  getReferenceUnavailableReason,
+  isRouteReference,
   buildSaveRules,
   chooseSelectedEntryAfterReload,
   filterSiteInstances,
@@ -84,6 +88,9 @@ describe('route editor state helpers', () => {
     expect(result).toHaveLength(2)
     expect(result[1]).toEqual({
       ruleId: '',
+      targetKind: 'Site',
+      targetRouteEntryId: null,
+      targetRouteEntryName: null,
       siteId: 'site-2',
       siteName: 'Claude Backup',
       siteEnabled: false,
@@ -147,6 +154,9 @@ describe('route editor state helpers', () => {
 
   it('builds save rules with only fields required by the save contract', () => {
     expect(buildSaveRules([makeRule()])).toEqual([{
+      targetKind: 'Site',
+      targetRouteEntryId: null,
+      targetRouteEntryName: null,
       siteId: 'site-1',
       siteModelName: 'site-model',
       upstreamModelName: 'upstream-model',
@@ -154,6 +164,68 @@ describe('route editor state helpers', () => {
       availabilityMode: 'AvailableOnly',
       timeRangesJson: '[{"start":"09:00","end":"18:00"}]'
     }])
+  })
+
+  const referenceTarget: RouteReferenceTarget = {
+    entryId: 'target-id', entryName: 'pool/model', managedByPoolId: 'pool-id',
+    candidateCount: 2, canSelect: true, reason: null
+  }
+
+  it('appends a reference as one enabled all-day group without expanding its children', () => {
+    const original = [makeRule()]
+    const result = appendReferenceCandidate(original, referenceTarget)
+    expect(original).toHaveLength(1)
+    expect(result).toHaveLength(2)
+    expect(result[1]).toMatchObject({
+      targetKind: 'RouteEntry', targetRouteEntryId: 'target-id', targetRouteEntryName: 'pool/model',
+      priority: 1, isEnabled: true, availabilityMode: 'AllDay', timeRangesJson: ''
+    })
+    expect(buildSaveRules(result)[1]).toEqual({
+      targetKind: 'RouteEntry', targetRouteEntryId: 'target-id', targetRouteEntryName: 'pool/model',
+      isEnabled: true, availabilityMode: 'AllDay', timeRangesJson: ''
+    })
+  })
+
+  it('does not append a target rejected by the reference picker', () => {
+    const original = [makeRule()]
+    expect(appendReferenceCandidate(original, { ...referenceTarget, canSelect: false, reason: 'nested' })).toBe(original)
+  })
+
+  it('keeps mixed group order and group availability in save payloads without site sentinels', () => {
+    const rules = appendReferenceCandidate([makeRule({ ruleId: 'site' })], referenceTarget)
+    rules[1].isEnabled = false
+    rules[1].availabilityMode = 'Unavailable'
+    rules[1].timeRangesJson = '[{"start":"10:00","end":"11:00"}]'
+    const moved = moveCandidate(rules, 1, -1)
+    const payload = buildSaveRules(moved)
+    expect(payload.map((rule) => rule.targetKind)).toEqual(['RouteEntry', 'Site'])
+    expect(payload[0]).toMatchObject({ isEnabled: false, availabilityMode: 'Unavailable', timeRangesJson: rules[1].timeRangesJson })
+    expect(payload[0]).not.toHaveProperty('siteId')
+    expect(payload[0]).not.toHaveProperty('siteModelName')
+    expect(payload[0]).not.toHaveProperty('upstreamModelName')
+    expect(payload[0]).not.toHaveProperty('referenceStatus')
+  })
+
+  it('preserves a missing reference id/name rather than converting it to a site', () => {
+    const rule = makeRule({ targetKind: 'RouteEntry', targetRouteEntryId: 'deleted-id', targetRouteEntryName: 'deleted', referenceStatus: 'Missing' })
+    expect(buildSaveRules([rule])[0]).toMatchObject({ targetKind: 'RouteEntry', targetRouteEntryId: 'deleted-id', targetRouteEntryName: 'deleted' })
+    expect(getReferenceUnavailableReason(rule)).toContain('不存在')
+    expect(buildSaveRules([makeRule({ targetKind: 'RouteEntry' })])[0]).toMatchObject({ targetRouteEntryId: null, targetRouteEntryName: null })
+  })
+
+  it('treats legacy rules without targetKind as site targets', () => {
+    const legacy = makeRule()
+    expect(isRouteReference(legacy)).toBe(false)
+    expect(getReferenceUnavailableReason(legacy)).toBeNull()
+    expect(buildSaveRules([legacy])[0]).toMatchObject({ targetKind: 'Site', siteId: legacy.siteId, targetRouteEntryId: null })
+  })
+
+  it.each([
+    ['Valid', null], ['AVAILABLE', null], ['Missing', '目标入口已删除或不存在'],
+    ['Nested', '目标入口含有路由引用，不支持嵌套引用'], ['empty', '目标入口没有可用候选'],
+    ['Invalid', '路由引用配置无效']
+  ])('explains reference status %s', (referenceStatus, reason) => {
+    expect(getReferenceUnavailableReason(makeRule({ targetKind: 'RouteEntry', referenceStatus }))).toBe(reason)
   })
 
   it('accepts only the latest route load token', () => {

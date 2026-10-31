@@ -158,16 +158,17 @@ public sealed partial class OpenAiProxyController
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
         var routeIndex = -1;
+        var attemptedRoutes = new RouteAttemptTracker(allRoutes);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
         foreach (var route in allRoutes)
         {
             routeIndex++;
-            if (IsRouteBlockedSafely(route.CircuitKey))
+            if (!attemptedRoutes.CanAttempt(route) || IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
-            attemptIndex++;
+            if (!attemptedRoutes.UsesGroupedFallback) attemptIndex++;
             // Responses 客户端优先选择上游原生 Responses；不支持时再降级为 OpenAI/Anthropic 协议转换。
             var actualProtocolType = route.ResolveProtocolForClient("Responses");
 
@@ -175,10 +176,11 @@ public sealed partial class OpenAiProxyController
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
                 concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
 
-            if (!concurrencyHandle.Acquired)
+            if (!concurrencyHandle.Acquired || !attemptedRoutes.TryStart(route))
             {
                 continue;
             }
+            if (attemptedRoutes.UsesGroupedFallback) attemptIndex++;
 
             // Responses 端点的转发逻辑：
             // - 原生 Responses 站点：直接透传 Responses 请求体，URL 指向 /responses
@@ -274,7 +276,7 @@ public sealed partial class OpenAiProxyController
                 var streamCanFallback = !streamResult.Success
                     && streamOutcome.CanFallback
                     && !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult)
-                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => attemptedRoutes.CanAttempt(candidate) && !IsRouteBlockedSafely(candidate.CircuitKey));
 
                 await SafeLogUsageAsync(new UsageLogEntry
                 {
@@ -359,7 +361,7 @@ public sealed partial class OpenAiProxyController
 
             SafeRecordProxyDiagnostic("Responses", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
             var canFallback = !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, result)
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => attemptedRoutes.CanAttempt(candidate) && !IsRouteBlockedSafely(candidate.CircuitKey));
 
             // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账，
             // 避免出现"日志已记成功、客户端却收到 502"的口径错位。
@@ -525,26 +527,28 @@ public sealed partial class OpenAiProxyController
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
         var routeIndex = -1;
+        var attemptedRoutes = new RouteAttemptTracker(allRoutes);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
         foreach (var route in allRoutes)
         {
             routeIndex++;
-            if (IsRouteBlockedSafely(route.CircuitKey))
+            if (!attemptedRoutes.CanAttempt(route) || IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
-            attemptIndex++;
+            if (!attemptedRoutes.UsesGroupedFallback) attemptIndex++;
             // Responses 客户端优先选择上游原生 Responses；不支持时再降级为 OpenAI/Anthropic 协议转换。
             var actualProtocolType = route.ResolveProtocolForClient("Responses");
 
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
                 concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
-            if (!concurrencyHandle.Acquired)
+            if (!concurrencyHandle.Acquired || !attemptedRoutes.TryStart(route))
             {
                 continue;
             }
+            if (attemptedRoutes.UsesGroupedFallback) attemptIndex++;
 
             var isPassthrough = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
             // Anthropic 上游走 PrepareRequestBody 的直转分支；Chat 上游经 ConvertResponsesRequestToChat。
@@ -627,7 +631,7 @@ public sealed partial class OpenAiProxyController
             var canFallback = !streamResult.Success
                 && streamOutcome.CanFallback
                 && !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult)
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => attemptedRoutes.CanAttempt(candidate) && !IsRouteBlockedSafely(candidate.CircuitKey));
 
             await SafeLogUsageAsync(new UsageLogEntry
             {

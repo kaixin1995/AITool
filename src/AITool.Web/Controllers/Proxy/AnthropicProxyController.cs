@@ -280,6 +280,7 @@ public sealed class AnthropicProxyController : ControllerBase
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
         var routeIndex = -1;
+        var attemptedRoutes = new RouteAttemptTracker(allRoutes);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
@@ -293,10 +294,10 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             // 跳过已被熔断器屏蔽的路由
-            if (IsRouteBlockedSafely(route.CircuitKey))
+            if (!attemptedRoutes.CanAttempt(route) || IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
-            attemptIndex++;
+            if (!attemptedRoutes.UsesGroupedFallback) attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("Anthropic");
 
             // 按站点+模型粒度获取并发许可，根据配置决定跳过或排队。
@@ -304,10 +305,11 @@ public sealed class AnthropicProxyController : ControllerBase
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
                 concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
 
-            if (!concurrencyHandle.Acquired)
+            if (!concurrencyHandle.Acquired || !attemptedRoutes.TryStart(route))
             {
                 continue;
             }
+            if (attemptedRoutes.UsesGroupedFallback) attemptIndex++;
 
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Anthropic",
@@ -424,7 +426,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 var streamCanFallback = !streamResult.Success
                     && streamOutcome.CanFallback
                     && !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult)
-                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => attemptedRoutes.CanAttempt(candidate) && !IsRouteBlockedSafely(candidate.CircuitKey));
 
                 await SafeLogUsageAsync(new UsageLogEntry
                 {
@@ -499,7 +501,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
             SafeRecordProxyDiagnostic("Anthropic", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
             var canFallback = !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, result)
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => attemptedRoutes.CanAttempt(candidate) && !IsRouteBlockedSafely(candidate.CircuitKey));
 
             // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账。
             // 否则会出现"日志已记成功、客户端却收到 502"，以及 fallback 成功后第一次尝试的真实
@@ -1326,6 +1328,10 @@ public sealed class AnthropicProxyController : ControllerBase
             ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
             TargetSiteId = route.SiteId,
             TargetSiteName = route.SiteName,
+            SourceRouteEntryId = route.SourceRouteEntryId,
+            SourceRouteEntryName = route.SourceRouteEntryName,
+            SourcePoolId = route.SourcePoolId,
+            FallbackGroupId = route.FallbackGroupId,
             PreparedRequestBody = preparedRequestBody,
             PreparedRequestHeaders = preparedRequestHeaders
         });

@@ -424,6 +424,77 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         ordered[1].SiteId.Should().Be(oauthSite, "OAuth 站点用账号表回退数据（+48h）殿后");
     }
 
+    [Fact]
+    public async Task Grouped_quota_ordering_sorts_pool_leaves_without_crossing_outer_siblings()
+    {
+        var provider = _serviceProvider.GetRequiredService<FakeSiteQuotaProvider>();
+        var siteId = Guid.NewGuid();
+        var group = Guid.NewGuid();
+        var a = new CachedProxyRouteTarget { SiteId = siteId, SiteKeyId = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 0 };
+        var late = new CachedProxyRouteTarget { SiteId = siteId, SiteKeyId = Guid.NewGuid(), FallbackGroupId = group, FallbackGroupOrder = 1 };
+        var soon = new CachedProxyRouteTarget { SiteId = siteId, SiteKeyId = Guid.NewGuid(), FallbackGroupId = group, FallbackGroupOrder = 1 };
+        var e = new CachedProxyRouteTarget { SiteId = siteId, SiteKeyId = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 2 };
+        await using (var scope = _serviceProvider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Sites.Add(new Domain.Sites.Site { Id = siteId, Name = "grouped-keys", BaseUrl = "https://isolated.invalid", IsEnabled = true });
+            foreach (var (route, hours) in new[] { (a, 96), (late, 48), (soon, 2), (e, 1) })
+                db.SiteKeys.Add(new Domain.Sites.SiteKey
+                {
+                    Id = route.SiteKeyId!.Value, SiteId = siteId, KeyValue = "test-only", IsEnabled = true,
+                    LastQuotaRawJson = provider.BuildRawJson(hours)
+                });
+            await db.SaveChangesAsync();
+        }
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+
+        var ordered = await policy.PreorderCandidatesAsync([a, late, soon, e], true, null, CancellationToken.None);
+
+        ordered.Should().Equal(new[] { a, soon, late, e }, "batch lookup must distinguish four keys on one site, while retaining A -> [pool] -> E");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Grouped_affinity_only_promotes_within_its_own_outer_group(bool pinLastOuterSibling)
+    {
+        var poolGroup = Guid.NewGuid();
+        var a = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 0 };
+        var first = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), FallbackGroupId = poolGroup, FallbackGroupOrder = 1 };
+        var pinned = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), FallbackGroupId = poolGroup, FallbackGroupOrder = 1 };
+        var e = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 2 };
+        _sessionAffinity.RecordSuccess("h:grouped", pinLastOuterSibling ? e.CircuitKey : pinned.CircuitKey);
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+
+        var ordered = await policy.PreorderCandidatesAsync([a, first, pinned, e], false, "h:grouped", CancellationToken.None);
+
+        ordered.Should().Equal(pinLastOuterSibling ? new[] { a, first, pinned, e } : new[] { a, pinned, first, e });
+    }
+
+    [Fact]
+    public async Task Grouped_affinity_wins_over_quota_only_inside_the_pinned_group()
+    {
+        var provider = _serviceProvider.GetRequiredService<FakeAccountQuotaProvider>();
+        var poolGroup = Guid.NewGuid();
+        var a = new CachedProxyRouteTarget { SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 0 };
+        var soon = new CachedProxyRouteTarget { SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = poolGroup, FallbackGroupOrder = 1 };
+        var pinned = new CachedProxyRouteTarget { SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = poolGroup, FallbackGroupOrder = 1 };
+        var e = new CachedProxyRouteTarget { SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 2 };
+        provider.Seed(a.SiteId, 96);
+        provider.Seed(soon.SiteId, 2);
+        provider.Seed(pinned.SiteId, 48);
+        provider.Seed(e.SiteId, 1);
+        _sessionAffinity.RecordSuccess("h:quota-affinity", pinned.CircuitKey);
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+
+        var ordered = await policy.PreorderCandidatesAsync([a, soon, pinned, e], true, "h:quota-affinity", CancellationToken.None);
+
+        ordered.Should().Equal(a, pinned, soon, e);
+    }
+
     public void Dispose()
     {
         _serviceProvider.Dispose();

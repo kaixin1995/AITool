@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { httpGet, httpPost } from './http'
 import {
   getRouteSiteInstances,
+  getRouteReferenceTargets,
+  deleteRouteEntry,
   routeAvailabilityModes,
   routeAvailabilityOptions,
   saveRouteRules
@@ -36,6 +38,44 @@ describe('route availability contract', () => {
 })
 
 describe('route rules API client', () => {
+  it('loads reference targets for the encoded parent entry', async () => {
+    mockedHttpGet.mockResolvedValueOnce([])
+    await expect(getRouteReferenceTargets('chat / prod')).resolves.toEqual([])
+    expect(mockedHttpGet).toHaveBeenCalledWith('/api/admin/route-rules/reference-targets?parentEntryName=chat%20%2F%20prod')
+  })
+
+  it('never confirms referenced deletion implicitly', async () => {
+    await deleteRouteEntry('entry')
+    expect(mockedHttpPost).toHaveBeenLastCalledWith(
+      '/api/admin/route-rules/entries/delete', { entryName: 'entry' }, { skipErrorNotify: true }
+    )
+    await deleteRouteEntry('entry', true)
+    expect(mockedHttpPost).toHaveBeenLastCalledWith(
+      '/api/admin/route-rules/entries/delete', { entryName: 'entry', confirmReferenced: true }, { skipErrorNotify: true }
+    )
+  })
+
+  it('propagates the initial deletion conflict without retrying or confirming', async () => {
+    const conflict = { status: 409, message: 'referenced' }
+    mockedHttpPost.mockRejectedValueOnce(conflict)
+    await expect(deleteRouteEntry('entry')).rejects.toBe(conflict)
+    expect(mockedHttpPost).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends reference-only payloads and advertises support', async () => {
+    const rules = [{
+      targetKind: 'RouteEntry' as const,
+      targetRouteEntryId: 'entry-id',
+      targetRouteEntryName: 'pool model',
+      isEnabled: true,
+      availabilityMode: 'AllDay' as const,
+      timeRangesJson: ''
+    }]
+    await saveRouteRules('auto', rules)
+    expect(mockedHttpPost).toHaveBeenCalledWith('/api/admin/route-rules/save', {
+      externalModelName: 'auto', rules, supportsRouteReferences: true
+    })
+  })
   it('loads the complete route site instance pool', async () => {
     mockedHttpGet.mockResolvedValueOnce([])
 
@@ -66,7 +106,8 @@ describe('route rules API client', () => {
       '/api/admin/route-rules/save',
       {
         externalModelName: 'chat prod',
-        rules
+        rules,
+        supportsRouteReferences: true
       }
     )
   })

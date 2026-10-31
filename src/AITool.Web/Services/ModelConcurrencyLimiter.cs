@@ -114,6 +114,8 @@ public sealed class ModelConcurrencyLimiter
     /// 每个 SiteId + RemoteModelName 组合对应的并发状态。
     /// </summary>
     private readonly ConcurrentDictionary<string, ModelConcurrencyState> _states = new(StringComparer.Ordinal);
+    // Slot ids must not be reused when an idle state is evicted and recreated.
+    private long _nextActiveSlotId;
 
     /// <summary>
     /// 最近出现过的模型并发展示元数据，归零后仍会保留一段时间，避免调试页瞬间清空。
@@ -377,7 +379,7 @@ public sealed class ModelConcurrencyLimiter
     /// <summary>
     /// 当前配置允许时，优先按先进先出放行已排队请求。
     /// </summary>
-    private static List<QueuedAcquireWaiter> PromoteQueuedWaitersLocked(ModelConcurrencyState state)
+    private List<QueuedAcquireWaiter> PromoteQueuedWaitersLocked(ModelConcurrencyState state)
     {
         List<QueuedAcquireWaiter>? promoted = null;
         while (CanAcquireImmediatelyLocked(state) && TryDequeueNextWaiterLocked(state, out var waiter))
@@ -472,9 +474,8 @@ public sealed class ModelConcurrencyLimiter
     /// <summary>
     /// 如果受影响的模型正在调用中，则在同一把锁内捕获槽位并登记延迟刷新，避免请求刚结束时丢失通知。
     /// <para>
-    /// 注意：多 Key 站点的并发 state 键是 {SiteKeyId}:{Model}，而本方法入参的 RouteTargetIdentity 用真实 SiteId，
-    /// 精确查不到时会返回 false，调用方据此降级为立即刷新缓存（安全行为，仅丢失"等活跃调用结束再刷新"的优化）。
-    /// 这是可接受的折中——该机制仅在编辑路由规则这一罕见操作时触发，且最坏后果是 5 秒缓存窗口后自动一致。
+    /// RouteTargetIdentity.SiteId 必须是实际并发隔离身份（SiteKeyId ?? SiteId），而非调试展示身份。
+    /// 释放时只匹配相同隔离身份、模型及槽位，避免不同 Key 使用相同模型时互相提前刷新。
     /// </para>
     /// </summary>
     public bool TryDeferRuntimeRouteTargetsRefresh(
@@ -482,8 +483,24 @@ public sealed class ModelConcurrencyLimiter
         IReadOnlyCollection<RouteTargetIdentity> affectedRouteTargets,
         IReadOnlyList<CachedProxyRouteTarget> previousRoutes)
     {
+        return TryDeferRuntimeRouteTargetsRefresh(
+            _metadataCache.IncludeDependentRouteTargets(externalModelName, affectedRouteTargets),
+            activeSnapshots => _metadataCache.DeferRuntimeRouteTargetsRefresh(externalModelName, activeSnapshots, previousRoutes));
+    }
+
+    /// <summary>Use the complete prewrite capture even if background invalidation evicted the metadata cache.</summary>
+    public bool TryDeferRuntimeRouteTargetsRefresh(RouteTargetsMutationSnapshot snapshot)
+    {
+        return TryDeferRuntimeRouteTargetsRefresh(snapshot.AffectedTargets,
+            activeSnapshots => _metadataCache.DeferRuntimeRouteTargetsRefresh(snapshot, activeSnapshots));
+    }
+
+    private bool TryDeferRuntimeRouteTargetsRefresh(
+        IReadOnlyCollection<RouteTargetIdentity> affectedRouteTargets,
+        Action<IReadOnlyCollection<ActiveRouteTargetSnapshot>> registerDeferral)
+    {
         var stateEntries = new List<(string Key, RouteTargetIdentity RouteTarget, ModelConcurrencyState State)>();
-        foreach (var routeTarget in affectedRouteTargets)
+        foreach (var routeTarget in affectedRouteTargets.Distinct())
         {
             var key = BuildKey(routeTarget.SiteId, routeTarget.SiteModelName);
             if (_states.TryGetValue(key, out var state))
@@ -518,7 +535,7 @@ public sealed class ModelConcurrencyLimiter
                 return false;
             }
 
-            _metadataCache.DeferRuntimeRouteTargetsRefresh(externalModelName, activeSnapshots, previousRoutes);
+            registerDeferral(activeSnapshots);
             return true;
         }
         finally
@@ -554,9 +571,9 @@ public sealed class ModelConcurrencyLimiter
     /// <summary>
     /// 为一次真实调用分配槽位编号，便于只等待保存前已经开始的请求。
     /// </summary>
-    private static long TrackActiveSlotLocked(ModelConcurrencyState state)
+    private long TrackActiveSlotLocked(ModelConcurrencyState state)
     {
-        var slotId = ++state.NextActiveSlotId;
+        var slotId = Interlocked.Increment(ref _nextActiveSlotId);
         state.ActiveSlotIds.Add(slotId);
         return slotId;
     }
@@ -621,10 +638,6 @@ public sealed class ModelConcurrencyLimiter
         /// 当前活跃并发数。
         /// </summary>
         public int ActiveCount { get; set; }
-        /// <summary>
-        /// 下一次真实调用的槽位编号。
-        /// </summary>
-        public long NextActiveSlotId { get; set; }
         /// <summary>
         /// 当前仍在执行的调用槽位编号。
         /// </summary>

@@ -1,7 +1,6 @@
 using System.Text.Json;
 using AITool.Application.Common;
 using AITool.Application.Proxy;
-using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
@@ -38,6 +37,9 @@ public sealed class RouteModelItem
 /// </summary>
 public sealed class RouteEntryListItem
 {
+    public Guid? EntryId { get; set; }
+    public Guid? ManagedByPoolId { get; set; }
+    public bool HasRouteReferences { get; set; }
     /// <summary>
     /// 主入口名称。
     /// </summary>
@@ -68,6 +70,7 @@ public sealed class CreateRouteEntryRequest
 /// </summary>
 public sealed class DeleteRouteEntryRequest
 {
+    public bool ConfirmReferenced { get; set; }
     /// <summary>
     /// 主入口名称。
     /// </summary>
@@ -129,6 +132,10 @@ public sealed class DiscoveredSiteItem
 /// </summary>
 public sealed class RouteRuleListItem
 {
+    public string TargetKind { get; set; } = "Site";
+    public Guid? TargetRouteEntryId { get; set; }
+    public string? TargetRouteEntryName { get; set; }
+    public string? ReferenceStatus { get; set; }
     /// <summary>
     /// 规则标识。
     /// </summary>
@@ -188,6 +195,7 @@ public sealed class RouteRuleListItem
 /// </summary>
 public sealed class SaveRouteRulesRequest
 {
+    public bool SupportsRouteReferences { get; set; }
     /// <summary>
     /// 外部模型名称。
     /// </summary>
@@ -203,6 +211,9 @@ public sealed class SaveRouteRulesRequest
 /// </summary>
 public sealed class SaveRouteRuleEntry
 {
+    public string TargetKind { get; set; } = "Site";
+    public Guid? TargetRouteEntryId { get; set; }
+    public string? TargetRouteEntryName { get; set; }
     /// <summary>
     /// 上游模型名称。
     /// </summary>
@@ -283,6 +294,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("entries")]
     public async Task<IActionResult> GetEntries(CancellationToken cancellationToken)
     {
+        using var lease = await RouteGraphMutationGate.AcquireAsync(cancellationToken);
         var result = await _metadataCache.GetRouteEntriesAsync(cancellationToken);
         return Ok(result);
     }
@@ -299,20 +311,14 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(entryName))
             return BadRequest(new { message = "主入口名称不能为空" });
 
-        var existsInEntries = await _dbContext.ProxyRouteEntries
-            .AnyAsync(x => x.EntryName == entryName, cancellationToken);
-        var existsInRules = await _dbContext.ProxyRouteRules
-            .AnyAsync(x => x.ExternalModelName == entryName, cancellationToken);
-        if (existsInEntries || existsInRules)
-            return BadRequest(new { message = "主入口已存在" });
-
-        _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
+        return await ExecuteGraphMutationAsync(async db =>
         {
-            EntryName = entryName
-        });
-        _metadataCache.InvalidateRouteTargets();
-
-        return Ok(new { message = "创建成功" });
+            if (await db.ProxyRouteEntries.AnyAsync(x => x.EntryName == entryName, cancellationToken)
+                || await db.ProxyRouteRules.AnyAsync(x => x.ExternalModelName == entryName, cancellationToken))
+                return BadRequest(new { message = "主入口已存在" });
+            await db.InsertAsync(new ProxyRouteEntry { EntryName = entryName }, cancellationToken);
+            return Ok(new { message = "创建成功" });
+        }, cancellationToken);
     }
 
     /// <summary>
@@ -327,28 +333,25 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(entryName))
             return BadRequest(new { message = "主入口名称不能为空" });
 
-        var entry = await _dbContext.ProxyRouteEntries
-            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
-        var rules = await _dbContext.ProxyRouteRules
-            .Where(x => x.ExternalModelName == entryName)
-            .ToListAsync(cancellationToken);
-
-        if (entry is null && rules.Count == 0)
-            return NotFound(new { message = "主入口不存在" });
-
-        if (entry is not null)
+        return await ExecuteGraphMutationAsync(async db =>
         {
-            _dbContext.ProxyRouteEntries.Remove(entry);
-        }
-
-        if (rules.Count > 0)
+            var entry = await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == entryName, cancellationToken);
+            var rules = await db.ProxyRouteRules.Where(x => x.ExternalModelName == entryName).ToListAsync(cancellationToken);
+            if (entry is null && rules.Count == 0) return NotFound(new { message = "主入口不存在" });
+            if (entry?.ManagedByPoolId is not null) return Conflict(new { message = "号池托管入口不能手工修改" });
+            var inbound = entry is null ? new List<ProxyRouteRule>() : await db.ProxyRouteRules
+                .Where(x => x.TargetKind == "RouteEntry" && x.TargetRouteEntryId == entry.Id).ToListAsync(cancellationToken);
+            if (inbound.Count > 0 && !request.ConfirmReferenced)
+                return Conflict(new { message = "入口正在被引用，确认删除后引用将失效", referenceCount = inbound.Count });
+            // Incoming references deliberately survive; recreating the name must not rebind them.
+            if (entry is not null) await db.DeleteAsync(entry, cancellationToken);
+            if (rules.Count > 0) await db.DeleteRangeAsync(rules, cancellationToken);
+            return Ok(new { message = "删除成功" });
+        }, cancellationToken, () =>
         {
-            _dbContext.ProxyRouteRules.RemoveRange(rules);
-        }
-
-        _metadataCache.InvalidateRouteTargets();
-
-        return Ok(new { message = "删除成功" });
+            _metadataCache.InvalidateDeletedRouteEntry(entryName);
+            return Task.CompletedTask;
+        });
     }
 
     /// <summary>
@@ -357,6 +360,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("site-instances")]
     public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
     {
+        using var lease = await RouteGraphMutationGate.AcquireAsync(cancellationToken);
         var result = await _metadataCache.GetRouteSiteInstancesAsync(cancellationToken);
         return Ok(result);
     }
@@ -367,6 +371,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
+        using var lease = await RouteGraphMutationGate.AcquireAsync(cancellationToken);
         var models = await _metadataCache.GetRouteModelsAsync(cancellationToken);
         return Ok(models);
     }
@@ -379,6 +384,7 @@ public sealed class RouteRulesApiController : ControllerBase
         [FromQuery] string modelName,
         CancellationToken cancellationToken)
     {
+        using var lease = await RouteGraphMutationGate.AcquireAsync(cancellationToken);
         var results = await _metadataCache.GetDiscoveredSitesAsync(modelName, cancellationToken);
         return Ok(results);
     }
@@ -391,6 +397,7 @@ public sealed class RouteRulesApiController : ControllerBase
         [FromQuery] string modelName,
         CancellationToken cancellationToken)
     {
+        using var lease = await RouteGraphMutationGate.AcquireAsync(cancellationToken);
         var result = await _metadataCache.GetRouteRulesAsync(modelName, cancellationToken);
         return Ok(result);
     }
@@ -407,248 +414,173 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(entryName))
             return BadRequest(new { message = "模型名称不能为空" });
 
-        var requestedSiteIds = request.Rules
-            .Select(x => x.SiteId)
-            .Distinct()
-            .ToList();
-        if (requestedSiteIds.Contains(Guid.Empty))
-            return BadRequest(new { message = "站点标识不能为空" });
-
-        if (requestedSiteIds.Count > 0)
+        if (request.Rules is null || request.Rules.Any(x => x is null))
+            return BadRequest(new { message = "规则不能为空" });
+        RouteTargetsMutationSnapshot? mutationSnapshot = null;
+        var routeRefreshDeferred = false;
+        var result = await ExecuteGraphMutationAsync(async db =>
         {
-            var existingSiteIds = await _dbContext.Sites
-                .Where(x => requestedSiteIds.Contains(x.Id))
-                .Select(x => x.Id)
-                .ToListAsync(cancellationToken);
-            if (existingSiteIds.Count != requestedSiteIds.Count)
-                return BadRequest(new { message = "包含不存在的站点" });
-        }
+            var entries = await db.ProxyRouteEntries.ToListAsync(cancellationToken);
+            var allRules = await db.ProxyRouteRules.ToListAsync(cancellationToken);
+            var existingEntry = entries.FirstOrDefault(x => x.EntryName == entryName);
+            if (existingEntry?.ManagedByPoolId is not null)
+                return Conflict(new { message = "号池托管入口不能手工修改" });
+            var oldRules = allRules.Where(x => x.ExternalModelName == entryName).ToList();
+            if (!request.SupportsRouteReferences && (oldRules.Any(IsReference) || request.Rules.Any(x => NormalizeTargetKind(x.TargetKind) == "RouteEntry")))
+                return Conflict(new { message = "客户端不支持入口引用，请升级后重试" });
 
-        // 在任何写入前完成全部候选的规范化和校验，避免 SqlSugar 立即写入导致旧规则被部分覆盖。
-        var upstreamOrder = request.Rules
-            .Select(r => r.UpstreamModelName)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct()
-            .ToList();
-        var newRules = new List<ProxyRouteRule>(request.Rules.Count);
-
-        for (int i = 0; i < request.Rules.Count; i++)
-        {
-            var entry = request.Rules[i];
-            var normalizedUpstreamModelName = string.IsNullOrWhiteSpace(entry.UpstreamModelName)
-                ? entry.SiteModelName
-                : entry.UpstreamModelName.Trim();
-            var sameModelEarlierCount = request.Rules
-                .Take(i)
-                .Count(x => string.Equals(
-                    string.IsNullOrWhiteSpace(x.UpstreamModelName) ? x.SiteModelName : x.UpstreamModelName.Trim(),
-                    normalizedUpstreamModelName,
-                    StringComparison.Ordinal));
-            var modelPriority = upstreamOrder.IndexOf(normalizedUpstreamModelName);
-            if (modelPriority < 0)
+            var parent = existingEntry ?? new ProxyRouteEntry { EntryName = entryName };
+            var newRules = new List<ProxyRouteRule>();
+            var modelOrder = new List<string>();
+            var sites = (await db.Sites.Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
+            foreach (var item in request.Rules)
             {
-                modelPriority = upstreamOrder.Count;
-                upstreamOrder.Add(normalizedUpstreamModelName);
-            }
-
-            if (!TryNormalizeAvailability(entry.AvailabilityMode, entry.TimeRangesJson, out var availability))
-                return BadRequest(new { message = "时间范围配置无效" });
-
-            newRules.Add(new ProxyRouteRule
-            {
-                ExternalModelName = entryName,
-                UpstreamModelName = normalizedUpstreamModelName,
-                SiteId = entry.SiteId,
-                SiteModelName = entry.SiteModelName,
-                Priority = i,
-                ModelPriority = modelPriority,
-                InstancePriority = sameModelEarlierCount,
-                IsEnabled = entry.IsEnabled,
-                AvailabilityMode = availability.Mode,
-                TimeRangesJson = availability.TimeRangesJson
-            });
-        }
-
-        var existingEntry = await _dbContext.ProxyRouteEntries
-            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
-        if (existingEntry is null)
-        {
-            _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
-            {
-                EntryName = entryName
-            });
-        }
-
-        // 删除该模型的所有旧规则
-        var existingRules = await _dbContext.ProxyRouteRules
-            .Where(r => r.ExternalModelName == entryName)
-            .ToListAsync(cancellationToken);
-        var previousRouteTargets = await LoadPreviousRouteTargetsAsync(existingRules, cancellationToken);
-        _dbContext.ProxyRouteRules.RemoveRange(existingRules);
-        _dbContext.ProxyRouteRules.AddRange(newRules);
-
-        var affectedRouteTargets = BuildAffectedRouteTargets(existingRules, request.Rules);
-
-        _metadataCache.InvalidateAdminRouteMetadata();
-        var routeRefreshDeferred = _concurrencyLimiter.TryDeferRuntimeRouteTargetsRefresh(entryName, affectedRouteTargets, previousRouteTargets);
-        if (!routeRefreshDeferred)
-        {
-            _metadataCache.InvalidateRuntimeRouteTargets();
-        }
-
-        return Ok(new { message = routeRefreshDeferred ? "保存成功，调用中的模型会在当前请求结束后生效" : "保存成功" });
-    }
-
-    /// <summary>
-    /// 将旧规则转换成运行时路由快照，活跃调用期间继续沿用该快照。
-    /// </summary>
-    private async Task<IReadOnlyList<CachedProxyRouteTarget>> LoadPreviousRouteTargetsAsync(
-        IReadOnlyCollection<ProxyRouteRule> existingRules,
-        CancellationToken cancellationToken)
-    {
-        if (existingRules.Count == 0)
-        {
-            return [];
-        }
-
-        var siteIds = existingRules.Select(x => x.SiteId).Distinct().ToList();
-        var sites = await _dbContext.Sites
-
-            .Where(x => siteIds.Contains(x.Id) && x.IsEnabled)
-            .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
-        // 加载这些站点的启用 SiteKey，按 SiteId 分组，用于按 Key 展开为多条候选（与缓存层一致）。
-        var siteKeys = await _dbContext.SiteKeys
-            .Where(k => k.IsEnabled && siteIds.Contains(k.SiteId))
-            .ToListAsync(cancellationToken);
-        var siteKeysBySite = siteKeys
-            .GroupBy(k => k.SiteId)
-            .ToDictionary(g => g.Key, g => g.ToList());
-        var upstreamModelNames = existingRules
-            .Select(x => x.UpstreamModelName)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct()
-            .ToList();
-        var models = await _dbContext.ModelLibraryItems
-            .Where(x => upstreamModelNames.Contains(x.ModelName))
-            .ToDictionaryAsync(x => x.ModelName, x => x, cancellationToken);
-        var compatibilityProfileIds = models.Values
-            .Select(x => x.CompatibilityProfileId)
-            .Where(x => x is not null && x.Value != Guid.Empty)
-            .Select(x => x!.Value)
-            .Distinct()
-            .ToList();
-        var profiles = compatibilityProfileIds.Count == 0
-            ? new Dictionary<Guid, IReadOnlyList<CompatibilityRule>>()
-            : (await _dbContext.CompatibilityProfiles
-                .Where(x => x.IsEnabled && compatibilityProfileIds.Contains(x.Id))
-                .ToListAsync(cancellationToken))
-            .ToDictionary(x => x.Id, x => ParseCompatibilityRules(x.RulesJson));
-
-        // 按 SiteKey 展开：每条路由 × 每个启用 Key 各产出一条候选，保证延迟刷新期间的旧快照
-        // 与缓存热路径产出一致（SiteKeyId/CircuitKey/ApiKey 都正确），避免保护期内熔断键错乱。
-        var expanded = new List<CachedProxyRouteTarget>();
-        foreach (var rule in existingRules.Where(x => x.IsEnabled && sites.ContainsKey(x.SiteId)))
-        {
-            var site = sites[rule.SiteId];
-            models.TryGetValue(rule.UpstreamModelName, out var model);
-            var candidates = ProxyRequestMetadataCache.ResolveSiteKeyCandidates(site.Id, site.ApiKey, siteKeysBySite);
-
-            foreach (var candidate in candidates)
-            {
-                expanded.Add(new CachedProxyRouteTarget
+                var kind = NormalizeTargetKind(item.TargetKind);
+                if (kind != "Site" && kind != "RouteEntry") return BadRequest(new { message = "未知目标类型" });
+                if (!TryNormalizeAvailability(item.AvailabilityMode, item.TimeRangesJson, out var availability))
+                    return BadRequest(new { message = "时间范围配置无效" });
+                ProxyRouteEntry? target = null;
+                if (kind == "RouteEntry")
                 {
-                    RouteId = rule.Id,
-                    SiteId = site.Id,
-                    SiteKeyId = candidate.SiteKeyId,
-                    CircuitKey = ProxyRequestMetadataCache.BuildCircuitKey(site.Id, candidate.SiteKeyId, rule.SiteModelName),
-                    SiteName = site.Name,
-                    ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(
-                        site.SupportsOpenAi,
-                        site.SupportsAnthropic,
-                        site.SupportsResponses,
-                        site.ProtocolType),
-                    EndpointPathMode = site.EndpointPathMode,
-                    SupportsOpenAi = site.SupportsOpenAi,
-                    SupportsAnthropic = site.SupportsAnthropic,
-                    SupportsResponses = ProxyProtocolResolver.SupportsResponses(
-                        site.SupportsOpenAi,
-                        site.SupportsAnthropic,
-                        site.SupportsResponses,
-                        site.ProtocolType),
-                    ExternalModelName = rule.ExternalModelName,
-                    UpstreamModelName = rule.UpstreamModelName,
-                    SiteModelName = rule.SiteModelName,
-                    BaseUrl = site.BaseUrl,
-                    ApiKey = candidate.ApiKey,
-                    ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
-                    ModelPriority = rule.ModelPriority,
-                    InstancePriority = rule.InstancePriority,
-                    Priority = rule.Priority,
-                    OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
-                    CompatibilityRules = GetRulesForModel(model, profiles),
-                    AvailabilityMode = rule.AvailabilityMode,
-                    TimeRangesJson = rule.TimeRangesJson
+                    if (item.SiteId != Guid.Empty || !string.IsNullOrWhiteSpace(item.SiteModelName)
+                        || item.TargetRouteEntryId is null || item.TargetRouteEntryId == Guid.Empty)
+                        return BadRequest(new { message = "入口引用必须使用入口标识且不能包含站点字段" });
+                    target = entries.FirstOrDefault(x => x.Id == item.TargetRouteEntryId);
+                    // Existing broken references can be preserved/reordered, but never rebound by name.
+                    if (target is null && !oldRules.Any(x => IsReference(x) && x.TargetRouteEntryId == item.TargetRouteEntryId))
+                        return BadRequest(new { message = "引用入口不存在" });
+                }
+                else if (item.SiteId == Guid.Empty || !sites.Contains(item.SiteId)
+                    || item.TargetRouteEntryId is not null || !string.IsNullOrWhiteSpace(item.TargetRouteEntryName))
+                    return BadRequest(new { message = "站点规则包含无效站点或入口引用字段" });
+
+                var model = kind == "RouteEntry" ? target?.EntryName ?? item.TargetRouteEntryName ?? string.Empty
+                    : string.IsNullOrWhiteSpace(item.UpstreamModelName) ? item.SiteModelName : item.UpstreamModelName.Trim();
+                if (!modelOrder.Contains(model)) modelOrder.Add(model);
+                newRules.Add(new ProxyRouteRule
+                {
+                    ExternalModelName = entryName, TargetKind = kind,
+                    TargetRouteEntryId = kind == "RouteEntry" ? item.TargetRouteEntryId : null,
+                    TargetRouteEntryName = kind == "RouteEntry" ? target?.EntryName
+                        ?? oldRules.First(x => IsReference(x) && x.TargetRouteEntryId == item.TargetRouteEntryId).TargetRouteEntryName : null,
+                    SiteId = kind == "RouteEntry" ? Guid.Empty : item.SiteId,
+                    SiteModelName = kind == "RouteEntry" ? string.Empty : item.SiteModelName,
+                    UpstreamModelName = model, Priority = newRules.Count, ModelPriority = modelOrder.IndexOf(model),
+                    InstancePriority = newRules.Count(x => x.UpstreamModelName == model),
+                    IsEnabled = item.IsEnabled, AvailabilityMode = availability.Mode, TimeRangesJson = availability.TimeRangesJson
                 });
             }
-        }
-
-        return expanded
-            .OrderBy(x => x.ModelPriority)
-            .ThenBy(x => x.InstancePriority)
-            .ThenBy(x => x.Priority)
-            .ToList();
+            var graphEntries = entries.Where(x => x.Id != parent.Id).Append(parent).ToList();
+            var graphRules = allRules.Where(x => x.ExternalModelName != entryName).Concat(newRules).ToList();
+            var graphError = ValidateGraph(parent, graphEntries, graphRules);
+            if (graphError is not null) return BadRequest(new { message = graphError });
+            mutationSnapshot = await _metadataCache.CaptureMutationSnapshotAsync(entryName, cancellationToken);
+            if (existingEntry is null) await db.InsertAsync(parent, cancellationToken);
+            if (oldRules.Count > 0) await db.DeleteRangeAsync(oldRules, cancellationToken);
+            if (newRules.Count > 0) await db.InsertRangeAsync(newRules, cancellationToken);
+            return Ok(new { message = "保存成功" });
+        }, cancellationToken, () =>
+        {
+            // The prewrite token owns the effective source and dependent-parent generations, even
+            // if a credential refresh evicts the shared cache before this transaction commits.
+            routeRefreshDeferred = _concurrencyLimiter.TryDeferRuntimeRouteTargetsRefresh(mutationSnapshot!);
+            if (!routeRefreshDeferred) _metadataCache.InvalidateRuntimeRouteTargets();
+            return Task.CompletedTask;
+        });
+        return result is OkObjectResult && routeRefreshDeferred
+            ? Ok(new { message = "保存成功，调用中的模型会在当前请求结束后生效" }) : result;
     }
 
-    /// <summary>
-    /// 解析兼容规则 JSON，保持与运行时路由目标投影一致的容错行为。
-    /// </summary>
-    private static IReadOnlyList<CompatibilityRule> ParseCompatibilityRules(string? rulesJson)
+    [HttpGet("reference-targets")]
+    public async Task<IActionResult> GetReferenceTargets([FromQuery] string? parentEntryName, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(rulesJson)) return Array.Empty<CompatibilityRule>();
+        using var lease = await RouteGraphMutationGate.AcquireAsync(cancellationToken);
+        var entries = await _dbContext.ProxyRouteEntries.ToListAsync(cancellationToken);
+        var rules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+        var parentName = (parentEntryName ?? string.Empty).Trim();
+        var parent = entries.FirstOrDefault(x => x.EntryName == parentName)
+            ?? new ProxyRouteEntry { EntryName = parentName };
+        var counts = (await _metadataCache.GetRouteEntriesAsync(cancellationToken))
+            .ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
+        return Ok(entries.OrderBy(x => x.EntryName).Select(target =>
+        {
+            var proposed = rules.Where(x => x.ExternalModelName != parentName).Append(new ProxyRouteRule
+            {
+                ExternalModelName = parentName, TargetKind = "RouteEntry", TargetRouteEntryId = target.Id
+            }).ToList();
+            var reason = parent.ManagedByPoolId is not null ? "号池托管入口不能手工修改"
+                : ValidateGraph(parent, entries, proposed);
+            return new { entryId = target.Id, entryName = target.EntryName, managedByPoolId = target.ManagedByPoolId,
+                candidateCount = counts.GetValueOrDefault(target.EntryName), canSelect = reason is null, reason };
+        }).ToList());
+    }
+
+    private static string NormalizeTargetKind(string? kind) => string.IsNullOrWhiteSpace(kind) ? "Site" : kind;
+    private static bool IsReference(ProxyRouteRule rule) => NormalizeTargetKind(rule.TargetKind) == "RouteEntry";
+
+    // All edges, including disabled/missing candidates, participate in structural validation.
+    private static string? ValidateGraph(ProxyRouteEntry parent, IReadOnlyList<ProxyRouteEntry> entries, IReadOnlyList<ProxyRouteRule> rules)
+    {
+        var outgoing = rules.Where(x => x.ExternalModelName == parent.EntryName && IsReference(x)).ToList();
+        if (outgoing.Count == 0) return null;
+        if (rules.Any(x => IsReference(x) && x.TargetRouteEntryId == parent.Id))
+            return "被引用入口不能再引用其他入口（不允许嵌套引用）";
+        foreach (var edge in outgoing)
+        {
+            if (edge.TargetRouteEntryId == parent.Id) return "入口不能引用自身";
+            var target = entries.FirstOrDefault(x => x.Id == edge.TargetRouteEntryId);
+            if (target is not null && rules.Any(x => x.ExternalModelName == target.EntryName && IsReference(x)))
+                return "不能引用包含入口引用的入口（不允许嵌套引用）";
+        }
+        return null;
+    }
+
+    private async Task<IActionResult> ExecuteGraphMutationAsync(
+        Func<AppDbContext, Task<IActionResult>> mutation, CancellationToken ct, Func<Task>? afterCommit = null)
+    {
+        using var lease = await RouteGraphMutationGate.AcquireAsync(ct);
+        // Never share a SqlSugarScope transaction with a parallel request/background writer.
+        using var client = _dbContext.Client.CopyNew();
+        var db = new AppDbContext(client, new SemaphoreSlim(1, 1));
+        var inTransaction = false;
         try
         {
-            var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(rulesJson);
-            return rules is null || rules.Count == 0 ? Array.Empty<CompatibilityRule>() : rules;
+            await client.Ado.ExecuteCommandAsync("PRAGMA busy_timeout=5000;");
+            await client.Ado.BeginTranAsync();
+            inTransaction = true;
+            var result = await mutation(db);
+            if (result is not OkObjectResult)
+            {
+                await client.Ado.RollbackTranAsync();
+                inTransaction = false;
+                return result;
+            }
+            await client.Ado.CommitTranAsync();
+            inTransaction = false;
+            _metadataCache.InvalidateAdminRouteMetadata();
+            if (afterCommit is null) _metadataCache.InvalidateRuntimeRouteTargets();
+            else await afterCommit();
+            return result;
+        }
+        catch (Exception ex) when (IsSqliteBusy(ex))
+        {
+            if (inTransaction) await client.Ado.RollbackTranAsync();
+            return Conflict(new { message = "配置正在被其他连接修改，请重试" });
         }
         catch
         {
-            return Array.Empty<CompatibilityRule>();
+            if (inTransaction) await client.Ado.RollbackTranAsync();
+            throw;
         }
     }
 
-    /// <summary>
-    /// 读取模型关联的兼容规则集。
-    /// </summary>
-    private static IReadOnlyList<CompatibilityRule> GetRulesForModel(
-        ModelLibraryItem? model,
-        IReadOnlyDictionary<Guid, IReadOnlyList<CompatibilityRule>> profileRules)
+    private static bool IsSqliteBusy(Exception ex)
     {
-        var profileId = model?.CompatibilityProfileId;
-        if (profileId is null || profileId == Guid.Empty) return Array.Empty<CompatibilityRule>();
-        return profileRules.TryGetValue(profileId.Value, out var rules) ? rules : Array.Empty<CompatibilityRule>();
-    }
-
-    /// <summary>
-    /// 解析站点额外请求头，保持与运行时路由目标投影一致的容错行为。
-    /// </summary>
-    private static Dictionary<string, string> TryParseExtraHeaders(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        try
-        {
-            var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonSerializerPresets.CaseInsensitive);
-            return headers is null
-                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                : new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        }
+        for (Exception? current = ex; current is not null; current = current.InnerException)
+            if (current.Message.Contains("database is locked", StringComparison.OrdinalIgnoreCase)
+                || current.Message.Contains("database table is locked", StringComparison.OrdinalIgnoreCase)
+                || current.Message.Contains("SQLITE_BUSY", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     /// <summary>
@@ -704,33 +636,33 @@ public sealed class RouteRulesApiController : ControllerBase
     }
 
     /// <summary>
-    /// 收集当前保存影响到的站点模型，命中活跃调用时运行时路由顺序需要延迟刷新。
-    /// </summary>
-    private static IReadOnlyCollection<RouteTargetIdentity> BuildAffectedRouteTargets(
-        IReadOnlyCollection<ProxyRouteRule> existingRules,
-        IReadOnlyCollection<SaveRouteRuleEntry> newRules)
-    {
-        return existingRules
-            .Select(x => new RouteTargetIdentity(x.SiteId, x.SiteModelName))
-            .Concat(newRules.Select(x => new RouteTargetIdentity(x.SiteId, x.SiteModelName)))
-            .ToHashSet(RouteTargetIdentityComparer.Instance);
-    }
-
-    /// <summary>
     /// 切换规则启用状态。
     /// </summary>
     [HttpPost("toggle/{ruleId}")]
     public async Task<IActionResult> ToggleRule(Guid ruleId, CancellationToken cancellationToken)
     {
-        var rule = await _dbContext.ProxyRouteRules.InSingleAsync(ruleId);
-        if (rule is null)
-            return NotFound(new { message = "规则不存在" });
-
-        rule.IsEnabled = !rule.IsEnabled;
-        await _dbContext.UpdateAsync(rule, cancellationToken);
-        _metadataCache.InvalidateRouteTargets();
-
-        return Ok(new { message = "状态已切换", isEnabled = rule.IsEnabled });
+        string? changedEntry = null;
+        return await ExecuteGraphMutationAsync(async db =>
+        {
+            var rule = await db.ProxyRouteRules.InSingleAsync(ruleId);
+            if (rule is null) return NotFound(new { message = "规则不存在" });
+            var entries = await db.ProxyRouteEntries.ToListAsync(cancellationToken);
+            var parent = entries.FirstOrDefault(x => x.EntryName == rule.ExternalModelName);
+            if (parent?.ManagedByPoolId is not null) return Conflict(new { message = "号池托管入口不能手工修改" });
+            if (parent is not null)
+            {
+                var error = ValidateGraph(parent, entries, await db.ProxyRouteRules.ToListAsync(cancellationToken));
+                if (error is not null) return BadRequest(new { message = error });
+            }
+            rule.IsEnabled = !rule.IsEnabled;
+            changedEntry = rule.ExternalModelName;
+            await db.UpdateAsync(rule, cancellationToken);
+            return Ok(new { message = "状态已切换", isEnabled = rule.IsEnabled });
+        }, cancellationToken, () =>
+        {
+            _metadataCache.InvalidateDeletedRouteEntry(changedEntry!);
+            return Task.CompletedTask;
+        });
     }
 
     /// <summary>
@@ -739,13 +671,20 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpPost("delete/{ruleId}")]
     public async Task<IActionResult> DeleteRule(Guid ruleId, CancellationToken cancellationToken)
     {
-        var rule = await _dbContext.ProxyRouteRules.InSingleAsync(ruleId);
-        if (rule is null)
-            return NotFound(new { message = "规则不存在" });
-
-        _dbContext.ProxyRouteRules.Remove(rule);
-        _metadataCache.InvalidateRouteTargets();
-
-        return Ok(new { message = "规则已删除" });
+        string? changedEntry = null;
+        return await ExecuteGraphMutationAsync(async db =>
+        {
+            var rule = await db.ProxyRouteRules.InSingleAsync(ruleId);
+            if (rule is null) return NotFound(new { message = "规则不存在" });
+            var parent = await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == rule.ExternalModelName, cancellationToken);
+            if (parent?.ManagedByPoolId is not null) return Conflict(new { message = "号池托管入口不能手工修改" });
+            changedEntry = rule.ExternalModelName;
+            await db.DeleteAsync(rule, cancellationToken);
+            return Ok(new { message = "规则已删除" });
+        }, cancellationToken, () =>
+        {
+            _metadataCache.InvalidateDeletedRouteEntry(changedEntry!);
+            return Task.CompletedTask;
+        });
     }
 }

@@ -1,5 +1,6 @@
 import type {
   RouteEntry,
+  RouteReferenceTarget,
   RouteRuleItem,
   SaveRuleItem,
   SiteInstanceItem
@@ -35,11 +36,57 @@ export function appendCandidate(
 ): RouteRuleItem[] {
   return [...rules, {
     ruleId: '',
+    targetKind: 'Site',
+    targetRouteEntryId: null,
+    targetRouteEntryName: null,
     siteId: instance.siteId,
     siteName: instance.siteName,
     siteEnabled: instance.siteEnabled,
     upstreamModelName: instance.siteModelName,
     siteModelName: instance.siteModelName,
+    priority: rules.length,
+    modelPriority: 0,
+    instancePriority: 0,
+    isEnabled: true,
+    availabilityMode: 'AllDay',
+    timeRangesJson: ''
+  }]
+}
+
+export function isRouteReference(rule: RouteRuleItem): boolean {
+  return rule.targetKind === 'RouteEntry'
+}
+
+export function getReferenceUnavailableReason(rule: RouteRuleItem): string | null {
+  if (!isRouteReference(rule)) return null
+  switch (rule.referenceStatus?.toLowerCase()) {
+    case 'valid':
+    case 'available': return null
+    case 'missing': return '目标入口已删除或不存在'
+    case 'nested': return '目标入口含有路由引用，不支持嵌套引用'
+    case 'empty': return '目标入口没有可用候选'
+    case 'invalid': return '路由引用配置无效'
+    default: return rule.referenceStatus || '目标入口状态未知，请刷新确认'
+  }
+}
+
+export function appendReferenceCandidate(
+  rules: RouteRuleItem[],
+  target: RouteReferenceTarget
+): RouteRuleItem[] {
+  if (!target.canSelect) return rules
+  return [...rules, {
+    ruleId: '',
+    targetKind: 'RouteEntry',
+    targetRouteEntryId: target.entryId,
+    targetRouteEntryName: target.entryName,
+    referenceStatus: 'available',
+    // UI placeholders only; site fields are never sent for references.
+    siteId: '',
+    siteName: '',
+    siteEnabled: false,
+    siteModelName: '',
+    upstreamModelName: '',
     priority: rules.length,
     modelPriority: 0,
     instancePriority: 0,
@@ -85,14 +132,27 @@ export function moveCandidate(
 }
 
 export function buildSaveRules(rules: RouteRuleItem[]): SaveRuleItem[] {
-  return rules.map((rule) => ({
-    siteId: rule.siteId,
-    siteModelName: rule.siteModelName,
-    upstreamModelName: rule.upstreamModelName,
-    isEnabled: rule.isEnabled,
-    availabilityMode: rule.availabilityMode,
-    timeRangesJson: rule.timeRangesJson
-  }))
+  return rules.map((rule): SaveRuleItem => {
+    const availability = {
+      isEnabled: rule.isEnabled,
+      availabilityMode: rule.availabilityMode,
+      timeRangesJson: rule.timeRangesJson
+    }
+    return isRouteReference(rule) ? {
+      ...availability,
+      targetKind: 'RouteEntry',
+      targetRouteEntryId: rule.targetRouteEntryId ?? null,
+      targetRouteEntryName: rule.targetRouteEntryName ?? null
+    } : {
+      ...availability,
+      targetKind: 'Site',
+      targetRouteEntryId: null,
+      targetRouteEntryName: null,
+      siteId: rule.siteId,
+      siteModelName: rule.siteModelName,
+      upstreamModelName: rule.upstreamModelName
+    }
+  })
 }
 
 export function isLatestRouteLoad(token: number, latestToken: number): boolean {

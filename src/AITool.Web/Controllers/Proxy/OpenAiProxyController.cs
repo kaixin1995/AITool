@@ -585,6 +585,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
         var routeIndex = -1;
+        var attemptedRoutes = new RouteAttemptTracker(allRoutes);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
@@ -597,10 +598,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 break;
             }
 
-            if (IsRouteBlockedSafely(route.CircuitKey))
+            if (!attemptedRoutes.CanAttempt(route) || IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
-            attemptIndex++;
+            if (!attemptedRoutes.UsesGroupedFallback) attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
             if (routeEligibility is not null && !routeEligibility(route, actualProtocolType))
             {
@@ -611,10 +612,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
                 concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
 
-            if (!concurrencyHandle.Acquired)
+            if (!concurrencyHandle.Acquired || !attemptedRoutes.TryStart(route))
             {
                 continue;
             }
+
+            if (attemptedRoutes.UsesGroupedFallback) attemptIndex++;
 
             // 协议转换阶段防御：PrepareRequestBody 处理任意用户输入的工具 schema，
             // 畸形结构可能触发异常。此阶段失败视为该路由不可用，continue 到下一路由（与转发失败回退同口径），
@@ -703,7 +706,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     && streamOutcome.CanFallback
                     && !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult)
                     && allRoutes.Skip(routeIndex + 1).Any(candidate =>
-                        !IsRouteBlockedSafely(candidate.CircuitKey)
+                        attemptedRoutes.CanAttempt(candidate) && !IsRouteBlockedSafely(candidate.CircuitKey)
                         && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
 
                 await SafeLogUsageAsync(new UsageLogEntry
@@ -790,7 +793,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
             SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
             var canFallback = !RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, result)
                 && allRoutes.Skip(routeIndex + 1).Any(candidate =>
-                    !IsRouteBlockedSafely(candidate.CircuitKey)
+                    attemptedRoutes.CanAttempt(candidate) && !IsRouteBlockedSafely(candidate.CircuitKey)
                     && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
 
             // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账，

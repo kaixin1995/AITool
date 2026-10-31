@@ -47,6 +47,34 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
         _limiter = _serviceProvider.GetRequiredService<ModelConcurrencyLimiter>();
     }
 
+    [Fact]
+    public async Task Slots_are_unique_across_physical_keys_and_old_slot_cannot_release_new_snapshot()
+    {
+        var cache = _serviceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var firstKey = Guid.NewGuid();
+        var secondKey = Guid.NewGuid();
+        using var first = await _limiter.AcquireAsync(_serviceProvider, firstKey, "shared-model", ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(1), CancellationToken.None);
+        using var second = await _limiter.AcquireAsync(_serviceProvider, secondKey, "shared-model", ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(1), CancellationToken.None);
+        var firstSlot = _limiter.ListActiveSlotIds(firstKey, "shared-model").Single();
+        var secondSlot = _limiter.ListActiveSlotIds(secondKey, "shared-model").Single();
+        firstSlot.Should().NotBe(secondSlot);
+        var oldRoutes = new[] { new CachedProxyRouteTarget { ExternalModelName = "frozen", SiteModelName = "old", SiteId = secondKey } };
+        _limiter.TryDeferRuntimeRouteTargetsRefresh("frozen", new[] { new RouteTargetIdentity(secondKey, "shared-model") }, oldRoutes).Should().BeTrue();
+        first.Dispose();
+        cache.CompleteDeferredRuntimeRouteTarget(firstKey, "shared-model", secondSlot);
+        (await cache.CaptureEffectiveRouteTargetsAsync("frozen", CancellationToken.None)).Single().SiteModelName.Should().Be("old");
+        second.Dispose();
+        (await cache.CaptureEffectiveRouteTargetsAsync("frozen", CancellationToken.None)).Should().BeEmpty();
+        using var next = await _limiter.AcquireAsync(_serviceProvider, secondKey, "shared-model", ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(1), CancellationToken.None);
+        var nextSlot = _limiter.ListActiveSlotIds(secondKey, "shared-model").Single();
+        nextSlot.Should().BeGreaterThan(secondSlot);
+        _limiter.TryDeferRuntimeRouteTargetsRefresh("frozen", new[] { new RouteTargetIdentity(secondKey, "shared-model") }, oldRoutes).Should().BeTrue();
+        cache.CompleteDeferredRuntimeRouteTarget(secondKey, "shared-model", secondSlot);
+        (await cache.CaptureEffectiveRouteTargetsAsync("frozen", CancellationToken.None)).Should().ContainSingle();
+        next.Dispose();
+        (await cache.CaptureEffectiveRouteTargetsAsync("frozen", CancellationToken.None)).Should().BeEmpty();
+    }
+
     /// <summary>
     /// 未配置并发限制的模型，应直接返回获取成功。
     /// </summary>

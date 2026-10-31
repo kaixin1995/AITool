@@ -4,6 +4,9 @@ using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
+using AITool.Web.Controllers.Admin;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using FluentAssertions;
 using SqlSugar;
 
@@ -170,6 +173,166 @@ public sealed class SiteCascadeDeleterTests
 
             (await db.ProxyRouteEntries.CountAsync(x => x.EntryName == "orphan")).Should().Be(0);
             (await db.ProxyRouteEntries.CountAsync(x => x.EntryName == "alive")).Should().Be(1);
+        }
+        finally { Cleanup(dbPath); }
+    }
+
+    [Fact]
+    public async Task Site_delete_preserves_reference_parent_and_does_not_rebind_recreated_target()
+    {
+        var (db, deleter, dbPath) = await CreateAsync();
+        try
+        {
+            var siteId = Guid.NewGuid();
+            SeedData(db, siteId, Guid.NewGuid(), "target", "synthetic");
+            var target = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "target");
+            var parent = new ProxyRouteEntry { EntryName = "parent" };
+            db.ProxyRouteEntries.Add(parent);
+            // Deliberately matching sentinel fields prove that TargetKind, not site/name fields,
+            // determines direct-site cascade membership. Disabled/broken references still count.
+            var reference = new ProxyRouteRule
+            {
+                ExternalModelName = parent.EntryName,
+                TargetKind = "RouteEntry",
+                TargetRouteEntryId = target.Id,
+                TargetRouteEntryName = target.EntryName,
+                SiteId = siteId,
+                SiteModelName = "target",
+                IsEnabled = false,
+            };
+            db.ProxyRouteRules.Add(reference);
+            db.ProxyRouteRules.Add(new ProxyRouteRule
+            {
+                ExternalModelName = parent.EntryName, SiteId = siteId, SiteModelName = "target",
+            });
+
+            await deleter.RemoveSitesAsync([siteId], default);
+            await deleter.CleanupEmptyRouteEntriesAsync([parent.EntryName], default);
+
+            (await db.ProxyRouteEntries.AnyAsync(e => e.Id == target.Id)).Should().BeFalse();
+            (await db.ProxyRouteEntries.AnyAsync(e => e.Id == parent.Id)).Should().BeTrue();
+            (await db.ProxyRouteRules.ToListAsync()).Should().ContainSingle(r => r.Id == reference.Id);
+            var recreated = new ProxyRouteEntry { EntryName = target.EntryName };
+            db.ProxyRouteEntries.Add(recreated);
+            recreated.Id.Should().NotBe(target.Id);
+            (await db.ProxyRouteRules.FirstAsync(r => r.Id == reference.Id)).TargetRouteEntryId.Should().Be(target.Id);
+        }
+        finally { Cleanup(dbPath); }
+    }
+
+    [Fact]
+    public async Task Cascade_failure_rolls_back_deleted_site_and_graph()
+    {
+        var (db, deleter, dbPath) = await CreateAsync();
+        try
+        {
+            var siteId = Guid.NewGuid();
+            SeedData(db, siteId, Guid.NewGuid(), "target", "synthetic");
+            await db.Client.Ado.ExecuteCommandAsync("CREATE TRIGGER reject_entry_delete BEFORE DELETE ON ProxyRouteEntries BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;");
+
+            var remove = () => deleter.RemoveSitesAsync([siteId], default);
+            await remove.Should().ThrowAsync<Exception>();
+
+            (await db.Sites.AnyAsync(s => s.Id == siteId)).Should().BeTrue();
+            (await db.SiteModelMappings.CountAsync()).Should().Be(1);
+            (await db.ProxyRouteRules.CountAsync()).Should().Be(1);
+            (await db.ProxyRouteEntries.CountAsync()).Should().Be(1);
+        }
+        finally { Cleanup(dbPath); }
+    }
+
+    [Fact]
+    public async Task Cleanup_inside_owned_graph_transaction_does_not_nest_gate_or_transaction()
+    {
+        var (db, deleter, dbPath) = await CreateAsync();
+        try
+        {
+            db.ProxyRouteEntries.Add(new ProxyRouteEntry { EntryName = "orphan" });
+            using var lease = await RouteGraphMutationGate.AcquireAsync();
+            await db.Client.Ado.BeginTranAsync();
+            await deleter.CleanupEmptyRouteEntriesInGraphMutationAsync(["orphan"], default);
+            await db.Client.Ado.RollbackTranAsync();
+            (await db.ProxyRouteEntries.CountAsync()).Should().Be(1);
+        }
+        finally { Cleanup(dbPath); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Model_cascade_uses_only_direct_site_mapping_keys_not_model_or_reference_names(bool deleteMapping)
+    {
+        var (db, deleter, dbPath) = await CreateAsync();
+        try
+        {
+            var siteId = Guid.NewGuid();
+            var modelId = Guid.NewGuid();
+            SeedData(db, siteId, modelId, "model-name", "synthetic");
+            var mapping = await db.SiteModelMappings.FirstAsync(m => m.ModelLibraryItemId == modelId);
+            var target = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "model-name");
+            db.ProxyRouteEntries.Add(new ProxyRouteEntry { EntryName = "parent" });
+            var reference = new ProxyRouteRule
+            {
+                ExternalModelName = "parent", TargetKind = "RouteEntry", TargetRouteEntryId = target.Id,
+                TargetRouteEntryName = target.EntryName, SiteId = siteId, SiteModelName = mapping.RemoteModelName,
+            };
+            db.ProxyRouteRules.Add(reference);
+            var unrelated = new ProxyRouteRule
+            {
+                ExternalModelName = "model-name", SiteId = Guid.NewGuid(), SiteModelName = "unrelated-model",
+            };
+            db.ProxyRouteRules.Add(unrelated);
+            using var services = new ServiceCollection().AddMemoryCache().BuildServiceProvider();
+            var cache = new ProxyRequestMetadataCache(services.GetRequiredService<IMemoryCache>(), services.GetRequiredService<IServiceScopeFactory>());
+            var controller = new ModelsApiController(db, cache, null!, null!, null!, deleter, null!, null!);
+
+            if (deleteMapping) await controller.DeleteMapping(modelId, mapping.Id, default);
+            else await controller.Delete(modelId, default);
+
+            (await db.SiteModelMappings.CountAsync()).Should().Be(0);
+            (await db.ProxyRouteRules.ToListAsync()).Select(r => r.Id).Should().BeEquivalentTo([reference.Id, unrelated.Id]);
+            (await db.ProxyRouteEntries.AnyAsync(e => e.Id == target.Id)).Should().BeTrue("an unrelated leaf sharing the model name is not cascade-owned");
+            (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "parent")).Should().BeTrue();
+            (await db.ProxyRouteRules.FirstAsync(r => r.Id == reference.Id)).TargetRouteEntryId.Should().Be(target.Id);
+        }
+        finally { Cleanup(dbPath); }
+    }
+
+    [Fact]
+    public async Task Removing_site_leaf_clears_deferred_parent_credentials_even_when_source_entry_survives()
+    {
+        var (db, _, dbPath) = await CreateAsync();
+        try
+        {
+            var source = new ProxyRouteEntry { EntryName = "source" };
+            var parent = new ProxyRouteEntry { EntryName = "parent" };
+            var site = new Site { Name = "synthetic", BaseUrl = "https://never-called.invalid", ApiKey = "synthetic-secret", SupportsOpenAi = true };
+            var survivingSite = new Site { Name = "survivor", BaseUrl = "https://also-never-called.invalid", ApiKey = "surviving-secret", SupportsOpenAi = true };
+            db.ProxyRouteEntries.AddRange(source, parent);
+            db.Sites.AddRange(site, survivingSite);
+            // A referenced source must contain only direct-site rows. A broken reference here
+            // would make parent -> source Nested before deletion, so no parent snapshot exists.
+            db.ProxyRouteRules.AddRange(
+                new ProxyRouteRule { ExternalModelName = source.EntryName, SiteId = site.Id, SiteModelName = "leaf" },
+                new ProxyRouteRule { ExternalModelName = source.EntryName, SiteId = survivingSite.Id, SiteModelName = "surviving-leaf" },
+                new ProxyRouteRule { ExternalModelName = parent.EntryName, TargetKind = "RouteEntry", TargetRouteEntryId = source.Id });
+            using var services = new ServiceCollection().AddMemoryCache().AddSingleton(db).BuildServiceProvider();
+            var cache = new ProxyRequestMetadataCache(services.GetRequiredService<IMemoryCache>(), services.GetRequiredService<IServiceScopeFactory>());
+            var before = await cache.CaptureEffectiveRouteTargetsAsync(source.EntryName, default);
+            var activeParent = await cache.CaptureEffectiveRouteTargetsAsync(parent.EntryName, default);
+            before.Should().HaveCount(2);
+            activeParent.Should().HaveCount(2, "the fixture must capture a valid nonnested parent before deletion");
+            cache.DeferRuntimeRouteTargetsRefresh(source.EntryName,
+                [new ActiveRouteTargetSnapshot(new RouteTargetIdentity(site.Id, "leaf"), [1L])], before);
+
+            await new SiteCascadeDeleter(db, cache).RemoveSitesAsync([site.Id], default);
+
+            (await db.ProxyRouteEntries.AnyAsync(e => e.Id == source.Id)).Should().BeTrue("the remaining physical leaf keeps its source entry");
+            var freshSource = await cache.CaptureEffectiveRouteTargetsAsync(source.EntryName, default);
+            var freshParent = await cache.CaptureEffectiveRouteTargetsAsync(parent.EntryName, default);
+            freshSource.Should().ContainSingle().Which.ApiKey.Should().Be("surviving-secret");
+            freshParent.Should().ContainSingle().Which.ApiKey.Should().Be("surviving-secret");
+            activeParent.Single(r => r.SiteId == site.Id).ApiKey.Should().Be("synthetic-secret", "already captured requests retain detached snapshots");
         }
         finally { Cleanup(dbPath); }
     }

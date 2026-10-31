@@ -88,7 +88,18 @@ public sealed class ModelsApiController : ControllerBase
     /// 清空模型相关数据。
     /// </summary>
     [HttpPost("clear-all")]
-    public async Task<IActionResult> ClearAll(CancellationToken cancellationToken)
+    public Task<IActionResult> ClearAll(CancellationToken cancellationToken)
+        => ExecuteGraphMutationAsync(() => ClearAllCore(cancellationToken), cancellationToken);
+
+    private async Task<IActionResult> ExecuteGraphMutationAsync(Func<Task<IActionResult>> mutation, CancellationToken ct)
+    {
+        var result = await _cascadeDeleter.ExecuteGraphMutationAsync(mutation, ct, _metadataCache);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
+        return result;
+    }
+
+    private async Task<IActionResult> ClearAllCore(CancellationToken cancellationToken)
     {
         // 按依赖顺序删除：映射 → 监控 → 模型（SqlSugar 用 Db.Deleteable<T>() 清空整表）。
         var mappingCount = await _dbContext.SiteModelMappings.CountAsync(cancellationToken);
@@ -98,9 +109,6 @@ public sealed class ModelsApiController : ControllerBase
         await _dbContext.Client.Deleteable<SiteModelMapping>().ExecuteCommandAsync(cancellationToken);
         await _dbContext.Client.Deleteable<ModelHealthMonitor>().ExecuteCommandAsync(cancellationToken);
         await _dbContext.Client.Deleteable<ModelLibraryItem>().ExecuteCommandAsync(cancellationToken);
-
-        _metadataCache.InvalidateModelMetadata();
-        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new
         {
@@ -114,10 +122,13 @@ public sealed class ModelsApiController : ControllerBase
     /// 更新站点模型映射项配置（并发数、客户端特征模拟、自定义请求头、出口代理等）。
     /// </summary>
     [HttpPut("mappings/{mappingId:guid}")]
-    public async Task<IActionResult> UpdateMapping(
+    public Task<IActionResult> UpdateMapping(
         Guid mappingId,
         [FromBody] UpdateMappingRequest request,
         CancellationToken cancellationToken)
+        => ExecuteGraphMutationAsync(() => UpdateMappingCore(mappingId, request, cancellationToken), cancellationToken);
+
+    private async Task<IActionResult> UpdateMappingCore(Guid mappingId, UpdateMappingRequest request, CancellationToken cancellationToken)
     {
         if (!EgressProxyValidator.TryValidate(request.EgressProxyUrl, out var proxyError))
         {
@@ -148,7 +159,7 @@ public sealed class ModelsApiController : ControllerBase
             // 级联更新关联的路由规则中的 SiteModelName
             await _dbContext.Client.Updateable<ProxyRouteRule>()
                 .SetColumns(r => r.SiteModelName == newRemoteModelName)
-                .Where(r => r.SiteId == mapping.SiteId && r.SiteModelName == oldRemoteModelName)
+                .Where(r => r.TargetKind == "Site" && r.SiteId == mapping.SiteId && r.SiteModelName == oldRemoteModelName)
                 .ExecuteCommandAsync(cancellationToken);
         }
 
@@ -161,9 +172,6 @@ public sealed class ModelsApiController : ControllerBase
         mapping.OverrideReasoningEffort = string.IsNullOrWhiteSpace(request.OverrideReasoningEffort) ? null : request.OverrideReasoningEffort.Trim().ToLowerInvariant();
 
         await _dbContext.UpdateAsync(mapping, cancellationToken);
-
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateModelMetadata();
 
         var siteKeyIds = await _dbContext.SiteKeys
             .Where(k => k.SiteId == mapping.SiteId && k.IsEnabled)
@@ -471,7 +479,10 @@ public sealed class ModelsApiController : ControllerBase
     /// 删除模型（含级联清理：mappings / rules / monitors / 解绑 detection tasks / 空路由入口）。
     /// </summary>
     [HttpDelete("{id:guid}")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+    public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+        => ExecuteGraphMutationAsync(() => DeleteCore(id, cancellationToken), cancellationToken);
+
+    private async Task<IActionResult> DeleteCore(Guid id, CancellationToken cancellationToken)
     {
         var model = await _dbContext.ModelLibraryItems.InSingleAsync(id);
         if (model is null)
@@ -486,20 +497,18 @@ public sealed class ModelsApiController : ControllerBase
         var mappingPairs = mappings.Select(x => new { x.SiteId, x.RemoteModelName }).ToList();
         var mappingSiteIds = mappingPairs.Select(x => x.SiteId).Distinct().ToList();
 
-        // 2. 查候选路由规则（ExternalModelName 匹配 或 SiteId ∈ 映射站点）。
+        // Only direct site leaves backed by a deleted mapping are related to this model.
+        // Entry/model display names and reference sentinel fields are not relationship keys.
         var candidateRules = await _dbContext.ProxyRouteRules
-            .Where(x => x.ExternalModelName == model.ModelName || mappingSiteIds.Contains(x.SiteId))
+            .Where(x => x.TargetKind == "Site" && mappingSiteIds.Contains(x.SiteId))
             .ToListAsync(cancellationToken);
-        // 内存精确过滤：名称匹配 或 (站点匹配 AND 远程名匹配)。
         var affectedRules = candidateRules
-            .Where(x => x.ExternalModelName == model.ModelName
-                || mappingPairs.Any(p => p.SiteId == x.SiteId && p.RemoteModelName == x.SiteModelName))
+            .Where(x => mappingPairs.Any(p => p.SiteId == x.SiteId && p.RemoteModelName == x.SiteModelName))
             .ToList();
 
         // 3. 受影响的入口名（用于清理空 entry）。
         var affectedEntryNames = affectedRules
             .Select(x => x.ExternalModelName)
-            .Append(model.ModelName)
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
@@ -534,11 +543,9 @@ public sealed class ModelsApiController : ControllerBase
         _dbContext.ModelLibraryItems.Remove(model);
 
         // 7. 清理空路由入口。
-        await _cascadeDeleter.CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
+        await _cascadeDeleter.CleanupEmptyRouteEntriesInGraphMutationAsync(affectedEntryNames, cancellationToken);
 
-        // 8. 失效缓存。
-        _metadataCache.InvalidateModelMetadata();
-        _metadataCache.InvalidateRouteTargets();
+        // Cache invalidation is performed by the mutation wrapper after commit.
 
         return Ok(ApiResponse.Ok(
             $"模型已删除，并清理了 {mappings.Count} 条站点关联、{affectedRules.Count} 条相关路由规则、{affectedMonitors.Count} 条健康监控，并解绑了 {affectedDetectionTasks.Count} 个检测任务"));
@@ -873,7 +880,10 @@ public sealed class ModelsApiController : ControllerBase
     /// 为模型添加站点关联映射（已存在则更新启用状态，标记 LastStatus="manual"）。
     /// </summary>
     [HttpPost("{id:guid}/mappings")]
-    public async Task<IActionResult> AddMapping(Guid id, [FromBody] AddMappingRequest request, CancellationToken cancellationToken)
+    public Task<IActionResult> AddMapping(Guid id, [FromBody] AddMappingRequest request, CancellationToken cancellationToken)
+        => ExecuteGraphMutationAsync(() => AddMappingCore(id, request, cancellationToken), cancellationToken);
+
+    private async Task<IActionResult> AddMappingCore(Guid id, AddMappingRequest request, CancellationToken cancellationToken)
     {
         if (request.SiteId == Guid.Empty)
         {
@@ -936,9 +946,6 @@ public sealed class ModelsApiController : ControllerBase
             });
         }
 
-        _metadataCache.InvalidateModelMetadata();
-        _metadataCache.InvalidateRouteTargets();
-
         return Ok(ApiResponse.Ok("关联站点已添加"));
     }
 
@@ -946,7 +953,10 @@ public sealed class ModelsApiController : ControllerBase
     /// 删除模型的站点关联映射（级联清理 SiteId+RemoteModelName 匹配的路由规则 + 空路由入口）。
     /// </summary>
     [HttpDelete("{id:guid}/mappings/{mappingId:guid}")]
-    public async Task<IActionResult> DeleteMapping(Guid id, Guid mappingId, CancellationToken cancellationToken)
+    public Task<IActionResult> DeleteMapping(Guid id, Guid mappingId, CancellationToken cancellationToken)
+        => ExecuteGraphMutationAsync(() => DeleteMappingCore(id, mappingId, cancellationToken), cancellationToken);
+
+    private async Task<IActionResult> DeleteMappingCore(Guid id, Guid mappingId, CancellationToken cancellationToken)
     {
         // 按主键取单行，用 InSingleAsync。
         var mapping = await _dbContext.SiteModelMappings.InSingleAsync(mappingId);
@@ -963,12 +973,11 @@ public sealed class ModelsApiController : ControllerBase
 
         // 查受影响规则：SiteId + RemoteModelName 精确匹配。
         var affectedRules = await _dbContext.ProxyRouteRules
-            .Where(x => x.SiteId == mapping.SiteId && x.SiteModelName == mapping.RemoteModelName)
+            .Where(x => x.TargetKind == "Site" && x.SiteId == mapping.SiteId && x.SiteModelName == mapping.RemoteModelName)
             .ToListAsync(cancellationToken);
 
         var affectedEntryNames = affectedRules
             .Select(x => x.ExternalModelName)
-            .Append(model.ModelName)
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
@@ -977,10 +986,7 @@ public sealed class ModelsApiController : ControllerBase
         {
             _dbContext.ProxyRouteRules.RemoveRange(affectedRules);
         }
-        await _cascadeDeleter.CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
-
-        _metadataCache.InvalidateModelMetadata();
-        _metadataCache.InvalidateRouteTargets();
+        await _cascadeDeleter.CleanupEmptyRouteEntriesInGraphMutationAsync(affectedEntryNames, cancellationToken);
 
         return Ok(ApiResponse.Ok($"站点关联已删除，并清理了 {affectedRules.Count} 条相关路由规则"));
     }

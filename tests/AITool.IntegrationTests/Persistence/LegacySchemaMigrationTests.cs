@@ -278,6 +278,8 @@ public sealed class LegacySchemaMigrationTests : IDisposable
                     VALUES ('77777777-7777-7777-7777-777777777777', '旧入口', '2026-01-01T00:00:00+00:00');
                 INSERT INTO ProxyRouteRules (Id, ExternalModelName, UpstreamModelName, SiteId, SiteModelName)
                     VALUES ('88888888-8888-8888-8888-888888888888', '旧入口', 'm', '99999999-9999-9999-9999-999999999999', 'm');
+                INSERT INTO ProxyRouteRules (Id, ExternalModelName, UpstreamModelName, SiteId, SiteModelName)
+                    VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'rule-only', 'm', '99999999-9999-9999-9999-999999999999', 'm');
                 """;
             command.ExecuteNonQuery();
         }
@@ -293,12 +295,65 @@ public sealed class LegacySchemaMigrationTests : IDisposable
             var entry = await db.ProxyRouteEntries.InSingleAsync(Guid.Parse("77777777-7777-7777-7777-777777777777"));
             entry.Should().NotBeNull("旧路由入口必须原样保留");
             entry!.ManagedByPoolId.Should().BeNull("升级后旧入口无托管标记（手工路由语义不变）");
-            (await db.ProxyRouteRules.CountAsync()).Should().Be(1);
+            (await db.ProxyRouteRules.CountAsync()).Should().Be(2);
+            var rule = await db.ProxyRouteRules.InSingleAsync(Guid.Parse("88888888-8888-8888-8888-888888888888"));
+            rule.TargetKind.Should().Be("Site");
+            rule.TargetRouteEntryId.Should().BeNull();
+            rule.TargetRouteEntryName.Should().BeNull();
+            var backfilled = await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == "rule-only");
+            backfilled.Should().NotBeNull();
+            var stableId = backfilled.Id;
+            // Startup is repeatable and preserves existing/backfilled identities, including empty legacy discriminators.
+            await db.Client.Ado.ExecuteCommandAsync("UPDATE ProxyRouteRules SET TargetKind = '' WHERE ExternalModelName = 'rule-only';");
+            SqlSugarSetup.InitializeDatabase(db.Client);
+            (await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == "rule-only")).Id.Should().Be(stableId);
+            (await db.ProxyRouteRules.InSingleAsync(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))).TargetKind.Should().Be("Site");
+            (await db.ProxyRouteEntries.CountAsync()).Should().Be(2);
+            (await db.ProxyRouteEntries.InSingleAsync(entry.Id)).Id.Should().Be(Guid.Parse("77777777-7777-7777-7777-777777777777"));
             (await db.AccountPools.CountAsync()).Should().Be(0, "新表空建可写可读");
             (await db.AccountPoolMembers.CountAsync()).Should().Be(0);
         }
 
         provider.Dispose();
+    }
+
+    [Fact]
+    public async Task Nullable_prerelease_discriminator_is_normalized_without_rebinding_deleted_identity()
+    {
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE ProxyRouteRules (
+                    Id TEXT PRIMARY KEY, ExternalModelName TEXT NOT NULL,
+                    UpstreamModelName TEXT NOT NULL, SiteId TEXT NOT NULL, SiteModelName TEXT NOT NULL,
+                    Priority INTEGER NOT NULL DEFAULT 0, ModelPriority INTEGER NOT NULL DEFAULT 0,
+                    InstancePriority INTEGER NOT NULL DEFAULT 0, IsEnabled INTEGER NOT NULL DEFAULT 1,
+                    AvailabilityMode TEXT NOT NULL DEFAULT 'AllDay', TimeRangesJson TEXT NOT NULL DEFAULT '',
+                    TargetKind TEXT NULL, TargetRouteEntryId TEXT NULL, TargetRouteEntryName TEXT NULL
+                );
+                INSERT INTO ProxyRouteRules (Id, ExternalModelName, UpstreamModelName, SiteId, SiteModelName, TargetKind)
+                    VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'legacy', 'm', '99999999-9999-9999-9999-999999999999', 'm', NULL);
+                INSERT INTO ProxyRouteRules (Id, ExternalModelName, UpstreamModelName, SiteId, SiteModelName, TargetKind, TargetRouteEntryId, TargetRouteEntryName)
+                    VALUES ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'parent', '', '00000000-0000-0000-0000-000000000000', '', 'RouteEntry', 'cccccccc-cccc-cccc-cccc-cccccccccccc', 'legacy');
+                """;
+            command.ExecuteNonQuery();
+        }
+        var services = new ServiceCollection();
+        services.AddSqlSugar($"Data Source={_databasePath}");
+        using var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredService<SqlSugar.ISqlSugarClient>();
+        SqlSugarSetup.InitializeDatabase(client);
+        SqlSugarSetup.InitializeDatabase(client);
+        using var scope = provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await db.ProxyRouteRules.InSingleAsync(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"))).TargetKind.Should().Be("Site");
+        var reference = await db.ProxyRouteRules.InSingleAsync(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"));
+        reference.TargetKind.Should().Be("RouteEntry");
+        reference.TargetRouteEntryId.Should().Be(Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"));
+        (await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == "legacy")).Id.Should().NotBe(reference.TargetRouteEntryId!.Value);
+        (await db.ProxyRouteEntries.CountAsync()).Should().Be(2);
     }
 
     public void Dispose()

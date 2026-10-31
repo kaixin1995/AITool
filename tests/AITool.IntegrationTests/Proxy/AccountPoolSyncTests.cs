@@ -275,6 +275,89 @@ public sealed class AccountPoolSyncTests : IDisposable
         rules.Select(r => r.SiteId).Should().BeEquivalentTo([a.LinkedSiteId, b.LinkedSiteId]);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Deleted_pool_targets_leave_incoming_references_bound_to_old_id(bool deletePool)
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var acc = await provisioner.ProvisionFromTokensAsync(Input("ref-target", "synthetic@example.test", "team", "synthetic-token"), default);
+        await provisioner.UpsertRemoteModelsAsync(acc.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], default);
+        var pool = new AccountPool { Name = "reference-pool", VendorKey = "codex", AutoIncludeMembers = true };
+        await sync.CreatePoolAsync(pool, null, default);
+        var original = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
+        var parent = new ProxyRouteEntry { EntryName = "parent" };
+        var reference = new ProxyRouteRule
+        {
+            ExternalModelName = parent.EntryName,
+            TargetKind = "RouteEntry",
+            TargetRouteEntryId = original.Id,
+            TargetRouteEntryName = original.EntryName,
+            SiteId = Guid.Empty,
+            SiteModelName = string.Empty,
+            UpstreamModelName = string.Empty,
+            IsEnabled = false,
+        };
+        await db.Client.Insertable(parent).ExecuteCommandAsync();
+        await db.Client.Insertable(reference).ExecuteCommandAsync();
+
+        if (deletePool) await sync.DeletePoolAsync(pool.Id, default);
+        else await sync.UpdateModelsAsync(pool.Id, "[\"m2\"]", default);
+
+        (await db.ProxyRouteEntries.AnyAsync(e => e.Id == original.Id)).Should().BeFalse();
+        (await db.ProxyRouteRules.AnyAsync(r => r.ExternalModelName == "m1")).Should().BeFalse();
+        (await db.ProxyRouteEntries.AnyAsync(e => e.Id == parent.Id)).Should().BeTrue();
+        var retained = await db.ProxyRouteRules.FirstAsync(r => r.Id == reference.Id);
+        retained.TargetRouteEntryId.Should().Be(original.Id);
+        retained.TargetRouteEntryName.Should().Be("m1");
+
+        if (deletePool)
+            await sync.CreatePoolAsync(new AccountPool { Name = "reference-pool", VendorKey = "codex", AutoIncludeMembers = true }, null, default);
+        else
+            await sync.UpdateModelsAsync(pool.Id, null, default);
+
+        var recreated = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
+        recreated.Id.Should().NotBe(original.Id);
+        (await db.ProxyRouteRules.FirstAsync(r => r.Id == reference.Id)).TargetRouteEntryId.Should().Be(original.Id,
+            "recreating the display name must never rebind an incoming reference");
+    }
+
+    [Fact]
+    public async Task Member_edit_and_sync_roll_back_together_when_graph_write_fails()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var acc = await provisioner.ProvisionFromTokensAsync(Input("rollback", "synthetic@example.test", "team", "synthetic-token"), default);
+        await provisioner.UpsertRemoteModelsAsync(acc.LinkedSiteId, [("m1", "m1")], default);
+        var pool = new AccountPool { Name = "rollback-pool", VendorKey = "codex" };
+        await sync.CreatePoolAsync(pool, [acc.Id], default);
+        await db.Client.Ado.ExecuteCommandAsync("CREATE TRIGGER reject_entry_delete BEFORE DELETE ON ProxyRouteEntries BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;");
+
+        var edit = () => sync.ReplaceMembersAsync(pool.Id, [], default);
+        await edit.Should().ThrowAsync<Exception>();
+
+        (await db.AccountPoolMembers.Where(m => m.PoolId == pool.Id).ToListAsync()).Should().ContainSingle(m => m.AccountRefId == acc.Id);
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().ContainSingle();
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m1")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Whitelist_edit_and_sync_roll_back_together_when_graph_write_fails()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var acc = await provisioner.ProvisionFromTokensAsync(Input("whitelist-rollback", "synthetic@example.test", "team", "synthetic-token"), default);
+        await provisioner.UpsertRemoteModelsAsync(acc.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], default);
+        var pool = new AccountPool { Name = "rollback-pool", VendorKey = "codex", AutoIncludeMembers = true };
+        await sync.CreatePoolAsync(pool, null, default);
+        await db.Client.Ado.ExecuteCommandAsync("CREATE TRIGGER reject_entry_delete BEFORE DELETE ON ProxyRouteEntries BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;");
+
+        var edit = () => sync.UpdateModelsAsync(pool.Id, "[\"m2\"]", default);
+        await edit.Should().ThrowAsync<Exception>();
+
+        (await db.AccountPools.FirstAsync(p => p.Id == pool.Id)).ExposedModelsJson.Should().BeNull();
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().ContainSingle();
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m1")).Should().BeTrue();
+    }
+
     private (CodexAccountProvisioner Provisioner, AccountPoolSyncService Sync, AppDbContext Db) CreateServices()
     {
         var scope = _services.CreateScope();

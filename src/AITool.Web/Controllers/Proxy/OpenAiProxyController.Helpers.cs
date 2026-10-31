@@ -990,6 +990,10 @@ public sealed partial class OpenAiProxyController
             ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
             TargetSiteId = route.SiteId,
             TargetSiteName = route.SiteName,
+            SourceRouteEntryId = route.SourceRouteEntryId,
+            SourceRouteEntryName = route.SourceRouteEntryName,
+            SourcePoolId = route.SourcePoolId,
+            FallbackGroupId = route.FallbackGroupId,
             PreparedRequestBody = preparedRequestBody,
             PreparedRequestHeaders = preparedRequestHeaders
         });
