@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Accounts;
 using AITool.Application.Sites;
 using AITool.Infrastructure.Proxy;
 using Microsoft.Extensions.DependencyInjection;
@@ -139,6 +140,17 @@ public sealed class RouteCandidatePolicyService
 
             var byKey = keys.ToLookup(k => k.Id);
             var bySite = keys.ToLookup(k => k.SiteId);
+
+            // OAuth 账号表回退：隐藏站点（无任何带配额缓存的 SiteKey）从账号表取巡检数据。
+            var fallbackSites = routes
+                .Where(r => !HasKeyQuotaData(r, byKey, bySite))
+                .Select(r => r.SiteId)
+                .Distinct()
+                .ToList();
+            var accountResets = fallbackSites.Count > 0
+                ? await LoadAccountResetsAsync(scope.ServiceProvider, fallbackSites, now, cancellationToken)
+                : [];
+
             for (var i = 0; i < routes.Count; i++)
             {
                 if (result[i].Item2 is not null || !misses.Contains(routes[i]))
@@ -147,38 +159,48 @@ public sealed class RouteCandidatePolicyService
                 }
 
                 var route = routes[i];
-                var candidates = route.SiteKeyId is not null ? byKey[route.SiteKeyId.Value] : bySite[route.SiteId];
+                var hasKeyData = HasKeyQuotaData(route, byKey, bySite);
                 DateTimeOffset? earliest = null;
-                foreach (var key in candidates)
+                if (hasKeyData)
                 {
-                    if (string.IsNullOrWhiteSpace(key.LastQuotaRawJson))
+                    var candidates = route.SiteKeyId is not null ? byKey[route.SiteKeyId.Value] : bySite[route.SiteId];
+                    foreach (var key in candidates)
                     {
-                        continue;
-                    }
-
-                    foreach (var provider in providers)
-                    {
-                        var parsed = provider.ParseCached(key.LastQuotaRawJson);
-                        if (parsed is not { Success: true })
+                        if (string.IsNullOrWhiteSpace(key.LastQuotaRawJson))
                         {
                             continue;
                         }
 
-                        foreach (var window in parsed.Windows)
+                        foreach (var provider in providers)
                         {
-                            if (window.IsAside || window.ResetAtUtc is not { } reset || reset <= now)
+                            var parsed = provider.ParseCached(key.LastQuotaRawJson);
+                            if (parsed is not { Success: true })
                             {
                                 continue;
                             }
 
-                            if (earliest is null || reset < earliest)
+                            foreach (var window in parsed.Windows)
                             {
-                                earliest = reset;
-                            }
-                        }
+                                if (window.IsAside || window.ResetAtUtc is not { } reset || reset <= now)
+                                {
+                                    continue;
+                                }
 
-                        break;
+                                if (earliest is null || reset < earliest)
+                                {
+                                    earliest = reset;
+                                }
+                            }
+
+                            break;
+                        }
                     }
+                }
+                else
+                {
+                    // 站点无 Key 配额数据：用账号表回退结果（同样可为 null → 负缓存 60 秒）。
+                    accountResets.TryGetValue(route.SiteId, out var accountReset);
+                    earliest = accountReset;
                 }
 
                 _quotaResetCache[route.SiteKeyId ?? route.SiteId] = new QuotaResetEntry(now, earliest);
@@ -191,6 +213,89 @@ public sealed class RouteCandidatePolicyService
         }
 
         return result;
+    }
+
+    /// <summary>该候选的站点是否存在任何带配额缓存的 SiteKey（决定是否走账号表回退）。</summary>
+    private static bool HasKeyQuotaData(
+        CachedProxyRouteTarget route,
+        ILookup<Guid, Domain.Sites.SiteKey> byKey,
+        ILookup<Guid, Domain.Sites.SiteKey> bySite)
+    {
+        var candidates = route.SiteKeyId is { } keyId ? byKey[keyId] : bySite[route.SiteId];
+        foreach (var key in candidates)
+        {
+            if (!string.IsNullOrWhiteSpace(key.LastQuotaRawJson))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 账号表配额回退（OAuth 隐藏站点无 SiteKey 行，巡检数据落在账号表）：
+    /// 按站点反查各 OAuth 提供程序的账号，解析巡检缓存的最早未来重置时刻。
+    /// 一个隐藏站点只属于一个账号/提供程序；无数据站点不进结果（等同 null 负缓存）。
+    /// </summary>
+    private static async Task<Dictionary<Guid, DateTimeOffset?>> LoadAccountResetsAsync(
+        IServiceProvider serviceProvider,
+        IReadOnlyList<Guid> siteIds,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var resets = new Dictionary<Guid, DateTimeOffset?>();
+        try
+        {
+            foreach (var provider in serviceProvider.GetServices<IAccountQuotaProvider>())
+            {
+                var targets = await provider.FindByLinkedSiteIdsAsync(siteIds, cancellationToken);
+                foreach (var group in targets.Where(t => !string.IsNullOrWhiteSpace(t.LastQuotaRawJson))
+                             .GroupBy(t => t.LinkedSiteId))
+                {
+                    if (resets.ContainsKey(group.Key))
+                    {
+                        continue;
+                    }
+
+                    resets[group.Key] = EarliestAccountResetUtc(provider, group.First().LastQuotaRawJson!, now);
+                }
+            }
+        }
+        catch
+        {
+            // 回退失败按无数据处理（负缓存 60 秒兜底），不影响既有 SiteKey 路径结果。
+        }
+
+        return resets;
+    }
+
+    private static DateTimeOffset? EarliestAccountResetUtc(
+        IAccountQuotaProvider provider,
+        string rawJson,
+        DateTimeOffset now)
+    {
+        var snapshot = provider.ParseCachedQuota(rawJson);
+        if (snapshot is not { Success: true })
+        {
+            return null;
+        }
+
+        DateTimeOffset? earliest = null;
+        foreach (var window in snapshot.Windows)
+        {
+            if (window.ResetAtUtc is not { } reset || reset <= now)
+            {
+                continue;
+            }
+
+            if (earliest is null || reset < earliest)
+            {
+                earliest = reset;
+            }
+        }
+
+        return earliest;
     }
     /// <summary>
     /// 取候选对应 Key 的最早未来重置时间：多 Key 展开候选用 SiteKeyId；兼容候选回退站点级
@@ -217,6 +322,16 @@ public sealed class RouteCandidatePolicyService
             var keys = route.SiteKeyId is { } keyId
                 ? await dbContext.SiteKeys.Where(k => k.Id == keyId).ToListAsync(cancellationToken)
                 : await dbContext.SiteKeys.Where(k => k.SiteId == route.SiteId).ToListAsync(cancellationToken);
+
+            var hasKeyData = keys.Any(k => !string.IsNullOrWhiteSpace(k.LastQuotaRawJson));
+            if (!hasKeyData)
+            {
+                // OAuth 隐藏站点无 Key 配额数据：回退账号表巡检缓存。
+                var accountResets = await LoadAccountResetsAsync(scope.ServiceProvider, [route.SiteId], now, cancellationToken);
+                accountResets.TryGetValue(route.SiteId, out var accountReset);
+                _quotaResetCache[cacheKey] = new QuotaResetEntry(now, accountReset);
+                return accountReset;
+            }
 
             foreach (var key in keys)
             {

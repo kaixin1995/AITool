@@ -90,6 +90,16 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         return accounts.Select(ToQuotaTarget).ToList();
     }
 
+    public async Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
+        IReadOnlyList<Guid> siteIds,
+        CancellationToken cancellationToken)
+    {
+        var accounts = await _dbContext.GoogleAccounts
+            .Where(a => siteIds.Contains(a.LinkedSiteId))
+            .ToListAsync(cancellationToken);
+        return accounts.Select(ToQuotaTarget).ToList();
+    }
+
     public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
     {
         if (string.IsNullOrWhiteSpace(rawJson))

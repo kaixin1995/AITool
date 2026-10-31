@@ -58,6 +58,19 @@ public interface IAccountQuotaProvider
     Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken);
 
     /// <summary>
+    /// 按隐藏 Site 反查账号（路由层配额贯通）：站点没有 SiteKey 配额数据时，
+    /// 路由的配额感知排序与分级冷却按 LinkedSiteId 回退读取账号表的巡检额度缓存
+    /// （巡检数据落在账号表而非 SiteKey，OAuth 隐藏站点无 Key 行）。
+    /// 默认返回空（未覆写的提供程序不参与回退）；返回目标的 LastQuotaRawJson
+    /// 供调用方经 <see cref="ParseCachedQuota"/> 解析。不过滤启用状态——
+    /// 重置时刻对禁用账号同样有效（冷却时长计算用）。
+    /// </summary>
+    Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
+        IReadOnlyList<Guid> siteIds,
+        CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<AccountQuotaTarget>>([]);
+
+    /// <summary>
     /// 从账号持久化的最近一次原始响应恢复额度快照；无法解析时返回 null。
     /// </summary>
     AccountQuotaSnapshot? ParseCachedQuota(string rawJson);

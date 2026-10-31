@@ -30,6 +30,8 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddSingleton<FakeSiteQuotaProvider>();
         services.AddSingleton<ISiteQuotaProvider>(sp => sp.GetRequiredService<FakeSiteQuotaProvider>());
+        services.AddSingleton<FakeAccountQuotaProvider>();
+        services.AddSingleton<IAccountQuotaProvider>(sp => sp.GetRequiredService<FakeAccountQuotaProvider>());
         _serviceProvider = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_serviceProvider.GetRequiredService<SqlSugar.ISqlSugarClient>());
     }
@@ -295,6 +297,93 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         _circuitStore.GetRest(route.CircuitKey).Should().BeNull("未启用分级冷却不休息");
     }
 
+    // ---- OAuth 账号表配额回退（隐藏站点无 SiteKey） ----
+
+    [Fact]
+    public async Task Quota_ordering_falls_back_to_oauth_account_quota_cache()
+    {
+        // OAuth 隐藏站点没有 SiteKey 行，巡检数据落在账号表：配额排序必须能回退读到，
+        // 否则对 Codex/Kimi 等托管账号的「最早重置优先」完全失效（全部按无数据殿后）。
+        var accountProvider = _serviceProvider.GetRequiredService<FakeAccountQuotaProvider>();
+        var soonSite = Guid.NewGuid();
+        var lateSite = Guid.NewGuid();
+        accountProvider.Seed(soonSite, resetInHours: 2);
+        accountProvider.Seed(lateSite, resetInHours: 96);
+
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+
+        var soonKey = Guid.NewGuid();
+        var lateKey = Guid.NewGuid();
+        var routes = new List<CachedProxyRouteTarget>
+        {
+            // 静态顺序：晚重置在前。回退生效后应被重排为早重置优先。
+            new() { CircuitKey = lateKey, SiteId = lateSite },
+            new() { CircuitKey = soonKey, SiteId = soonSite },
+        };
+
+        var ordered = await policy.PreorderCandidatesAsync(routes, quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
+
+        ordered[0].CircuitKey.Should().Be(soonKey, "隐藏站点从账号表回退读取重置时刻，最早重置优先");
+        ordered[1].CircuitKey.Should().Be(lateKey);
+    }
+
+    [Fact]
+    public async Task Tiered_cooldown_rests_until_account_quota_reset()
+    {
+        // 分级冷却的「休到重置点」对隐藏站点同样要回退账号表，否则只剩 30 分钟盲休。
+        var accountProvider = _serviceProvider.GetRequiredService<FakeAccountQuotaProvider>();
+        var siteId = Guid.NewGuid();
+        accountProvider.Seed(siteId, resetInHours: 6);
+
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+        var route = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), SiteId = siteId };
+
+        await policy.RecordRouteFailureAsync(route, 402, """{"error":{"message":"额度不足"}}""",
+            retryAfterSeconds: null, tieredCooldownEnabled: true,
+            meta: new CircuitRouteMeta("q", "m"), CancellationToken.None);
+
+        var rest = _circuitStore.GetRest(route.CircuitKey);
+        rest.Should().NotBeNull("配额耗尽应休到账号额度窗口重置点");
+        rest!.Value.UntilUtc.Should().BeAfter(DateTimeOffset.UtcNow.AddHours(5), "回退账号表后按重置点（+6h）休息，而非 30 分钟默认值");
+        rest.Value.UntilUtc.Should().BeBefore(DateTimeOffset.UtcNow.AddHours(7));
+    }
+
+    [Fact]
+    public async Task Sites_with_site_key_quota_do_not_use_account_fallback()
+    {
+        // 有 Key 配额数据的普通站点不得被账号回退干扰（数据源边界）。
+        var accountProvider = _serviceProvider.GetRequiredService<FakeAccountQuotaProvider>();
+        var siteProvider = _serviceProvider.GetRequiredService<FakeSiteQuotaProvider>();
+        var mixedSite = Guid.NewGuid();
+        var siteKeyId = Guid.NewGuid();
+        await using (var scope = _serviceProvider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Sites.Add(new Domain.Sites.Site { Id = mixedSite, Name = "mixed", BaseUrl = "https://m.com", IsEnabled = true });
+            db.SiteKeys.Add(new Domain.Sites.SiteKey
+            {
+                Id = siteKeyId, SiteId = mixedSite, KeyValue = "k", Priority = 0, IsEnabled = true,
+                LastQuotaRawJson = siteProvider.BuildRawJson(resetInHours: 3)
+            });
+            await db.SaveChangesAsync();
+        }
+        // 账号表若也有同站点数据（不同值），必须被 Key 数据压制。
+        accountProvider.Seed(mixedSite, resetInHours: 96);
+
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+        var route = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), SiteId = mixedSite, SiteKeyId = siteKeyId };
+
+        await policy.RecordRouteFailureAsync(route, 402, "insufficient quota",
+            retryAfterSeconds: null, tieredCooldownEnabled: true,
+            meta: new CircuitRouteMeta("q", "m"), CancellationToken.None);
+
+        var rest = _circuitStore.GetRest(route.CircuitKey);
+        rest!.Value.UntilUtc.Should().BeBefore(DateTimeOffset.UtcNow.AddHours(5), "Key 配额数据（+3h）优先，账号回退（+96h）不参与");
+    }
+
     public void Dispose()
     {
         _serviceProvider.Dispose();
@@ -334,5 +423,80 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         }
 
         public string BuildRawJson(int resetInHours) => $"{{\"fakeQuota\":{resetInHours}}}";
+    }
+
+    /// <summary>
+    /// 账号表配额回退测试桩：模拟 IAccountQuotaProvider 的账号巡检缓存
+    /// （LinkedSiteId → LastQuotaRawJson），验证策略层的回退管线。
+    /// </summary>
+    private sealed class FakeAccountQuotaProvider : IAccountQuotaProvider
+    {
+        public string ProviderKey => "fake-account";
+        private readonly Dictionary<Guid, int> _resetHoursBySite = [];
+
+        public void Seed(Guid linkedSiteId, int resetInHours) => _resetHoursBySite[linkedSiteId] = resetInHours;
+
+        public Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<AccountQuotaTarget>>(
+                _resetHoursBySite.Select(pair => new AccountQuotaTarget
+                {
+                    ProviderKey = ProviderKey,
+                    AccountId = pair.Key,
+                    DisplayName = "fake",
+                    LinkedSiteId = pair.Key,
+                    IsEnabled = true,
+                    LastQuotaRawJson = BuildRawJson(pair.Value),
+                }).ToList());
+
+        public Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
+            IReadOnlyList<Guid> siteIds,
+            CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<AccountQuotaTarget>>(
+                _resetHoursBySite.Where(pair => siteIds.Contains(pair.Key))
+                    .Select(pair => new AccountQuotaTarget
+                    {
+                        ProviderKey = ProviderKey,
+                        AccountId = pair.Key,
+                        DisplayName = "fake",
+                        LinkedSiteId = pair.Key,
+                        IsEnabled = true,
+                        LastQuotaRawJson = BuildRawJson(pair.Value),
+                    }).ToList());
+
+        public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
+        {
+            if (rawJson is null || !rawJson.Contains("\"fakeAccountQuota\""))
+            {
+                return null;
+            }
+
+            var resetHours = int.Parse(rawJson.Split(':')[1].TrimEnd('}'));
+            return new AccountQuotaSnapshot
+            {
+                Success = true,
+                RawJson = rawJson,
+                Windows =
+                [
+                    new AccountQuotaWindow
+                    {
+                        Id = "fake_window",
+                        Label = "测试窗口",
+                        UsedPercent = 50,
+                        ResetAtUtc = DateTimeOffset.UtcNow.AddHours(resetHours),
+                    }
+                ],
+            };
+        }
+
+        public Task<AccountQuotaSnapshot> QueryAsync(AccountQuotaTarget account, bool forceRefresh, CancellationToken cancellationToken)
+            => Task.FromResult(new AccountQuotaSnapshot { Success = false, Error = "not used" });
+
+        public Task SetEnabledAsync(AccountQuotaTarget account, bool enabled, string reason, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task ApplyFeatureToggleAsync(bool enabled, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public string BuildRawJson(int resetInHours) => $"{{\"fakeAccountQuota\":{resetInHours}}}";
     }
 }

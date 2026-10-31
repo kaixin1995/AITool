@@ -53,6 +53,16 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         return accounts.Select(ToTarget).ToList();
     }
 
+    public async Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
+        IReadOnlyList<Guid> siteIds,
+        CancellationToken cancellationToken)
+    {
+        var accounts = await _dbContext.DeviceOAuthAccounts
+            .Where(a => !a.IsDeleted && siteIds.Contains(a.LinkedSiteId))
+            .ToListAsync(cancellationToken);
+        return accounts.Select(ToTarget).ToList();
+    }
+
     public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
     {
         // 快照按厂商格式存储，逐厂商尝试解析。

@@ -61,6 +61,16 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         return accounts.Select(ToQuotaTarget).ToList();
     }
 
+    public async Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
+        IReadOnlyList<Guid> siteIds,
+        CancellationToken cancellationToken)
+    {
+        var accounts = await _dbContext.KimiAccounts
+            .Where(a => !a.IsDeleted && siteIds.Contains(a.LinkedSiteId))
+            .ToListAsync(cancellationToken);
+        return accounts.Select(ToQuotaTarget).ToList();
+    }
+
     public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
     {
         var windows = KimiQuotaParser.Parse(rawJson);
