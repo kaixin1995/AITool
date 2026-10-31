@@ -196,6 +196,29 @@ public sealed class AccountPoolSyncTests : IDisposable
         (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().HaveCount(2);
     }
 
+    [Fact]
+    public async Task Concurrent_syncs_serialize_and_converge_cleanly()
+    {
+        // 「导入后自动 sync-all」与「手动同步」交错的回归护栏：同步全局串行化后，
+        // 并发同步必须全部成功收敛（无 UNIQUE 异常泄漏、规则不重复不丢失）。
+        var (provisioner, sync, db) = CreateServices();
+        var a = await provisioner.ProvisionFromTokensAsync(Input("acc-r1", "r@p.com", "team", "at-1"), CancellationToken.None);
+        var b = await provisioner.ProvisionFromTokensAsync(Input("acc-r2", "s@p.com", "team", "at-2"), CancellationToken.None);
+        await provisioner.BatchUpsertRemoteModelsAsync(a.Id, [("m1", "m1")], CancellationToken.None);
+
+        var pool = new AccountPool { Name = "race-pool", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+
+        var tasks = Enumerable.Range(0, 4)
+            .Select(_ => sync.SyncPoolAsync(pool.Id, CancellationToken.None));
+        var results = await Task.WhenAll(tasks);
+
+        results.Should().OnlyContain(r => r.RuleCount == 2, "串行化后并发同步全部成功收敛");
+        var rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
+        rules.Should().HaveCount(2, "2 成员 × m1，并发同步不重复不丢失");
+        rules.Select(r => r.SiteId).Should().BeEquivalentTo([a.LinkedSiteId, b.LinkedSiteId]);
+    }
+
     private (CodexAccountProvisioner Provisioner, AccountPoolSyncService Sync, AppDbContext Db) CreateServices()
     {
         var scope = _services.CreateScope();

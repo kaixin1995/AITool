@@ -34,8 +34,28 @@ public sealed class AccountPoolSyncService
         _logger = logger;
     }
 
-    /// <summary>同步单个池：物化自动成员 → 按模型重生成托管入口与规则。</summary>
+    /// <summary>
+    /// 池同步全局串行化：同步是低频管理操作，但「导入后自动 sync-all」与「手动同步/成员编辑」
+    /// 可能交错——碰撞检测与写入跨连接事务非原子，交错时靠入口唯一索引兜底只能保证不脏写、
+    /// 不保证不报错（一方 UNIQUE 冲突异常）。全局单锁把交错收敛为排队，零行为损失。
+    /// </summary>
+    private static readonly SemaphoreSlim _syncGate = new(1, 1);
+
+    /// <summary>同步单个池：物化自动成员 → 按模型重生成托管入口与规则（全局串行化）。</summary>
     public async Task<AccountPoolSyncResult> SyncPoolAsync(Guid poolId, CancellationToken ct)
+    {
+        await _syncGate.WaitAsync(ct);
+        try
+        {
+            return await SyncPoolCoreAsync(poolId, ct);
+        }
+        finally
+        {
+            _syncGate.Release();
+        }
+    }
+
+    private async Task<AccountPoolSyncResult> SyncPoolCoreAsync(Guid poolId, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
@@ -208,8 +228,21 @@ public sealed class AccountPoolSyncService
         return results;
     }
 
-    /// <summary>删除池：删成员行 + 解除该池认领的全部入口托管（规则保留）。</summary>
+    /// <summary>删除池：删成员行 + 解除该池认领的全部入口托管（规则保留）。与同步互斥。</summary>
     public async Task DeletePoolAsync(Guid poolId, CancellationToken ct)
+    {
+        await _syncGate.WaitAsync(ct);
+        try
+        {
+            await DeletePoolCoreAsync(poolId, ct);
+        }
+        finally
+        {
+            _syncGate.Release();
+        }
+    }
+
+    private async Task DeletePoolCoreAsync(Guid poolId, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
