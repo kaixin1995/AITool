@@ -384,6 +384,46 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         rest!.Value.UntilUtc.Should().BeBefore(DateTimeOffset.UtcNow.AddHours(5), "Key 配额数据（+3h）优先，账号回退（+96h）不参与");
     }
 
+    [Fact]
+    public async Task Mixed_candidates_use_key_data_and_account_fallback_independently()
+    {
+        // 混合路由组（普通站点带 Key + OAuth 隐藏站点）：两套数据源各归各位、互不串扰，
+        // 排序统一按「最早重置优先」。这是 P0 回退在真实多源候选组里的行为锁定。
+        var accountProvider = _serviceProvider.GetRequiredService<FakeAccountQuotaProvider>();
+        var siteProvider = _serviceProvider.GetRequiredService<FakeSiteQuotaProvider>();
+        var oauthSite = Guid.NewGuid();
+        var keySite = Guid.NewGuid();
+        var keyId = Guid.NewGuid();
+        await using (var scope = _serviceProvider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Sites.Add(new Domain.Sites.Site { Id = keySite, Name = "key-site", BaseUrl = "https://k.com", IsEnabled = true });
+            db.SiteKeys.Add(new Domain.Sites.SiteKey
+            {
+                Id = keyId, SiteId = keySite, KeyValue = "k", Priority = 0, IsEnabled = true,
+                LastQuotaRawJson = siteProvider.BuildRawJson(resetInHours: 1)
+            });
+            await db.SaveChangesAsync();
+        }
+        accountProvider.Seed(oauthSite, resetInHours: 48); // OAuth 账号重置更晚
+
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+
+        var oauthKey = Guid.NewGuid();
+        var routes = new List<CachedProxyRouteTarget>
+        {
+            new() { CircuitKey = Guid.NewGuid(), SiteId = oauthSite },        // OAuth（账号表回退）
+            new() { CircuitKey = Guid.NewGuid(), SiteId = keySite, SiteKeyId = keyId }, // 普通（Key 数据）
+        };
+
+        var ordered = await policy.PreorderCandidatesAsync(routes, quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
+
+        ordered[0].SiteKeyId.Should().Be(keyId, "Key 站点用自己的重置数据（+1h）");
+        ordered[1].SiteKeyId.Should().BeNull();
+        ordered[1].SiteId.Should().Be(oauthSite, "OAuth 站点用账号表回退数据（+48h）殿后");
+    }
+
     public void Dispose()
     {
         _serviceProvider.Dispose();
