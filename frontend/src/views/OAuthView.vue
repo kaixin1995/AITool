@@ -2902,29 +2902,37 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .oauth-table-email { font-size: 11px; }
+/* 网格三列（标签｜条｜百分比）：标签列取组内最宽（fit-content 上限 150px），
+   上下窗口行的进度条与百分比随之纵向对齐成列，不再跟着各自标签宽度左右漂移 */
 .oauth-table-windows {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-/* 单个额度窗口一行排布：文字 + 进度条 + 百分比 */
-.oauth-table-window-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: fit-content(150px) minmax(100px, 1fr) auto;
   align-items: center;
-  gap: 6px;
+  gap: 4px 6px;
+}
+/* 行容器只做语义分组：display:contents 让「文字/条/百分比」直接成为网格项；
+   各自钉死列号，避免纯 label 行（资源包等）被自动流排到同一行并排 */
+.oauth-table-window-row {
+  display: contents;
+}
+.oauth-table-window-name,
+.oauth-table-window-label-only,
+.oauth-table-window-none {
+  grid-column: 1;
+}
+.oauth-table-window-bar {
+  grid-column: 2;
+}
+.oauth-table-window-pct {
+  grid-column: 3;
 }
 .oauth-table-window-name {
-  flex-shrink: 0;
   /* 数值型窗口（企业周期（已用 8/100）、积分（3/10）等）短名按内容自适应，超长省略悬浮看全 */
-  max-width: 150px;
+  min-width: 0;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.oauth-table-window-bar {
-  flex: 1;
-  min-width: 100px;
 }
 .oauth-table-window-bar .n-progress {
   display: block;
