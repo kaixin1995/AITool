@@ -134,7 +134,9 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
         var pro = ParseTier(root, "codex-pro");
 
         // 校验（照 CPA validateModelsCatalog 的关键约束）：四层非空、层内无重复、
-        // 且至少一层含 gpt-5.5（证明这确实是一份 Codex 客户端目录而非损坏数据）。
+        // 且至少一层含 gpt-<数字> 系模型（证明这确实是一份 Codex 客户端目录而非损坏数据）。
+        // 注意不能用具体模型名当锚点：2026-10 上游目录已全面进入 gpt-6 代际、移除 gpt-5.5，
+        // 硬编码 gpt-5.5 会让每次刷新都被误判为「数据无效」（实测线上两来源均被拒）。
         if (free.Count == 0 || team.Count == 0 || plus.Count == 0 || pro.Count == 0)
         {
             _logger.LogWarning("Codex remote catalog from {Url} has empty tier, rejected", url);
@@ -145,9 +147,9 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
             _logger.LogWarning("Codex remote catalog from {Url} contains duplicate ids, rejected", url);
             return null;
         }
-        if (!free.Concat(team).Concat(plus).Concat(pro).Any(id => string.Equals(id, "gpt-5.5", StringComparison.OrdinalIgnoreCase)))
+        if (!free.Concat(team).Concat(plus).Concat(pro).Any(IsCodexGenerationModel))
         {
-            _logger.LogWarning("Codex remote catalog from {Url} is missing expected baseline model gpt-5.5, rejected", url);
+            _logger.LogWarning("Codex remote catalog from {Url} contains no gpt-<digit> generation model, rejected", url);
             return null;
         }
 
@@ -183,6 +185,15 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
 
     private static bool TiersEqual(IReadOnlyList<string> a, IReadOnlyList<string> b)
         => a.Count == b.Count && a.SequenceEqual(b, StringComparer.Ordinal);
+
+    /// <summary>
+    /// 代际无关的 Codex 目录锚点：id 形如 gpt-&lt;数字&gt;…（gpt-5.5 / gpt-6-luna 等）。
+    /// gpt-image-* 不算——图片模型是 builtin，不构成「这是 Codex 客户端分层」的证据。
+    /// </summary>
+    private static bool IsCodexGenerationModel(string id)
+        => id.Length > 4
+            && id.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase)
+            && char.IsAsciiDigit(id[4]);
 
     private IReadOnlyList<string> ComputeModels(string key)
     {

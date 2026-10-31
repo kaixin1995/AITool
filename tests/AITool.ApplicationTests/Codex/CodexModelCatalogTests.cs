@@ -104,7 +104,7 @@ public sealed class CodexModelCatalogTests
     [Fact]
     public async Task Payload_missing_baseline_model_is_rejected()
     {
-        // 缺 gpt-5.5 基线模型：疑似非 Codex 目录或损坏数据，应拒绝并沿用本地。
+        // 不含任何 gpt-<数字> 代际模型：疑似非 Codex 目录或损坏数据，应拒绝并沿用本地。
         var bogus = new[] { "totally-unknown-model" };
         var catalog = CreateCatalog(new Dictionary<string, object>
         {
@@ -115,6 +115,35 @@ public sealed class CodexModelCatalogTests
         var result = await catalog.TryRefreshFromRemoteAsync();
 
         result.Success.Should().BeFalse();
+        catalog.GetModelsForPlan("free").Should().Contain("gpt-5.5");
+    }
+
+    [Fact]
+    public async Task Payload_without_gpt55_but_with_newer_generation_is_accepted()
+    {
+        // 回归锁定（2026-10-31 实测线上形态）：上游目录已进入 gpt-6 代际、四层均无 gpt-5.5。
+        // 旧锚点「必须含 gpt-5.5」曾把这份合法目录整体拒绝，导致每次拉取模型都弹
+        // 「远端模型目录拉取失败」。代际无关的结构校验必须放行它。
+        var catalog = CreateCatalog(new Dictionary<string, object>
+        {
+            ["router-for.me"] = TierJson(
+                ["gpt-6-luna", "gpt-6.1-terra", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review"],
+                ["gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "codex-auto-review"],
+                ["gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "codex-auto-review"],
+                ["gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "codex-auto-review"])
+        });
+
+        var result = await catalog.TryRefreshFromRemoteAsync();
+
+        result.Success.Should().BeTrue("无 gpt-5.5 但含 gpt-6 代际的目录是合法的上游新形态");
+        catalog.GetModelsForPlan("free").Should().Contain("gpt-6-luna");
+
+        // 恢复内置分层，避免 static 快照影响同进程其他测试。
+        var restore = CreateCatalog(new Dictionary<string, object>
+        {
+            ["router-for.me"] = TierJson(BuiltinFree, BuiltinTeam, BuiltinPlus, BuiltinPlus)
+        });
+        (await restore.TryRefreshFromRemoteAsync()).Success.Should().BeTrue();
         catalog.GetModelsForPlan("free").Should().Contain("gpt-5.5");
     }
 }
