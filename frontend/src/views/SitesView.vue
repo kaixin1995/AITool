@@ -1439,7 +1439,8 @@ onBeforeUnmount(handleCatalogClosed)
   overflow: hidden;
 }
 
-.site-url {
+/* h() 渲染在 Naive UI Cell 上下文中拿不到本组件 data-v，需 :deep 才能命中表格单元格 */
+:deep(.site-url) {
   display: inline-block;
   max-width: 100%;
   overflow: hidden;

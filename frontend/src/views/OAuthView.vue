@@ -2508,88 +2508,8 @@ onUnmounted(() => {
   min-height: 28px;
 }
 
-/* 表格视图单元格 */
-.oauth-table-name-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.oauth-table-name {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.oauth-table-sub {
-  font-size: 12px;
-  color: var(--text-color-secondary, #888);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.oauth-table-email { font-size: 11px; }
-.oauth-table-windows {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.oauth-table-window-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.oauth-table-window-name {
-  flex-shrink: 0;
-  /* 数值型窗口（企业周期（已用 8/100）、积分（3/10）等）短名按内容自适应，超长省略悬浮看全 */
-  max-width: 150px;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.oauth-table-window-bar {
-  flex: 1;
-  min-width: 100px;
-}
-/* 条内百分比：绝对定位居中在填充条上（Naive 指示器已关） */
-.oauth-table-window-bar :deep(.n-progress) {
-  display: block;
-}
-.oauth-table-window-bar :deep(.n-progress-graph-line) {
-  padding: 0;
-}
-.oauth-table-window-bar :deep(.n-progress-graph-line-rail),
-.oauth-table-window-bar :deep(.n-progress-graph-line-fill) {
-  height: 14px !important;
-  border-radius: 3px;
-}
-.oauth-table-window-bar :deep(.n-progress-graph-line-rail) {
-  background: var(--bg-page, #f3f3f3);
-}
-.oauth-table-window-pct {
-  flex-shrink: 0;
-  width: 42px;
-  text-align: right;
-  font-size: 12px;
-  color: var(--text-color-secondary, #666);
-  font-variant-numeric: tabular-nums;
-}
-.oauth-table-window-none {
-  font-size: 12px;
-  color: var(--text-color-secondary, #888);
-}
-.oauth-table-window-label-only {
-  font-size: 12px;
-  color: var(--text-color-secondary, #666);
-  line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.oauth-table-nowrap {
-  white-space: nowrap;
-}
+/* 表格视图单元格样式见文件末尾的全局块——本组件的 h() 元素渲染在 Naive UI Cell 上下文中，
+   拿不到本组件的 data-v 作用域属性，scoped 规则永远匹配不上（进度条曾因此塌成三行）。 */
 
 /* 表格：覆盖全局过宽的内边距，给内容腾出呼吸空间 */
 .oauth-data-table :deep(.n-data-table-th) {
@@ -2598,27 +2518,6 @@ onUnmounted(() => {
 .oauth-data-table :deep(.n-data-table-td) {
   padding: 10px 12px !important;
 }
-
-/* 表格：Token 列不折行 */
-.oauth-table-token {
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 表格：操作按钮——两排紧凑栅格，弱化边框 */
-.oauth-table-actions {
-  display: grid;
-  grid-template-columns: repeat(3, auto);
-  gap: 4px 6px;
-  justify-content: start;
-}
-.oauth-table-actions .n-button {
-  --n-height: 22px;
-  font-size: 12px;
-  padding: 0 8px;
-  border-radius: 4px;
-}
-
 
 .oauth-grid {
   display: grid;
@@ -2975,5 +2874,111 @@ onUnmounted(() => {
   .reset-credit-expiry {
     text-align: left;
   }
+}
+</style>
+
+<style>
+/* 表格视图单元格——必须是非 scoped 全局块。
+   原因：这些 class 都出现在 NDataTable columns 的 h() 渲染函数里，由 Naive UI 的 Cell
+   组件在自己的渲染上下文中调用，元素上没有本组件的 data-v 属性，scoped 选择器永远匹配不上。
+   所有类名均带 oauth-table- 前缀，不会污染全局。 */
+.oauth-table-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.oauth-table-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-sub {
+  font-size: 12px;
+  color: var(--text-color-secondary, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-email { font-size: 11px; }
+.oauth-table-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* 单个额度窗口一行排布：文字 + 进度条 + 百分比 */
+.oauth-table-window-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.oauth-table-window-name {
+  flex-shrink: 0;
+  /* 数值型窗口（企业周期（已用 8/100）、积分（3/10）等）短名按内容自适应，超长省略悬浮看全 */
+  max-width: 150px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-window-bar {
+  flex: 1;
+  min-width: 100px;
+}
+.oauth-table-window-bar .n-progress {
+  display: block;
+}
+.oauth-table-window-bar .n-progress-graph-line {
+  padding: 0;
+}
+.oauth-table-window-bar .n-progress-graph-line-rail,
+.oauth-table-window-bar .n-progress-graph-line-fill {
+  height: 14px !important;
+  border-radius: 3px;
+}
+.oauth-table-window-bar .n-progress-graph-line-rail {
+  background: var(--bg-page, #f3f3f3);
+}
+.oauth-table-window-pct {
+  flex-shrink: 0;
+  width: 42px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-color-secondary, #666);
+  font-variant-numeric: tabular-nums;
+}
+.oauth-table-window-none {
+  font-size: 12px;
+  color: var(--text-color-secondary, #888);
+}
+.oauth-table-window-label-only {
+  font-size: 12px;
+  color: var(--text-color-secondary, #666);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-nowrap {
+  white-space: nowrap;
+}
+/* Token 列不折行 */
+.oauth-table-token {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* 操作按钮——两排紧凑栅格，弱化边框 */
+.oauth-table-actions {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 4px 6px;
+  justify-content: start;
+}
+.oauth-table-actions .n-button {
+  --n-height: 22px;
+  font-size: 12px;
+  padding: 0 8px;
+  border-radius: 4px;
 }
 </style>
