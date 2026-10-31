@@ -250,6 +250,23 @@ SuperGrok 设备码登录与账号管理（详见 [xai-accounts.md](xai-accounts
 | POST | `/accounts/batch-apply-models` | 批量应用模型到全部账号（组内拉一次、应用到全组；逐账号结果） |
 | POST | `/import-credential` | 导入凭证 JSON（`~/.grok/auth.json` 形态或平铺 token） |
 
+## 18.2 号池 `api/admin/account-pools`（类级 OAuth 功能开关，关闭时 404）
+
+生成式路由总包：把多个同厂商（Codex 需同套餐）账号打包成一个对外路由入口。
+池名即 ExternalModelName；成员的已启用模型并集透出（对外名=上游名，每个模型只路由到持有它的成员）。
+转发热路径零改动——池规则就是普通规则，池内静态顺序=InstancePriority 基线，运行时叠加
+配额感知排序 / 分级冷却 / 熔断 / 会话亲和（P0 起对 OAuth 账号贯通巡检数据）。
+直接编辑托管入口的规则会在下次池同步时被覆盖；删除池仅解除托管（规则保留）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `` | 池列表（含成员摘要/托管状态） |
+| GET | `/candidates?vendorKey=&planType=` | 厂商（+套餐）账号候选 |
+| POST | `` | 建池（名称即路由入口名，创建后不可改；autoInclude=自动纳入，手动池传 memberAccountIds） |
+| PUT | `/{id}/members` | 整体替换成员行（勾选/排序/排除；自动池用排除位控制参与） |
+| POST | `/{id}/sync` · `/sync-all` | 同步单池/全部池（重生成规则，事务保护，幂等） |
+| DELETE | `/{id}` | 删池（清成员行 + 解除路由托管，规则保留） |
+
 ## 19. Hangfire 仪表盘
 
 `/hangfire` — Hangfire Dashboard（InMemory 存储），未登录由中间件重定向 `/login?returnUrl=...`。

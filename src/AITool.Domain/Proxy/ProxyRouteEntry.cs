@@ -22,6 +22,13 @@ public sealed class ProxyRouteEntry
     public string EntryName { get; set; } = string.Empty;
 
     /// <summary>
+    /// 号池托管标记：由 <see cref="AccountPool"/> 生成并维护规则的路由入口。
+    /// null = 手工路由（号池同步绝不触碰）；删除池时仅清除本标记（解除托管，规则保留）。
+    /// </summary>
+    [SugarColumn(IsNullable = true)]
+    public Guid? ManagedByPoolId { get; set; }
+
+    /// <summary>
     /// 主入口创建时间，用于记录该入口配置的建立时间。
     /// </summary>
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

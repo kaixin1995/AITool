@@ -5,8 +5,9 @@ import { NTabPane, NTabs } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import RoutesView from './RoutesView.vue'
 import CompatibilityView from './CompatibilityView.vue'
+import AccountPoolsView from './AccountPoolsView.vue'
 
-type RouteManagementTab = 'routes' | 'compatibility'
+type RouteManagementTab = 'routes' | 'compatibility' | 'pools'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,13 +18,16 @@ function getTabFromHash(): RouteManagementTab {
   if (hash === 'compatibility' || route.query.tab === 'compatibility') {
     return 'compatibility'
   }
+  if (hash === 'pools' || route.query.tab === 'pools') {
+    return 'pools'
+  }
   return 'routes'
 }
 
 function handleTabChange(value: string): void {
-  const nextTab: RouteManagementTab = value === 'compatibility' ? 'compatibility' : 'routes'
+  const nextTab: RouteManagementTab = value === 'compatibility' ? 'compatibility' : value === 'pools' ? 'pools' : 'routes'
   activeTab.value = nextTab
-  const nextHash = nextTab === 'compatibility' ? '#compatibility' : '#routes'
+  const nextHash = nextTab === 'compatibility' ? '#compatibility' : nextTab === 'pools' ? '#pools' : '#routes'
   if (route.hash !== nextHash) {
     void router.replace({ hash: nextHash })
   }
@@ -40,7 +44,7 @@ watch(() => route.query.tab, () => {
 
 <template>
   <div class="page-container route-management-page">
-    <PageHeader title="路由管理" subtitle="统一管理路由规则与兼容规则集" />
+    <PageHeader title="路由管理" subtitle="统一管理路由规则、号池与兼容规则集" />
 
     <NTabs v-model:value="activeTab" type="line" animated @update:value="handleTabChange">
       <NTabPane name="routes" tab="路由规则">
@@ -48,6 +52,9 @@ watch(() => route.query.tab, () => {
       </NTabPane>
       <NTabPane name="compatibility" tab="兼容规则集">
         <CompatibilityView embedded />
+      </NTabPane>
+      <NTabPane name="pools" tab="号池">
+        <AccountPoolsView embedded />
       </NTabPane>
     </NTabs>
   </div>

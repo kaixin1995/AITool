@@ -100,6 +100,8 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<DetectionTaskExecution> DetectionTaskExecutions => _client.Queryable<DetectionTaskExecution>();
     public ISugarQueryable<ProxyRouteEntry> ProxyRouteEntries => _client.Queryable<ProxyRouteEntry>();
     public ISugarQueryable<ProxyRouteRule> ProxyRouteRules => _client.Queryable<ProxyRouteRule>();
+    public ISugarQueryable<Domain.Proxy.AccountPool> AccountPools => _client.Queryable<Domain.Proxy.AccountPool>();
+    public ISugarQueryable<Domain.Proxy.AccountPoolMember> AccountPoolMembers => _client.Queryable<Domain.Proxy.AccountPoolMember>();
     public ISugarQueryable<ProxyAccessKey> ProxyAccessKeys => _client.Queryable<ProxyAccessKey>();
     public ISugarQueryable<ProxyUsageLog> ProxyUsageLogs => _client.Queryable<ProxyUsageLog>();
     public ISugarQueryable<ModelHealthMonitor> ModelHealthMonitors => _client.Queryable<ModelHealthMonitor>();
@@ -278,6 +280,8 @@ public static class SqlSugarSetup
             typeof(DetectionTaskExecution),
             typeof(ProxyRouteEntry),
             typeof(ProxyRouteRule),
+            typeof(Domain.Proxy.AccountPool),
+            typeof(Domain.Proxy.AccountPoolMember),
             typeof(ProxyAccessKey),
             typeof(ProxyUsageLog),
             typeof(ModelHealthMonitor),

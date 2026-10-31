@@ -243,6 +243,64 @@ public sealed class LegacySchemaMigrationTests : IDisposable
         provider.Dispose();
     }
 
+    /// <summary>
+    /// 号池加列/建表升级专项（ProxyRouteEntries 加可空 ManagedByPoolId 列 + AccountPools/
+    /// AccountPoolMembers 新表）：可空列默认 null（无托管），新表空建，旧数据原样保留。
+    /// </summary>
+    [Fact]
+    public async Task Route_entries_upgrade_with_pool_tables_and_managed_column()
+    {
+        var dbFile = _databasePath;
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbFile}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE ProxyRouteEntries (
+                    Id TEXT PRIMARY KEY,
+                    EntryName TEXT NOT NULL,
+                    CreatedAt TEXT NOT NULL
+                );
+                CREATE TABLE ProxyRouteRules (
+                    Id TEXT PRIMARY KEY,
+                    ExternalModelName TEXT NOT NULL,
+                    UpstreamModelName TEXT NOT NULL,
+                    SiteId TEXT NOT NULL,
+                    SiteModelName TEXT NOT NULL,
+                    Priority INTEGER NOT NULL DEFAULT 0,
+                    ModelPriority INTEGER NOT NULL DEFAULT 0,
+                    InstancePriority INTEGER NOT NULL DEFAULT 0,
+                    IsEnabled INTEGER NOT NULL DEFAULT 1,
+                    AvailabilityMode TEXT NOT NULL DEFAULT 'AllDay',
+                    TimeRangesJson TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO ProxyRouteEntries (Id, EntryName, CreatedAt)
+                    VALUES ('77777777-7777-7777-7777-777777777777', '旧入口', '2026-01-01T00:00:00+00:00');
+                INSERT INTO ProxyRouteRules (Id, ExternalModelName, UpstreamModelName, SiteId, SiteModelName)
+                    VALUES ('88888888-8888-8888-8888-888888888888', '旧入口', 'm', '99999999-9999-9999-9999-999999999999', 'm');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        var services = new ServiceCollection();
+        services.AddSqlSugar($"Data Source={dbFile}");
+        var provider = services.BuildServiceProvider();
+        SqlSugarSetup.InitializeDatabase(provider.GetRequiredService<SqlSugar.ISqlSugarClient>());
+
+        using (var scope = provider.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var entry = await db.ProxyRouteEntries.InSingleAsync(Guid.Parse("77777777-7777-7777-7777-777777777777"));
+            entry.Should().NotBeNull("旧路由入口必须原样保留");
+            entry!.ManagedByPoolId.Should().BeNull("升级后旧入口无托管标记（手工路由语义不变）");
+            (await db.ProxyRouteRules.CountAsync()).Should().Be(1);
+            (await db.AccountPools.CountAsync()).Should().Be(0, "新表空建可写可读");
+            (await db.AccountPoolMembers.CountAsync()).Should().Be(0);
+        }
+
+        provider.Dispose();
+    }
+
     public void Dispose()
     {
         TryDelete(_databasePath);

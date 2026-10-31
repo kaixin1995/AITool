@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
+import { syncAllAccountPools } from '@/api/accountPools'
 import {
   importSelectedDeviceModels,
   batchApplyDeviceModels,
@@ -1007,6 +1008,8 @@ async function handleDelete(acc: UnifiedAccount): Promise<void> {
   }
   message.success('已删除账号')
   await load()
+  // 号池收口：成员账号删除后同步全部池（清掉指向已删站点的生成规则）。
+  try { await syncAllAccountPools() } catch { /* 最佳努力 */ }
 }
 async function handleRunInspection(force: boolean): Promise<void> {
   if (inspectionRunning.value) return
@@ -1278,6 +1281,8 @@ async function handleImportModels(): Promise<void> {
     }
     modelModal.value = false
     await load()
+    // 号池收口：模型映射变更后同步全部池（无池时是空操作，失败不阻断）。
+    try { await syncAllAccountPools() } catch { /* 最佳努力 */ }
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
 }
 
