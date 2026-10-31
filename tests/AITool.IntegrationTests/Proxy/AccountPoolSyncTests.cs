@@ -14,7 +14,8 @@ namespace AITool.IntegrationTests.Proxy;
 /// 托管路由入口（ExternalModelName=模型名，ManagedByPoolId=池 Id），池做账号扇出：
 /// 请求 gpt-5 时候选=持有 gpt-5 的全部成员（InstancePriority=池内静态顺序，运行时
 /// 叠加配额排序/冷却）。池名只是管理标签，不占用路由命名空间。碰撞模型（已被手工
-/// 路由占用）跳过不阻塞整池；成员映射变化后陈旧入口被清理；删池解除全部托管。
+/// 路由占用）跳过不阻塞整池；白名单只给勾选模型生成入口；成员映射变化后陈旧入口
+/// 被清理；删池连带删除它生成的入口与规则（手工路由不受影响）。
 /// </summary>
 public sealed class AccountPoolSyncTests : IDisposable
 {
@@ -144,11 +145,21 @@ public sealed class AccountPoolSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task Delete_pool_unmanages_all_entries_and_keeps_rules()
+    public async Task Delete_pool_cascades_to_managed_entries_and_rules_only()
     {
         var (provisioner, sync, db) = CreateServices();
         var acc = await provisioner.ProvisionFromTokensAsync(Input("acc-d1", "d@p.com", "team", "at-1"), CancellationToken.None);
         await provisioner.UpsertRemoteModelsAsync(acc.LinkedSiteId, [("m1", "m1")], CancellationToken.None);
+
+        // 手工路由（非池生成）：删池绝不能碰。
+        await db.Client.Insertable(new ProxyRouteEntry { EntryName = "manual" }).ExecuteCommandAsync();
+        await db.Client.Insertable(new ProxyRouteRule
+        {
+            ExternalModelName = "manual",
+            UpstreamModelName = "manual",
+            SiteId = acc.LinkedSiteId,
+            SiteModelName = "manual",
+        }).ExecuteCommandAsync();
 
         var pool = new AccountPool { Name = "del-pool", VendorKey = "codex", AutoIncludeMembers = true };
         await db.Client.Insertable(pool).ExecuteCommandAsync();
@@ -159,10 +170,55 @@ public sealed class AccountPoolSyncTests : IDisposable
 
         (await db.AccountPools.ToListAsync()).Should().BeEmpty();
         (await db.AccountPoolMembers.ToListAsync()).Should().BeEmpty();
-        var entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
-        entry.ManagedByPoolId.Should().BeNull("删除池=解除该池全部入口托管");
+        // 池生成的入口与规则连带删除（用户语义：删池不留自动生成的入口）。
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m1")).Should()
+            .BeFalse("池生成的托管入口随池删除");
         (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
-            .Should().HaveCount(1, "生成规则保留，可继续手工维护");
+            .Should().BeEmpty("池生成的规则随池删除");
+        // 手工路由原样保留。
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "manual")).Should().BeTrue("手工入口不受删池影响");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "manual").ToListAsync())
+            .Should().HaveCount(1, "手工规则不受删池影响");
+    }
+
+    [Fact]
+    public async Task Model_whitelist_limits_entries_and_resync_cleans_deselected()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var acc = await provisioner.ProvisionFromTokensAsync(Input("acc-w1", "w@p.com", "team", "at-1"), CancellationToken.None);
+        await provisioner.UpsertRemoteModelsAsync(acc.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], CancellationToken.None);
+
+        // 白名单只勾 m1：m2 不生成入口。
+        var pool = new AccountPool
+        {
+            Name = "whitelist-pool",
+            VendorKey = "codex",
+            AutoIncludeMembers = true,
+            ExposedModelsJson = """["m1"]""",
+        };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+        var result = await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
+
+        result.ModelCount.Should().Be(1, "白名单只放行 m1");
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m2")).Should().BeFalse("未勾选的模型不生成入口");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m2").ToListAsync()).Should().BeEmpty();
+
+        // 白名单改为 m2：m1 入口与规则被清理，m2 新建（陈旧清理复用同一机制）。
+        pool.ExposedModelsJson = """["m2"]""";
+        await db.Client.Updateable(pool).UpdateColumns(p => p.ExposedModelsJson).ExecuteCommandAsync();
+        await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
+
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m1")).Should().BeFalse("取消勾选的模型入口被清理");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().BeEmpty();
+        (await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m2")).ManagedByPoolId.Should().Be(pool.Id);
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m2").ToListAsync()).Should().HaveCount(1);
+
+        // 白名单清空 = 不限：m1 恢复生成（向后兼容旧池语义）。
+        pool.ExposedModelsJson = null;
+        await db.Client.Updateable(pool).UpdateColumns(p => p.ExposedModelsJson).ExecuteCommandAsync();
+        await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
+
+        (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m1" && e.ManagedByPoolId == pool.Id)).Should().BeTrue();
     }
 
     [Fact]

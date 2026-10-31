@@ -16,7 +16,8 @@ namespace AITool.Web.Services;
 /// （P0 已对 OAuth 账号贯通巡检数据）。池名只是管理标签，不占用路由命名空间。
 /// </para>
 /// <para>保护：模型名被手工路由（或其它池）占用时跳过该模型（记入 SkippedModels），
-/// 绝不覆盖；删除池=解除该池全部入口托管（规则保留，可继续手工维护）。</para>
+/// 绝不覆盖；池可用白名单（ExposedModelsJson）只给勾选的模型生成入口；
+/// 删除池=连带删除该池生成的全部托管入口与规则（手工路由不受影响）。</para>
 /// </summary>
 public sealed class AccountPoolSyncService
 {
@@ -95,6 +96,14 @@ public sealed class AccountPoolSyncService
                     exposedModels.Add(mapping.RemoteModelName);
                 }
             }
+        }
+
+        // ②′ 白名单过滤：池勾选了托管模型清单时，只给清单内的模型生成入口（用户不用的模型不占用）。
+        var whitelist = ParseExposedModels(pool.ExposedModelsJson);
+        if (whitelist is { Count: > 0 })
+        {
+            var wanted = whitelist.ToHashSet(StringComparer.Ordinal);
+            exposedModels = exposedModels.Where(m => wanted.Contains(m)).ToList();
         }
 
         // ③ 碰撞检测：模型名已被手工路由（或其它池）占用 → 跳过该模型，不阻塞整池。
@@ -228,7 +237,10 @@ public sealed class AccountPoolSyncService
         return results;
     }
 
-    /// <summary>删除池：删成员行 + 解除该池认领的全部入口托管（规则保留）。与同步互斥。</summary>
+    /// <summary>
+    /// 删除池：删成员行 + 连带删除该池生成的全部托管入口与名下规则（入口由池创建，
+    /// 生命周期随池；手工路由不受影响——池从不认领手工入口）。与同步互斥。
+    /// </summary>
     public async Task DeletePoolAsync(Guid poolId, CancellationToken ct)
     {
         await _syncGate.WaitAsync(ct);
@@ -251,20 +263,48 @@ public sealed class AccountPoolSyncService
             .ToListAsync(ct)).FirstOrDefault()
             ?? throw new KeyNotFoundException("号池不存在");
 
-        await client.Deleteable<AccountPoolMember>().Where(m => m.PoolId == poolId).ExecuteCommandAsync(ct);
-        await client.Deleteable<AccountPool>().Where(p => p.Id == poolId).ExecuteCommandAsync(ct);
-
         var ownedEntries = await client.Queryable<ProxyRouteEntry>()
             .Where(e => e.ManagedByPoolId == poolId)
             .ToListAsync(ct);
-        foreach (var entry in ownedEntries)
+
+        await client.Ado.UseTranAsync(async () =>
         {
-            entry.ManagedByPoolId = null;
-            await client.Updateable(entry).UpdateColumns(e => e.ManagedByPoolId).ExecuteCommandAsync(ct);
-        }
+            await client.Deleteable<AccountPoolMember>().Where(m => m.PoolId == poolId).ExecuteCommandAsync(ct);
+            await client.Deleteable<AccountPool>().Where(p => p.Id == poolId).ExecuteCommandAsync(ct);
+
+            // 连带清理：池生成的入口连同名下规则一起删（池的规则由池生成，不存在用户手工编辑需要保留的语义）。
+            foreach (var entry in ownedEntries)
+            {
+                await client.Deleteable<ProxyRouteRule>()
+                    .Where(r => r.ExternalModelName == entry.EntryName)
+                    .ExecuteCommandAsync(ct);
+                await client.Deleteable<ProxyRouteEntry>()
+                    .Where(e => e.Id == entry.Id)
+                    .ExecuteCommandAsync(ct);
+            }
+        });
 
         _metadataCache.InvalidateAdminRouteMetadata();
         _metadataCache.InvalidateRuntimeRouteTargets();
+    }
+
+    /// <summary>解析池的白名单 JSON；空/非法 = null（不限，全部生成）。</summary>
+    private static List<string>? ParseExposedModels(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            var list = System.Text.Json.JsonSerializer.Deserialize<List<string>>(json);
+            return list is { Count: > 0 } ? list : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

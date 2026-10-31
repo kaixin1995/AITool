@@ -59,6 +59,7 @@ public sealed class AccountPoolsApiController : ControllerBase
             vendorLabel = VendorLabelOf(p.VendorKey),
             planType = p.PlanType,
             autoIncludeMembers = p.AutoIncludeMembers,
+            exposedModels = ParseModelsJson(p.ExposedModelsJson),
             managedEntryCount = managedCounts.GetValueOrDefault(p.Id, 0),
             createdAt = p.CreatedAt,
             updatedAt = p.UpdatedAt,
@@ -120,6 +121,7 @@ public sealed class AccountPoolsApiController : ControllerBase
             VendorKey = vendorKey,
             PlanType = string.IsNullOrWhiteSpace(request.PlanType) ? null : request.PlanType!.Trim(),
             AutoIncludeMembers = request.AutoIncludeMembers,
+            ExposedModelsJson = SerializeModelsJson(request.ExposedModels),
         };
         await _dbContext.Client.Insertable(pool).ExecuteCommandAsync(ct);
 
@@ -219,6 +221,66 @@ public sealed class AccountPoolsApiController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 模型预览：厂商（+套餐，可选限定成员账号）隐藏站点启用映射的对外模型并集（稳定序）。
+    /// 建池弹窗与模型编辑弹窗共用——建池传已勾选成员（自动池不传 = 全部候选账号）。
+    /// </summary>
+    [HttpPost("models-preview")]
+    public async Task<IActionResult> PreviewModels([FromBody] ModelsPreviewRequest? request, CancellationToken ct)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.VendorKey))
+        {
+            return BadRequest(ApiResponse.Fail("缺少厂商参数", "missing_vendor"));
+        }
+
+        var accounts = await _syncService.ListVendorAccountsAsync(request.VendorKey.Trim(), request.PlanType, ct);
+        if (request.MemberAccountIds is { Count: > 0 })
+        {
+            var wanted = request.MemberAccountIds.ToHashSet();
+            accounts = accounts.Where(a => wanted.Contains(a.AccountId)).ToList();
+        }
+
+        var siteIds = accounts.Select(a => a.LinkedSiteId).Distinct().ToList();
+        var models = new List<string>();
+        foreach (var mapping in await _dbContext.SiteModelMappings
+            .Where(m => siteIds.Contains(m.SiteId) && m.IsEnabled)
+            .ToListAsync(ct))
+        {
+            if (!string.IsNullOrWhiteSpace(mapping.RemoteModelName) && !models.Contains(mapping.RemoteModelName))
+            {
+                models.Add(mapping.RemoteModelName);
+            }
+        }
+
+        return Ok(ApiResponse.Ok(models));
+    }
+
+    /// <summary>更新托管模型白名单：空 = 不限（成员模型并集全部生成）；非空 = 只给勾选模型生成入口。</summary>
+    [HttpPut("{id:guid}/models")]
+    public async Task<IActionResult> UpdateModels(Guid id, [FromBody] UpdateModelsRequest? request, CancellationToken ct)
+    {
+        var pool = (await _dbContext.AccountPools.Where(p => p.Id == id).ToListAsync(ct)).FirstOrDefault();
+        if (pool is null)
+        {
+            return NotFound(ApiResponse.Fail("号池不存在", "pool_not_found"));
+        }
+
+        pool.ExposedModelsJson = SerializeModelsJson(request?.ExposedModels);
+        pool.UpdatedAt = DateTimeOffset.UtcNow;
+        await _dbContext.Client.Updateable(pool)
+            .UpdateColumns(p => new { p.ExposedModelsJson, p.UpdatedAt })
+            .ExecuteCommandAsync(ct);
+
+        try
+        {
+            return Ok(ApiResponse.Ok(new { sync = await _syncService.SyncPoolAsync(id, ct) }));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, "sync_rejected"));
+        }
+    }
+
     /// <summary>同步全部池（前端在模型导入/账号删除后调用收口）。</summary>
     [HttpPost("sync-all")]
     public async Task<IActionResult> SyncAll(CancellationToken ct)
@@ -226,7 +288,7 @@ public sealed class AccountPoolsApiController : ControllerBase
         return Ok(ApiResponse.Ok(new { results = await _syncService.SyncAllPoolsAsync(ct) }));
     }
 
-    /// <summary>删除池：清成员行并解除路由托管（生成规则保留，可继续手工维护）。</summary>
+    /// <summary>删除池：清成员行，并连带删除该池生成的全部托管入口与名下规则（手工路由不受影响）。</summary>
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> DeletePool(Guid id, CancellationToken ct)
     {
@@ -297,6 +359,21 @@ public sealed class AccountPoolsApiController : ControllerBase
         public string? PlanType { get; set; }
         public bool AutoIncludeMembers { get; set; }
         public List<Guid>? MemberAccountIds { get; set; }
+        /// <summary>托管模型白名单；null/空 = 成员模型并集全部生成。</summary>
+        public List<string>? ExposedModels { get; set; }
+    }
+
+    public sealed class ModelsPreviewRequest
+    {
+        public string? VendorKey { get; set; }
+        public string? PlanType { get; set; }
+        public List<Guid>? MemberAccountIds { get; set; }
+    }
+
+    public sealed class UpdateModelsRequest
+    {
+        /// <summary>null/空 = 清空白名单（全部生成）。</summary>
+        public List<string>? ExposedModels { get; set; }
     }
 
     public sealed class ReplaceMembersRequest
@@ -308,5 +385,29 @@ public sealed class AccountPoolsApiController : ControllerBase
     {
         public Guid AccountRefId { get; set; }
         public bool Excluded { get; set; }
+    }
+
+    /// <summary>白名单 JSON 序列化；空清单 = null（不限）。</summary>
+    private static string? SerializeModelsJson(List<string>? models)
+        => models is { Count: > 0 }
+            ? System.Text.Json.JsonSerializer.Serialize(models)
+            : null;
+
+    /// <summary>白名单 JSON 反序列化；空/非法 = null（不限）。</summary>
+    private static List<string>? ParseModelsJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 }

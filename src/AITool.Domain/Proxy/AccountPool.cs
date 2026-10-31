@@ -9,7 +9,7 @@ namespace AITool.Domain.Proxy;
 /// <see cref="ProxyRouteRule"/>（ExternalModelName=模型名，对外照常按模型名调用，
 /// 池做账号扇出），入口经 <see cref="ProxyRouteEntry.ManagedByPoolId"/> 认领。
 /// 转发热路径、优先级/熔断/分级冷却/会话亲和/配额排序等既有机制全部原样复用，
-/// 删除池仅解除托管（规则保留）。
+/// 删除池连带删除它生成的托管入口与规则（手工路由不受影响）。
 /// </para>
 /// <para>
 /// 池名只是管理标签（不占用路由命名空间，创建后不可改——改不了的实质是
@@ -48,6 +48,14 @@ public sealed class AccountPool
     /// </summary>
     [SugarColumn(IsNullable = false)]
     public bool AutoIncludeMembers { get; set; }
+
+    /// <summary>
+    /// 托管模型白名单（JSON 数组，如 ["gpt-5","gpt-5-codex"]）：
+    /// 同步只给清单内的模型生成托管入口，避免一次生成全量模型入口。
+    /// null 或空 = 不限（成员模型并集全部生成，向后兼容旧池）。
+    /// </summary>
+    [SugarColumn(ColumnDataType = "text", IsNullable = true)]
+    public string? ExposedModelsJson { get; set; }
 
     /// <summary>创建时间（UTC）。</summary>
     [SugarColumn(IsNullable = false)]

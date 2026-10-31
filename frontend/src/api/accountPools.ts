@@ -17,6 +17,8 @@ export interface AccountPoolSummary {
   vendorLabel: string
   planType: string | null
   autoIncludeMembers: boolean
+  /** 托管模型白名单；null = 不限（成员模型并集全部生成入口）。 */
+  exposedModels: string[] | null
   /** 池认领的托管路由入口数（每个成员模型一个入口）。 */
   managedEntryCount: number
   createdAt: string
@@ -31,6 +33,8 @@ export interface CreateAccountPoolRequest {
   planType?: string | null
   autoIncludeMembers: boolean
   memberAccountIds?: string[]
+  /** 托管模型白名单；不传/空 = 全部生成。 */
+  exposedModels?: string[] | null
 }
 
 /** 成员候选（厂商账号）。 */
@@ -63,6 +67,21 @@ export function fetchPoolCandidates(vendorKey: string, planType?: string | null)
 
 export async function createAccountPool(req: CreateAccountPoolRequest): Promise<AccountPoolSyncSummary> {
   const res = await httpPost<{ poolId: string; sync: AccountPoolSyncSummary }>('/api/admin/account-pools', req)
+  return res.sync
+}
+
+/** 模型预览：厂商（+套餐，可选限定成员账号）站点启用映射的对外模型并集。 */
+export function previewPoolModels(req: {
+  vendorKey: string
+  planType?: string | null
+  memberAccountIds?: string[]
+}): Promise<string[]> {
+  return httpPost<string[]>('/api/admin/account-pools/models-preview', req)
+}
+
+/** 更新托管模型白名单：models 为空 = 不限（全部生成）。返回同步结果。 */
+export async function updatePoolModels(id: string, models: string[] | null): Promise<AccountPoolSyncSummary> {
+  const res = await httpPut<{ sync: AccountPoolSyncSummary }>(`/api/admin/account-pools/${id}/models`, { exposedModels: models })
   return res.sync
 }
 
