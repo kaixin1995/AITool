@@ -22,6 +22,11 @@ public sealed class AccountQuotaInspectionService : BackgroundService
     private readonly ILogger<AccountQuotaInspectionService> _logger;
     private readonly IHostEnvironment _environment;
     private readonly SiteUsageTracker _siteUsageTracker;
+    private readonly IQuotaRecheckScheduleStore? _scheduleStore;
+    private readonly TimeProvider _timeProvider;
+    private readonly RouteCandidatePolicyService? _routePolicy;
+    private readonly Dictionary<(string Provider, Guid Account), DateTimeOffset> _recheckTimes = new();
+    private long _nextGlobalAtUtcTicks;
 
     private readonly object _stateLock = new();
     private AccountInspectionRunResult? _lastRun;
@@ -33,12 +38,18 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         IServiceProvider services,
         ILogger<AccountQuotaInspectionService> logger,
         IHostEnvironment environment,
-        SiteUsageTracker siteUsageTracker)
+        SiteUsageTracker siteUsageTracker,
+        IQuotaRecheckScheduleStore? scheduleStore = null,
+        TimeProvider? timeProvider = null,
+        RouteCandidatePolicyService? routePolicy = null)
     {
         _services = services;
         _logger = logger;
         _environment = environment;
         _siteUsageTracker = siteUsageTracker;
+        _scheduleStore = scheduleStore;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _routePolicy = routePolicy;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -63,7 +74,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
 
             try
             {
-                await Task.Delay(TickInterval, stoppingToken);
+                await Task.Delay(TickInterval, _timeProvider, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -78,7 +89,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         {
             return GetLastRun() ?? new AccountInspectionRunResult
             {
-                FinishedAt = DateTimeOffset.UtcNow,
+                FinishedAt = _timeProvider.GetUtcNow(),
             };
         }
 
@@ -136,51 +147,71 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         };
     }
 
-    private async Task TickAsync(CancellationToken cancellationToken)
+    /// <summary>One heartbeat; exposed internally for deterministic clock-driven tests.</summary>
+    internal async Task TickAsync(CancellationToken cancellationToken)
     {
-        using var scope = _services.CreateScope();
-        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-        var runtime = await cache.GetRuntimeSettingsAsync(cancellationToken);
-
-        if (!runtime.OAuthFeaturesEnabled || !runtime.OAuthInspectionEnabled) return;
-
-        var now = DateTimeOffset.UtcNow;
-        var nextScheduledAt = ReadNextScheduledAt();
-        if (nextScheduledAt is null)
-        {
-            Interlocked.CompareExchange(
-                ref _nextScheduledAtUtcTicks,
-                now.UtcDateTime.Ticks,
-                0);
-            nextScheduledAt = ReadNextScheduledAt();
-        }
-
-        if (nextScheduledAt is not null && now < nextScheduledAt.Value) return;
+        // Cover listing as well as queries: a manual pass must never overlap a heartbeat.
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0) return;
-
         try
         {
-            Volatile.Write(
-                ref _nextScheduledAtUtcTicks,
-                (now + TimeSpan.FromSeconds(Math.Max(30, runtime.OAuthInspectionIntervalSeconds))).UtcDateTime.Ticks);
-            var providers = scope.ServiceProvider
-                .GetServices<IAccountQuotaProvider>()
-                .ToList();
+            using var scope = _services.CreateScope();
+            var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+            var runtime = await cache.GetRuntimeSettingsAsync(cancellationToken);
+            if (!runtime.OAuthFeaturesEnabled || !runtime.OAuthInspectionEnabled)
+            {
+                Volatile.Write(ref _nextScheduledAtUtcTicks, 0);
+                return;
+            }
 
+            var globalDue = _nextGlobalAtUtcTicks == 0 || _timeProvider.GetUtcNow().UtcTicks >= _nextGlobalAtUtcTicks;
+            if (!globalDue && _scheduleStore is null) return;
+            var providers = scope.ServiceProvider.GetServices<IAccountQuotaProvider>().ToList();
             await RunInspectionAsync(
-                providers,
-                cache,
+                providers, cache,
                 Math.Max(1, runtime.OAuthQuotaMaxCacheHours),
                 runtime.OAuthInspectionCacheEnabled,
                 Math.Clamp(runtime.OAuthAutoDisableThresholdPercent, 1, 100),
                 forceRefresh: false,
                 autoTriggered: true,
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken,
+                runRegular: globalDue);
+
+            // Start the normal interval at completion, not at the beginning of slow upstream work.
+            if (globalDue)
+                _nextGlobalAtUtcTicks = (_timeProvider.GetUtcNow() + TimeSpan.FromSeconds(Math.Max(30, runtime.OAuthInspectionIntervalSeconds))).UtcTicks;
+            PublishNextScheduledAt();
         }
         finally
         {
             Interlocked.Exchange(ref _running, 0);
         }
+    }
+
+    private static bool IsRecoveryEligible(AccountQuotaTarget account) =>
+        !account.IsEnabled && !account.ManuallyDisabled && !account.DisabledByFeatureToggle
+        && !account.DisabledByUpstream && !account.IsQuotaCooling;
+
+    private void PublishNextScheduledAt()
+    {
+        var next = _nextGlobalAtUtcTicks;
+        foreach (var time in _recheckTimes.Values)
+            if (next == 0 || time.UtcTicks < next) next = time.UtcTicks;
+        Volatile.Write(ref _nextScheduledAtUtcTicks, next);
+    }
+
+    private sealed record ProviderListing(IReadOnlyList<AccountQuotaTarget> Accounts, QuotaRecheckObservation? Observation);
+
+    private async Task ReconcileAsync(IAccountQuotaProvider provider, ProviderListing listing, CancellationToken cancellationToken)
+    {
+        if (_scheduleStore is null) return;
+        var eligible = listing.Accounts.Where(IsRecoveryEligible).ToList();
+        var schedules = listing.Observation is null
+            ? await _scheduleStore.ReconcileAsync(provider.ProviderKey, eligible, cancellationToken)
+            : await _scheduleStore.ReconcileAsync(provider.ProviderKey, eligible, listing.Observation, cancellationToken);
+        foreach (var key in _recheckTimes.Keys.Where(key => key.Provider == provider.ProviderKey).ToList())
+            _recheckTimes.Remove(key);
+        foreach (var schedule in schedules)
+            _recheckTimes[(provider.ProviderKey, schedule.AccountId)] = schedule.NextCheckAt;
     }
 
     private async Task<AccountInspectionRunResult> RunInspectionAsync(
@@ -191,78 +222,152 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         int autoDisableThresholdPercent,
         bool forceRefresh,
         bool autoTriggered,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool runRegular = true)
     {
         var result = new AccountInspectionRunResult
         {
             IsRunning = true,
             ForcedRefresh = forceRefresh,
             AutoTriggered = autoTriggered,
-            StartedAt = DateTimeOffset.UtcNow,
+            StartedAt = _timeProvider.GetUtcNow(),
         };
-        AddLog("inspection", $"账号额度巡检开始{(forceRefresh ? "（强制真实刷新）" : "")}");
-
+        var listed = new List<(IAccountQuotaProvider Provider, AccountQuotaTarget Account)>();
         foreach (var provider in providers)
         {
-            IReadOnlyList<AccountQuotaTarget> accounts;
+            var accounts = await ListAccountsAsync(provider, cancellationToken);
+            if (accounts is null) continue; // Failed listings must not delete persistent schedules.
+            await ReconcileAsync(provider, accounts, cancellationToken);
+            listed.AddRange(accounts.Accounts.Select(account => (provider, account)));
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        var recovery = _scheduleStore is null
+            ? []
+            : listed.Where(item => IsRecoveryEligible(item.Account)
+                && ((!autoTriggered && forceRefresh)
+                    || (_recheckTimes.TryGetValue((item.Provider.ProviderKey, item.Account.AccountId), out var at) && at <= now)))
+                .OrderBy(item => _recheckTimes.GetValueOrDefault((item.Provider.ProviderKey, item.Account.AccountId)))
+                .ThenBy(item => item.Provider.ProviderKey, StringComparer.Ordinal)
+                .ThenBy(item => item.Account.AccountId).ToList();
+        var regular = runRegular
+            ? listed.Where(item => _scheduleStore is null || !IsRecoveryEligible(item.Account)).ToList()
+            : [];
+        var work = recovery.Concat(regular).DistinctBy(item => (item.Provider.ProviderKey, item.Account.AccountId)).ToList();
+        if (work.Count == 0 && !runRegular)
+        {
+            PublishNextScheduledAt();
+            return result; // Quiet heartbeat: preserve the last real run and avoid ten-second log spam.
+        }
+
+        AddLog("inspection", $"账号额度巡检开始{(forceRefresh ? "（强制真实刷新）" : "")}{(!runRegular ? "（到期恢复复查）" : "")}");
+        foreach (var (provider, originalAccount) in work)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var account = originalAccount;
+            QuotaRecheckLease? lease = null;
+            var recoveryWork = _scheduleStore is not null && IsRecoveryEligible(account);
+            if (_scheduleStore is not null)
+            {
+                // Re-read all planned work: an earlier callback may have disabled a regular target.
+                var current = await ListAccountsAsync(provider, cancellationToken);
+                if (current is null) continue;
+                await ReconcileAsync(provider, current, cancellationToken);
+                var freshAccount = current.Accounts.FirstOrDefault(candidate => candidate.AccountId == account.AccountId);
+                if (freshAccount is null || IsRecoveryEligible(freshAccount) != recoveryWork) continue;
+                account = freshAccount;
+            }
+            if (recoveryWork)
+            {
+                lease = await _scheduleStore!.TryAcquireAsync(provider.ProviderKey, account.AccountId, cancellationToken,
+                    force: !autoTriggered && forceRefresh);
+                if (lease is null) continue;
+                AddLog("schedule", $"账号 {account.DisplayName} 开始{(!autoTriggered && forceRefresh ? "手动强制" : "到期")}额度恢复复查（绕过缓存）");
+            }
+
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (lease is not null) attempt.CancelAfter(TimeSpan.FromMinutes(2));
             try
             {
-                accounts = await provider.GetAccountsAsync(cancellationToken);
+                result.Accounts.Add(await InspectAccountAsync(
+                    provider, account, cache, maxCacheHours, inspectionCacheEnabled,
+                    autoDisableThresholdPercent, forceRefresh || recoveryWork, attempt.Token));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                AddLog("provider", $"提供程序 {provider.ProviderKey} 获取账号失败：{ex.Message}");
-                _logger.LogError(ex, "Account quota provider {ProviderKey} failed to list accounts", provider.ProviderKey);
-                continue;
+                AddLog("account", $"账号 {account.DisplayName} 巡检失败：{ex.Message}");
+                _logger.LogError(ex, "Account quota inspection failed for {ProviderKey}/{AccountId}", provider.ProviderKey, account.AccountId);
+                result.Accounts.Add(new AccountInspectionAccountResult
+                {
+                    ProviderKey = provider.ProviderKey,
+                    AccountId = account.AccountId,
+                    DisplayName = account.DisplayName,
+                    Reason = ex.Message,
+                    CheckedAt = _timeProvider.GetUtcNow(),
+                });
             }
-
-            foreach (var account in accounts)
+            finally
             {
-                if (cancellationToken.IsCancellationRequested) break;
-
-                try
+                if (_scheduleStore is not null)
                 {
-                    var accountResult = await InspectAccountAsync(
-                        provider,
-                        account,
-                        cache,
-                        maxCacheHours,
-                        inspectionCacheEnabled,
-                        autoDisableThresholdPercent,
-                        forceRefresh,
-                        cancellationToken);
-                    result.Accounts.Add(accountResult);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    AddLog("account", $"账号 {account.DisplayName} 巡检失败：{ex.Message}");
-                    _logger.LogError(ex, "Account quota inspection failed for {ProviderKey}/{AccountId}", provider.ProviderKey, account.AccountId);
-                    result.Accounts.Add(new AccountInspectionAccountResult
+                    // Cancellation must not strand a lease or create an immediate retry loop.
+                    ProviderListing? fresh;
+                    using (var listingTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
                     {
-                        ProviderKey = provider.ProviderKey,
-                        AccountId = account.AccountId,
-                        DisplayName = account.DisplayName,
-                        Reason = ex.Message,
-                        CheckedAt = DateTimeOffset.UtcNow,
-                    });
+                        try { fresh = await ListAccountsAsync(provider, listingTimeout.Token); }
+                        catch (OperationCanceledException) when (listingTimeout.IsCancellationRequested) { fresh = null; }
+                    }
+                    var current = fresh?.Accounts.FirstOrDefault(candidate => candidate.AccountId == account.AccountId);
+                    using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    if (lease is not null)
+                        await _scheduleStore.CompleteAsync(lease,
+                            keepScheduled: fresh is null || (current is not null && IsRecoveryEligible(current)), cleanup.Token);
+                    if (current is not null && IsRecoveryEligible(current))
+                        await _scheduleStore.EnsureScheduledAsync(provider.ProviderKey, current.AccountId, current.LastQuotaCheckedAt, cleanup.Token);
+                    if (fresh is not null) await ReconcileAsync(provider, fresh, cleanup.Token);
+                    if (lease is not null && _recheckTimes.TryGetValue((provider.ProviderKey, account.AccountId), out var next))
+                        AddLog("schedule", $"账号 {account.DisplayName} 额度恢复复查完成，下次复查 {next:O}（完成后随机间隔）");
                 }
             }
         }
 
         result.IsRunning = false;
-        result.FinishedAt = DateTimeOffset.UtcNow;
+        result.FinishedAt = _timeProvider.GetUtcNow();
         lock (_stateLock)
         {
             _lastRun = CloneRunResult(result);
         }
+        PublishNextScheduledAt();
         AddLog(
             "inspection",
             $"账号额度巡检完成：保留 {result.KeepCount}、禁用 {result.DisableCount}、启用 {result.EnableCount}、缓存命中 {result.CacheCount}、真实刷新 {result.RealRefreshCount}");
         return result;
+    }
+
+    private async Task<ProviderListing?> ListAccountsAsync(IAccountQuotaProvider provider, CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Capture generations BEFORE the account snapshot; later events must survive stale cleanup.
+            var observation = _scheduleStore is null ? null
+                : await _scheduleStore.BeginReconciliationAsync(provider.ProviderKey, cancellationToken);
+            var accounts = await provider.GetAccountsAsync(cancellationToken);
+            return new ProviderListing(accounts, observation);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AddLog("provider", $"提供程序 {provider.ProviderKey} 获取账号失败：{ex.Message}");
+            _logger.LogError(ex, "Account quota provider {ProviderKey} failed to list accounts", provider.ProviderKey);
+            return null;
+        }
     }
 
     private DateTimeOffset? ReadNextScheduledAt()
@@ -322,10 +427,10 @@ public sealed class AccountQuotaInspectionService : BackgroundService
             ProviderKey = provider.ProviderKey,
             AccountId = account.AccountId,
             DisplayName = account.DisplayName,
-            CheckedAt = DateTimeOffset.UtcNow,
+            CheckedAt = _timeProvider.GetUtcNow(),
         };
 
-        if (account.TokenExpiresAt is { } tokenExpiresAt && tokenExpiresAt <= DateTimeOffset.UtcNow)
+        if (account.TokenExpiresAt is { } tokenExpiresAt && tokenExpiresAt <= _timeProvider.GetUtcNow())
         {
             result.Reason = "access_token 已过期，等待后台刷新，暂不进行额度巡检";
             AddLog("quota", $"账号 {account.DisplayName} access_token 已过期，暂不巡检");
@@ -339,7 +444,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         }
 
         var usedCache = false;
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         if (!forceRefresh && inspectionCacheEnabled)
         {
             var hasRecentUsage = HasRecentUsage(account.LinkedSiteId, account.LastQuotaCheckedAt);
@@ -368,6 +473,13 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         {
             result.Reason = string.IsNullOrWhiteSpace(snapshot.Error) ? "额度查询失败" : snapshot.Error;
             AddLog("quota", $"账号 {account.DisplayName} 额度查询失败：{result.Reason}");
+            return result;
+        }
+
+        if (snapshot.Windows.Count == 0)
+        {
+            result.Reason = "提供程序未返回可主动检查的额度窗口，本轮不判断恢复";
+            AddLog("quota", $"账号 {account.DisplayName} {result.Reason}");
             return result;
         }
 
@@ -424,10 +536,30 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                  && usedPercent.Value < reenableThreshold)
         {
             await provider.SetEnabledAsync(account, true, "quota-recovered", cancellationToken);
-            result.Action = "enable";
-            result.Reason = AppendReason(
-                result.Reason,
-                $"额度已恢复（{usedPercent.Value:F1}%<回启阈值 {reenableThreshold:F0}%），已自动启用");
+            // Provider guards can reject recovery when a concurrent manual/feature disable wins.
+            var refreshed = await ListAccountsAsync(provider, cancellationToken);
+            var confirmed = refreshed?.Accounts.FirstOrDefault(current => current.AccountId == account.AccountId);
+            if (confirmed?.IsEnabled == true)
+            {
+                result.Action = "enable";
+                result.Reason = AppendReason(
+                    result.Reason,
+                    $"额度已恢复（{usedPercent.Value:F1}%<回启阈值 {reenableThreshold:F0}%），已自动启用");
+            }
+            else
+                result.Reason = AppendReason(result.Reason, "额度已恢复，但账号当前状态不允许自动启用或未能确认启用");
+        }
+
+        // Retrying this idempotent signal on later fresh healthy checks also covers a successful
+        // enable whose immediate confirmation failed. Cached/empty/protected snapshots cannot release rests.
+        if (_routePolicy is not null && !usedCache && snapshot.Success && snapshot.Windows.Count > 0
+            && usedPercent.HasValue && usedPercent.Value < reenableThreshold)
+        {
+            var confirmation = await ListAccountsAsync(provider, cancellationToken);
+            var confirmed = confirmation?.Accounts.FirstOrDefault(current => current.AccountId == account.AccountId);
+            if (confirmed?.IsEnabled == true && !confirmed.ManuallyDisabled && !confirmed.DisabledByFeatureToggle
+                && !confirmed.DisabledByUpstream && !confirmed.IsQuotaCooling)
+                _routePolicy.OnAccountQuotaRecovered(confirmed.LinkedSiteId);
         }
 
         return result;
@@ -440,7 +572,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
     {
         var lastUsedAt = _siteUsageTracker.GetLastUsedAt(siteId);
         if (lastUsedAt is null) return false;
-        var cutoff = since ?? DateTimeOffset.UtcNow.AddDays(-1);
+        var cutoff = since ?? _timeProvider.GetUtcNow().AddDays(-1);
         return lastUsedAt.Value > cutoff;
     }
 
@@ -453,6 +585,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
     {
         _logs.Enqueue(new AccountInspectionLogEntry
         {
+            At = _timeProvider.GetUtcNow(),
             Category = category,
             Message = message,
         });

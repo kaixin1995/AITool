@@ -62,10 +62,13 @@
 
 ## 6. 巡检（Inspection）
 
-**`AccountQuotaInspectionService`**（Singleton + HostedService，`src/AITool.Web/Services/AccountQuotaInspectionService.cs`）：周期 `OAuthInspectionIntervalSeconds` 执行一轮全账号额度巡检；通过 `IAccountQuotaProvider` 枚举账号、查询额度和同步启停状态，新增 OAuth 提供程序无需复制巡检编排。
-- **缓存复用 `QuotaCachePolicy.TryReuseQuota`**（静态，`Web/Services/QuotaCachePolicy.cs:27`）：`OAuthInspectionCacheEnabled` 开启且账号未被使用（`SiteUsageTracker` 零 DB 查询，最近 7 天启动预热）且窗口未过期且未超 `OAuthQuotaMaxCacheHours` 时沿用上次快照，减少上游请求
-- 按账号级/全局 `OAuthAutoDisableThresholdPercent` 阈值自动禁用额度耗尽账号（记录原因）；阈值选择由提供程序返回的额度窗口决定，不固定为某两个窗口
-- `RunManualAsync(force)`（force=忽略缓存真实刷新）/`GetLastRun`/`GetLogs`/`GetStatus`
+**`AccountQuotaInspectionService`**（Singleton + HostedService，`src/AITool.Web/Services/AccountQuotaInspectionService.cs`）：每 10 秒检查任务，启用账号按 `OAuthInspectionIntervalSeconds` 执行常规巡检；额度自动禁用账号使用独立的持久化恢复日程。通过 `IAccountQuotaProvider` 枚举账号、查询额度和同步启停状态，新增 OAuth 提供程序无需复制巡检编排。
+- **随机恢复复查**：每个额度自动禁用账号独立随机等待 **40–60 分钟**，绕过持久化额度快照与 provider 结果缓存；无论成功、失败、token 过期或需要重新授权，本次尝试结束后仍重新随机计时，不会每 10 秒重试。手动、功能开关、上游禁用及额度冷却中的账号不参与；自动任务仍受 OAuth 总开关与自动巡检开关控制。
+- **持久化与并发**：`QuotaRecheckSchedules` 仅保存 provider/account ID、UTC 时间及认领令牌，不保存凭证。重启沿用已抽取的时间；历史已逾期或无检查时间的账号首次按 0–60 秒错峰补查。数据库原子认领避免多个巡检实例重复执行；崩溃后有效认领最多保留 10 分钟，正常恢复工作使用 2 分钟取消预算。
+- **缓存复用 `QuotaCachePolicy.TryReuseQuota`**：仅用于常规巡检。`OAuthInspectionCacheEnabled` 开启且账号未被使用（`SiteUsageTracker`）、窗口未过期且未超 `OAuthQuotaMaxCacheHours` 时沿用上次快照；随机恢复复查不受缓存设置或常规周期影响。
+- 按账号级/全局 `OAuthAutoDisableThresholdPercent` 阈值自动禁用额度耗尽账号；恢复沿用滞回规则：用量必须严格低于 `max(1, threshold - 8)`（默认阈值 95% 时低于 87%）。写库时再次核对当前禁用标志和总开关，并在同一事务内更新账号与关联站点，避免覆盖查询期间的手动停用。
+- 只有成功取得可用额度窗口才判断恢复；仅返回占位信息、无法主动查询额度的厂商不能据此自动回启。确认恢复后仅解除该站点的额度耗尽路由休息，不清除独立限流休息或普通故障熔断。
+- `RunManualAsync(force)`（force=忽略缓存真实刷新，可提前领取尚未到期的恢复任务，但不会抢占有效认领）/`GetLastRun`/`GetLogs`/`GetStatus`
 - 手动接口：`POST /api/admin/oauth/inspection/run?force=`；结果页见 OAuth 管理页「额度巡检」页签（保留/禁用/启用/缓存命中/真实刷新计数 + 每账号动态额度窗口/动作/原因表）。当前 Codex 提供程序返回 5 小时和周窗口，其他提供程序可以返回日、月或自定义窗口。
 
 ## 7. 代理链路中的 Codex 特判

@@ -25,6 +25,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
     private readonly IMemoryCache _resultCache;
     private readonly DeviceOAuthCredentialRefreshService _credentialRefresh;
     private readonly ILogger<DeviceOAuthQuotaService> _logger;
+    private readonly IQuotaRecheckScheduleStore? _scheduleStore;
 
     public DeviceOAuthQuotaService(
         AppDbContext dbContext,
@@ -32,7 +33,8 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         ProxyRequestMetadataCache metadataCache,
         IMemoryCache resultCache,
         DeviceOAuthCredentialRefreshService credentialRefresh,
-        ILogger<DeviceOAuthQuotaService> logger)
+        ILogger<DeviceOAuthQuotaService> logger,
+        IQuotaRecheckScheduleStore? scheduleStore = null)
     {
         _dbContext = dbContext;
         _registry = registry;
@@ -40,6 +42,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         _resultCache = resultCache;
         _credentialRefresh = credentialRefresh;
         _logger = logger;
+        _scheduleStore = scheduleStore;
     }
 
     string IAccountQuotaProvider.ProviderKey => ProviderKey;
@@ -176,6 +179,15 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
 
     public async Task SetEnabledAsync(AccountQuotaTarget account, bool enabled, string reason, CancellationToken cancellationToken)
     {
+        if ((enabled && string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase)) ||
+            (!enabled && string.Equals(reason, "quota-threshold", StringComparison.OrdinalIgnoreCase)))
+        {
+            await QuotaAccountStateWriter.ChangeAsync(_dbContext, ProviderKey, account.AccountId, enabled,
+                _scheduleStore, _logger, cancellationToken);
+            _metadataCache.InvalidateRouteTargets();
+            return;
+        }
+
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var current = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(account.AccountId);
@@ -184,7 +196,6 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         if (enabled)
         {
             current.IsEnabled = true;
-            if (reason is "quota-recovered") current.ManuallyDisabled = false;
             if (reason is "feature-toggle-on") current.DisabledByFeatureToggle = false;
         }
         else
@@ -194,7 +205,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         }
 
         await client.Updateable(current)
-            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByFeatureToggle })
+            .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
             .ExecuteCommandAsync(cancellationToken);
 
         if (current.LinkedSiteId != Guid.Empty)

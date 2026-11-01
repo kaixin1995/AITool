@@ -323,17 +323,17 @@ onMounted(() => {
         </NCard>
 
         <NCard class="settings-card settings-body-card">
-          <h5 class="settings-card-title form-label-tip">账号额度巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 OAuth 账号功能总开关开启时生效。巡检会周期性检查各账号的额度窗口。</NTooltip></h5>
+          <h5 class="settings-card-title form-label-tip">账号额度巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 OAuth 账号功能总开关和自动巡检开启时生效。启用账号按常规周期检查；额度自动禁用账号独立按随机 40–60 分钟真实复查，手动、功能开关、上游禁用和冷却中的账号不参与此恢复复查。</NTooltip></h5>
           <NForm label-placement="top">
             <div class="oauth-inspection-row">
               <NFormItem>
                 <div class="oauth-switch-pair">
                   <label class="settings-switch-inline"><NSwitch v-model:value="form.oauthInspectionEnabled" :disabled="!form.oauthFeaturesEnabled" />启用自动巡检</label>
-                  <label class="settings-switch-inline"><NSwitch v-model:value="form.oauthInspectionCacheEnabled" :disabled="!form.oauthFeaturesEnabled" /><span class="form-label-tip">启用巡检缓存<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后，未被使用的账号可命中近期缓存额度，减少上游请求；关闭（默认）后每次巡检都真实刷新额度，数据最准但会增加上游请求。</NTooltip></span></label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.oauthInspectionCacheEnabled" :disabled="!form.oauthFeaturesEnabled" /><span class="form-label-tip">启用巡检缓存<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后，常规巡检中未被使用的账号可命中近期缓存额度，减少上游请求；关闭（默认）后常规巡检真实刷新。额度自动禁用账号的随机恢复复查始终绕过缓存，失败后也重新随机等待 40–60 分钟。</NTooltip></span></label>
                 </div>
               </NFormItem>
               <NFormItem class="oauth-field">
-                <template #label><span class="form-label-tip">巡检周期（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>每隔多少秒执行一轮自动巡检，下限 30 秒。</NTooltip></span></template>
+                <template #label><span class="form-label-tip">巡检周期（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>常规账号巡检的间隔，下限 30 秒。额度自动禁用账号使用独立的随机 40–60 分钟恢复复查，不受本周期和缓存时长控制。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.oauthInspectionIntervalSeconds" :min="30" :step="30" :disabled="!form.oauthFeaturesEnabled" />
               </NFormItem>
               <NFormItem class="oauth-field">

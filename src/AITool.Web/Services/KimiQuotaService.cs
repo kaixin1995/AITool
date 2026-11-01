@@ -27,6 +27,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
     private readonly IMemoryCache _resultCache;
     private readonly KimiCredentialRefreshService _credentialRefreshService;
     private readonly ILogger<KimiQuotaService> _logger;
+    private readonly IQuotaRecheckScheduleStore? _scheduleStore;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。</summary>
     private static readonly KeyedAsyncLock Locks = new();
@@ -37,7 +38,8 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         ProxyRequestMetadataCache metadataCache,
         IMemoryCache resultCache,
         KimiCredentialRefreshService credentialRefreshService,
-        ILogger<KimiQuotaService> logger)
+        ILogger<KimiQuotaService> logger,
+        IQuotaRecheckScheduleStore? scheduleStore = null)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -45,6 +47,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         _resultCache = resultCache;
         _credentialRefreshService = credentialRefreshService;
         _logger = logger;
+        _scheduleStore = scheduleStore;
     }
 
     public string ProviderKey => "kimi";
@@ -117,6 +120,16 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         string reason,
         CancellationToken cancellationToken)
     {
+        if ((enabled && string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase)) ||
+            (!enabled && string.Equals(reason, "quota-threshold", StringComparison.OrdinalIgnoreCase)))
+        {
+            await QuotaAccountStateWriter.ChangeAsync(_dbContext, ProviderKey, account.AccountId, enabled,
+                _scheduleStore, _logger, cancellationToken);
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateKimiAccounts();
+            return;
+        }
+
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var current = (await client.Queryable<KimiAccount>()
@@ -128,10 +141,6 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         if (enabled)
         {
             current.IsEnabled = true;
-            if (string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase))
-            {
-                current.ManuallyDisabled = false;
-            }
             if (string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase))
             {
                 current.DisabledByFeatureToggle = false;
@@ -147,7 +156,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         }
 
         await client.Updateable(current)
-            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByFeatureToggle })
+            .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
             .ExecuteCommandAsync(cancellationToken);
         await SetLinkedSiteEnabledAsync(client, current.LinkedSiteId, enabled, cancellationToken);
         _metadataCache.InvalidateRouteTargets();
@@ -374,22 +383,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
 
     private async Task DisableAccountAsync(KimiAccount account, CancellationToken ct, string reason)
     {
-        using var client = _dbContext.Client.CopyNew();
-        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-        account.IsEnabled = false;
-        await client.Updateable(account)
-            .UpdateColumns(x => new { x.IsEnabled })
-            .ExecuteCommandAsync(ct);
-
-        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
-        if (site != null && site.IsEnabled)
-        {
-            site.IsEnabled = false;
-            await client.Updateable(site).ExecuteCommandAsync(ct);
-        }
-
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateKimiAccounts();
+        await SetEnabledAsync(ToQuotaTarget(account), false, "quota-threshold", ct);
         _logger.LogWarning("Kimi account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
 }

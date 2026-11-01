@@ -31,6 +31,7 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
     private readonly IMemoryCache _resultCache;
     private readonly IXaiOAuthClient _oauthClient;
     private readonly ILogger<XaiQuotaService> _logger;
+    private readonly IQuotaRecheckScheduleStore? _scheduleStore;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。</summary>
     private static readonly KeyedAsyncLock Locks = new();
@@ -41,7 +42,8 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
         ProxyRequestMetadataCache metadataCache,
         IMemoryCache resultCache,
         IXaiOAuthClient oauthClient,
-        ILogger<XaiQuotaService> logger)
+        ILogger<XaiQuotaService> logger,
+        IQuotaRecheckScheduleStore? scheduleStore = null)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -49,6 +51,7 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
         _resultCache = resultCache;
         _oauthClient = oauthClient;
         _logger = logger;
+        _scheduleStore = scheduleStore;
     }
 
     public string ProviderKey => "xai";
@@ -112,6 +115,15 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
 
     public async Task SetEnabledAsync(AccountQuotaTarget account, bool enabled, string reason, CancellationToken cancellationToken)
     {
+        if ((enabled && string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase)) ||
+            (!enabled && string.Equals(reason, "quota-threshold", StringComparison.OrdinalIgnoreCase)))
+        {
+            await QuotaAccountStateWriter.ChangeAsync(_dbContext, ProviderKey, account.AccountId, enabled,
+                _scheduleStore, _logger, cancellationToken);
+            _metadataCache.InvalidateRouteTargets();
+            return;
+        }
+
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var current = (await client.Queryable<XaiAccount>()
@@ -123,10 +135,6 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
         if (enabled)
         {
             current.IsEnabled = true;
-            if (string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase))
-            {
-                current.ManuallyDisabled = false;
-            }
             if (string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase))
             {
                 current.DisabledByFeatureToggle = false;
@@ -142,7 +150,7 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
         }
 
         await client.Updateable(current)
-            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByFeatureToggle })
+            .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
             .ExecuteCommandAsync(cancellationToken);
         await SetLinkedSiteEnabledAsync(client, current.LinkedSiteId, enabled, cancellationToken);
         _metadataCache.InvalidateRouteTargets();
@@ -461,21 +469,7 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
 
     private async Task DisableAccountAsync(XaiAccount account, CancellationToken ct, string reason)
     {
-        using var client = _dbContext.Client.CopyNew();
-        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-        account.IsEnabled = false;
-        await client.Updateable(account)
-            .UpdateColumns(x => new { x.IsEnabled })
-            .ExecuteCommandAsync(ct);
-
-        var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
-        if (site != null && site.IsEnabled)
-        {
-            site.IsEnabled = false;
-            await client.Updateable(site).ExecuteCommandAsync(ct);
-        }
-
-        _metadataCache.InvalidateRouteTargets();
-        _logger.LogWarning("xAI account {Id} auto-disabled: {Reason}", account.Id, reason);
+        await SetEnabledAsync(ToQuotaTarget(account), false, "quota-threshold", ct);
+        _logger.LogWarning("Xai account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
 }

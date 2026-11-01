@@ -47,6 +47,17 @@ public sealed class RouteCandidatePolicyService
     }
 
     /// <summary>
+    /// 仅在新鲜账号配额查询确认账号已实际恢复启用后调用。
+    /// OAuth 隐藏站点无 SiteKey，重置缓存按物理 SiteId 失效；仅解除该站点的配额休息，
+    /// 不清除普通熔断、失败计数或限流休息，也不依赖站点展示名称。
+    /// </summary>
+    public void OnAccountQuotaRecovered(Guid linkedSiteId)
+    {
+        _quotaResetCache.TryRemove(linkedSiteId, out _);
+        _circuitStore.ReleaseQuotaRests(linkedSiteId);
+    }
+
+    /// <summary>
     /// 候选预排序：会话亲和命中时把亲和候选挪到最前（不再做配额排序——会话粘性优先）；
     /// 否则在启用配额排序时按「最早重置优先」稳定排序（无配额数据的候选保持原相对次序、排在有数据的之后）。
     /// </summary>
@@ -440,14 +451,16 @@ public sealed class RouteCandidatePolicyService
                 until = now.AddDays(8);
             }
 
-            _circuitStore.Rest(route.CircuitKey, until, $"配额耗尽，休息至 {until.ToLocalTime():MM-dd HH:mm}", meta);
+            _circuitStore.Rest(route.CircuitKey, until, $"配额耗尽，休息至 {until.ToLocalTime():MM-dd HH:mm}", meta,
+                kind: RouteRestKind.Quota, siteId: route.SiteId);
             return;
         }
 
         if (statusCode == 429)
         {
             var rest = TimeSpan.FromSeconds(Math.Clamp(retryAfterSeconds ?? 120, 1, 3600));
-            _circuitStore.Rest(route.CircuitKey, DateTimeOffset.UtcNow.Add(rest), $"限流，休息 {Math.Round(rest.TotalMinutes)} 分钟", meta);
+            _circuitStore.Rest(route.CircuitKey, DateTimeOffset.UtcNow.Add(rest), $"限流，休息 {Math.Round(rest.TotalMinutes)} 分钟", meta,
+                kind: RouteRestKind.RateLimit, siteId: route.SiteId);
             return;
         }
 

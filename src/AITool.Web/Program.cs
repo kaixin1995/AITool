@@ -31,6 +31,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using SqlSugar;
 using NLog;
 using NLog.Web;
@@ -457,6 +458,9 @@ builder.Services.AddScoped<OAuthFeatureToggleAttribute>();
 // 通用账号巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。
 builder.Services.AddScoped<AccountInspectionToggleAttribute>();
 // 通用账号额度巡检后台服务（周期巡检 + 缓存策略 + 自动禁用）。
+builder.Services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.TryAddSingleton<IQuotaRecheckIntervalSource, QuotaRecheckIntervalSource>();
+builder.Services.TryAddSingleton<IQuotaRecheckScheduleStore, QuotaRecheckScheduleStore>();
 builder.Services.AddSingleton<AccountQuotaInspectionService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AccountQuotaInspectionService>());
 

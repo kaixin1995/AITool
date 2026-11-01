@@ -1,6 +1,7 @@
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using SqlSugar;
 
@@ -92,9 +93,14 @@ public sealed class PasswordHasherTests
 /// <summary>
 /// JwtTokenService 单元测试：验证签发、刷新轮换、吊销。
 /// </summary>
-public sealed class JwtTokenServiceTests
+public sealed class JwtTokenServiceTests : IDisposable
 {
-    private static JwtTokenService CreateService()
+    private readonly SqliteConnection _keeper;
+    private readonly SqlSugarScope _sqlSugar;
+    private readonly SemaphoreSlim _semaphore = new(1, 1);
+    private readonly JwtTokenService _service;
+
+    public JwtTokenServiceTests()
     {
         var options = Options.Create(new JwtOptions
         {
@@ -104,17 +110,49 @@ public sealed class JwtTokenServiceTests
             AccessTokenMinutes = 15,
             RefreshTokenDays = 7
         });
-        // 用共享内存 SQLite 做测试 DB（CopyNew 需要看到同一数据库）
-        var connString = $"DataSource=file:test-{Guid.NewGuid():N}?mode=memory&cache=shared";
-        var sqlSugar = new SqlSugarScope(new ConnectionConfig
+        // CopyNew needs the same named memory database. Keep it alive explicitly rather than
+        // depending on idle pooled connections, which another fixture can close during cleanup.
+        var connectionString = $"Data Source=jwt-{Guid.NewGuid():N};Mode=Memory;Cache=Shared;Pooling=False";
+        _keeper = new SqliteConnection(connectionString);
+        _keeper.Open();
+        _sqlSugar = new SqlSugarScope(new ConnectionConfig
         {
-            ConnectionString = connString,
+            ConnectionString = connectionString,
             DbType = DbType.Sqlite,
             IsAutoCloseConnection = true
         }, _ => { });
-        sqlSugar.CodeFirst.InitTables(typeof(AITool.Domain.Auth.RefreshTokenRecord));
-        var dbContext = new AppDbContext(sqlSugar, new SemaphoreSlim(1, 1));
-        return new JwtTokenService(options, dbContext);
+        try
+        {
+            _sqlSugar.CodeFirst.InitTables(typeof(AITool.Domain.Auth.RefreshTokenRecord));
+            _service = new JwtTokenService(options, new AppDbContext(_sqlSugar, _semaphore));
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+    }
+
+    public void Dispose()
+    {
+        try { _sqlSugar.Dispose(); }
+        finally
+        {
+            try { _keeper.Dispose(); }
+            finally { _semaphore.Dispose(); }
+        }
+    }
+
+    [Fact]
+    public void Memory_database_survives_all_operation_connections_closing()
+    {
+        _sqlSugar.Close();
+        var original = _service.IssueTokens("admin");
+        _sqlSugar.Close();
+        var refreshed = _service.Refresh(original.RefreshToken);
+        refreshed.Should().NotBeNull("the fixture's keeper, not connection pooling, owns the database lifetime");
+        using var verification = _sqlSugar.CopyNew();
+        verification.Queryable<AITool.Domain.Auth.RefreshTokenRecord>().Count().Should().Be(1);
     }
 
     /// <summary>
@@ -123,7 +161,7 @@ public sealed class JwtTokenServiceTests
     [Fact]
     public void IssueTokens_returns_valid_pair()
     {
-        var svc = CreateService();
+        var svc = _service;
         var pair = svc.IssueTokens("admin");
         pair.AccessToken.Should().NotBeNullOrEmpty();
         pair.RefreshToken.Should().NotBeNullOrEmpty();
@@ -137,7 +175,7 @@ public sealed class JwtTokenServiceTests
     [Fact]
     public void Refresh_valid_token_returns_new_pair()
     {
-        var svc = CreateService();
+        var svc = _service;
         var original = svc.IssueTokens("admin");
         var refreshed = svc.Refresh(original.RefreshToken);
         refreshed.Should().NotBeNull();
@@ -151,7 +189,7 @@ public sealed class JwtTokenServiceTests
     [Fact]
     public void Refresh_old_token_after_rotation_is_invalid()
     {
-        var svc = CreateService();
+        var svc = _service;
         var original = svc.IssueTokens("admin");
         svc.Refresh(original.RefreshToken); // 第一次刷新，旧 token 被消费
         var secondAttempt = svc.Refresh(original.RefreshToken); // 再用旧 token
@@ -167,7 +205,7 @@ public sealed class JwtTokenServiceTests
     [InlineData(" ")]
     public void Refresh_invalid_token_returns_null(string badToken)
     {
-        var svc = CreateService();
+        var svc = _service;
         var result = svc.Refresh(badToken);
         result.Should().BeNull();
     }
@@ -178,7 +216,7 @@ public sealed class JwtTokenServiceTests
     [Fact]
     public async Task Refresh_concurrent_requests_consume_token_once()
     {
-        var svc = CreateService();
+        var svc = _service;
         var original = svc.IssueTokens("admin");
 
         var results = await Task.WhenAll(
@@ -195,7 +233,7 @@ public sealed class JwtTokenServiceTests
     [Fact]
     public void Revoke_invalidates_refresh_token()
     {
-        var svc = CreateService();
+        var svc = _service;
         var pair = svc.IssueTokens("admin");
         svc.Revoke(pair.RefreshToken);
         var refreshed = svc.Refresh(pair.RefreshToken);

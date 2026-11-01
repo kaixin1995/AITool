@@ -33,6 +33,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     private readonly CodexCredentialRefreshService _credentialRefreshService;
     private readonly ICodexClientVersionResolver _versionResolver;
     private readonly ILogger<CodexQuotaService> _logger;
+    private readonly IQuotaRecheckScheduleStore? _scheduleStore;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。KeyedAsyncLock 会在账号不再使用时回收锁条目。</summary>
     private static readonly KeyedAsyncLock Locks = new();
@@ -44,7 +45,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         IMemoryCache resultCache,
         CodexCredentialRefreshService credentialRefreshService,
         ICodexClientVersionResolver versionResolver,
-        ILogger<CodexQuotaService> logger)
+        ILogger<CodexQuotaService> logger,
+        IQuotaRecheckScheduleStore? scheduleStore = null)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -53,6 +55,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         _credentialRefreshService = credentialRefreshService;
         _versionResolver = versionResolver;
         _logger = logger;
+        _scheduleStore = scheduleStore;
     }
 
     public string ProviderKey => "codex";
@@ -127,6 +130,16 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         string reason,
         CancellationToken cancellationToken)
     {
+        if ((enabled && string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase)) ||
+            (!enabled && string.Equals(reason, "quota-threshold", StringComparison.OrdinalIgnoreCase)))
+        {
+            await QuotaAccountStateWriter.ChangeAsync(_dbContext, ProviderKey, account.AccountId, enabled,
+                _scheduleStore, _logger, cancellationToken);
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateCodexAccounts();
+            return;
+        }
+
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var current = (await client.Queryable<CodexAccount>()
@@ -138,10 +151,6 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         if (enabled)
         {
             current.IsEnabled = true;
-            if (string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase))
-            {
-                current.ManuallyDisabled = false;
-            }
             if (string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase))
             {
                 current.DisabledByFeatureToggle = false;
@@ -157,7 +166,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         }
 
         await client.Updateable(current)
-            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByFeatureToggle })
+            .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
             .ExecuteCommandAsync(cancellationToken);
         await SetLinkedSiteEnabledAsync(client, current.LinkedSiteId, enabled, cancellationToken);
         _metadataCache.InvalidateRouteTargets();
@@ -400,24 +409,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
     private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
     {
-        // 用 CopyNew 独立连接写入；只更新目标列，避免整行覆盖并发写入的其他字段。
-        using var client = _dbContext.Client.CopyNew();
-        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-        account.IsEnabled = false;
-        await client.Updateable(account)
-            .UpdateColumns(x => new { x.IsEnabled })
-            .ExecuteCommandAsync(ct);
-
-        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
-        if (site != null && site.IsEnabled)
-        {
-            site.IsEnabled = false;
-            // 列限定写回：整行写会把后台刷新刚写入的 site.ApiKey 回滚成读取时的旧快照。
-            await client.Updateable(site).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(ct);
-        }
-
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateCodexAccounts();
+        await SetEnabledAsync(ToQuotaTarget(account), false, "quota-threshold", ct);
         _logger.LogWarning("Codex account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
 }

@@ -108,6 +108,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<SystemRuntimeSettings> SystemRuntimeSettings => _client.Queryable<SystemRuntimeSettings>();
     public ISugarQueryable<CompatibilityProfile> CompatibilityProfiles => _client.Queryable<CompatibilityProfile>();
     public ISugarQueryable<SqlMigrationExecution> SqlMigrationExecutions => _client.Queryable<SqlMigrationExecution>();
+    public ISugarQueryable<QuotaRecheckSchedule> QuotaRecheckSchedules => _client.Queryable<QuotaRecheckSchedule>();
     public ISugarQueryable<ProxyProfile> ProxyProfiles => _client.Queryable<ProxyProfile>();
 
     /// <summary>
@@ -288,6 +289,7 @@ public static class SqlSugarSetup
             typeof(SystemRuntimeSettings),
             typeof(CompatibilityProfile),
             typeof(SqlMigrationExecution),
+            typeof(QuotaRecheckSchedule),
             typeof(ProxyProfile),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
 

@@ -331,6 +331,7 @@ public sealed class AccountQuotaInspectionTests : IDisposable
         public Task SetEnabledAsync(AccountQuotaTarget account, bool enabled, string reason, CancellationToken cancellationToken)
         {
             EnabledChanges.Add(enabled);
+            AccountIsEnabled = enabled;
             return Task.CompletedTask;
         }
 

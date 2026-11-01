@@ -185,7 +185,7 @@ public sealed class SystemRuntimeSettings
     public bool OAuthInspectionEnabled { get; set; }
 
     /// <summary>
-    /// OAuth 账号额度巡检周期（秒），下限 30。每隔该周期执行一轮账号额度巡检。
+    /// 启用账号的常规额度巡检周期（秒），下限 30；额度自动禁用账号独立按随机 40–60 分钟真实复查。
     /// </summary>
     [SugarColumn(ColumnName = "CodexInspectionIntervalSeconds")]
     public int OAuthInspectionIntervalSeconds { get; set; } = 1800;
@@ -206,8 +206,9 @@ public sealed class SystemRuntimeSettings
 
     /// <summary>
     /// OAuth 账号额度巡检缓存复用开关。仅在 OAuthFeaturesEnabled 开启时生效。
-    /// 关闭（默认）：每轮巡检都对所有账号真实刷新额度，无论是否被调用。
-    /// 开启：未被使用且窗口未过期且未超过 OAuthQuotaMaxCacheHours 的账号沿用上次额度快照（减少上游请求）。
+    /// 关闭（默认）：常规巡检对启用账号真实刷新额度，无论是否被调用。
+    /// 开启：常规巡检中未被使用且窗口未过期且未超过 OAuthQuotaMaxCacheHours 的账号沿用上次额度快照。
+    /// 额度自动禁用账号的随机恢复复查始终绕过缓存。
     /// </summary>
     [SugarColumn(ColumnName = "CodexInspectionCacheEnabled")]
     public bool OAuthInspectionCacheEnabled { get; set; }
