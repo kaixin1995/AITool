@@ -122,6 +122,10 @@ public sealed record DeviceOAuthQuotaResult
     public bool Success { get; init; }
     public string? Error { get; init; }
     public bool CredentialInvalid { get; init; }
+    /// <summary>额度端点真实返回 HTTP 401，不包括代理 407。</summary>
+    public bool UpstreamUnauthorized { get; init; }
+    /// <summary>401 对应账号 access_token，而不是派生密钥或其他令牌。</summary>
+    public bool AccessTokenUnauthorized { get; init; }
     public string? PlanType { get; init; }
     public string RawJson { get; init; } = string.Empty;
     public IReadOnlyList<AccountQuotaWindow> Windows { get; init; } = [];

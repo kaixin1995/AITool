@@ -1,4 +1,6 @@
 using AITool.Application.OAuth;
+using AITool.Application.Kimi;
+using AITool.Application.Xai;
 using AITool.Infrastructure.OAuth;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
@@ -28,6 +30,31 @@ public sealed class DeviceOAuthProvisionNameTests : IDisposable
         services.AddScoped<ProxyRequestMetadataCache>();
         _serviceProvider = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_serviceProvider.GetRequiredService<SqlSugar.ISqlSugarClient>());
+        var client = _serviceProvider.GetRequiredService<SqlSugar.ISqlSugarClient>();
+        var settings = client.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>().InSingle(1);
+        if (settings is null)
+            client.Insertable(new AITool.Domain.Operations.SystemRuntimeSettings { Id = 1, OAuthFeaturesEnabled = true }).ExecuteCommand();
+        else
+        {
+            settings.OAuthFeaturesEnabled = true;
+            client.Updateable(settings).ExecuteCommand();
+        }
+    }
+
+    [Fact]
+    public async Task Provision_does_not_import_default_models_and_relogin_preserves_selection()
+    {
+        var (provisioner, db) = CreateProvisioner();
+        var vendor = CreateVendor();
+        var account = await provisioner.ProvisionAsync(vendor, "manual", null, "manual-models",
+            Tokens("at-1"), null, CancellationToken.None);
+        (await db.ModelLibraryItems.ToListAsync()).Should().BeEmpty();
+        (await db.SiteModelMappings.ToListAsync()).Should().BeEmpty();
+
+        await provisioner.SyncSelectedModelsAsync(account.Id, [("selected-model", "selected-model", true)], CancellationToken.None);
+        await provisioner.ProvisionAsync(vendor, "manual", null, "manual-models", Tokens("at-2"), null, CancellationToken.None);
+        (await db.ModelLibraryItems.ToListAsync()).Select(x => x.ModelName).Should().Equal("selected-model");
+        (await db.SiteModelMappings.ToListAsync()).Should().ContainSingle(x => x.RemoteModelName == "selected-model" && x.IsEnabled);
     }
 
     [Fact]
@@ -92,6 +119,131 @@ public sealed class DeviceOAuthProvisionNameTests : IDisposable
         var row = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
         row!.DisplayName.Should().Be("测试号A", "登录时命名的自定义名不被重登冲掉");
         (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("测试号A");
+    }
+
+    [Theory]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    public async Task Relogin_clears_reauth_without_overriding_other_disable_reasons(bool manual, bool feature, bool expectedEnabled)
+    {
+        var (provisioner, db) = CreateProvisioner();
+        var vendor = CreateVendor();
+        var account = await provisioner.ProvisionAsync(vendor, "test", null, "reauth-user", Tokens("old"), null, CancellationToken.None);
+        var row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.RequiresReauth = true;
+        row.IsEnabled = false;
+        row.ManuallyDisabled = manual;
+        row.DisabledByFeatureToggle = feature;
+        await db.UpdateAsync(row);
+        var site = (await db.Sites.InSingleAsync(account.LinkedSiteId))!;
+        site.IsEnabled = false;
+        await db.UpdateAsync(site);
+
+        await provisioner.ProvisionAsync(vendor, "test", null, "reauth-user", Tokens("new"), null, CancellationToken.None);
+
+        row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.RequiresReauth.Should().BeFalse();
+        row.ManuallyDisabled.Should().Be(manual);
+        row.DisabledByFeatureToggle.Should().Be(feature);
+        row.IsEnabled.Should().Be(expectedEnabled);
+        row.AccessToken.Should().Be("new");
+        (await db.Sites.InSingleAsync(account.LinkedSiteId))!.IsEnabled.Should().Be(expectedEnabled);
+    }
+
+    [Fact]
+    public async Task Relogin_while_global_oauth_is_off_stays_disabled_and_records_feature_reason()
+    {
+        var (provisioner, db) = CreateProvisioner();
+        var vendor = CreateVendor();
+        var account = await provisioner.ProvisionAsync(vendor, "test", null, "feature-off-user", Tokens("old"), null, default);
+        var row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.RequiresReauth = true;
+        row.IsEnabled = false;
+        await db.UpdateAsync(row);
+        var settings = await db.Client.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>().InSingleAsync(1);
+        if (settings is null)
+            await db.InsertAsync(new AITool.Domain.Operations.SystemRuntimeSettings { Id = 1, OAuthFeaturesEnabled = false });
+        else
+        {
+            settings.OAuthFeaturesEnabled = false;
+            await db.UpdateAsync(settings);
+        }
+
+        await provisioner.ProvisionAsync(vendor, "test", null, "feature-off-user", Tokens("new"), null, default);
+
+        row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.RequiresReauth.Should().BeFalse();
+        row.DisabledByFeatureToggle.Should().BeTrue();
+        row.IsEnabled.Should().BeFalse();
+        (await db.Sites.InSingleAsync(row.LinkedSiteId))!.IsEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Manual_enable_and_refresh_token_edit_do_not_bypass_rejected_access_token()
+    {
+        var (provisioner, db) = CreateProvisioner();
+        var account = await provisioner.ProvisionAsync(CreateVendor(), "test", null, "blocked-user", Tokens("old"), null, CancellationToken.None);
+        var row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.RequiresReauth = true;
+        row.IsEnabled = false;
+        row.ManuallyDisabled = true;
+        await db.UpdateAsync(row);
+        var site = (await db.Sites.InSingleAsync(account.LinkedSiteId))!;
+        site.IsEnabled = false;
+        await db.UpdateAsync(site);
+
+        await provisioner.ToggleAsync(account.Id, true, CancellationToken.None);
+        await provisioner.UpdateAsync(account.Id, "test", "replacement-refresh", CancellationToken.None);
+
+        row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.ManuallyDisabled.Should().BeFalse();
+        row.RequiresReauth.Should().BeTrue();
+        row.IsEnabled.Should().BeFalse();
+        row.RefreshToken.Should().Be("replacement-refresh");
+        (await db.Sites.InSingleAsync(account.LinkedSiteId))!.IsEnabled.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    public async Task Kimi_and_xai_relogin_preserve_independent_disable_reasons(bool manual, bool feature, bool expectedEnabled)
+    {
+        var (_, db) = CreateProvisioner();
+        var cache = _serviceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var cascade = new SiteCascadeDeleter(db);
+        var kimi = new KimiAccountProvisioner(db, cache, null!, null!, cascade, NullLogger<KimiAccountProvisioner>.Instance);
+        var xai = new XaiAccountProvisioner(db, cache, null!, cascade, NullLogger<XaiAccountProvisioner>.Instance);
+        var ki = new KimiProvisionInput { UserId = "user", AccessToken = "old", RefreshToken = "refresh" };
+        var xi = new XaiProvisionInput { ExternalUserId = "user", AccessToken = "old", RefreshToken = "refresh" };
+        var k = await kimi.ProvisionFromTokensAsync(ki, default);
+        var x = await xai.ProvisionFromTokensAsync(xi, default);
+        k.IsEnabled = x.IsEnabled = false;
+        k.RequiresReauth = x.RequiresReauth = true;
+        k.ManuallyDisabled = x.ManuallyDisabled = manual;
+        k.DisabledByFeatureToggle = x.DisabledByFeatureToggle = feature;
+        await db.UpdateAsync(k);
+        await db.UpdateAsync(x);
+        foreach (var id in new[] { k.LinkedSiteId, x.LinkedSiteId })
+        {
+            var site = (await db.Sites.InSingleAsync(id))!;
+            site.IsEnabled = false;
+            await db.UpdateAsync(site);
+        }
+        ki.AccessToken = xi.AccessToken = "new";
+        await kimi.ProvisionFromTokensAsync(ki, default);
+        await xai.ProvisionFromTokensAsync(xi, default);
+        k = (await db.KimiAccounts.InSingleAsync(k.Id))!;
+        x = (await db.XaiAccounts.InSingleAsync(x.Id))!;
+        k.RequiresReauth.Should().BeFalse();
+        x.RequiresReauth.Should().BeFalse();
+        k.ManuallyDisabled.Should().Be(manual);
+        x.ManuallyDisabled.Should().Be(manual);
+        k.IsEnabled.Should().Be(expectedEnabled);
+        x.IsEnabled.Should().Be(expectedEnabled);
+        (await db.Sites.InSingleAsync(k.LinkedSiteId))!.IsEnabled.Should().Be(expectedEnabled);
+        (await db.Sites.InSingleAsync(x.LinkedSiteId))!.IsEnabled.Should().Be(expectedEnabled);
     }
 
     private (DeviceOAuthAccountProvisioner Provisioner, AppDbContext Db) CreateProvisioner()

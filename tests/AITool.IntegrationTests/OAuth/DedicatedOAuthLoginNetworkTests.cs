@@ -127,7 +127,8 @@ public sealed class DedicatedOAuthLoginNetworkTests
         result.Should().BeOfType<OkObjectResult>();
         (await fixture.Store.GetAsync(new(provider, id))).Selection.Mode.Should().Be(NetworkMode.Direct);
         fixture.Transport.Sends.Should().OnlyContain(s => s.Scope == $"{provider}:{id:D}");
-        if (provider != "codex") fixture.Transport.Sends.Should().NotBeEmpty();
+        if (provider == "google") fixture.Transport.Sends.Should().NotBeEmpty();
+        else fixture.Transport.Sends.Should().BeEmpty("凭证导入不应自动拉取模型目录");
         (await fixture.Db.Client.Queryable<AccountNetworkPolicy>().CountAsync()).Should().Be(1);
     }
 

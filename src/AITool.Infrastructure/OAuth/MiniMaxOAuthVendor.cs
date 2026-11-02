@@ -77,7 +77,7 @@ public sealed class MiniMaxOAuthVendor : IDeviceOAuthVendor
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token.AccessToken.Trim());
         }
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden && !string.IsNullOrWhiteSpace(token.AccessToken))
         {
             response.Dispose();
@@ -348,15 +348,17 @@ public sealed class MiniMaxOAuthVendor : IDeviceOAuthVendor
             using var request = new HttpRequestMessage(HttpMethod.Get, _site.Platform + "/v1/api/openplatform/coding_plan/remains");
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token.AccessToken.Trim());
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            string body;
+            try { body = await response.Content.ReadAsStringAsync(cancellationToken); }
+            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { body = string.Empty; }
             if (response.IsSuccessStatusCode)
             {
                 windows.AddRange(MiniMaxQuotaParser.ParsePlanWindows(body));
             }
             else if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
-                return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true };
+                return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized, AccessTokenUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized };
             }
             else
             {

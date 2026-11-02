@@ -315,15 +315,19 @@ public sealed class GoogleAccountsApiController : ControllerBase
     [HttpPost("accounts/{id}/toggle")]
     public async Task<IActionResult> Toggle(Guid id, [FromBody] GoogleToggleRequest? req, CancellationToken ct)
     {
-        var account = await GetAccountAsync(id, ct);
-        if (account == null) return NotFound(new { message = "账号不存在" });
-
-        var enabled = req?.Enabled ?? !account.IsEnabled;
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-        account.IsEnabled = enabled;
+        await client.Ado.BeginTranAsync();
+        var committed = false;
+        try
+        {
+        await client.Ado.ExecuteCommandAsync("UPDATE GoogleAccounts SET IsEnabled=IsEnabled WHERE 1=0;");
+        var account = await client.Queryable<GoogleAccount>().InSingleAsync(id);
+        if (account == null) { await client.Ado.CommitTranAsync(); return NotFound(new { message = "账号不存在" }); }
+        var enabled = req?.Enabled ?? !account.IsEnabled;
         account.ManuallyDisabled = !enabled;
-        if (enabled)
+        account.IsEnabled = enabled && !account.RequiresReauth && !account.DisabledByFeatureToggle && !account.IsQuotaCooling;
+        if (enabled && !account.RequiresReauth)
         {
             account.DisabledByUpstream = false;
         }
@@ -332,17 +336,21 @@ public sealed class GoogleAccountsApiController : ControllerBase
             .ExecuteCommandAsync(ct);
 
         var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
-        if (site is not null && site.IsEnabled != enabled)
+        if (site is not null && site.IsEnabled != account.IsEnabled)
         {
-            site.IsEnabled = enabled;
+            site.IsEnabled = account.IsEnabled;
             await client.Updateable(site).UpdateColumns(x => new { x.IsEnabled }).ExecuteCommandAsync(ct);
         }
 
+        await client.Ado.CommitTranAsync();
+        committed = true;
         var cache = HttpContext.RequestServices.GetRequiredService<ProxyRequestMetadataCache>();
         cache.InvalidateRouteTargets();
         cache.InvalidateGoogleAccounts();
         var selectedModels = await GetSelectedModelsForSiteAsync(account.LinkedSiteId, ct);
         return Ok(ToSummary(account, selectedModels: selectedModels));
+        }
+        catch { if (!committed) await client.Ado.RollbackTranAsync(); throw; }
     }
 
     /// <summary>删除账号（级联删除隐藏 Site 与模型映射）。</summary>
@@ -395,25 +403,41 @@ public sealed class GoogleAccountsApiController : ControllerBase
         // token 过期或临期先刷新（拉取对 token 有效性敏感）；经凭证刷新服务持久化并同步隐藏 Site，
         // 避免下次代理请求再吃一次 401。
         var accessToken = account.AccessToken ?? string.Empty;
+        var credentialAccount = account;
         if (account.TokenExpiresAt is null || account.TokenExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(2))
         {
             var refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, accessToken, ct);
             if (!string.IsNullOrWhiteSpace(refreshed))
             {
                 accessToken = refreshed;
+                // A newly returned access token must be paired with its persisted credentials.
+                credentialAccount = await GetAccountAsync(id, ct);
             }
         }
 
+        // Without a refresh, retain the original snapshot even if another request rotates credentials.
+        var credentialSnapshot = credentialAccount is null ? null : new ForwardOAuthCredentialSnapshot("google", credentialAccount.Id, credentialAccount.LinkedSiteId, credentialAccount.AccessToken, credentialAccount.RefreshToken, credentialAccount.LastRefreshAt);
         IReadOnlyList<(string Slug, string DisplayName)> models;
         try
         {
             using var network = _networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "models");
             models = await (network?.GoogleModels ?? _modelFetcher).FetchAsync(account.AccountKind, accessToken, ct);
         }
-        catch (Exception ex) when (GoogleCredentialRefreshService.IsForbiddenResponse(ex))
+        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
         {
-            await _credentialRefreshService.DisableAsync(account.LinkedSiteId, "model-fetch-403", ct);
-            return StatusCode(StatusCodes.Status403Forbidden, new { message = "Google 上游返回 403，已自动禁用该账号，请完成验证或确认账号权限后再手动启用" });
+            if (credentialSnapshot is not null)
+                await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(accessToken, credentialSnapshot, ct);
+            return StatusCode(StatusCodes.Status401Unauthorized, new { message = ex.Message });
+        }
+        catch (Exception ex) when (
+            ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Forbidden }
+            // Compatibility with the previous GoogleModelFetcher error format only.
+            || ex is InvalidOperationException && ex.Message.StartsWith("fetchAvailableModels returned 403:", StringComparison.Ordinal))
+        {
+            var disabled = credentialSnapshot is not null && await DisableForModelForbiddenAsync(accessToken, credentialSnapshot, ct);
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = disabled
+                ? "Google 上游返回 403，已自动禁用该账号，请完成验证或确认账号权限后再手动启用"
+                : "Google 上游返回 403，账号凭证已变更或账号不存在，未禁用当前账号" });
         }
 
         // 附带现有映射，前端区分"已导入/未导入"。
@@ -572,6 +596,42 @@ public sealed class GoogleAccountsApiController : ControllerBase
         };
     }
 
+    // An upstream 403 applies only to the complete credential version sent. Guard
+    // the account and site update atomically, including refresh-only rotations.
+    private async Task<bool> DisableForModelForbiddenAsync(string sentToken, ForwardOAuthCredentialSnapshot snapshot, CancellationToken ct)
+    {
+        if (!string.Equals(sentToken, snapshot.AccessToken, StringComparison.Ordinal)) return false;
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        await client.Ado.BeginTranAsync();
+        int changed;
+        try
+        {
+            changed = await client.Updateable<GoogleAccount>()
+                .SetColumns(a => new GoogleAccount { IsEnabled = false, DisabledByUpstream = true })
+                .Where(a => a.Id == snapshot.AccountId && a.LinkedSiteId == snapshot.SiteId
+                    && a.AccessToken == snapshot.AccessToken && a.RefreshToken == snapshot.RefreshToken
+                    && a.LastRefreshAt == snapshot.LastRefreshAt)
+                .ExecuteCommandAsync(ct);
+            if (changed != 0)
+                await client.Updateable<Domain.Sites.Site>().SetColumns(s => new Domain.Sites.Site { IsEnabled = false })
+                    .Where(s => s.Id == snapshot.SiteId).ExecuteCommandAsync(ct);
+            await client.Ado.CommitTranAsync();
+        }
+        catch
+        {
+            await client.Ado.RollbackTranAsync();
+            throw;
+        }
+        if (changed != 0)
+        {
+            var cache = HttpContext.RequestServices.GetRequiredService<ProxyRequestMetadataCache>();
+            cache.InvalidateRouteTargets();
+            cache.InvalidateGoogleAccounts();
+        }
+        return changed != 0;
+    }
+
     private async Task<GoogleAccount?> GetAccountAsync(Guid id, CancellationToken ct)
     {
         return (await _dbContext.GoogleAccounts.Where(a => a.Id == id).ToListAsync(ct)).FirstOrDefault();
@@ -645,6 +705,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
             creditAmount = a.CreditAmount,
             isEnabled = a.IsEnabled,
             disabledByUpstream = a.DisabledByUpstream,
+            requiresReauth = a.RequiresReauth,
             isQuotaCooling = a.IsQuotaCooling,
             quotaCoolingUntil = a.QuotaCoolingUntil,
             selectedModels = selectedModelNames,

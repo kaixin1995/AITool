@@ -47,15 +47,15 @@ public sealed class AccountPoolForwardE2eTests
             result.RuleCount.Should().Be(2, "两成员各持 m1 → 两条扇出规则");
         }
 
-        // 请求模型名（不是池名）：应命中优先级 0 的成员 B。
+        // 请求模型名（不是池名）：新规则按账号名称排序，成员 A 首选。
         fake.Requests.Clear();
         var response = await client.SendAsync(ChatRequest(Model));
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         fake.Requests.Should().HaveCount(1);
-        fake.Requests[0].TargetApiKey.Should().Be(KeyB, "池内静态顺序：B(优先级0)首选");
+        fake.Requests[0].TargetApiKey.Should().Be(KeyA, "新规则按账号名称排序，A 首选");
 
-        // B 持续失败：无感回退到 A（同模型扇出，不是跨模型回退）。
-        fake.ForwardResultFactory = r => r.TargetApiKey == KeyB
+        // A 持续失败：无感回退到 B（同模型扇出，不是跨模型回退）。
+        fake.ForwardResultFactory = r => r.TargetApiKey == KeyA
             ? new AITool.Application.Proxy.ProxyForwardResult { StatusCode = 502, Success = false }
             : new AITool.Application.Proxy.ProxyForwardResult
             {
@@ -67,8 +67,8 @@ public sealed class AccountPoolForwardE2eTests
         var fallbackResponse = await client.SendAsync(ChatRequest(Model));
         fallbackResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         fake.Requests.Select(r => r.TargetApiKey).Should().BeEquivalentTo(
-            [KeyB, KeyA],
-            "成员 B 失败后同模型无感回退到成员 A——号池账号扇出的核心语义");
+            [KeyA, KeyB], options => options.WithStrictOrdering(),
+            "成员 A 失败后同模型无感回退到成员 B——号池账号扇出的核心语义");
     }
 
     private static HttpRequestMessage ChatRequest(string model) => new(HttpMethod.Post, "/v1/chat/completions")
@@ -80,7 +80,7 @@ public sealed class AccountPoolForwardE2eTests
         Headers = { Authorization = new AuthenticationHeaderValue("Bearer", "test-key") },
     };
 
-    /// <summary>两个 Codex 隐藏站点 + 账号行 + m1 映射 + 手动池（B 优先级 0）。</summary>
+    /// <summary>显式准备两个 Codex 站点、账号和 m1 模型映射，不依赖供给默认导入。</summary>
     private static async Task SeedPoolAsync(ProxyFallbackWebApplicationFactory factory)
     {
         await using var scope = factory.Services.CreateAsyncScope();

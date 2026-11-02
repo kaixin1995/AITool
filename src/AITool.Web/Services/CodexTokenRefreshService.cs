@@ -90,7 +90,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
         var now = DateTimeOffset.UtcNow;
         var refreshLeadTime = now + RefreshLead;
         var due = await dbContext.CodexAccounts
-            .Where(a => !string.IsNullOrEmpty(a.RefreshToken)
+            .Where(a => !a.RequiresReauth && !string.IsNullOrEmpty(a.RefreshToken)
                         && (a.TokenExpiresAt == null
                             || a.TokenExpiresAt <= refreshLeadTime))
             .OrderBy(a => a.TokenExpiresAt)
@@ -139,7 +139,8 @@ public sealed class CodexTokenRefreshService : BackgroundService
             // HTTP 调用在锁外执行，避免长时间持有串行锁
             using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", account.Id, ct);
             var current = await db.CodexAccounts.InSingleAsync(account.Id);
-            if (current is null || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
+            if (current is null || current.RequiresReauth || string.IsNullOrWhiteSpace(current.RefreshToken)
+                || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
             account = current;
             using var network = networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "background-token-refresh");
             var tokens = await (network?.CodexOAuth ?? oauthClient).RefreshTokenAsync(account.RefreshToken!, ct);

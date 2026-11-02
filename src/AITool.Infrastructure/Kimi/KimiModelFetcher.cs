@@ -51,10 +51,14 @@ public sealed class KimiModelFetcher : IKimiModelFetcher
                 request.Headers.TryAddWithoutValidation("X-Msh-Device-Id", deviceId.Trim());
             }
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
             if (response.IsSuccessStatusCode)
             {
-                var body = await response.Content.ReadAsStringAsync(ct);
+                var body = await response.Content.ReadAsStringAsync(requestBudget.Token);
                 using var doc = JsonDocument.Parse(body);
                 var root = doc.RootElement;
                 if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
@@ -76,6 +80,10 @@ public sealed class KimiModelFetcher : IKimiModelFetcher
                     }
                 }
             }
+        }
+        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

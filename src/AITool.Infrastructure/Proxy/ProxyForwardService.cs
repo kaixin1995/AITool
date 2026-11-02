@@ -97,10 +97,11 @@ public sealed class ProxyForwardService : IProxyForwardService
         "proxy_profiles_disabled" or "forward_network_transport_unavailable" or "forward_network_resolver_unavailable";
 
     private sealed class StartedForward(HttpRequestMessage request, Task<HttpResponseMessage> response,
-        INetworkTransportLease? networkLease, string apiKey) : IAsyncDisposable
+        INetworkTransportLease? networkLease, string apiKey, object? credentialSnapshot) : IAsyncDisposable
     {
         public Task<HttpResponseMessage> Response { get; } = response;
         public string ApiKey { get; } = apiKey;
+        public object? CredentialSnapshot { get; } = credentialSnapshot;
         public async ValueTask DisposeAsync()
         {
             request.Dispose();
@@ -121,7 +122,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             var key = credential.UseResolvedApiKey ? credential.ApiKey : currentApiKey;
             message = BuildRequestMessage(request, requestBody, key, credential.ProtectAuthenticationHeaders);
             var response = (lease?.Client ?? _httpClient).SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
-            return new StartedForward(message, response, lease, key);
+            return new StartedForward(message, response, lease, key, credential.CredentialSnapshot);
         }
         catch
         {
@@ -242,7 +243,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                 if (!response.IsSuccessStatusCode)
                 {
                     stopwatch.Stop();
-                    var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    string errorBody;
+                    try { errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token); }
+                    catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !timeoutCts.Token.IsCancellationRequested) { errorBody = string.Empty; }
                     if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                         && request.RefreshTargetApiKeyAsync is not null
                         && !tokenRefreshAttempted)
@@ -260,6 +263,17 @@ public sealed class ProxyForwardService : IProxyForwardService
                             attempt--;
                             continue;
                         }
+                    }
+
+                    if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                        && request.InvalidateTargetCredentialAsync is not null)
+                    {
+                        try
+                        {
+                            await request.InvalidateTargetCredentialAsync(sentApiKey, started.CredentialSnapshot, cancellationToken);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Unable to invalidate rejected forwarding credential"); }
                     }
 
                     if (response.StatusCode == System.Net.HttpStatusCode.Forbidden
@@ -545,7 +559,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                 if (!response.IsSuccessStatusCode)
                 {
                     stopwatch.Stop();
-                    var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    string errorBody;
+                    try { errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token); }
+                    catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !timeoutCts.Token.IsCancellationRequested) { errorBody = string.Empty; }
                     if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                         && request.RefreshTargetApiKeyAsync is not null
                         && !tokenRefreshAttempted)
@@ -563,6 +579,17 @@ public sealed class ProxyForwardService : IProxyForwardService
                             attempt--;
                             continue;
                         }
+                    }
+
+                    if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                        && request.InvalidateTargetCredentialAsync is not null)
+                    {
+                        try
+                        {
+                            await request.InvalidateTargetCredentialAsync(sentApiKey, started.CredentialSnapshot, cancellationToken);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Unable to invalidate rejected forwarding credential"); }
                     }
 
                     if (response.StatusCode == System.Net.HttpStatusCode.Forbidden

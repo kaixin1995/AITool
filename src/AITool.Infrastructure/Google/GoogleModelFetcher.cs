@@ -37,12 +37,21 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
         request.Headers.TryAddWithoutValidation("requestId", $"req-{Guid.NewGuid():N}");
         request.Headers.TryAddWithoutValidation("requestType", "agent");
 
-        using var response = await _httpClient.SendAsync(request, ct);
-        var body = await response.Content.ReadAsStringAsync(ct);
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"fetchAvailableModels returned {(int)response.StatusCode}: {body}");
+            // Retain the diagnostic body when available, but preserve the actual status
+            // even if the body cannot be read.
+            string? errorBody;
+            try { errorBody = await response.Content.ReadAsStringAsync(requestBudget.Token); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { errorBody = null; }
+            throw new HttpRequestException($"fetchAvailableModels returned {(int)response.StatusCode}: {errorBody}", null, response.StatusCode);
         }
+        var body = await response.Content.ReadAsStringAsync(requestBudget.Token);
 
         var models = new List<(string Slug, string DisplayName)>();
         using var doc = JsonDocument.Parse(body);

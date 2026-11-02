@@ -1,3 +1,6 @@
+using System.Net;
+using AITool.Infrastructure.OAuth;
+using Microsoft.AspNetCore.Http;
 using AITool.Application.Accounts;
 using AITool.Application.OAuth;
 using AITool.Domain.OAuth;
@@ -25,6 +28,7 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
         services.AddLogging();
         services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddScoped<ProxyRequestMetadataCache>();
+        services.AddScoped<ForwardOAuthInvalidationService>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
     }
@@ -136,6 +140,78 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
         var emptyImport = await controller.ImportModels(account.Id,
             new DeviceOAuthAccountsApiController.ImportDeviceModelsRequest(), CancellationToken.None);
         emptyImport.Should().BeOfType<BadRequestObjectResult>();
+    }
+
+    [Theory]
+    [InlineData(401, false)]
+    [InlineData(401, true)]
+    [InlineData(407, false)]
+    public async Task Model_api_only_disables_matching_credential_on_direct_401(int status, bool rotate)
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var http = new HttpClient(new BlockingModelHandler(status, entered, release));
+        var vendor = new CopilotOAuthVendor(http);
+        var provisioner = CreateProvisioner(db);
+        var account = await provisioner.ProvisionAsync(vendor, "target", null, "target-user",
+            new DeviceOAuthTokenSet { AccessToken = "old-access", RefreshToken = "old-refresh" }, null, CancellationToken.None);
+        var other = await provisioner.ProvisionAsync(vendor, "other", null, "other-user",
+            new DeviceOAuthTokenSet { AccessToken = "other-access", RefreshToken = "other-refresh" }, null, CancellationToken.None);
+        var controller = CreateController(db, provisioner, vendor);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider }
+        };
+
+        var fetch = controller.FetchModels(account.Id, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        try
+        {
+            if (rotate)
+            {
+                await using var rotationScope = _services.CreateAsyncScope();
+                var rotationDb = rotationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var current = await rotationDb.DeviceOAuthAccounts.InSingleAsync(account.Id);
+                current!.AccessToken = "new-access";
+                current.RefreshToken = "new-refresh";
+                current.LastRefreshAt = DateTimeOffset.UtcNow;
+                await rotationDb.UpdateAsync(current);
+            }
+        }
+        finally { release.TrySetResult(true); }
+
+        if (status == 401)
+        {
+            var result = (await fetch).Should().BeOfType<ObjectResult>().Subject;
+            result.StatusCode.Should().Be(401);
+            System.Text.Json.JsonSerializer.Serialize(result.Value).Should().Contain("upstream_unauthorized");
+        }
+        else
+            await Assert.ThrowsAnyAsync<InvalidOperationException>(() => fetch);
+
+        var stored = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
+        var shouldDisable = status == 401 && !rotate;
+        stored!.IsEnabled.Should().Be(!shouldDisable);
+        stored.RequiresReauth.Should().Be(shouldDisable);
+        stored.AccessToken.Should().Be(rotate ? "new-access" : "old-access");
+        (await db.Sites.InSingleAsync(account.LinkedSiteId))!.IsEnabled.Should().Be(!shouldDisable);
+        var untouched = await db.DeviceOAuthAccounts.InSingleAsync(other.Id);
+        untouched!.IsEnabled.Should().BeTrue();
+        untouched.RequiresReauth.Should().BeFalse();
+        (await db.Sites.InSingleAsync(other.LinkedSiteId))!.IsEnabled.Should().BeTrue();
+    }
+
+    private sealed class BlockingModelHandler(int status, TaskCompletionSource<bool> entered, TaskCompletionSource<bool> release) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            request.Headers.Authorization!.ToString().Should().Be("Bearer old-access");
+            entered.TrySetResult(true);
+            await release.Task.WaitAsync(cancellationToken);
+            return new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent("{}") };
+        }
     }
 
     private DeviceOAuthAccountProvisioner CreateProvisioner(AppDbContext db)

@@ -170,6 +170,25 @@ public sealed class TokenRefreshDisabledAccountTests : IDisposable
     }
 
     [Fact]
+    public async Task Google_stale_403_does_not_disable_relogged_account()
+    {
+        var siteId = Guid.NewGuid();
+        var accountId = Guid.NewGuid();
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        db.Sites.Add(new Site { Id = siteId, Name = "relogged", BaseUrl = "https://example.invalid", ApiKey = "new-token", IsEnabled = true });
+        db.GoogleAccounts.Add(new GoogleAccount { Id = accountId, LinkedSiteId = siteId, DisplayName = "relogged", AccessToken = "new-token", IsEnabled = true });
+        await db.SaveChangesAsync();
+        var service = new GoogleCredentialRefreshService(db, _serviceProvider.GetRequiredService<StubGoogleOAuthClient>(),
+            scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>(), NullLogger<GoogleCredentialRefreshService>.Instance);
+        (await service.DisableAsync(siteId, "stale-403", CancellationToken.None, "old-token")).Should().BeFalse();
+        var account = await db.GoogleAccounts.SingleAsync(item => item.Id == accountId);
+        account.IsEnabled.Should().BeTrue();
+        account.DisabledByUpstream.Should().BeFalse();
+        (await db.Sites.InSingleAsync(siteId)).IsEnabled.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Disabled_kimi_account_is_still_refreshed()
     {
         // 不变量：任何禁用状态（手动 / 总开关 / 普通禁用）都不得阻断 token 刷新——

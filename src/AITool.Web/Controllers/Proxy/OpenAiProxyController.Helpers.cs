@@ -327,6 +327,14 @@ public sealed partial class OpenAiProxyController
         return null;
     }
 
+    private Func<string, object?, CancellationToken, Task>? CreateCredentialInvalidationCallback(CachedProxyRouteTarget route)
+    {
+        if (!new[] { "Codex", "Google", "kimi_oauth", "xai_oauth", "device_oauth" }
+            .Contains(route.ManagedSource, StringComparer.OrdinalIgnoreCase)) return null;
+        return (token, snapshot, ct) => HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>()
+            .InvalidateAsync(token, snapshot, ct);
+    }
+
     private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
         CachedProxyRouteTarget route)
     {

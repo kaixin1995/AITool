@@ -222,6 +222,8 @@ else
 builder.Services.AddSingleton<AccountNetworkClientFactory>();
 builder.Services.AddSingleton<IForwardNetworkPolicyResolver, ForwardNetworkPolicyResolver>();
 builder.Services.AddSingleton<IForwardCredentialResolver, ForwardCredentialResolver>();
+builder.Services.AddScoped<ForwardOAuthInvalidationService>();
+builder.Services.AddScoped<IHealthCredentialCallbacks, HealthCredentialCallbacks>();
 builder.Services.AddSingleton<NetworkBoundOAuthClientFactory>();
 builder.Services.AddSingleton<NetworkBoundDeviceOAuthVendorFactory>();
 builder.Services.AddSingleton<SessionIsolationKeyStore>();

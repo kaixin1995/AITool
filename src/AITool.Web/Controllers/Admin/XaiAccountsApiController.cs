@@ -375,8 +375,18 @@ public sealed class XaiAccountsApiController : ControllerBase
             return NotFound(new { message = "账号不存在" });
         }
 
-        using var network = _networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "models");
-        var models = await (network?.XaiModels ?? _modelFetcher).FetchAsync(account.AccessToken ?? string.Empty, ct);
+        var snapshot = new ForwardOAuthCredentialSnapshot("xai", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
+        IReadOnlyList<(string Slug, string DisplayName)> models;
+        try
+        {
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "models");
+            models = await (network?.XaiModels ?? _modelFetcher).FetchAsync(snapshot.AccessToken ?? string.Empty, ct);
+        }
+        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
+        {
+            await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(snapshot.AccessToken ?? string.Empty, snapshot, ct);
+            return StatusCode(StatusCodes.Status401Unauthorized, new { message = ex.Message });
+        }
         var existingMappings = await _dbContext.SiteModelMappings
             .Where(m => m.SiteId == account.LinkedSiteId)
             .ToListAsync(ct);

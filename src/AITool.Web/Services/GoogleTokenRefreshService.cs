@@ -88,7 +88,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         var now = DateTimeOffset.UtcNow;
         var refreshLeadTime = now + RefreshLead;
         var due = await dbContext.GoogleAccounts
-            .Where(a => !string.IsNullOrEmpty(a.RefreshToken)
+            .Where(a => !a.RequiresReauth && !string.IsNullOrEmpty(a.RefreshToken)
                         && (a.TokenExpiresAt == null
                             || a.TokenExpiresAt <= refreshLeadTime))
             .OrderBy(a => a.TokenExpiresAt)
@@ -132,7 +132,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         {
             using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", account.Id, ct);
             var current = await db.GoogleAccounts.InSingleAsync(account.Id);
-            if (current is null || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
+            if (current is null || current.RequiresReauth || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
             account = current;
             if (string.IsNullOrWhiteSpace(account.RefreshToken)) return false;
             using var network = networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "background-token-refresh");

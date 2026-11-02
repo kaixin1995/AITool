@@ -62,6 +62,8 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
     public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(
         DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(token.AccessToken))
+            throw new InvalidOperationException("ZCode 模型目录请求缺少 access token");
         // ① 远端 provider 配置（失败即失败：配置拉不到就不给目录，不用静态清单顶替）。
         var config = await FetchProviderConfigAsync(cancellationToken);
 
@@ -163,7 +165,7 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
     {
         // 参考以裸铸造 key 鉴权（与额度 monitor 同形态）。
         var data = await CallAsync(HttpMethod.Get, ZaiApi + "/api/biz/subscription/list",
-            auth: token.AccessToken.Trim(), ct: ct);
+            auth: token.AccessToken.Trim(), ct: ct, modelAccessToken: true);
         if (data.ValueKind != JsonValueKind.Array)
         {
             return false;
@@ -687,11 +689,13 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
                 request.Headers.TryAddWithoutValidation("Bigmodel-Project", project!);
             }
 
-            using var response = await _httpClient.SendAsync(request, ct);
-            var text = await response.Content.ReadAsStringAsync(ct);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            string text;
+            try { text = await response.Content.ReadAsStringAsync(ct); }
+            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !ct.IsCancellationRequested) { text = string.Empty; }
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
-                return new DeviceOAuthQuotaResult { Success = false, Error = "铸造的 API key 被拒绝，请重新登录", CredentialInvalid = true };
+                return new DeviceOAuthQuotaResult { Success = false, Error = "铸造的 API key 被拒绝，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized };
             }
 
             if (!response.IsSuccessStatusCode)
@@ -844,7 +848,8 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
         string? auth = null,
         string? body = null,
         string? device = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool modelAccessToken = false)
     {
         using var request = new HttpRequestMessage(method, url);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
@@ -864,7 +869,9 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
             request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
         }
 
-        using var response = await _httpClient.SendAsync(request, ct);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (modelAccessToken && response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
         var text = await response.Content.ReadAsStringAsync(ct);
         JsonElement envelope;
         try

@@ -71,6 +71,23 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 
     private async Task<ProxyForwardRequest> PrepareForwardAsync(ProxyForwardRequest request, CancellationToken ct)
     {
+        if (request.SiteId is { } siteId && siteId != Guid.Empty)
+        {
+            var services = HttpContext.RequestServices;
+            if (string.Equals(request.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase))
+                request.RefreshTargetApiKeyAsync = (token, tokenCt) => services.GetRequiredService<CodexCredentialRefreshService>().RefreshAsync(siteId, token, tokenCt);
+            else if (string.Equals(request.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+                request.RefreshTargetApiKeyAsync = (token, tokenCt) => services.GetRequiredService<GoogleCredentialRefreshService>().RefreshAsync(siteId, token, tokenCt);
+            else if (string.Equals(request.ManagedSource, "kimi_oauth", StringComparison.OrdinalIgnoreCase))
+                request.RefreshTargetApiKeyAsync = (token, tokenCt) => services.GetRequiredService<KimiCredentialRefreshService>().RefreshAsync(siteId, token, tokenCt);
+            else if (string.Equals(request.ManagedSource, "device_oauth", StringComparison.OrdinalIgnoreCase))
+                request.RefreshTargetApiKeyAsync = (token, tokenCt) => services.GetRequiredService<DeviceOAuthCredentialRefreshService>().RefreshAsync(siteId, token, tokenCt);
+
+            if (new[] { "Codex", "Google", "kimi_oauth", "xai_oauth", "device_oauth" }
+                .Contains(request.ManagedSource, StringComparer.OrdinalIgnoreCase))
+                request.InvalidateTargetCredentialAsync = (token, snapshot, tokenCt) => services.GetRequiredService<ForwardOAuthInvalidationService>()
+                    .InvalidateAsync(token, snapshot, tokenCt);
+        }
         if (_sessionIsolation is null) return request;
         if (_sessionContext is null) CaptureSession(request.RequestBody);
         var context = _sessionContext ?? throw new InvalidOperationException("Session context was not captured.");

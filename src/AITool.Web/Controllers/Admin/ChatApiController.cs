@@ -374,6 +374,8 @@ public sealed class ChatApiController : ControllerBase
 
     private async Task<ProxyForwardRequest> PrepareForwardAsync(ProxyForwardRequest request, CancellationToken ct)
     {
+        request.RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(request.ManagedSource, request.SiteId);
+        request.InvalidateTargetCredentialAsync = CreateCredentialInvalidationCallback(request.ManagedSource);
         if (_sessionIsolation is null) return request;
         if (_sessionContext is null) CaptureSession(request.RequestBody);
         var isolated = await _sessionIsolation.ApplyAsync(_sessionContext!, request.AccountIdentity,
@@ -382,6 +384,28 @@ public sealed class ChatApiController : ControllerBase
         request.PreparedRequestBody = isolated.PreparedRequestBody;
         request.ForwardHeaders = isolated.ForwardHeaders;
         return request;
+    }
+
+    private Func<string, CancellationToken, Task<string?>>? CreateCredentialRefreshCallback(string? source, Guid? siteId)
+    {
+        if (siteId is not { } id || id == Guid.Empty) return null;
+        if (string.Equals(source, "Codex", StringComparison.OrdinalIgnoreCase))
+            return (token, ct) => HttpContext.RequestServices.GetRequiredService<CodexCredentialRefreshService>().RefreshAsync(id, token, ct);
+        if (string.Equals(source, "Google", StringComparison.OrdinalIgnoreCase))
+            return (token, ct) => _googleCredentialRefreshService.RefreshAsync(id, token, ct);
+        if (string.Equals(source, "kimi_oauth", StringComparison.OrdinalIgnoreCase))
+            return (token, ct) => HttpContext.RequestServices.GetRequiredService<KimiCredentialRefreshService>().RefreshAsync(id, token, ct);
+        if (string.Equals(source, "device_oauth", StringComparison.OrdinalIgnoreCase))
+            return (token, ct) => HttpContext.RequestServices.GetRequiredService<DeviceOAuthCredentialRefreshService>().RefreshAsync(id, token, ct);
+        return null;
+    }
+
+    private Func<string, object?, CancellationToken, Task>? CreateCredentialInvalidationCallback(string? source)
+    {
+        if (!new[] { "Codex", "Google", "kimi_oauth", "xai_oauth", "device_oauth" }
+            .Contains(source, StringComparer.OrdinalIgnoreCase)) return null;
+        return (token, snapshot, ct) => HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>()
+            .InvalidateAsync(token, snapshot, ct);
     }
 
     private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
@@ -1213,9 +1237,12 @@ public sealed class ChatApiController : ControllerBase
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, requestTimeoutSeconds)));
         var stopwatch = Stopwatch.StartNew();
+        var refreshAttempted = false;
 
         try
         {
+          while (true)
+          {
             var networkRequest = await PrepareForwardAsync(new ProxyForwardRequest
             {
                 TargetBaseUrl = baseUrl, TargetEndpointPathMode = endpointPathMode,
@@ -1271,8 +1298,8 @@ public sealed class ChatApiController : ControllerBase
             };
 
             Task<HttpResponseMessage> sendTask;
+            var sendKey = credential.UseResolvedApiKey ? credential.ApiKey : apiKey;
             {
-                var sendKey = credential.UseResolvedApiKey ? credential.ApiKey : apiKey;
                 if (protocolType == "Anthropic")
                 {
                     foreach (var (name, value) in ProxyForwardService.ResolveAnthropicAuthHeaders(sendKey, networkRequest.ForwardHeaders))
@@ -1300,7 +1327,32 @@ public sealed class ChatApiController : ControllerBase
             if (!response.IsSuccessStatusCode)
             {
                 stopwatch.Stop();
-                var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                string errorBody;
+                try { errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token); }
+                catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !timeoutCts.Token.IsCancellationRequested) { errorBody = string.Empty; }
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    if (!refreshAttempted && networkRequest.RefreshTargetApiKeyAsync is not null)
+                    {
+                        // Revalidate the network selection before refresh performs its own I/O.
+                        if (_networkPolicies is not null)
+                            await _networkPolicies.ResolveAsync(networkRequest, timeoutCts.Token);
+                        refreshAttempted = true;
+                        var refreshed = await networkRequest.RefreshTargetApiKeyAsync(sendKey, cancellationToken);
+                        if (!string.IsNullOrWhiteSpace(refreshed))
+                        {
+                            apiKey = refreshed;
+                            stopwatch.Start();
+                            continue;
+                        }
+                    }
+                    if (networkRequest.InvalidateTargetCredentialAsync is not null)
+                    {
+                        try { await networkRequest.InvalidateTargetCredentialAsync(sendKey, credential.CredentialSnapshot, cancellationToken); }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                        catch (Exception) { /* Preserve the upstream response if persistence fails. */ }
+                    }
+                }
                 return new ChatStreamForwardResult
                 {
                     Success = false,
@@ -1406,6 +1458,7 @@ public sealed class ChatApiController : ControllerBase
                 RequestBody = requestBody,
                 ResponseBody = responseBodySummary
             };
+          }
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {

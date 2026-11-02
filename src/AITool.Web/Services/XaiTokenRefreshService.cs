@@ -129,7 +129,8 @@ public sealed class XaiTokenRefreshService : BackgroundService
         {
             using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("xai", account.Id, ct);
             var current = await db.XaiAccounts.InSingleAsync(account.Id);
-            if (current is null || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
+            if (current is null || current.IsDeleted || current.RequiresReauth || string.IsNullOrWhiteSpace(current.RefreshToken)
+                || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
             account = current;
             using var network = networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "background-token-refresh");
             var tokens = await (network?.XaiOAuth ?? oauthClient).RefreshTokenAsync(account.RefreshToken!, ct);
@@ -171,10 +172,11 @@ public sealed class XaiTokenRefreshService : BackgroundService
             {
                 using var client = db.Client.CopyNew();
                 client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-                account.RequiresReauth = true;
-                account.UpdatedAt = DateTimeOffset.UtcNow;
-                await client.Updateable(account)
-                    .UpdateColumns(a => new { a.RequiresReauth, a.UpdatedAt })
+                var updatedAt = DateTimeOffset.UtcNow;
+                await client.Updateable<XaiAccount>()
+                    .SetColumns(a => new XaiAccount { RequiresReauth = true, UpdatedAt = updatedAt })
+                    .Where(a => a.Id == account.Id && !a.IsDeleted && a.AccessToken == account.AccessToken
+                        && a.RefreshToken == account.RefreshToken && a.LastRefreshAt == account.LastRefreshAt)
                     .ExecuteCommandAsync(ct);
                 cache.InvalidateRouteTargets();
             }

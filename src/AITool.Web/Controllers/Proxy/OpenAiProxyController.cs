@@ -699,6 +699,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 AccountIdentity = route.AccountIdentity,
                 SiteId = route.SiteId, ManagedSource = route.ManagedSource,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                InvalidateTargetCredentialAsync = CreateCredentialInvalidationCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = defaultTargetPathFactory is null
                     ? (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)

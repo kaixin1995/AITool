@@ -122,7 +122,8 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
                 }
             }
 
-            _resultCache.Set(cacheKey, snapshot, ResultCacheTtl);
+            if (snapshot.UpstreamUnauthorized) _resultCache.Remove(cacheKey);
+            else _resultCache.Set(cacheKey, snapshot, ResultCacheTtl);
             return snapshot;
         }
     }
@@ -166,19 +167,36 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
             ExpiresAt = current.TokenExpiresAt,
         };
 
+        var credential = new ForwardOAuthCredentialSnapshot(ProviderKey, current.Id, current.LinkedSiteId,
+            current.AccessToken, current.RefreshToken, current.LastRefreshAt);
         using var boundVendor = _networkVendors?.ForAccount(current, "device-oauth-quota");
         var remoteVendor = boundVendor?.Vendor ?? vendor;
         var result = await remoteVendor.QueryQuotaAsync(token, current.ExtraJson, ct);
         if (result.CredentialInvalid && allowTokenRefresh && !string.IsNullOrWhiteSpace(current.RefreshToken))
         {
-            var refreshed = await _credentialRefresh.RefreshForAccountAsync(current.Id, current.AccessToken!, ct);
+            string? refreshed;
+            try { refreshed = await _credentialRefresh.RefreshForAccountAsync(current.Id, current.AccessToken!, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (result.UpstreamUnauthorized && result.AccessTokenUnauthorized)
+                    await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
+                return new AccountQuotaSnapshot { Success = false, UpstreamUnauthorized = result.UpstreamUnauthorized, Error = "凭证刷新失败：" + ex.Message };
+            }
             if (!string.IsNullOrWhiteSpace(refreshed))
             {
-                token = token with { AccessToken = refreshed };
+                var refreshedAccount = await _dbContext.DeviceOAuthAccounts.InSingleAsync(current.Id);
+                if (refreshedAccount is null || refreshedAccount.IsDeleted || refreshedAccount.AccessToken != refreshed)
+                    return new AccountQuotaSnapshot { Success = false, UpstreamUnauthorized = result.UpstreamUnauthorized, Error = "账号凭证已更新，请重试" };
+                current = refreshedAccount;
+                credential = new ForwardOAuthCredentialSnapshot(ProviderKey, current.Id, current.LinkedSiteId,
+                    current.AccessToken, current.RefreshToken, current.LastRefreshAt);
+                token = new DeviceOAuthTokenSet { AccessToken = current.AccessToken!, RefreshToken = current.RefreshToken, ExpiresAt = current.TokenExpiresAt };
                 result = await remoteVendor.QueryQuotaAsync(token, current.ExtraJson, ct);
             }
         }
 
+        if (result.UpstreamUnauthorized && result.AccessTokenUnauthorized)
+            await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
         return ToSnapshot(result);
     }
 
@@ -193,6 +211,14 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
             return;
         }
 
+        if (enabled)
+        {
+            await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.AccountId,
+                reason is "feature-toggle-on", false, cancellationToken);
+            _metadataCache.InvalidateRouteTargets();
+            return;
+        }
+
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var current = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(account.AccountId);
@@ -200,6 +226,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
 
         if (enabled)
         {
+            if (current.RequiresReauth) return;
             current.IsEnabled = true;
             if (reason is "feature-toggle-on") current.DisabledByFeatureToggle = false;
         }
@@ -233,6 +260,13 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         var accounts = await client.Queryable<DeviceOAuthAccount>().Where(a => !a.IsDeleted).ToListAsync(cancellationToken);
         foreach (var account in accounts)
         {
+            if (enabled)
+            {
+                await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.Id,
+                    true, true, cancellationToken);
+                continue;
+            }
+
             // 对齐 Kimi 语义：站点启停只跟随「账号状态分支」，绝不能在重开总开关时
             // 把被额度巡检禁用（非开关原因）的账号站点一并启用。
             if (!enabled)
@@ -243,15 +277,6 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
                     .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
                     .ExecuteCommandAsync(cancellationToken);
                 await SetSiteEnabledAsync(client, account.LinkedSiteId, false, cancellationToken);
-            }
-            else if (account.DisabledByFeatureToggle && !account.ManuallyDisabled)
-            {
-                account.IsEnabled = true;
-                account.DisabledByFeatureToggle = false;
-                await client.Updateable(account)
-                    .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
-                    .ExecuteCommandAsync(cancellationToken);
-                await SetSiteEnabledAsync(client, account.LinkedSiteId, true, cancellationToken);
             }
         }
 
@@ -301,7 +326,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         IsQuotaCooling = false,
         DisabledByFeatureToggle = account.DisabledByFeatureToggle,
         ManuallyDisabled = account.ManuallyDisabled,
-        DisabledByUpstream = false,
+        DisabledByUpstream = account.RequiresReauth,
         TokenExpiresAt = account.TokenExpiresAt,
         LastQuotaCheckedAt = account.LastQuotaCheckedAt,
         LastQuotaRawJson = account.LastQuotaRawJson,
@@ -311,6 +336,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
     {
         Success = result.Success,
         Error = result.Error,
+        UpstreamUnauthorized = result.UpstreamUnauthorized,
         PlanType = result.PlanType,
         RawJson = result.RawJson,
         CheckedAt = DateTimeOffset.UtcNow,

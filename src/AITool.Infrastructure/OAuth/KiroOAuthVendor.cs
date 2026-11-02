@@ -348,11 +348,13 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token.AccessToken.Trim());
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            string text;
+            try { text = await response.Content.ReadAsStringAsync(cancellationToken); }
+            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { text = string.Empty; }
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
-                return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true };
+                return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized, AccessTokenUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized };
             }
 
             if (!response.IsSuccessStatusCode)
@@ -457,7 +459,9 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
         request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + accessToken.Trim());
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {

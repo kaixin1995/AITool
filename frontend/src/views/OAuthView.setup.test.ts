@@ -39,6 +39,10 @@ interface OAuthSetup {
   editNetworkSelection: Ref<{ mode: 0 | 1 | 2; proxyProfileId?: string | null } | undefined>
   editNetworkConflict: Ref<boolean>
   editPartialError: Ref<string>
+  accounts: Ref<Array<{ id: string; displayName: string }>>
+  checkedModels: Ref<string[]>
+  applyToGroup: Ref<boolean>
+  openFetchModels(account: object): Promise<void>
   openEdit(account: object): void
   rebaseEditNetwork(): Promise<void>
   handleSaveEdit(): Promise<void>
@@ -86,6 +90,25 @@ beforeEach(() => {
   vi.mocked(api.pollXaiToken).mockResolvedValue({ status: 'pending' })
 })
 afterEach(() => { app?.unmount(); app = undefined; vi.useRealTimers(); vi.unstubAllGlobals() })
+describe('OAuth model selection and ordering', () => {
+  it('sorts accounts by name and starts new model selections unchecked', async () => {
+    const base = { email: null, accountId: null, planType: null, isEnabled: true, isQuotaCooling: false,
+      quotaCoolingUntil: null, lastQuotaCheckedAt: null, tokenExpiresAt: null, createdAt: null }
+    vi.mocked(api.listOAuthAccounts).mockResolvedValue([
+      { ...base, id: '2', displayName: 'Account 10' },
+      { ...base, id: '1', displayName: 'Account 2' }
+    ])
+    vi.spyOn(api, 'fetchOAuthModels').mockResolvedValue({ models: [
+      { remoteModelName: 'm1', displayName: 'm1', existingMappingId: null, isEnabled: false, existingDisplayName: null }
+    ] } as Awaited<ReturnType<typeof api.fetchOAuthModels>>)
+    const state = await mountOAuth()
+    expect(state.accounts.value.map(a => a.displayName)).toEqual(['Account 2', 'Account 10'])
+    await state.openFetchModels({ ...base, id: '1', displayName: 'Account 2', provider: 'codex' })
+    expect(state.checkedModels.value).toEqual([])
+    expect(state.applyToGroup.value).toBe(false)
+  })
+})
+
 describe('OAuthView dedicated device session regression', () => {
   it.each(['kimi', 'xai'])('passes %s serverSessionId through automatic and manual polls and resets it', async (provider) => {
     const state = await mountOAuth()

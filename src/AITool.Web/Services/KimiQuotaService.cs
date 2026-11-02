@@ -134,6 +134,15 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
             return;
         }
 
+        if (enabled)
+        {
+            await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.AccountId,
+                string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase), false, cancellationToken);
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateKimiAccounts();
+            return;
+        }
+
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var current = (await client.Queryable<KimiAccount>()
@@ -144,6 +153,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
 
         if (enabled)
         {
+            if (current.RequiresReauth) return;
             current.IsEnabled = true;
             if (string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase))
             {
@@ -177,6 +187,13 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
 
         foreach (var account in accounts)
         {
+            if (enabled)
+            {
+                await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.Id,
+                    true, true, cancellationToken);
+                continue;
+            }
+
             if (!enabled)
             {
                 account.DisabledByFeatureToggle = account.IsEnabled;
@@ -185,15 +202,6 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
                     .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
                     .ExecuteCommandAsync(cancellationToken);
                 await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, false, cancellationToken);
-            }
-            else if (account.DisabledByFeatureToggle && !account.ManuallyDisabled)
-            {
-                account.IsEnabled = true;
-                account.DisabledByFeatureToggle = false;
-                await client.Updateable(account)
-                    .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
-                    .ExecuteCommandAsync(cancellationToken);
-                await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, true, cancellationToken);
             }
         }
 
@@ -261,7 +269,8 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
                 }
             }
 
-            _resultCache.Set(cacheKey, info, ResultCacheTtl);
+            if (info.UpstreamUnauthorized) _resultCache.Remove(cacheKey);
+            else _resultCache.Set(cacheKey, info, ResultCacheTtl);
             return info;
         }
     }
@@ -275,6 +284,8 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
 
         try
         {
+            var credential = new ForwardOAuthCredentialSnapshot(ProviderKey, account.Id, account.LinkedSiteId,
+                account.AccessToken, account.RefreshToken, account.LastRefreshAt);
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{KimiConstants.ApiBaseUrl}/v1/usages");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", account.AccessToken.Trim());
             // 对齐官方 Kimi CLI 抓包指纹（KimiCLI UA + kimi_cli 平台标识）。
@@ -287,22 +298,37 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
 
             using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "quota");
             if (network is not null) network.HttpClient.Timeout = _httpClient.Timeout;
-            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, ct);
-            var body = await response.Content.ReadAsStringAsync(ct);
+            using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
+            string body;
+            try { body = await response.Content.ReadAsStringAsync(requestBudget.Token); }
+            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !requestBudget.IsCancellationRequested) { body = string.Empty; }
 
             if (!response.IsSuccessStatusCode)
             {
-                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh && !string.IsNullOrWhiteSpace(account.RefreshToken))
                 {
-                    var refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, account.AccessToken, ct);
+                    string? refreshed;
+                    try { refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, account.AccessToken, ct); }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
+                        return new QuotaQueryResult { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，凭证刷新失败：" + ex.Message };
+                    }
                     if (!string.IsNullOrWhiteSpace(refreshed))
                     {
-                        account.AccessToken = refreshed;
-                        return await QueryUpstreamAsync(account, ct, allowTokenRefresh: false);
+                        var refreshedAccount = await _dbContext.KimiAccounts.InSingleAsync(account.Id);
+                        if (refreshedAccount is not null && refreshedAccount.AccessToken == refreshed)
+                            return await QueryUpstreamAsync(refreshedAccount, ct, allowTokenRefresh: false);
+                        return new QuotaQueryResult { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，账号凭证已更新，请重试" };
                     }
                 }
 
-                return new QuotaQueryResult { Success = false, Error = $"上游返回 {(int)response.StatusCode}", RawJson = body };
+                var unauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized;
+                if (unauthorized)
+                    await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
+                return new QuotaQueryResult { Success = false, UpstreamUnauthorized = unauthorized, Error = $"上游返回 {(int)response.StatusCode}", RawJson = body };
             }
 
             var windows = KimiQuotaParser.Parse(body);
@@ -333,6 +359,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
     {
         public bool Success { get; init; }
         public string? Error { get; init; }
+        public bool UpstreamUnauthorized { get; init; }
         public string? PlanType { get; init; }
         public string RawJson { get; init; } = string.Empty;
         public DateTimeOffset CheckedAt { get; init; } = DateTimeOffset.UtcNow;
@@ -349,7 +376,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         IsQuotaCooling = false,
         DisabledByFeatureToggle = account.DisabledByFeatureToggle,
         ManuallyDisabled = account.ManuallyDisabled,
-        DisabledByUpstream = false,
+        DisabledByUpstream = account.RequiresReauth,
         TokenExpiresAt = account.TokenExpiresAt,
         LastQuotaCheckedAt = account.LastQuotaCheckedAt,
         LastQuotaRawJson = account.LastQuotaRawJson,
@@ -359,6 +386,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
     {
         Success = info.Success,
         Error = info.Error,
+        UpstreamUnauthorized = info.UpstreamUnauthorized,
         PlanType = info.PlanType,
         RawJson = info.RawJson,
         CheckedAt = info.CheckedAt,

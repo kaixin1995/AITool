@@ -79,7 +79,7 @@ public sealed class NetworkBoundDeviceOAuthVendorFactory(
                 "zcode" => new ZCodeOAuthVendor(client),
                 _ => throw new NetworkPolicyException("unsupported_bound_vendor", "The OAuth vendor has no network-bound implementation.")
             };
-            return new BoundVendor(new ValidatedVendor(vendor, validate), client);
+            return new BoundVendor(new ValidatedVendor(vendor, validate, _requestTimeout), client);
         }
         catch
         {
@@ -92,7 +92,7 @@ public sealed class NetworkBoundDeviceOAuthVendorFactory(
     // preserve its result: a rotating refresh may already have consumed the old refresh token.
     // Only failures are rechecked to reclassify policy errors swallowed by vendor adapters.
     private sealed class ValidatedVendor(IDeviceOAuthVendor inner,
-        Func<CancellationToken, Task<ResolvedNetworkConfiguration>> validate) : IDeviceOAuthVendor
+        Func<CancellationToken, Task<ResolvedNetworkConfiguration>> validate, TimeSpan requestTimeout) : IDeviceOAuthVendor
     {
         public string VendorKey => inner.VendorKey;
         public string Label => inner.Label;
@@ -101,38 +101,46 @@ public sealed class NetworkBoundDeviceOAuthVendorFactory(
         public IReadOnlyList<(string Slug, string DisplayName)> DefaultModels => inner.DefaultModels;
         public TimeSpan RefreshLead => inner.RefreshLead;
         public DeviceOAuthQuotaResult? ParseCachedQuota(string rawJson) => inner.ParseCachedQuota(rawJson);
-        private async Task<T> Run<T>(Func<Task<T>> action, CancellationToken ct,
+        private async Task<T> Run<T>(Func<CancellationToken, Task<T>> action, CancellationToken ct,
             Func<T, bool>? failed = null)
         {
-            await validate(ct);
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(requestTimeout);
+            await validate(budget.Token);
             T result;
-            try { result = await action(); }
+            try { result = await action(budget.Token); }
+            catch (OperationCanceledException) when (budget.IsCancellationRequested) { throw; }
             catch
             {
                 // Reclassify swallowed/wrapped policy errors without ever replacing a
                 // successful result (especially freshly rotated credentials).
-                await validate(ct);
+                budget.Token.ThrowIfCancellationRequested();
+                await validate(budget.Token);
                 throw;
             }
-            if (failed?.Invoke(result) == true) await validate(ct);
+            if (failed?.Invoke(result) == true)
+            {
+                budget.Token.ThrowIfCancellationRequested();
+                await validate(budget.Token);
+            }
             return result;
         }
         public Task<DeviceOAuthStartResult> StartSignInAsync(CancellationToken ct)
-            => Run(() => inner.StartSignInAsync(ct), ct);
+            => Run(token => inner.StartSignInAsync(token), ct);
         public Task<DeviceOAuthPollResult> PollSignInAsync(string sessionJson, CancellationToken ct)
-            => Run(() => inner.PollSignInAsync(sessionJson, ct), ct, FailedPoll);
+            => Run(token => inner.PollSignInAsync(sessionJson, token), ct, FailedPoll);
         public Task<DeviceOAuthPollResult> CompleteWithCallbackAsync(string sessionJson, string callbackUrl, CancellationToken ct)
-            => Run(() => inner.CompleteWithCallbackAsync(sessionJson, callbackUrl, ct), ct, FailedPoll);
+            => Run(token => inner.CompleteWithCallbackAsync(sessionJson, callbackUrl, token), ct, FailedPoll);
         public Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken ct)
-            => Run(() => inner.RefreshTokenAsync(refreshToken, ct), ct);
+            => Run(token => inner.RefreshTokenAsync(refreshToken, token), ct);
         public Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, string? extraJson, CancellationToken ct)
-            => Run(() => inner.RefreshTokenAsync(refreshToken, extraJson, ct), ct);
+            => Run(token => inner.RefreshTokenAsync(refreshToken, extraJson, token), ct);
         public Task<DeviceOAuthTokenSet> RefreshTokenAsync(DeviceOAuthTokenSet current, string? extraJson, CancellationToken ct)
-            => Run(() => inner.RefreshTokenAsync(current, extraJson, ct), ct);
+            => Run(token => inner.RefreshTokenAsync(current, extraJson, token), ct);
         public Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken ct)
-            => Run(() => inner.FetchModelsAsync(token, extraJson, ct), ct, models => models.Count == 0);
+            => Run(budget => inner.FetchModelsAsync(token, extraJson, budget), ct, models => models.Count == 0);
         public Task<DeviceOAuthQuotaResult> QueryQuotaAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken ct)
-            => Run(() => inner.QueryQuotaAsync(token, extraJson, ct), ct, result => !result.Success);
+            => Run(budget => inner.QueryQuotaAsync(token, extraJson, budget), ct, result => !result.Success);
         private static bool FailedPoll(DeviceOAuthPollResult result)
             => result.Tokens is null && (result.IsDenied || result.IsExpired || !string.IsNullOrEmpty(result.Error));
     }

@@ -66,11 +66,11 @@ public sealed class AccountPoolSyncTests : IDisposable
         (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "gpt-team-pool")).Should()
             .BeFalse("池名只是管理标签，不占用路由命名空间");
 
-        // 请求 m1：候选=两个成员（B 优先）；请求 m2：候选=仅 A。请求池名：无候选。
+        // 新生成规则按账号名称排序；请求 m2 的候选只有 A。
         var m1Rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
         m1Rules.Should().HaveCount(2);
-        m1Rules.Single(r => r.SiteId == teamB.LinkedSiteId).InstancePriority.Should().Be(0, "池内静态顺序=InstancePriority 基线");
-        m1Rules.Single(r => r.SiteId == teamA.LinkedSiteId).InstancePriority.Should().Be(1);
+        m1Rules.Single(r => r.SiteId == teamA.LinkedSiteId).InstancePriority.Should().Be(0, "新规则按账号名称排序");
+        m1Rules.Single(r => r.SiteId == teamB.LinkedSiteId).InstancePriority.Should().Be(1);
         m1Rules.All(r => r.UpstreamModelName == "m1" && r.SiteModelName == "m1").Should().BeTrue("对外名=上游名（透出）");
         (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m2").ToListAsync())
             .Should().ContainSingle(r => r.SiteId == teamA.LinkedSiteId, "m2 只扇出到持有它的成员");
@@ -231,10 +231,16 @@ public sealed class AccountPoolSyncTests : IDisposable
         var pool = new AccountPool { Name = "grow-pool", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
         await db.Client.Insertable(pool).ExecuteCommandAsync();
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
-        (await db.ProxyRouteRules.Where(r => r.ExternalModelName.StartsWith("m")).ToListAsync()).Should().BeEmpty("尚无映射→无规则");
+        (await db.SiteModelMappings.Where(m => m.SiteId == a.LinkedSiteId || m.SiteId == b.LinkedSiteId).ToListAsync())
+            .Should().BeEmpty("账号供给不应自动导入模型");
+        (await db.ProxyRouteRules.ToListAsync()).Should().BeEmpty("尚无映射→无规则");
 
         // 批量导入（P1）后同步：两个成员都拿到 m1/m2。
-        await provisioner.BatchUpsertRemoteModelsAsync(a.Id, [("m1", "m1"), ("m2", "m2")], CancellationToken.None);
+        var imports = await provisioner.BatchUpsertRemoteModelsAsync(a.Id, [("m1", "m1"), ("m2", "m2")], CancellationToken.None);
+        imports.Should().HaveCount(2).And.OnlyContain(r => r.Ok, "两个成员都需要显式导入模型");
+        var importedMappings = await db.SiteModelMappings.Where(m => m.SiteId == a.LinkedSiteId || m.SiteId == b.LinkedSiteId).ToListAsync();
+        importedMappings.Select(m => (m.SiteId, m.RemoteModelName)).Should().BeEquivalentTo(
+            new[] { (a.LinkedSiteId, "m1"), (a.LinkedSiteId, "m2"), (b.LinkedSiteId, "m1"), (b.LinkedSiteId, "m2") });
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
         await sync.SyncPoolAsync(pool.Id, CancellationToken.None);
 
@@ -260,7 +266,8 @@ public sealed class AccountPoolSyncTests : IDisposable
         var (provisioner, sync, db) = CreateServices();
         var a = await provisioner.ProvisionFromTokensAsync(Input("acc-r1", "r@p.com", "team", "at-1"), CancellationToken.None);
         var b = await provisioner.ProvisionFromTokensAsync(Input("acc-r2", "s@p.com", "team", "at-2"), CancellationToken.None);
-        await provisioner.BatchUpsertRemoteModelsAsync(a.Id, [("m1", "m1")], CancellationToken.None);
+        await provisioner.UpsertRemoteModelsAsync(a.LinkedSiteId, [("m1", "m1")], CancellationToken.None);
+        await provisioner.UpsertRemoteModelsAsync(b.LinkedSiteId, [("m1", "m1")], CancellationToken.None);
 
         var pool = new AccountPool { Name = "race-pool", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
         await db.Client.Insertable(pool).ExecuteCommandAsync();
@@ -356,6 +363,114 @@ public sealed class AccountPoolSyncTests : IDisposable
         (await db.AccountPools.FirstAsync(p => p.Id == pool.Id)).ExposedModelsJson.Should().BeNull();
         (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().ContainSingle();
         (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m1")).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Model_reselection_preserves_retained_rules_and_sorts_new_rules_by_name()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var z = await provisioner.ProvisionFromTokensAsync(Input("sort-z", "z@example.test", "team", "token-z"), default);
+        var a = await provisioner.ProvisionFromTokensAsync(Input("sort-a", "a@example.test", "team", "token-a"), default);
+        await provisioner.UpsertRemoteModelsAsync(z.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], default);
+        await provisioner.UpsertRemoteModelsAsync(a.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], default);
+        var pool = new AccountPool { Name = "preserve", VendorKey = "codex", ExposedModelsJson = "[\"m1\"]" };
+        await sync.CreatePoolAsync(pool, [z.Id, a.Id], default);
+        var before = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
+        var first = before.Single(r => r.SiteId == z.LinkedSiteId);
+        var second = before.Single(r => r.SiteId == a.LinkedSiteId);
+        first.Priority = 2;
+        first.InstancePriority = 3;
+        first.ModelPriority = 4;
+        first.IsEnabled = false;
+        first.AvailabilityMode = "DailyRanges";
+        first.TimeRangesJson = "[{\"start\":\"09:00\",\"end\":\"17:00\"}]";
+        second.Priority = 8;
+        second.InstancePriority = 9;
+        await db.Client.Updateable(new[] { first, second }).ExecuteCommandAsync();
+
+        var result = await sync.UpdateModelsAsync(pool.Id, "[\"m1\",\"m2\"]", default);
+
+        result.RuleCount.Should().Be(4);
+        var after = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
+        after.Should().BeEquivalentTo(new[] { first, second });
+        var generated = (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m2").ToListAsync())
+            .OrderBy(r => r.InstancePriority).ToList();
+        generated.Select(r => r.SiteId).Should().Equal(a.LinkedSiteId, z.LinkedSiteId);
+        generated.Select(r => r.Priority).Should().Equal(0, 1);
+
+        await sync.SyncPoolAsync(pool.Id, default);
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().BeEquivalentTo(after);
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m2").ToListAsync()).Should().BeEquivalentTo(generated);
+    }
+
+    [Fact]
+    public async Task Sync_preserves_manual_other_model_and_reference_rules_but_removes_excluded_pool_members()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var a = await provisioner.ProvisionFromTokensAsync(Input("manual-a", "a@example.test", "team", "token-a"), default);
+        var b = await provisioner.ProvisionFromTokensAsync(Input("manual-b", "b@example.test", "team", "token-b"), default);
+        await provisioner.UpsertRemoteModelsAsync(a.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], default);
+        await provisioner.UpsertRemoteModelsAsync(b.LinkedSiteId, [("m1", "m1")], default);
+        var pool = new AccountPool { Name = "manual-rules", VendorKey = "codex", ExposedModelsJson = "[\"m1\"]" };
+        await sync.CreatePoolAsync(pool, [a.Id, b.Id], default);
+        var externalRule = new ProxyRouteRule
+        {
+            ExternalModelName = "m1", UpstreamModelName = "custom", SiteModelName = "remote-custom",
+            SiteId = Guid.NewGuid(), Priority = 7, ModelPriority = 3, InstancePriority = 9,
+            IsEnabled = false, AvailabilityMode = "DailyRanges", TimeRangesJson = "[]"
+        };
+        var sameSiteOtherModel = new ProxyRouteRule
+        {
+            ExternalModelName = "m1", UpstreamModelName = "custom", SiteModelName = "remote-custom",
+            SiteId = a.LinkedSiteId, Priority = 8, ModelPriority = 3, InstancePriority = 10
+        };
+        var reference = new ProxyRouteRule
+        {
+            ExternalModelName = "m1", UpstreamModelName = "reference", TargetKind = "RouteEntry",
+            TargetRouteEntryId = Guid.NewGuid(), TargetRouteEntryName = "reference", Priority = 9
+        };
+        var externalSameModel = new ProxyRouteRule
+        {
+            ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1",
+            SiteId = Guid.NewGuid(), Priority = 12, InstancePriority = 12
+        };
+        await db.Client.Insertable(new[] { externalRule, sameSiteOtherModel, reference, externalSameModel }).ExecuteCommandAsync();
+
+        await sync.UpdateModelsAsync(pool.Id, "[\"m1\",\"m2\"]", default);
+        await sync.ReplaceMembersAsync(pool.Id, [(a.Id, false), (b.Id, true)], default);
+
+        var rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
+        rules.Where(r => r.Id == externalRule.Id || r.Id == sameSiteOtherModel.Id || r.Id == reference.Id || r.Id == externalSameModel.Id)
+            .Should().BeEquivalentTo(new[] { externalRule, sameSiteOtherModel, reference, externalSameModel });
+        rules.Should().ContainSingle(r => r.SiteId == a.LinkedSiteId && r.UpstreamModelName == "m1");
+        rules.Should().NotContain(r => r.SiteId == b.LinkedSiteId && r.UpstreamModelName == "m1");
+    }
+
+    [Fact]
+    public async Task New_members_append_in_name_order_without_changing_existing_configuration()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var existing = await provisioner.ProvisionFromTokensAsync(Input("existing", "m@example.test", "team", "token-m"), default);
+        await provisioner.UpsertRemoteModelsAsync(existing.LinkedSiteId, [("m1", "m1")], default);
+        var pool = new AccountPool { Name = "append", VendorKey = "codex", AutoIncludeMembers = true };
+        await sync.CreatePoolAsync(pool, null, default);
+        var original = await db.ProxyRouteRules.FirstAsync(r => r.ExternalModelName == "m1");
+        original.Priority = 11;
+        original.InstancePriority = 15;
+        original.IsEnabled = false;
+        await db.Client.Updateable(original).ExecuteCommandAsync();
+        var z = await provisioner.ProvisionFromTokensAsync(Input("new-z", "z@example.test", "team", "token-z"), default);
+        var a = await provisioner.ProvisionFromTokensAsync(Input("new-a", "a@example.test", "team", "token-a"), default);
+        await provisioner.UpsertRemoteModelsAsync(z.LinkedSiteId, [("m1", "m1")], default);
+        await provisioner.UpsertRemoteModelsAsync(a.LinkedSiteId, [("m1", "m1")], default);
+
+        await sync.SyncPoolAsync(pool.Id, default);
+
+        var rules = (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
+            .OrderBy(r => r.InstancePriority).ToList();
+        rules.Select(r => r.SiteId).Should().Equal(existing.LinkedSiteId, a.LinkedSiteId, z.LinkedSiteId);
+        rules.Select(r => r.InstancePriority).Should().Equal(15, 16, 17);
+        rules.Single(r => r.Id == original.Id).Should().BeEquivalentTo(original);
     }
 
     private (CodexAccountProvisioner Provisioner, AccountPoolSyncService Sync, AppDbContext Db) CreateServices()

@@ -100,6 +100,10 @@ public sealed class CodexAccount
     [SugarColumn(IsNullable = false)]
     public bool IsEnabled { get; set; } = true;
 
+    /// <summary>转发凭证被上游拒绝，需要重新登录。</summary>
+    [SugarColumn(IsNullable = false)]
+    public bool RequiresReauth { get; set; }
+
     /// <summary>
     /// 标记该账号是否因「Codex 功能总开关」被关闭而禁用（区别于额度耗尽/手动禁用）。
     /// 总开关重新开启时，仅恢复此标记为 true 的账号，避免误启用冷却中或手动禁用的账号。

@@ -339,8 +339,18 @@ public sealed class KimiAccountsApiController : ControllerBase
             return NotFound(new { message = "账号不存在" });
         }
 
-        using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "models");
-        var models = await (network?.KimiModels ?? _modelFetcher).FetchAsync(account.AccessToken ?? string.Empty, account.DeviceId, ct);
+        var snapshot = new ForwardOAuthCredentialSnapshot("kimi", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
+        IReadOnlyList<(string Slug, string DisplayName)> models;
+        try
+        {
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "models");
+            models = await (network?.KimiModels ?? _modelFetcher).FetchAsync(snapshot.AccessToken ?? string.Empty, account.DeviceId, ct);
+        }
+        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
+        {
+            await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(snapshot.AccessToken ?? string.Empty, snapshot, ct);
+            return StatusCode(StatusCodes.Status401Unauthorized, new { message = ex.Message });
+        }
         var existingMappings = await _dbContext.SiteModelMappings
             .Where(m => m.SiteId == account.LinkedSiteId)
             .ToListAsync(ct);
@@ -611,6 +621,7 @@ public sealed class KimiAccountsApiController : ControllerBase
             deviceId = a.DeviceId,
             planType = "Kimi Code",
             isEnabled = a.IsEnabled,
+            requiresReauth = a.RequiresReauth,
             isQuotaCooling = false,
             quotaCoolingUntil = (string?)null,
             lastQuotaCheckedAt = a.LastQuotaCheckedAt?.ToString("o"),

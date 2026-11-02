@@ -131,7 +131,14 @@ public sealed class DeviceOAuthAccountProvisioner
             if (!string.IsNullOrWhiteSpace(tokens.RefreshToken)) account.RefreshToken = tokens.RefreshToken;
             account.TokenExpiresAt = tokens.ExpiresAt;
             account.LastRefreshAt = DateTimeOffset.UtcNow;
-            account.RequiresReauth = false;
+            if (account.RequiresReauth)
+            {
+                account.RequiresReauth = false;
+                var settings = await client.Queryable<SystemRuntimeSettings>().InSingleAsync(1);
+                if (settings is { OAuthFeaturesEnabled: false } && !account.ManuallyDisabled && !account.IsDeleted)
+                    account.DisabledByFeatureToggle = true;
+                account.IsEnabled = !account.ManuallyDisabled && !account.DisabledByFeatureToggle && !account.IsDeleted;
+            }
             if (!string.IsNullOrEmpty(email)) account.Email = email;
             if (!string.IsNullOrEmpty(externalUserId)) account.ExternalUserId = externalUserId;
             if (!string.IsNullOrWhiteSpace(extraJson)) account.ExtraJson = extraJson;
@@ -140,10 +147,6 @@ public sealed class DeviceOAuthAccountProvisioner
                 account.DisplayName = label;
                 account.IsDisplayNameCustom = isUserSuppliedName;
             }
-            account.IsEnabled = true;
-            account.ManuallyDisabled = false;
-            account.DisabledByFeatureToggle = false;
-            account.IsDeleted = false;
             account.UpdatedAt = DateTimeOffset.UtcNow;
         }
         else
@@ -199,7 +202,7 @@ public sealed class DeviceOAuthAccountProvisioner
                 if (renameOnProvision) site.Name = label;
                 site.BaseUrl = chatBaseUrl ?? chat.BaseUrl;
                 site.ExtraHeadersJson = mergedHeadersJson;
-                site.IsEnabled = true;
+                site.IsEnabled = account.IsEnabled;
                 await client.Updateable(site).ExecuteCommandAsync(ct);
             }
         }
@@ -213,11 +216,7 @@ public sealed class DeviceOAuthAccountProvisioner
             await client.Updateable(account).ExecuteCommandAsync(ct);
         }
 
-        // 模型映射：默认清单（厂商静态注册表）；映射的上游名与公开名一致。
-        if (site is not null)
-        {
-            await UpsertDefaultModelMappingsAsync(client, site.Id, vendor, ct);
-        }
+        // 模型由用户手动选择导入；供给和重新登录不修改既有映射。
 
         // Missing selection on relogin preserves existing policy; an explicit Legacy selection
         // is still an update. New unspecified accounts inherit Legacy without a policy row.
@@ -241,11 +240,16 @@ public sealed class DeviceOAuthAccountProvisioner
     public async Task ToggleAsync(Guid accountId, bool isEnabled, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        await client.Ado.BeginTranAsync();
+        try
+        {
+        await client.Ado.ExecuteCommandAsync("UPDATE DeviceOAuthAccounts SET UpdatedAt=UpdatedAt WHERE 1=0;");
         var account = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(accountId);
-        if (account == null) return;
+        if (account == null) { await client.Ado.CommitTranAsync(); return; }
 
-        account.IsEnabled = isEnabled;
         account.ManuallyDisabled = !isEnabled;
+        account.IsEnabled = isEnabled && !account.RequiresReauth && !account.DisabledByFeatureToggle && !account.IsDeleted;
         account.UpdatedAt = DateTimeOffset.UtcNow;
         await client.Updateable(account).UpdateColumns(a => new { a.IsEnabled, a.ManuallyDisabled, a.UpdatedAt }).ExecuteCommandAsync(ct);
 
@@ -254,11 +258,14 @@ public sealed class DeviceOAuthAccountProvisioner
             var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
             if (site != null)
             {
-                site.IsEnabled = isEnabled;
+                site.IsEnabled = account.IsEnabled;
                 await client.Updateable(site).UpdateColumns(s => new { s.IsEnabled }).ExecuteCommandAsync(ct);
             }
         }
 
+        await client.Ado.CommitTranAsync();
+        }
+        catch { await client.Ado.RollbackTranAsync(); throw; }
         _metadataCache.InvalidateRouteTargets();
     }
 
@@ -280,10 +287,22 @@ public sealed class DeviceOAuthAccountProvisioner
         if (!string.IsNullOrWhiteSpace(refreshToken))
         {
             account.RefreshToken = refreshToken.Trim();
-            account.RequiresReauth = false;
         }
 
-        await client.Updateable(account).ExecuteCommandAsync(ct);
+        if (!string.IsNullOrWhiteSpace(refreshToken))
+            await client.Updateable(account)
+                .UpdateColumns(a => new { a.DisplayName, a.IsDisplayNameCustom, a.RefreshToken, a.UpdatedAt })
+                .ExecuteCommandAsync(ct);
+        else
+            await client.Updateable(account)
+                .UpdateColumns(a => new { a.DisplayName, a.IsDisplayNameCustom, a.UpdatedAt })
+                .ExecuteCommandAsync(ct);
+        // A refresh-token edit cannot clear a forwarding 401, which disabled the account.
+        if (!string.IsNullOrWhiteSpace(refreshToken))
+            await client.Updateable<DeviceOAuthAccount>()
+                .SetColumns(a => new DeviceOAuthAccount { RequiresReauth = false })
+                .Where(a => a.Id == accountId && a.IsEnabled && a.RefreshToken == account.RefreshToken)
+                .ExecuteCommandAsync(ct);
         if (account.LinkedSiteId != Guid.Empty)
         {
             var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
@@ -866,7 +885,7 @@ internal static class DeviceOAuthSiteCredentialSync
             // roll back the rotated refresh token, which the provider may already have consumed.
             var count = await db.Client.Updateable(account).UpdateColumns(a => new
             {
-                a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.RequiresReauth, a.UpdatedAt
+                a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.UpdatedAt
             }).Where(a => a.Id == account.Id && !a.IsDeleted).ExecuteCommandAsync(CancellationToken.None);
             if (count != 1) throw new InvalidOperationException("Device OAuth account no longer exists.");
         }

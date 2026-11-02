@@ -144,6 +144,15 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             return;
         }
 
+        if (enabled)
+        {
+            await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.AccountId,
+                string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase), false, cancellationToken);
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateCodexAccounts();
+            return;
+        }
+
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var current = (await client.Queryable<CodexAccount>()
@@ -185,6 +194,13 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
         foreach (var account in accounts)
         {
+            if (enabled)
+            {
+                await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.Id,
+                    true, true, cancellationToken);
+                continue;
+            }
+
             if (!enabled)
             {
                 account.DisabledByFeatureToggle = account.IsEnabled;
@@ -193,15 +209,6 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                     .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
                     .ExecuteCommandAsync(cancellationToken);
                 await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, false, cancellationToken);
-            }
-            else if (account.DisabledByFeatureToggle)
-            {
-                account.IsEnabled = true;
-                account.DisabledByFeatureToggle = false;
-                await client.Updateable(account)
-                    .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
-                    .ExecuteCommandAsync(cancellationToken);
-                await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, true, cancellationToken);
             }
         }
 
@@ -268,8 +275,9 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                 }
             }
 
-            // 写缓存（无论成功失败都缓存 30s，避免失败风暴）
-            _resultCache.Set(cacheKey, info, ResultCacheTtl);
+            // 401 必须清除旧成功结果，避免后续查询继续使用失效凭证的额度。
+            if (info.UpstreamUnauthorized) _resultCache.Remove(cacheKey);
+            else _resultCache.Set(cacheKey, info, ResultCacheTtl);
             return info;
         }
     }
@@ -286,6 +294,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
         try
         {
+            var credential = new ForwardOAuthCredentialSnapshot(ProviderKey, account.Id, account.LinkedSiteId,
+                account.AccessToken, account.RefreshToken, account.LastRefreshAt);
             var versionInfo = await _versionResolver.ResolveAsync(ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, UsageUrl);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -299,26 +309,41 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
             using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "quota");
             if (network is not null) network.HttpClient.Timeout = _httpClient.Timeout;
-            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, ct);
-            var body = await response.Content.ReadAsStringAsync(ct);
+            using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
+            string body;
+            try { body = await response.Content.ReadAsStringAsync(requestBudget.Token); }
+            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !requestBudget.IsCancellationRequested) { body = string.Empty; }
 
             var info = new CodexQuotaInfo { RawJson = body, CheckedAt = DateTimeOffset.UtcNow };
             if (!response.IsSuccessStatusCode)
             {
-                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh && !string.IsNullOrWhiteSpace(account.RefreshToken))
                 {
-                    var refreshedAccessToken = await _credentialRefreshService.RefreshForAccountAsync(
-                        account.Id,
-                        account.AccessToken,
-                        ct);
+                    string? refreshedAccessToken;
+                    try
+                    {
+                        refreshedAccessToken = await _credentialRefreshService.RefreshForAccountAsync(account.Id, account.AccessToken, ct);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
+                        return new CodexQuotaInfo { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，凭证刷新失败：" + ex.Message };
+                    }
                     if (!string.IsNullOrWhiteSpace(refreshedAccessToken))
                     {
-                        account.AccessToken = refreshedAccessToken;
-                        return await QueryUpstreamAsync(account, ct, false);
+                        var refreshedAccount = await _dbContext.CodexAccounts.InSingleAsync(account.Id);
+                        if (refreshedAccount is not null && refreshedAccount.AccessToken == refreshedAccessToken)
+                            return await QueryUpstreamAsync(refreshedAccount, ct, false);
+                        return new CodexQuotaInfo { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，账号凭证已更新，请重试" };
                     }
                 }
 
                 info.Success = false;
+                info.UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized;
+                if (info.UpstreamUnauthorized)
+                    await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
                 info.Error = $"上游返回 {(int)response.StatusCode}";
                 return info;
             }
@@ -363,6 +388,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         IsQuotaCooling = account.IsQuotaCooling,
         DisabledByFeatureToggle = account.DisabledByFeatureToggle,
         ManuallyDisabled = account.ManuallyDisabled,
+        DisabledByUpstream = account.RequiresReauth,
         TokenExpiresAt = account.TokenExpiresAt,
         LastQuotaCheckedAt = account.LastQuotaCheckedAt,
         LastQuotaRawJson = account.LastQuotaRawJson,
@@ -372,6 +398,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     {
         Success = info.Success,
         Error = info.Error,
+        UpstreamUnauthorized = info.UpstreamUnauthorized,
         PlanType = info.PlanType,
         RawJson = info.RawJson,
         CheckedAt = info.CheckedAt,

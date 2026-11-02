@@ -303,7 +303,9 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
                     HttpMethod.Get,
                     _site.ChatBase + path,
                     headers: headers,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken, preserveUnauthorized: true);
+                if (status == 401 && headers.ContainsKey("Authorization"))
+                    throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
                 if (status != 200)
                 {
                     lastError = "HTTP " + status;
@@ -328,6 +330,10 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             {
                 throw;
             }
+            catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 lastError = ex.Message;
@@ -339,6 +345,8 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
 
     public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(token.AccessToken))
+            throw new InvalidOperationException("WorkBuddy 模型目录请求缺少 access token");
         var uid = ReadStringExtra(extraJson, "uid");
         var headers = ChatHeaders(token.AccessToken.Trim());
         if (!string.IsNullOrWhiteSpace(uid))
@@ -518,7 +526,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             foreach (var path in paths)
             {
                 var (status, responseBody) = await CallAsync(HttpMethod.Post, _site.BillingBase + path,
-                    headers: headers, body: body, cancellationToken: cancellationToken);
+                    headers: headers, body: body, cancellationToken: cancellationToken, preserveUnauthorized: true);
                 if (status == 404 && path != paths[^1])
                 {
                     continue;
@@ -526,7 +534,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
 
                 if (status is 401 or 403)
                 {
-                    return new DeviceOAuthQuotaResult { Success = false, Error = "登录态已失效，请重新扫码", CredentialInvalid = true };
+                    return new DeviceOAuthQuotaResult { Success = false, Error = "登录态已失效，请重新扫码", CredentialInvalid = true, UpstreamUnauthorized = status == 401, AccessTokenUnauthorized = status == 401 };
                 }
 
                 if (status != 200)
@@ -558,11 +566,11 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
     {
         var (status, body) = await CallAsync(HttpMethod.Post,
             _site.BillingBase + "/v2/billing/meter/get-enterprise-user-usage",
-            headers: headers, body: "{}", cancellationToken: cancellationToken);
+            headers: headers, body: "{}", cancellationToken: cancellationToken, preserveUnauthorized: true);
         if (status != 200)
         {
             return status is 401 or 403
-                ? new DeviceOAuthQuotaResult { Success = false, Error = "登录态已失效，请重新扫码", CredentialInvalid = true }
+                ? new DeviceOAuthQuotaResult { Success = false, Error = "登录态已失效，请重新扫码", CredentialInvalid = true, UpstreamUnauthorized = status == 401, AccessTokenUnauthorized = status == 401 }
                 : new DeviceOAuthQuotaResult { Success = false, Error = $"企业额度查询 HTTP {status}" };
         }
 
@@ -633,7 +641,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
     }
 
     private async Task<(int Status, string Body)> CallAsync(
-        HttpMethod method, string url, Dictionary<string, string> headers, string? body = null, CancellationToken cancellationToken = default)
+        HttpMethod method, string url, Dictionary<string, string> headers, string? body = null, CancellationToken cancellationToken = default, bool preserveUnauthorized = false)
     {
         using var request = new HttpRequestMessage(method, url);
         foreach (var (name, value) in headers)
@@ -646,8 +654,10 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             request.Content = new StringContent(body, Encoding.UTF8, "application/json");
         }
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var response = await _httpClient.SendAsync(request, preserveUnauthorized ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead, cancellationToken);
+        string text;
+        try { text = await response.Content.ReadAsStringAsync(cancellationToken); }
+        catch (Exception ex) when (preserveUnauthorized && response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { text = string.Empty; }
         return ((int)response.StatusCode, text);
     }
 

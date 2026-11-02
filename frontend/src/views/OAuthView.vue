@@ -154,7 +154,7 @@ const accountViewMode = ref<AccountViewMode>(
 )
 watch(accountViewMode, mode => localStorage.setItem('oauth:viewMode', mode))
 
-const accountStatusFilter = ref<AccountStatusFilter>('enabled')
+const accountStatusFilter = ref<AccountStatusFilter>('all')
 const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFilter }> = [
   { label: '已启用', value: 'enabled' },
   { label: '已禁用', value: 'disabled' },
@@ -246,7 +246,7 @@ const accountTableColumns = [
     key: 'name',
     minWidth: 190,
     render(row: AccountTableRow) {
-      const nodes = [h('div', { class: 'oauth-table-name' }, row.name)]
+      const nodes = [h('div', { class: 'oauth-table-name', style: row.raw.requiresReauth ? { color: '#e5484d' } : undefined }, row.name)]
       const subs = [row.plan, row.email].filter(Boolean)
       if (subs.length > 0) {
         nodes.push(h('div', { class: 'oauth-table-sub' }, subs.join(' · ')))
@@ -641,7 +641,9 @@ async function loadAccounts(showError: boolean): Promise<void> {
     : []
 
   accounts.value = [...codexAccounts, ...googleAccounts, ...kimiAccounts, ...xaiAccounts, ...deviceAccounts].sort(
-    (a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
+    (a, b) => a.displayName.localeCompare(b.displayName, 'zh-CN', { numeric: true, sensitivity: 'base' })
+      || a.provider.localeCompare(b.provider)
+      || a.id.localeCompare(b.id)
   )
   featureDisabled.value = false
   void loadNetwork()
@@ -1280,7 +1282,7 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
   modelAccount.value = acc
   modelList.value = []
   checkedModels.value = []
-  applyToGroup.value = true
+  applyToGroup.value = false
   modelModal.value = true
   modelLoading.value = true
   try {
@@ -1329,8 +1331,8 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
     } else if (previouslyEnabled.length > 0 || models.some(model => model.existingMappingId)) {
       checkedModels.value = previouslyEnabled
     } else {
-      // 若当前没有任何已启用的映射，默认勾选全部拉取到的可用模型
-      checkedModels.value = models.map(model => model.remoteModelName)
+      // 新账号不预选模型，由用户明确选择需要导入的条目。
+      checkedModels.value = []
     }
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
 }
@@ -1803,7 +1805,7 @@ onUnmounted(() => {
                 />
                 <div class="oauth-card-header">
                   <div class="oauth-card-header-main">
-                    <div class="oauth-account-name">{{ acc.displayName }}</div>
+                    <div class="oauth-account-name" :style="acc.requiresReauth ? { color: '#e5484d' } : undefined">{{ acc.displayName }}</div>
                     <div class="oauth-account-email">
                       {{ acc.email || '' }}
                       <button

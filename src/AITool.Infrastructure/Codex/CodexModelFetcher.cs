@@ -5,6 +5,9 @@ using Microsoft.Extensions.Logging;
 
 namespace AITool.Infrastructure.Codex;
 
+/// <summary>A model request received HTTP 401 for the account access token itself.</summary>
+public sealed class ModelAccessTokenUnauthorizedException() : InvalidOperationException("上游模型目录返回 HTTP 401，账号凭证被拒绝") { }
+
 /// <summary>
 /// 动态拉取 Codex 上游模型目录。请求格式移植自 CPA
 /// （reference-projects/CLIProxyAPI/cmd/fetch_codex_models/main.go:231-295）。
@@ -46,10 +49,14 @@ public sealed class CodexModelFetcher : ICodexModelFetcher
         }
         _logger.LogDebug("Fetch codex models with client_version {Version} (source: {Source})", versionInfo.ClientVersion, versionInfo.Source);
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            throw new ModelAccessTokenUnauthorizedException();
         response.EnsureSuccessStatusCode();
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(requestBudget.Token);
         using var doc = JsonDocument.Parse(body);
 
         // 上游响应顶层可能是数组，也可能是 { models: [...] } 或 { data: [...] }，逐种尝试

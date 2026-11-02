@@ -139,13 +139,13 @@ public sealed class ModelHealthApiController : ControllerBase
             };
         }
 
-        // 4. 加载映射、站点、日志、路由规则。
+        // 4. 健康看板展示历史调用，不按当前启用状态排除映射、站点或路由。
         var mappings = await _dbContext.SiteModelMappings
-            .Where(m => monitoredModelIds.Contains(m.ModelLibraryItemId) && m.IsEnabled)
+            .Where(m => monitoredModelIds.Contains(m.ModelLibraryItemId))
             .ToListAsync(cancellationToken);
         var siteIds = mappings.Select(m => m.SiteId).Distinct().ToList();
         var sites = await _dbContext.Sites
-            .Where(s => siteIds.Contains(s.Id) && s.IsEnabled)
+            .Where(s => siteIds.Contains(s.Id))
             .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
         var recentCutoff = ResolveRecentCutoff(range);
@@ -154,9 +154,10 @@ public sealed class ModelHealthApiController : ControllerBase
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .ToHashSet(StringComparer.Ordinal);
         var matchedRemoteNames = mappings.Select(m => m.RemoteModelName).ToHashSet(StringComparer.Ordinal);
-        var matchedUpstreamNames = (await _dbContext.ProxyRouteRules
-            .Where(x => x.IsEnabled && matchedModelNames.Contains(x.ExternalModelName))
-            .ToListAsync(cancellationToken))
+        var routeRules = await _dbContext.ProxyRouteRules
+            .Where(x => matchedModelNames.Contains(x.ExternalModelName))
+            .ToListAsync(cancellationToken);
+        var matchedUpstreamNames = routeRules
             .Select(x => x.UpstreamModelName)
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .ToHashSet(StringComparer.Ordinal);
@@ -166,10 +167,6 @@ public sealed class ModelHealthApiController : ControllerBase
             .Where(x => matchedModelNames.Contains(x.RequestModel)
                 || matchedRemoteNames.Contains(x.AttemptedModel)
                 || matchedUpstreamNames.Contains(x.AttemptedModel))
-            .ToListAsync(cancellationToken);
-
-        var routeRules = await _dbContext.ProxyRouteRules
-            .Where(x => x.IsEnabled)
             .ToListAsync(cancellationToken);
 
         // 5. 按模型分组聚合。
@@ -199,12 +196,26 @@ public sealed class ModelHealthApiController : ControllerBase
                 .Where(l => matchedRequestModels.Contains(l.RequestModel) || matchedAttemptedModels.Contains(l.AttemptedModel))
                 .ToList();
 
-            // 用强类型 record 投影，避免反射开销（原 PageModel 用强类型 ViewModel，零反射）。
+            // A site can have several mappings for one library model. Attribute each call
+            // to one mapping, preferring its remote name over a route alias. Historical logs
+            // with no remaining matching rule fall back deterministically to the first mapping.
+            var orderedMappings = modelMappings.OrderBy(m => m.RemoteModelName, StringComparer.Ordinal).ThenBy(m => m.Id).ToList();
+            var firstMappingBySite = orderedMappings.GroupBy(m => m.SiteId).ToDictionary(g => g.Key, g => g.First().Id);
+            var mappingByAttempt = new Dictionary<(Guid SiteId, string Name), Guid>();
+            foreach (var mapping in orderedMappings)
+                mappingByAttempt.TryAdd((mapping.SiteId, mapping.RemoteModelName), mapping.Id);
+            foreach (var mapping in orderedMappings)
+            foreach (var rule in relatedRouteRules.Where(r => r.SiteId == mapping.SiteId &&
+                string.Equals(r.SiteModelName, mapping.RemoteModelName, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(r.UpstreamModelName)))
+                mappingByAttempt.TryAdd((mapping.SiteId, rule.UpstreamModelName), mapping.Id);
+
             var healthList = modelMappings.Select(map =>
             {
                 sites.TryGetValue(map.SiteId, out var site);
                 var siteLogs = modelLogs
-                    .Where(l => l.TargetSiteId == map.SiteId
+                    .Where(l => (l.TargetSiteId == map.SiteId &&
+                            (mappingByAttempt.TryGetValue((map.SiteId, l.AttemptedModel ?? string.Empty), out var owner)
+                                ? owner == map.Id : firstMappingBySite[map.SiteId] == map.Id))
                         || (l.TargetSiteId == Guid.Empty && string.Equals(l.AttemptedModel, map.RemoteModelName, StringComparison.Ordinal)))
                     .OrderByDescending(l => l.RequestedAt)
                     .ToList();

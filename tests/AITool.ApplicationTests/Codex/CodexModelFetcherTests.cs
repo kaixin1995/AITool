@@ -32,6 +32,32 @@ public sealed class CodexModelFetcherTests
             && model.DisplayName == "GPT-5.6 Codex");
     }
 
+    [Fact]
+    public async Task FetchAsync_preserves_401_when_response_body_is_unreadable()
+    {
+        using var httpClient = new HttpClient(new BrokenBodyHandler());
+        var fetcher = new CodexModelFetcher(httpClient,
+            new CodexClientVersionResolver(new StubProfileCatalog(),
+                Options.Create(new CodexUpstreamOptions { ClientVersion = "0.153.3" }),
+                NullLogger<CodexClientVersionResolver>.Instance),
+            NullLogger<CodexModelFetcher>.Instance);
+        await Assert.ThrowsAsync<ModelAccessTokenUnauthorizedException>(
+            () => fetcher.FetchAsync("access-token", "account-id", default));
+    }
+
+    private sealed class BrokenBodyHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new BrokenBody() });
+    }
+
+    private sealed class BrokenBody : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => Task.FromException(new IOException("broken response body"));
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+    }
+
     /// <summary>
     /// 恒返回 null 的模板库桩：验证解析失败时按配置兜底、请求照常发出。
     /// </summary>

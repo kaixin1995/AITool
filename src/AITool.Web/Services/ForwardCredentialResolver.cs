@@ -5,6 +5,9 @@ using AITool.Infrastructure.Persistence;
 
 namespace AITool.Web.Services;
 
+internal sealed record ForwardOAuthCredentialSnapshot(string Provider, Guid AccountId, Guid SiteId,
+    string? AccessToken, string? RefreshToken, DateTimeOffset? LastRefreshAt);
+
 /// <summary>Revalidates site ownership and device OAuth credentials at the send boundary.</summary>
 public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory) : IForwardCredentialResolver
 {
@@ -42,7 +45,25 @@ public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory)
             // The statement and connection finish before the caller starts network I/O.
             cancellationToken.ThrowIfCancellationRequested();
             var rows = await db.Ado.SqlQueryAsync<DeviceCredentialSnapshot>("""
-                SELECT s.ManagedSource, s.BaseUrl, d.AccessToken,
+                SELECT s.ManagedSource, s.BaseUrl,
+                    CASE @provider
+                        WHEN 'codex' THEN (SELECT c.AccessToken FROM CodexAccounts c WHERE c.Id=@accountId AND c.LinkedSiteId=s.Id)
+                        WHEN 'google' THEN (SELECT g.AccessToken FROM GoogleAccounts g WHERE g.Id=@accountId AND g.LinkedSiteId=s.Id)
+                        WHEN 'kimi' THEN (SELECT k.AccessToken FROM KimiAccounts k WHERE k.Id=@accountId AND k.LinkedSiteId=s.Id)
+                        WHEN 'xai' THEN (SELECT x.AccessToken FROM XaiAccounts x WHERE x.Id=@accountId AND x.LinkedSiteId=s.Id)
+                        WHEN 'device-oauth' THEN d.AccessToken END AS AccessToken,
+                    CASE @provider
+                        WHEN 'codex' THEN (SELECT c.RefreshToken FROM CodexAccounts c WHERE c.Id=@accountId)
+                        WHEN 'google' THEN (SELECT g.RefreshToken FROM GoogleAccounts g WHERE g.Id=@accountId)
+                        WHEN 'kimi' THEN (SELECT k.RefreshToken FROM KimiAccounts k WHERE k.Id=@accountId)
+                        WHEN 'xai' THEN (SELECT x.RefreshToken FROM XaiAccounts x WHERE x.Id=@accountId)
+                        WHEN 'device-oauth' THEN d.RefreshToken END AS RefreshToken,
+                    CASE @provider
+                        WHEN 'codex' THEN (SELECT c.LastRefreshAt FROM CodexAccounts c WHERE c.Id=@accountId)
+                        WHEN 'google' THEN (SELECT g.LastRefreshAt FROM GoogleAccounts g WHERE g.Id=@accountId)
+                        WHEN 'kimi' THEN (SELECT k.LastRefreshAt FROM KimiAccounts k WHERE k.Id=@accountId)
+                        WHEN 'xai' THEN (SELECT x.LastRefreshAt FROM XaiAccounts x WHERE x.Id=@accountId)
+                        WHEN 'device-oauth' THEN d.LastRefreshAt END AS LastRefreshAt,
                     (SELECT COUNT(*) FROM CodexAccounts c WHERE c.LinkedSiteId=s.Id) +
                     (SELECT COUNT(*) FROM GoogleAccounts g WHERE g.LinkedSiteId=s.Id) +
                     (SELECT COUNT(*) FROM KimiAccounts k WHERE k.LinkedSiteId=s.Id AND k.IsDeleted=0) +
@@ -66,7 +87,9 @@ public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory)
                 || snapshot.OwnerCount != 1 || snapshot.ExpectedCount != 1
                 || (isDevice && string.IsNullOrWhiteSpace(snapshot.AccessToken)))
                 throw Blocked();
-            return new ForwardCredentialLease(isDevice ? snapshot.AccessToken! : request.TargetApiKey, isDevice, gate);
+            return new ForwardCredentialLease(isDevice ? snapshot.AccessToken! : request.TargetApiKey, isDevice, gate,
+                credentialSnapshot: new ForwardOAuthCredentialSnapshot(identity.ProviderKey, identity.AccountId, siteId,
+                    snapshot.AccessToken, snapshot.RefreshToken, snapshot.LastRefreshAt));
         }
         catch
         {
@@ -80,6 +103,8 @@ public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory)
         public string? ManagedSource { get; set; }
         public string BaseUrl { get; set; } = string.Empty;
         public string? AccessToken { get; set; }
+        public string? RefreshToken { get; set; }
+        public DateTimeOffset? LastRefreshAt { get; set; }
         public long OwnerCount { get; set; }
         public long ExpectedCount { get; set; }
     }

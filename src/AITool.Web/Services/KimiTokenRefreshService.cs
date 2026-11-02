@@ -85,7 +85,7 @@ public sealed class KimiTokenRefreshService : BackgroundService
 
         using var client = dbContext.Client.CopyNew();
         var due = await client.Queryable<KimiAccount>()
-            .Where(a => !a.IsDeleted
+            .Where(a => !a.IsDeleted && !a.RequiresReauth
                         && !string.IsNullOrEmpty(a.RefreshToken)
                         && (a.TokenExpiresAt == null || a.TokenExpiresAt <= refreshLeadTime))
             .OrderBy(a => a.TokenExpiresAt)
@@ -127,7 +127,8 @@ public sealed class KimiTokenRefreshService : BackgroundService
         {
             using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("kimi", account.Id, ct);
             var current = await db.KimiAccounts.InSingleAsync(account.Id);
-            if (current is null || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
+            if (current is null || current.IsDeleted || current.RequiresReauth || string.IsNullOrWhiteSpace(current.RefreshToken)
+                || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
             account = current;
             using var network = networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "background-token-refresh");
             var tokens = await (network?.KimiOAuth ?? oauthClient).RefreshTokenAsync(account.RefreshToken!, account.DeviceId, ct);

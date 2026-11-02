@@ -103,6 +103,9 @@ public sealed class ProxyForwardRequest
     /// </summary>
     public Func<string, CancellationToken, Task<string?>>? RefreshTargetApiKeyAsync { get; set; }
 
+    /// <summary>Called only for an actual upstream HTTP 401 after refresh/retry has been exhausted.</summary>
+    public Func<string, object?, CancellationToken, Task>? InvalidateTargetCredentialAsync { get; set; }
+
     /// <summary>
     /// 上游返回 403 时禁用特定托管凭证；普通站点不设置此回调。
     /// </summary>
@@ -204,9 +207,10 @@ public sealed class ProxyForwardResult
 
 /// <summary>Live credential and optional send-boundary gate. Dispose immediately after SendAsync is initiated.</summary>
 public sealed class ForwardCredentialLease(string apiKey, bool isDeviceOAuth = false, IDisposable? gate = null,
-    bool useResolvedApiKey = false, bool protectAuthenticationHeaders = false) : IDisposable
+    bool useResolvedApiKey = false, bool protectAuthenticationHeaders = false, object? credentialSnapshot = null) : IDisposable
 {
     public string ApiKey { get; } = apiKey;
+    public object? CredentialSnapshot { get; } = credentialSnapshot;
     public bool IsDeviceOAuth { get; } = isDeviceOAuth;
     public bool UseResolvedApiKey { get; } = useResolvedApiKey || isDeviceOAuth;
     public bool ProtectAuthenticationHeaders { get; } = protectAuthenticationHeaders || isDeviceOAuth;

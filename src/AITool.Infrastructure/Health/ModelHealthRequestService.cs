@@ -32,6 +32,7 @@ public sealed class ModelHealthRequestService
     private readonly SiteKeySelector _siteKeySelector;
     private readonly IHeaderProfileCatalogService? _headerProfileCatalogService;
     private readonly IAuxiliarySessionPreparation? _sessionPreparation;
+    private readonly IHealthCredentialCallbacks? _credentialCallbacks;
 
     /// <summary>
     /// 注入数据库上下文、代理转发服务、日志服务、站点密钥选择器与请求头目录服务
@@ -42,7 +43,8 @@ public sealed class ModelHealthRequestService
         IUsageLogService usageLogService,
         SiteKeySelector siteKeySelector,
         IHeaderProfileCatalogService? headerProfileCatalogService = null,
-        IAuxiliarySessionPreparation? sessionPreparation = null)
+        IAuxiliarySessionPreparation? sessionPreparation = null,
+        IHealthCredentialCallbacks? credentialCallbacks = null)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
@@ -50,6 +52,7 @@ public sealed class ModelHealthRequestService
         _siteKeySelector = siteKeySelector;
         _headerProfileCatalogService = headerProfileCatalogService;
         _sessionPreparation = sessionPreparation;
+        _credentialCallbacks = credentialCallbacks;
     }
 
     /// <summary>
@@ -177,7 +180,7 @@ public sealed class ModelHealthRequestService
                     activeApiKey = site.ApiKey;
                 }
 
-                var result = await _forwardService.ForwardAsync(new ProxyForwardRequest
+                var forwardRequest = new ProxyForwardRequest
                 {
                     TargetBaseUrl = site.BaseUrl,
                     TargetEndpointPathMode = site.EndpointPathMode,
@@ -199,7 +202,10 @@ public sealed class ModelHealthRequestService
                         : string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                             ? SiteEndpointPathResolver.ResolvePath(site.EndpointPathMode, "responses")
                             : null
-                }, cancellationToken);
+                };
+                if (!string.IsNullOrWhiteSpace(site.ManagedSource))
+                    _credentialCallbacks?.Configure(forwardRequest);
+                var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 // A transport interruption may set IsCanceled even when the caller did not
                 // cancel. Only the caller's token can cancel the batch; all other failures are

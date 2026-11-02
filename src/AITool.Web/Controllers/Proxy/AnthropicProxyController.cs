@@ -167,6 +167,14 @@ public sealed class AnthropicProxyController : ControllerBase
         return null;
     }
 
+    private Func<string, object?, CancellationToken, Task>? CreateCredentialInvalidationCallback(CachedProxyRouteTarget route)
+    {
+        if (!new[] { "Codex", "Google", "kimi_oauth", "xai_oauth", "device_oauth" }
+            .Contains(route.ManagedSource, StringComparer.OrdinalIgnoreCase)) return null;
+        return (token, snapshot, ct) => HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>()
+            .InvalidateAsync(token, snapshot, ct);
+    }
+
     private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
         CachedProxyRouteTarget route)
     {
@@ -401,6 +409,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 AccountIdentity = route.AccountIdentity,
                 SiteId = route.SiteId, ManagedSource = route.ManagedSource,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                InvalidateTargetCredentialAsync = CreateCredentialInvalidationCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
                     ? (enableStreaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent")

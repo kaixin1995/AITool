@@ -74,6 +74,24 @@ public sealed class DedicatedOAuthNetworkTests : IDisposable
     [InlineData("google")]
     [InlineData("kimi")]
     [InlineData("xai")]
+    public async Task Quota_body_stall_is_bounded_by_client_timeout(string provider)
+    {
+        var account = await SeedAsync(provider);
+        _fallback.Timeout = TimeSpan.FromMilliseconds(150);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _transport.QuotaContent = () => new PausedContent(started);
+        var pending = QueryQuotaAsync(account);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(result.Success);
+        Assert.False(result.UpstreamUnauthorized);
+    }
+
+    [Theory]
+    [InlineData("codex")]
+    [InlineData("google")]
+    [InlineData("kimi")]
+    [InlineData("xai")]
     public async Task Quota_services_send_real_requests_with_each_accounts_guid_and_selected_proxy(string provider)
     {
         var first = await SeedAsync(provider);
@@ -550,6 +568,7 @@ public sealed class DedicatedOAuthNetworkTests : IDisposable
         public ConcurrentQueue<Acquisition> Acquisitions { get; } = new();
         public ConcurrentQueue<CapturedRequest> Requests { get; } = new();
         public bool RejectOldQuotaToken { get; set; }
+        public Func<HttpContent>? QuotaContent { get; set; }
         public Func<CapturedRequest, CancellationToken, Task>? BeforeResponse { get; set; }
 
         public ValueTask<INetworkTransportLease> AcquireAsync(ResolvedNetworkConfiguration configuration, string isolationScope,
@@ -596,14 +615,14 @@ public sealed class DedicatedOAuthNetworkTests : IDisposable
             {
                 if (RejectOldQuotaToken && captured.Header("Authorization") == $"Bearer old-access-{account.AccountId:N}")
                     return new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("{}") };
-                content = account.ProviderKey switch
+                content = QuotaContent?.Invoke() ?? (account.ProviderKey switch
                 {
                     "codex" => new StringContent("""{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":20,"limit_window_seconds":18000}}}"""),
                     "google" => new StringContent("""{"models":{"gemini-test":{"quotaInfo":{"remainingFraction":0.8}}}}"""),
                     "kimi" => new StringContent("""{"usage":{"limit":"100","used":"20"}}"""),
                     "xai" => new ByteArrayContent([0, 0, 0, 0, 7, 10, 5, 13, .. BitConverter.GetBytes(20f)]),
                     _ => throw new InvalidOperationException("Unknown provider")
-                };
+                });
             }
             else throw new InvalidOperationException($"Unexpected fake HTTP endpoint: {url}");
             var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
@@ -629,6 +648,18 @@ public sealed class DedicatedOAuthNetworkTests : IDisposable
                 if (Interlocked.Exchange(ref _disposed, 1) == 0) Interlocked.Decrement(ref owner._activeLeases);
                 return ValueTask.CompletedTask;
             }
+        }
+    }
+
+    private sealed class PausedContent(TaskCompletionSource started) : HttpContent
+    {
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => SerializeToStreamAsync(stream, context, CancellationToken.None);
+        protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context, CancellationToken cancellationToken)
+        {
+            started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
     }
 

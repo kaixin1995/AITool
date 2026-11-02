@@ -40,6 +40,8 @@ public sealed class AccountQuotaSnapshot
 {
     public bool Success { get; init; }
     public string? Error { get; init; }
+    /// <summary>本次真实上游 HTTP 401；不包括代理 407 或其他认证失败。</summary>
+    public bool UpstreamUnauthorized { get; init; }
     public string? PlanType { get; init; }
     public string? RawJson { get; init; }
     public DateTimeOffset CheckedAt { get; init; } = DateTimeOffset.UtcNow;

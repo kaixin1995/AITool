@@ -242,7 +242,7 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
                     lists.Add((fn, entries));
                 }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException and not TraeExchangeRefusedException)
+            catch (Exception ex) when (ex is not OperationCanceledException and not TraeExchangeRefusedException and not AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException)
             {
                 lastError = ex.Message;
             }
@@ -268,7 +268,9 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
             request.Headers.TryAddWithoutValidation(name, value);
         }
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {

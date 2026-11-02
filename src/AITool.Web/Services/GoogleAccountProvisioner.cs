@@ -210,8 +210,7 @@ public sealed class GoogleAccountProvisioner
         try
         {
             // Lock publication before identity resolution; policy and credentials become visible together.
-            if (_networkPolicies is not null)
-                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+            await client.Ado.ExecuteCommandAsync("UPDATE GoogleAccounts SET IsEnabled=IsEnabled WHERE 1=0;");
 
         var existing = existingId is { } id
             ? await client.Queryable<GoogleAccount>().InSingleAsync(id)
@@ -230,6 +229,15 @@ public sealed class GoogleAccountProvisioner
                 if (!string.IsNullOrWhiteSpace(input.RefreshToken)) account.RefreshToken = input.RefreshToken;
                 account.TokenExpiresAt = input.TokenExpiresAt;
                 account.LastRefreshAt = DateTimeOffset.UtcNow;
+                if (account.RequiresReauth)
+                {
+                    account.RequiresReauth = false;
+                    var settings = await client.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>().InSingleAsync(1);
+                    if (settings is { OAuthFeaturesEnabled: false } && !account.ManuallyDisabled && !account.IsQuotaCooling && !account.DisabledByUpstream)
+                        account.DisabledByFeatureToggle = true;
+                    account.IsEnabled = !account.ManuallyDisabled && !account.DisabledByFeatureToggle && !account.IsQuotaCooling && !account.DisabledByUpstream;
+                    site.IsEnabled = account.IsEnabled;
+                }
             }
             if (!string.IsNullOrEmpty(input.Email)) account.Email = input.Email;
             if (!string.IsNullOrEmpty(input.ProjectId)) account.ProjectId = input.ProjectId;
@@ -240,8 +248,8 @@ public sealed class GoogleAccountProvisioner
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) site.Name = input.DisplayName;
             if (updateDisplayName && !string.IsNullOrWhiteSpace(input.DisplayName)) account.DisplayName = input.DisplayName;
 
-            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.Email, a.ProjectId, a.SubscriptionTier, a.CreditAmount, a.DisplayName }).ExecuteCommandAsync(ct);
-            await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name }).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.Email, a.ProjectId, a.SubscriptionTier, a.CreditAmount, a.DisplayName, a.RequiresReauth, a.IsEnabled, a.DisabledByFeatureToggle }).ExecuteCommandAsync(ct);
+            await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name, s.IsEnabled }).ExecuteCommandAsync(ct);
         }
         else
         {
@@ -298,34 +306,7 @@ public sealed class GoogleAccountProvisioner
             throw;
         }
 
-        // —— 模型映射 ——
-        // A concurrent refresh can make the login access token stale; do not send it or
-        // allow its 403 to change the newly refreshed account's enabled state.
-        if (!preserveCredentials)
-        {
-        try
-        {
-            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "provision-models");
-            var models = await (network?.GoogleModels ?? _modelFetcher).FetchAsync(account.AccountKind, input.AccessToken, ct);
-            if (models.Count > 0)
-            {
-                await UpsertModelMappingsCoreAsync(site.Id, models, account.AccountKind, ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            if (GoogleCredentialRefreshService.IsForbiddenResponse(ex))
-            {
-                if (await _credentialRefreshService.DisableAsync(account.LinkedSiteId, "model-fetch-403", ct))
-                {
-                    account.IsEnabled = false;
-                    account.DisabledByUpstream = true;
-                    site.IsEnabled = false;
-                }
-            }
-            _logger.LogWarning(ex, "Antigravity 模型拉取失败（账号供给继续）: {AccountId}", account.Id);
-        }
-        }
+        // 模型由用户手动选择导入；供给和重新登录不请求目录或修改映射。
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();

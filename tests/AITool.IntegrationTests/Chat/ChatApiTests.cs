@@ -2,7 +2,9 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
+using AITool.Application.Networking;
 using AITool.Domain.Models;
+using AITool.Domain.OAuth;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
@@ -133,6 +135,74 @@ public sealed class ChatApiTests
         fakeForwardService.Requests[0].ProtocolType.Should().Be("OpenAI");
         fakeForwardService.Requests[0].TargetModelName.Should().Be(ChatWebApplicationFactory.SecondSiteModelName);
         fakeForwardService.Requests[0].RequestBody.Should().Contain(ChatWebApplicationFactory.SecondSiteModelName);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Managed_chat_401_disables_account_for_route_and_selected_target(bool streaming, bool selected)
+    {
+        var fakeForward = new ChatFakeProxyForwardService();
+        var fakeHttp = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("401"));
+        await using var factory = new ChatWebApplicationFactory(fakeForward, fakeHttp, "OpenAI", directNetwork: true);
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = await db.Sites.InSingleAsync(ChatWebApplicationFactory.SiteId);
+        site.ManagedSource = "device_oauth";
+        site.ApiKey = "test-token";
+        await db.UpdateAsync(site);
+        var account = new DeviceOAuthAccount { LinkedSiteId = site.Id, VendorKey = "test", AccessToken = "test-token" };
+        await db.InsertAsync(account);
+        scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRouteTargets();
+        var mapping = selected ? $",\"mappingId\":\"{ChatWebApplicationFactory.MappingId}\"" : "";
+        var endpoint = streaming ? "send-stream" : "send";
+        var response = await client.PostAsync($"/api/admin/chat/{endpoint}", new StringContent(
+            $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hi\"{mapping}}}", Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        if (!streaming)
+        {
+            fakeForward.Requests.Should().ContainSingle();
+            var sent = fakeForward.Requests[0];
+            sent.RefreshTargetApiKeyAsync.Should().NotBeNull();
+            sent.InvalidateTargetCredentialAsync.Should().NotBeNull();
+        }
+        else
+        {
+            var updated = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
+            updated.IsEnabled.Should().BeFalse();
+            updated.RequiresReauth.Should().BeTrue();
+            (await db.Sites.InSingleAsync(site.Id)).IsEnabled.Should().BeFalse();
+        }
+    }
+
+    [Theory]
+    [InlineData("407")]
+    [InlineData("network")]
+    public async Task Managed_chat_stream_transport_failures_do_not_disable_account(string failure)
+    {
+        var fakeHttp = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler(failure));
+        await using var factory = new ChatWebApplicationFactory(new ChatFakeProxyForwardService(), fakeHttp, "OpenAI", directNetwork: true);
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = await db.Sites.InSingleAsync(ChatWebApplicationFactory.SiteId);
+        site.ManagedSource = "device_oauth";
+        site.ApiKey = "test-token";
+        await db.UpdateAsync(site);
+        var account = new DeviceOAuthAccount { LinkedSiteId = site.Id, VendorKey = "test", AccessToken = "test-token" };
+        await db.InsertAsync(account);
+        scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRouteTargets();
+        using var response = await client.PostAsync("/api/admin/chat/send-stream", new StringContent(
+            $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"mappingId\":\"{ChatWebApplicationFactory.MappingId}\",\"message\":\"hi\"}}", Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        fakeHttp.Handler.Requests.Should().ContainSingle();
+        var current = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
+        current.IsEnabled.Should().BeTrue();
+        current.RequiresReauth.Should().BeFalse();
+        (await db.Sites.InSingleAsync(site.Id)).IsEnabled.Should().BeTrue();
     }
 
     /// <summary>
@@ -404,6 +474,7 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// 保存当前测试站点声明的协议类型。
     /// </summary>
     private readonly string _siteProtocol;
+    private readonly bool _directNetwork;
 
     /// <summary>
     /// 创建聊天接口测试宿主，并使用默认的 HTTP 客户端工厂。
@@ -416,11 +487,12 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// <summary>
     /// 创建聊天接口测试宿主，并注入模拟转发服务和可选的 HTTP 客户端工厂。
     /// </summary>
-    public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService, IHttpClientFactory? httpClientFactory, string siteProtocol = "Anthropic")
+    public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService, IHttpClientFactory? httpClientFactory, string siteProtocol = "Anthropic", bool directNetwork = false)
     {
         _fakeForwardService = fakeForwardService;
         _httpClientFactory = httpClientFactory;
         _siteProtocol = siteProtocol;
+        _directNetwork = directNetwork;
     }
 
     /// <summary>
@@ -434,6 +506,11 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
             IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
+            if (_directNetwork)
+            {
+                services.RemoveAll<IForwardNetworkPolicyResolver>();
+                services.AddSingleton<IForwardNetworkPolicyResolver, ChatDirectNetworkPolicy>();
+            }
             if (_httpClientFactory is not null)
             {
                 services.RemoveAll<IHttpClientFactory>();
@@ -548,6 +625,12 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     }
 }
 
+internal sealed class ChatDirectNetworkPolicy : IForwardNetworkPolicyResolver
+{
+    public Task<ForwardNetworkPolicyResolution> ResolveAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+        => Task.FromResult(new ForwardNetworkPolicyResolution(ResolvedNetworkConfiguration.Legacy, "chat-test", true));
+}
+
 /// <summary>
 /// 用于模拟代理转发结果，支撑 ChatFakeProxyForwardService 相关断言。
 /// </summary>
@@ -582,6 +665,8 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
             EnableStreaming = request.EnableStreaming,
             RequestTimeoutSeconds = request.RequestTimeoutSeconds,
             RetryCount = request.RetryCount,
+            RefreshTargetApiKeyAsync = request.RefreshTargetApiKeyAsync,
+            InvalidateTargetCredentialAsync = request.InvalidateTargetCredentialAsync,
             TargetPath = request.TargetPath
         });
 
@@ -695,6 +780,11 @@ internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests.Add(CloneRequest(request));
+        if (_siteProtocol == "401")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("unauthorized") });
+        if (_siteProtocol == "407")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ProxyAuthenticationRequired) { Content = new StringContent("proxy rejected") });
+        if (_siteProtocol == "network") throw new HttpRequestException("simulated network failure");
 
         var payload = string.Equals(_siteProtocol, "Gemini", StringComparison.OrdinalIgnoreCase)
             ? string.Join(

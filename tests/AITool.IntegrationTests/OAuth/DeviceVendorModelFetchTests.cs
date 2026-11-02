@@ -60,6 +60,135 @@ public sealed class DeviceVendorModelFetchTests
 
     private static string Extra(object payload) => JsonSerializer.Serialize(payload);
 
+    private sealed class BrokenContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => Task.FromException(new IOException("broken response body"));
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+    }
+
+    [Fact]
+    public async Task Kiro_unreadable_401_body_preserves_quota_and_model_authentication_status()
+    {
+        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new BrokenContent()
+        }));
+        var vendor = new KiroOAuthVendor(client);
+        var quota = await vendor.QueryQuotaAsync(Tokens(), null, CancellationToken.None);
+        quota.UpstreamUnauthorized.Should().BeTrue();
+        quota.AccessTokenUnauthorized.Should().BeTrue();
+        await Assert.ThrowsAsync<AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException>(
+            () => vendor.FetchModelsAsync(Tokens(), Extra(new { profileArn = "arn:p" }), CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, true)]
+    [InlineData(HttpStatusCode.Forbidden, false)]
+    [InlineData(HttpStatusCode.ProxyAuthenticationRequired, false)]
+    public async Task Kiro_quota_marks_only_actual_401(HttpStatusCode status, bool unauthorized)
+    {
+        var handler = new StubHandler(_ => Json(status, "{}"));
+        var vendor = new KiroOAuthVendor(new HttpClient(handler));
+        var result = await vendor.QueryQuotaAsync(Tokens(), null, CancellationToken.None);
+        result.Success.Should().BeFalse();
+        result.UpstreamUnauthorized.Should().Be(unauthorized);
+        result.AccessTokenUnauthorized.Should().Be(unauthorized);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, true)]
+    [InlineData(HttpStatusCode.Forbidden, false)]
+    [InlineData(HttpStatusCode.ProxyAuthenticationRequired, false)]
+    public async Task Kiro_model_fetch_distinguishes_upstream_401(HttpStatusCode status, bool unauthorized)
+    {
+        var handler = new StubHandler(_ => Json(status, "{}"));
+        var vendor = new KiroOAuthVendor(new HttpClient(handler));
+        var action = () => vendor.FetchModelsAsync(Tokens(), Extra(new { profileArn = "arn:p" }), CancellationToken.None);
+        var exception = await Assert.ThrowsAnyAsync<InvalidOperationException>(action);
+        (exception is AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException).Should().Be(unauthorized);
+    }
+
+    [Fact]
+    public async Task Qoder_signed_credential_401_does_not_reject_access_token()
+    {
+        var handler = new StubHandler(_ => Json(HttpStatusCode.Unauthorized, "{}"));
+        var vendor = new QoderOAuthVendor(new HttpClient(handler));
+        var action = () => vendor.FetchModelsAsync(Tokens(), Extra(new { uid = "u", machineId = "m" }), CancellationToken.None);
+        var exception = await Assert.ThrowsAnyAsync<InvalidOperationException>(action);
+        exception.Should().NotBeOfType<AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException>();
+    }
+
+    [Theory]
+    [InlineData("kiro-profile", 401, true)]
+    [InlineData("kiro-profile", 407, false)]
+    [InlineData("trae-cn-batch", 401, true)]
+    [InlineData("trae-cn-batch", 407, false)]
+    [InlineData("trae-global-batch", 401, true)]
+    [InlineData("trae-global-batch", 407, false)]
+    [InlineData("trae-cn-fallback", 401, true)]
+    [InlineData("trae-cn-fallback", 407, false)]
+    [InlineData("trae-global-fallback", 401, true)]
+    [InlineData("trae-global-fallback", 407, false)]
+    [InlineData("workbuddy-cn", 401, true)]
+    [InlineData("workbuddy-cn", 407, false)]
+    [InlineData("workbuddy-global", 401, true)]
+    [InlineData("workbuddy-global", 407, false)]
+    [InlineData("qoder", 401, false)]
+    [InlineData("qoder", 407, false)]
+    [InlineData("claude-public", 401, false)]
+    [InlineData("claude-public", 407, false)]
+    public async Task Model_catalog_classifies_rejection_by_actual_wire_credential(string scenario, int status, bool accountRejected)
+    {
+        var handler = new StubHandler(request =>
+        {
+            if (scenario.EndsWith("fallback") && request.Url.AbsolutePath.Contains("batch_get"))
+                return Json(HttpStatusCode.OK, "{}");
+            if (scenario == "claude-public")
+                request.Headers.Should().NotContainKey("Authorization");
+            else if (scenario == "qoder")
+                request.Headers["Authorization"].Should().StartWith("Bearer COSY.");
+            else if (scenario.StartsWith("trae"))
+                request.Headers["Authorization"].Should().Be("Cloud-IDE-JWT at-1");
+            else
+                request.Headers["Authorization"].Should().Be("Bearer at-1");
+            return Json((HttpStatusCode)status, "{}");
+        });
+        using var http = new HttpClient(handler);
+        AITool.Application.OAuth.IDeviceOAuthVendor vendor = scenario switch
+        {
+            "kiro-profile" => new KiroOAuthVendor(http),
+            "trae-cn-batch" or "trae-cn-fallback" => new TraeOAuthVendor(http),
+            "trae-global-batch" or "trae-global-fallback" => new TraeOAuthVendor(http, global: true),
+            "workbuddy-cn" => new WorkBuddyOAuthVendor(http),
+            "workbuddy-global" => new WorkBuddyOAuthVendor(http, global: true),
+            "qoder" => new QoderOAuthVendor(http),
+            _ => new ClaudeOAuthVendor(http),
+        };
+        var extra = scenario == "qoder" ? Extra(new { uid = "u", machineId = "m" }) : null;
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(
+            () => vendor.FetchModelsAsync(Tokens(), extra, CancellationToken.None));
+        (ex is AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException).Should().Be(accountRejected);
+        handler.Requests.Should().NotBeEmpty();
+        if (scenario == "kiro-profile") handler.Requests[0].Url.AbsolutePath.Should().Be("/List-Available-Profiles");
+        if (scenario.EndsWith("fallback")) handler.Requests.Should().Contain(r => r.Url.AbsolutePath.Contains("get_detail_param") && !r.Url.AbsolutePath.Contains("batch"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Direct_catalog_missing_access_token_never_sends_unauthenticated_requests(bool workBuddy)
+    {
+        var handler = new StubHandler(_ => Json(HttpStatusCode.Unauthorized, "{}"));
+        using var http = new HttpClient(handler);
+        AITool.Application.OAuth.IDeviceOAuthVendor vendor = workBuddy
+            ? new WorkBuddyOAuthVendor(http) : new CopilotOAuthVendor(http);
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Tokens(" "), null, CancellationToken.None));
+        ex.Should().NotBeOfType<AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException>();
+        handler.Requests.Should().BeEmpty();
+    }
+
     // ---- Kiro ------------------------------------------------------------------
 
     [Fact]

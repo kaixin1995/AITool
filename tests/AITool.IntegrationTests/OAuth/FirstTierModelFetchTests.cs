@@ -29,6 +29,23 @@ public sealed class FirstTierModelFetchTests
 
     private static string Envelope(object? data) => System.Text.Json.JsonSerializer.Serialize(new { code = 0, msg = "ok", data });
 
+    [Theory]
+    [InlineData(false, 401)]
+    [InlineData(false, 407)]
+    [InlineData(true, 401)]
+    [InlineData(true, 407)]
+    public async Task MiniMax_public_catalog_refusal_never_marks_account_token_invalid(bool global, int status)
+    {
+        var handler = new FirstTierStubHandler(_ => Json("{}", (HttpStatusCode)status));
+        using var client = new HttpClient(handler);
+        var vendor = new MiniMaxOAuthVendor(client, NullLogger<MiniMaxOAuthVendor>.Instance, global);
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+        ex.Should().NotBeOfType<AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException>();
+        handler.Requests[0].Headers["Authorization"].Should().Be("Bearer stub-access");
+        handler.Requests.Should().HaveCount(status == 401 ? 2 : 1);
+        if (status == 401) handler.Requests[1].Headers.Should().NotContainKey("Authorization");
+    }
+
     // ---- MiniMax（CN + Global）-------------------------------------------------
 
     [Theory]
@@ -170,8 +187,9 @@ public sealed class FirstTierModelFetchTests
         var handler = new FirstTierStubHandler(_ => Json("{}", (HttpStatusCode)status));
         var vendor = new CopilotOAuthVendor(new HttpClient(handler));
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => vendor.FetchModelsAsync(Token, null, CancellationToken.None));
         ex.Message.Should().Contain(expected);
+        (ex is AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException).Should().Be(status == 401);
     }
 
     [Fact]
@@ -236,6 +254,51 @@ public sealed class FirstTierModelFetchTests
 
     private static Func<HttpResponseMessage> ValidSubscription() =>
         () => Json(Envelope(new[] { new { productName = "GLM Coding Pro", status = "VALID" } }));
+
+    [Fact]
+    public async Task ZCode_missing_access_token_does_not_make_unauthenticated_requests()
+    {
+        var handler = ZCodeHandler();
+        using var http = new HttpClient(handler);
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(() =>
+            new ZCodeOAuthVendor(http).FetchModelsAsync(new DeviceOAuthTokenSet(), null, CancellationToken.None));
+        ex.Should().NotBeOfType<AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException>();
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("configs", 401, false)]
+    [InlineData("configs", 407, false)]
+    [InlineData("download", 401, false)]
+    [InlineData("download", 407, false)]
+    [InlineData("subscription", 401, true)]
+    [InlineData("subscription", 407, false)]
+    public async Task ZCode_model_chain_classifies_which_credential_was_rejected(string endpoint, int status, bool accountRejected)
+    {
+        Func<HttpResponseMessage> failure = () => Json("{}", (HttpStatusCode)status);
+        var handler = ZCodeHandler(configs: endpoint == "configs" ? failure : null,
+            providerConfig: endpoint == "download" ? failure : null,
+            subscription: endpoint == "subscription" ? failure : null);
+        using var http = new HttpClient(handler);
+        var vendor = new ZCodeOAuthVendor(http);
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => vendor.FetchModelsAsync(Token, "{\"zaiToken\":\"zai-jwt\"}", CancellationToken.None));
+        (ex is AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException).Should().Be(accountRejected);
+        var request = handler.Requests.Last();
+        if (endpoint == "subscription") request.Headers["Authorization"].Should().Be("stub-access");
+        else request.Headers.Should().NotContainKey("Authorization");
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(407)]
+    public async Task ZCode_gift_token_rejection_does_not_reject_account_access_token(int status)
+    {
+        var handler = ZCodeHandler(subscription: ValidSubscription(), balance: () => Json("{}", (HttpStatusCode)status));
+        using var http = new HttpClient(handler);
+        var models = await new ZCodeOAuthVendor(http).FetchModelsAsync(Token, "{\"zaiToken\":\"zai-jwt\"}", CancellationToken.None);
+        models.Should().NotBeEmpty();
+        handler.Requests.Last().Headers["Authorization"].Should().Be("Bearer zai-jwt");
+    }
 
     [Fact]
     public async Task ZCode_fetches_remote_config_filters_models_by_the_accounts_own_plan_and_appends_live_gift_trials()

@@ -268,27 +268,35 @@ public sealed class CodexApiController : ControllerBase
     [HttpPost("accounts/{id}/toggle")]
     public async Task<IActionResult> Toggle(Guid id, CancellationToken ct)
     {
-        var account = await GetAccountAsync(id, ct);
-        if (account == null) return NotFound(new { message = "账号不存在" });
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        await client.Ado.BeginTranAsync();
+        try
+        {
+        await client.Ado.ExecuteCommandAsync("UPDATE CodexAccounts SET IsEnabled=IsEnabled WHERE 1=0;");
+        var account = await client.Queryable<CodexAccount>().InSingleAsync(id);
+        if (account == null) { await client.Ado.CommitTranAsync(); return NotFound(new { message = "账号不存在" }); }
 
-        account.IsEnabled = !account.IsEnabled;
-        // 手动禁用打标记，避免巡检「额度恢复」时误自动启用；
-        // 手动启用则清除标记，恢复巡检的自动恢复能力。
-        account.ManuallyDisabled = !account.IsEnabled;
+        var requestedEnabled = !account.IsEnabled;
+        account.ManuallyDisabled = !requestedEnabled;
+        account.IsEnabled = requestedEnabled && !account.RequiresReauth && !account.DisabledByFeatureToggle && !account.IsQuotaCooling;
         // 列限定写回：整行写会把供给/后台刷新刚更新的 token、名称等列回滚成读取时的旧快照。
-        await _dbContext.Client.Updateable(account)
+        await client.Updateable(account)
             .UpdateColumns(a => new { a.IsEnabled, a.ManuallyDisabled })
             .ExecuteCommandAsync(ct);
 
-        var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+        var site = await client.Queryable<AITool.Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null)
         {
             site.IsEnabled = account.IsEnabled;
-            await _dbContext.Client.Updateable(site).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(ct);
+            await client.Updateable(site).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(ct);
         }
+        await client.Ado.CommitTranAsync();
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateCodexAccounts();
         return Ok(ToSummary(account));
+        }
+        catch { await client.Ado.RollbackTranAsync(); throw; }
     }
 
     /// <summary>删除账号（级联删隐藏 Site + 映射 + 路由规则）。</summary>
@@ -474,6 +482,7 @@ public sealed class CodexApiController : ControllerBase
         }
 
         // Global catalog refresh is independent and must not bypass this account's network policy.
+        var credentialSnapshot = new ForwardOAuthCredentialSnapshot("codex", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
 
         try
         {
@@ -522,6 +531,11 @@ public sealed class CodexApiController : ControllerBase
                 catalogNote = "公共模型目录使用缓存；本次仅拉取账号模型",
                 models = result
             });
+        }
+        catch (ModelAccessTokenUnauthorizedException ex)
+        {
+            await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(credentialSnapshot.AccessToken!, credentialSnapshot, ct);
+            return Ok(new { success = false, message = ex.Message });
         }
         catch (Exception ex)
         {
@@ -758,6 +772,7 @@ public sealed class CodexApiController : ControllerBase
             accountId = a.AccountId,
             planType = a.PlanType,
             isEnabled = a.IsEnabled,
+            requiresReauth = a.RequiresReauth,
             isQuotaCooling = a.IsQuotaCooling,
             quotaCoolingUntil = a.QuotaCoolingUntil,
             autoDisableThreshold = a.AutoDisableThreshold,

@@ -238,7 +238,7 @@ async function openModels(pool: AccountPoolSummary): Promise<void> {
   await refreshPoolModelOptions()
 }
 
-/** 模型编辑弹窗的预览：按池现有有效成员（未排除）拉模型并集，预填白名单之外的新模型默认勾选。 */
+/** 模型编辑弹窗按有效成员预览；自选模式保留原有选择。 */
 async function refreshPoolModelOptions(): Promise<void> {
   const pool = modelsPool.value
   if (!pool) return
@@ -250,11 +250,10 @@ async function refreshPoolModelOptions(): Promise<void> {
       // 与同步口径一致：排除位成员不参与模型并集
       memberAccountIds: pool.members.filter(m => !m.excluded).map(m => m.accountRefId),
     })
-    const known = new Set(modelsSelected.value)
-    modelsSelected.value = [
-      ...modelsSelected.value.filter(m => modelsOptions.value.includes(m)),
-      ...modelsOptions.value.filter(m => !known.has(m)),
-    ]
+    // 自选白名单是完整选择，不能把之前未选的模型重新自动勾选。
+    modelsSelected.value = modelsMode.value === 'all'
+      ? [...modelsOptions.value]
+      : modelsSelected.value.filter(m => modelsOptions.value.includes(m))
   } catch (e) {
     message.error((e as Error).message)
   } finally {
@@ -309,7 +308,7 @@ onMounted(load)
             <span class="pool-hint-badge" tabindex="0">?</span>
           </template>
           号池把多个同厂商（Codex 需同套餐）账号打包：按勾选的托管模型生成路由入口，
-          对外照常按模型名调用（如 gpt-5），池在背后扇出到全部持有该模型的成员；池内顺序是静态基线，
+          对外照常按模型名调用（如 gpt-5），池在背后扇出到全部持有该模型的成员；新规则默认按账号名排序，
           运行时叠加「配额感知排序 / 分级冷却 / 熔断」自动优先剩余额度多/最早重置的账号并跳过耗尽账号。
           被手工路由占用的模型名自动跳过；删除池会连带删除它生成的托管入口与规则（手工路由不受影响）。
         </NTooltip>
@@ -371,7 +370,7 @@ onMounted(load)
           <NSwitch v-model:value="newAutoInclude" @update:value="refreshCreateModelOptions" />
         </div>
         <div v-if="!newAutoInclude">
-          <div class="field-label">勾选成员（顺序即优先级）</div>
+          <div class="field-label">勾选成员（新路由默认按账号名排序）</div>
           <NSpin :show="candidatesLoading" size="small">
             <NEmpty v-if="!candidatesLoading && candidates.length === 0" description="该厂商暂无账号" size="small" />
             <div v-else class="candidate-list">
@@ -422,7 +421,7 @@ onMounted(load)
     <NModal v-model:show="memberModal" preset="card" :title="`成员 - ${memberPool?.name ?? ''}`" style="width: 560px; max-width: 94vw">
       <div class="account-pools-hint">
         勾选 = 池成员；「排除」= 保留在池里但被跳过（自动池不会再补回，取消排除即恢复）。
-        列表顺序即池内优先级基线。
+        已有路由保留原顺序，新成员默认按账号名追加。
       </div>
       <div class="candidate-list member-list">
         <div v-for="entry in candidateEntries" :key="entry.id" class="member-row">

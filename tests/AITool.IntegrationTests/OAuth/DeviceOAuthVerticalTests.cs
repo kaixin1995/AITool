@@ -108,7 +108,7 @@ public sealed class DeviceOAuthVerticalTests : IDisposable
     // ---- 供给工厂（隐藏 Site + 账号 + 模型映射） ----
 
     [Fact]
-    public async Task Provisioner_creates_hidden_site_account_and_model_mappings()
+    public async Task Provisioner_creates_hidden_site_and_account_without_automatically_importing_models()
     {
         await using var scope = _serviceProvider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AITool.Infrastructure.Persistence.AppDbContext>();
@@ -140,10 +140,9 @@ public sealed class DeviceOAuthVerticalTests : IDisposable
         site.BaseUrl.Should().Contain("agent.minimax.cn");
         site.ExtraHeadersJson.Should().Contain("MiniMaxAgent");
 
-        // 默认模型映射生成
+        // 模型由用户手动选择导入，不自动创建默认映射。
         var mappings = await db.SiteModelMappings.Where(m => m.SiteId == site.Id).ToListAsync();
-        mappings.Should().NotBeEmpty();
-        mappings.Select(m => m.RemoteModelName).Should().Contain("MiniMax-M3");
+        mappings.Should().BeEmpty();
 
         // 重复登录同 ExternalUserId 复用账号（不重复建站）
         var again = await provisioner.ProvisionAsync(

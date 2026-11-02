@@ -287,11 +287,17 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             RefreshToken = account.RefreshToken,
             ExpiresAt = account.TokenExpiresAt,
         };
+        var snapshot = new ForwardOAuthCredentialSnapshot("device-oauth", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
         IReadOnlyList<Application.OAuth.DeviceOAuthRemoteModel> models;
         try
         {
             using var boundVendor = _networkVendors?.ForAccount(account, "device-oauth-models");
             models = await (boundVendor?.Vendor ?? vendor).FetchModelsAsync(token, account.ExtraJson, ct);
+        }
+        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
+        {
+            await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(token.AccessToken, snapshot, ct);
+            return StatusCode(StatusCodes.Status401Unauthorized, ApiResponse.Fail(ex.Message, "upstream_unauthorized"));
         }
         catch (NotSupportedException)
         {

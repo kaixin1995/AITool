@@ -84,8 +84,7 @@ public sealed class CodexAccountProvisioner
         try
         {
             // Lock publication before identity resolution; policy and credentials become visible together.
-            if (_networkPolicies is not null)
-                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+            await client.Ado.ExecuteCommandAsync("UPDATE CodexAccounts SET IsEnabled=IsEnabled WHERE 1=0;");
 
         // —— 去重：按 AccountId（兜底 Email）查现有账号 ——
         var existing = networkOperation?.Account is { } known && known.ProviderKey == "codex"
@@ -106,6 +105,15 @@ public sealed class CodexAccountProvisioner
             account.IdToken = input.IdToken;
             account.TokenExpiresAt = input.TokenExpiresAt;
             account.LastRefreshAt = DateTimeOffset.UtcNow;
+            if (account.RequiresReauth)
+            {
+                account.RequiresReauth = false;
+                var settings = await client.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>().InSingleAsync(1);
+                if (settings is { OAuthFeaturesEnabled: false } && !account.ManuallyDisabled && !account.IsQuotaCooling)
+                    account.DisabledByFeatureToggle = true;
+                account.IsEnabled = !account.ManuallyDisabled && !account.DisabledByFeatureToggle && !account.IsQuotaCooling;
+                site.IsEnabled = account.IsEnabled;
+            }
             if (!string.IsNullOrEmpty(input.AccountId)) account.AccountId = input.AccountId;
             var previousEmail = account.Email;
             if (!string.IsNullOrEmpty(input.Email)) account.Email = input.Email;
@@ -138,10 +146,10 @@ public sealed class CodexAccountProvisioner
             // 整行写回会把刷新刚写入的 token 回滚成锁内读取的旧快照。
             await client.Updateable(account).UpdateColumns(a => new
             {
-                a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt,
+                a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt, a.RequiresReauth, a.IsEnabled, a.DisabledByFeatureToggle,
                 a.AccountId, a.Email, a.PlanType, a.DisplayName, a.IsDisplayNameCustom,
             }).ExecuteCommandAsync(ct);
-            await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name, s.ExtraHeadersJson }).ExecuteCommandAsync(ct);
+            await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name, s.ExtraHeadersJson, s.IsEnabled }).ExecuteCommandAsync(ct);
         }
         else
         {
@@ -197,8 +205,7 @@ public sealed class CodexAccountProvisioner
             throw;
         }
 
-        // —— 模型映射（按 plan 分层）——
-        await UpsertModelMappingsAsync(site.Id, account.PlanType, ct);
+        // 模型由用户手动选择导入；重新登录也不修改既有映射。
 
         // —— 失效缓存（一次性）——
         _metadataCache.InvalidateRouteTargets();

@@ -71,8 +71,7 @@ public sealed class KimiAccountProvisioner
         try
         {
             // Lock publication before identity resolution; policy and credentials become visible together.
-            if (_networkPolicies is not null)
-                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+            await client.Ado.ExecuteCommandAsync("UPDATE KimiAccounts SET UpdatedAt=UpdatedAt WHERE 1=0;");
 
         var existing = networkOperation?.Account is { } known && known.ProviderKey == "kimi"
             ? await client.Queryable<KimiAccount>().InSingleAsync(known.AccountId)
@@ -108,18 +107,23 @@ public sealed class KimiAccountProvisioner
             if (!string.IsNullOrEmpty(input.UserId)) account.UserId = input.UserId;
             if (!string.IsNullOrEmpty(input.DeviceId)) account.DeviceId = input.DeviceId;
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) account.DisplayName = input.DisplayName;
-            account.IsEnabled = true;
-            account.ManuallyDisabled = false;
-            account.IsDeleted = false;
+            if (account.RequiresReauth)
+            {
+                account.RequiresReauth = false;
+                var settings = await client.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>().InSingleAsync(1);
+                if (settings is { OAuthFeaturesEnabled: false } && !account.ManuallyDisabled && !account.IsDeleted)
+                    account.DisabledByFeatureToggle = true;
+                account.IsEnabled = !account.ManuallyDisabled && !account.DisabledByFeatureToggle && !account.IsDeleted;
+            }
             account.UpdatedAt = DateTimeOffset.UtcNow;
 
             site.ApiKey = input.AccessToken;
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) site.Name = input.DisplayName;
             site.ExtraHeadersJson = extraHeadersJson;
             site.ClientEmulation = ClientEmulationConstants.Kimi;
-            site.IsEnabled = true;
+            site.IsEnabled = account.IsEnabled;
 
-            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenType, a.Scope, a.TokenExpiresAt, a.LastRefreshAt, a.Email, a.UserId, a.DeviceId, a.DisplayName, a.IsEnabled, a.ManuallyDisabled, a.IsDeleted, a.UpdatedAt }).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenType, a.Scope, a.TokenExpiresAt, a.LastRefreshAt, a.Email, a.UserId, a.DeviceId, a.DisplayName, a.IsEnabled, a.RequiresReauth, a.DisabledByFeatureToggle, a.ManuallyDisabled, a.IsDeleted, a.UpdatedAt }).ExecuteCommandAsync(ct);
             await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name, s.ExtraHeadersJson, s.ClientEmulation, s.IsEnabled }).ExecuteCommandAsync(ct);
         }
         else
@@ -182,21 +186,7 @@ public sealed class KimiAccountProvisioner
             throw;
         }
 
-        // —— 模型映射 ——
-        try
-        {
-            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "provision-models");
-            var models = await (network?.KimiModels ?? _modelFetcher).FetchAsync(input.AccessToken, account.DeviceId, ct);
-            if (models.Count > 0)
-            {
-                await UpsertModelMappingsCoreAsync(site.Id, models, ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Kimi model fetching failed during provision, falling back to default models");
-            await UpsertModelMappingsCoreAsync(site.Id, KimiConstants.DefaultModels, ct);
-        }
+        // 模型由用户手动选择导入；供给和重新登录不请求目录或修改映射。
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
@@ -211,21 +201,29 @@ public sealed class KimiAccountProvisioner
     public async Task ToggleAsync(Guid accountId, bool isEnabled, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        await client.Ado.BeginTranAsync();
+        try
+        {
+        await client.Ado.ExecuteCommandAsync("UPDATE KimiAccounts SET UpdatedAt=UpdatedAt WHERE 1=0;");
         var account = await client.Queryable<KimiAccount>().InSingleAsync(accountId);
-        if (account == null) return;
+        if (account == null) { await client.Ado.CommitTranAsync(); return; }
 
-        account.IsEnabled = isEnabled;
         account.ManuallyDisabled = !isEnabled;
+        account.IsEnabled = isEnabled && !account.RequiresReauth && !account.DisabledByFeatureToggle && !account.IsDeleted;
         account.UpdatedAt = DateTimeOffset.UtcNow;
         await client.Updateable(account).UpdateColumns(a => new { a.IsEnabled, a.ManuallyDisabled, a.UpdatedAt }).ExecuteCommandAsync(ct);
 
         var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null)
         {
-            site.IsEnabled = isEnabled;
+            site.IsEnabled = account.IsEnabled;
             await client.Updateable(site).UpdateColumns(s => new { s.IsEnabled }).ExecuteCommandAsync(ct);
         }
 
+        await client.Ado.CommitTranAsync();
+        }
+        catch { await client.Ado.RollbackTranAsync(); throw; }
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateKimiAccounts();
     }

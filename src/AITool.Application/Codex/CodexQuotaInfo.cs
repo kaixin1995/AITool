@@ -7,6 +7,7 @@ namespace AITool.Application.Codex;
 public sealed class CodexQuotaInfo
 {
     public bool Success { get; set; }
+    public bool UpstreamUnauthorized { get; set; }
 
     /// <summary>失败原因（Success=false 时）。</summary>
     public string? Error { get; set; }

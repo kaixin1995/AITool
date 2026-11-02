@@ -58,6 +58,93 @@ public sealed class ForwardCredentialSendTests
         request.TargetApiKey.Should().Be("stale-site-key");
     }
 
+    [Theory]
+    [InlineData(false, 401, false)]
+    [InlineData(true, 401, false)]
+    [InlineData(false, 407, false)]
+    [InlineData(true, 407, false)]
+    [InlineData(false, 401, true)]
+    [InlineData(true, 401, true)]
+    public async Task Only_final_upstream_401_invalidates_the_sent_credential(bool streaming, int status, bool refresh)
+    {
+        var seen = new List<string>();
+        var invalidated = new List<(string, object?)>();
+        var snapshot = new object();
+        var handler = new Handler(request =>
+        {
+            seen.Add(request.Headers.Authorization?.Parameter ?? "");
+            return new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent("rejected") };
+        });
+        var resolver = new SnapshotCredentials(snapshot);
+        var service = new ProxyForwardService(new HttpClient(handler), NullLogger<ProxyForwardService>.Instance,
+            networkPolicyResolver: new FakeNetwork(), credentialResolver: resolver);
+        var request = new ProxyForwardRequest
+        {
+            SiteId = Guid.NewGuid(), TargetBaseUrl = "http://127.0.0.1:12345", TargetApiKey = "first",
+            RequestBody = "{}", RequestTimeoutSeconds = 10,
+            RefreshTargetApiKeyAsync = refresh ? (_, _) => Task.FromResult<string?>("second") : null,
+            InvalidateTargetCredentialAsync = (token, state, _) => { invalidated.Add((token, state)); return Task.CompletedTask; }
+        };
+        var result = streaming ? await service.ForwardStreamingAsync(request, (_, _) => Task.CompletedTask)
+            : await service.ForwardAsync(request);
+        result.StatusCode.Should().Be(status);
+        if (status == 401)
+        {
+            invalidated.Should().ContainSingle();
+            invalidated[0].Item1.Should().Be(refresh ? "second" : "first");
+            invalidated[0].Item2.Should().BeSameAs(snapshot);
+        }
+        else invalidated.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Upstream_401_with_null_refresh_invalidates_sent_snapshot(bool streaming)
+    {
+        var snapshot = new object();
+        var rejected = new List<(string, object?)>();
+        var handler = new Handler(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("rejected") });
+        var service = new ProxyForwardService(new HttpClient(handler), NullLogger<ProxyForwardService>.Instance,
+            networkPolicyResolver: new FakeNetwork(), credentialResolver: new SnapshotCredentials(snapshot));
+        var request = new ProxyForwardRequest
+        {
+            SiteId = Guid.NewGuid(), TargetBaseUrl = "https://example.test", TargetApiKey = "sent",
+            RequestBody = "{}", RequestTimeoutSeconds = 10,
+            RefreshTargetApiKeyAsync = (_, _) => Task.FromResult<string?>(null),
+            InvalidateTargetCredentialAsync = (token, state, _) => { rejected.Add((token, state)); return Task.CompletedTask; }
+        };
+        var result = streaming ? await service.ForwardStreamingAsync(request, (_, _) => Task.CompletedTask) : await service.ForwardAsync(request);
+        result.StatusCode.Should().Be(401);
+        handler.Calls.Should().Be(1);
+        rejected.Should().ContainSingle();
+        rejected[0].Should().Be(("sent", snapshot));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Network_failure_without_upstream_response_does_not_invalidate(bool streaming)
+    {
+        var invalidations = 0;
+        var service = new ProxyForwardService(new HttpClient(new Handler(_ => throw new HttpRequestException("offline"))),
+            NullLogger<ProxyForwardService>.Instance, networkPolicyResolver: new FakeNetwork(), credentialResolver: new SnapshotCredentials(new object()));
+        var request = new ProxyForwardRequest
+        {
+            SiteId = Guid.NewGuid(), TargetBaseUrl = "https://example.test", TargetApiKey = "sent", RequestBody = "{}", RequestTimeoutSeconds = 10,
+            InvalidateTargetCredentialAsync = (_, _, _) => { invalidations++; return Task.CompletedTask; }
+        };
+        var result = streaming ? await service.ForwardStreamingAsync(request, (_, _) => Task.CompletedTask) : await service.ForwardAsync(request);
+        result.Success.Should().BeFalse();
+        invalidations.Should().Be(0);
+    }
+
+    private sealed class SnapshotCredentials(object snapshot) : IForwardCredentialResolver
+    {
+        public Task<ForwardCredentialLease> ResolveAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new ForwardCredentialLease(request.TargetApiKey, credentialSnapshot: snapshot));
+    }
+
     [Fact]
     public async Task Send_failure_releases_gate()
     {

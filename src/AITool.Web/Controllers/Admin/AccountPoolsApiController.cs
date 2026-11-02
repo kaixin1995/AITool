@@ -183,7 +183,7 @@ public sealed class AccountPoolsApiController : ControllerBase
         }
 
         var accounts = await _syncService.ListVendorAccountsAsync(request.VendorKey.Trim(), request.PlanType, ct);
-        if (request.MemberAccountIds is { Count: > 0 })
+        if (request.MemberAccountIds is not null)
         {
             var wanted = request.MemberAccountIds.ToHashSet();
             accounts = accounts.Where(a => wanted.Contains(a.AccountId)).ToList();

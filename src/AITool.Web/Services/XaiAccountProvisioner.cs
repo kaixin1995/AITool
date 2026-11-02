@@ -67,8 +67,7 @@ public sealed class XaiAccountProvisioner
         try
         {
             // Lock publication before identity resolution; policy and credentials become visible together.
-            if (_networkPolicies is not null)
-                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+            await client.Ado.ExecuteCommandAsync("UPDATE XaiAccounts SET UpdatedAt=UpdatedAt WHERE 1=0;");
 
         var existing = networkOperation?.Account is { } known && known.ProviderKey == "xai"
             ? await client.Queryable<XaiAccount>().InSingleAsync(known.AccountId)
@@ -87,20 +86,24 @@ public sealed class XaiAccountProvisioner
             account.Scope = input.Scope;
             account.TokenExpiresAt = input.TokenExpiresAt;
             account.LastRefreshAt = DateTimeOffset.UtcNow;
-            account.RequiresReauth = false;
+            if (account.RequiresReauth)
+            {
+                account.RequiresReauth = false;
+                var settings = await client.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>().InSingleAsync(1);
+                if (settings is { OAuthFeaturesEnabled: false } && !account.ManuallyDisabled && !account.IsDeleted)
+                    account.DisabledByFeatureToggle = true;
+                account.IsEnabled = !account.ManuallyDisabled && !account.DisabledByFeatureToggle && !account.IsDeleted;
+            }
             if (!string.IsNullOrEmpty(input.Email)) account.Email = input.Email;
             if (!string.IsNullOrEmpty(input.ExternalUserId)) account.ExternalUserId = input.ExternalUserId;
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) account.DisplayName = input.DisplayName;
-            account.IsEnabled = true;
-            account.ManuallyDisabled = false;
-            account.IsDeleted = false;
             account.UpdatedAt = DateTimeOffset.UtcNow;
 
             site.ApiKey = input.AccessToken;
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) site.Name = input.DisplayName;
-            site.IsEnabled = true;
+            site.IsEnabled = account.IsEnabled;
 
-            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.Scope, a.TokenExpiresAt, a.LastRefreshAt, a.RequiresReauth, a.Email, a.ExternalUserId, a.DisplayName, a.IsEnabled, a.ManuallyDisabled, a.IsDeleted, a.UpdatedAt }).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.Scope, a.TokenExpiresAt, a.LastRefreshAt, a.RequiresReauth, a.DisabledByFeatureToggle, a.Email, a.ExternalUserId, a.DisplayName, a.IsEnabled, a.ManuallyDisabled, a.IsDeleted, a.UpdatedAt }).ExecuteCommandAsync(ct);
             await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name, s.IsEnabled }).ExecuteCommandAsync(ct);
         }
         else
@@ -159,21 +162,7 @@ public sealed class XaiAccountProvisioner
             throw;
         }
 
-        // —— 模型映射 ——
-        try
-        {
-            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "provision-models");
-            var models = await (network?.XaiModels ?? _modelFetcher).FetchAsync(input.AccessToken, ct);
-            if (models.Count > 0)
-            {
-                await UpsertModelMappingsCoreAsync(site.Id, models, ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "xAI model fetching failed during provision, falling back to default models");
-            await UpsertModelMappingsCoreAsync(site.Id, XaiConstants.DefaultModels, ct);
-        }
+        // 模型由用户手动选择导入；供给和重新登录不请求目录或修改映射。
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
@@ -187,21 +176,29 @@ public sealed class XaiAccountProvisioner
     public async Task ToggleAsync(Guid accountId, bool isEnabled, CancellationToken ct)
     {
         using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        await client.Ado.BeginTranAsync();
+        try
+        {
+        await client.Ado.ExecuteCommandAsync("UPDATE XaiAccounts SET UpdatedAt=UpdatedAt WHERE 1=0;");
         var account = await client.Queryable<XaiAccount>().InSingleAsync(accountId);
-        if (account == null) return;
+        if (account == null) { await client.Ado.CommitTranAsync(); return; }
 
-        account.IsEnabled = isEnabled;
         account.ManuallyDisabled = !isEnabled;
+        account.IsEnabled = isEnabled && !account.RequiresReauth && !account.DisabledByFeatureToggle && !account.IsDeleted;
         account.UpdatedAt = DateTimeOffset.UtcNow;
         await client.Updateable(account).UpdateColumns(a => new { a.IsEnabled, a.ManuallyDisabled, a.UpdatedAt }).ExecuteCommandAsync(ct);
 
         var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null)
         {
-            site.IsEnabled = isEnabled;
+            site.IsEnabled = account.IsEnabled;
             await client.Updateable(site).UpdateColumns(s => new { s.IsEnabled }).ExecuteCommandAsync(ct);
         }
 
+        await client.Ado.CommitTranAsync();
+        }
+        catch { await client.Ado.RollbackTranAsync(); throw; }
         _metadataCache.InvalidateRouteTargets();
     }
 
@@ -232,12 +229,16 @@ public sealed class XaiAccountProvisioner
         if (!string.IsNullOrWhiteSpace(refreshToken))
         {
             account.RefreshToken = refreshToken.Trim();
-            account.RequiresReauth = false;
-            await client.Updateable(account).UpdateColumns(a => new { a.DisplayName, a.RefreshToken, a.UpdatedAt, a.RequiresReauth }).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.DisplayName, a.RefreshToken, a.UpdatedAt }).ExecuteCommandAsync(ct);
+            // Only clear a refresh-refusal marker, not a forwarding 401 that disabled the account.
+            await client.Updateable<XaiAccount>()
+                .SetColumns(a => new XaiAccount { RequiresReauth = false })
+                .Where(a => a.Id == accountId && a.IsEnabled && a.RefreshToken == account.RefreshToken)
+                .ExecuteCommandAsync(ct);
         }
         else
         {
-            await client.Updateable(account).UpdateColumns(a => new { a.DisplayName, a.RefreshToken, a.UpdatedAt, a.RequiresReauth }).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.DisplayName, a.UpdatedAt }).ExecuteCommandAsync(ct);
         }
 
         _metadataCache.InvalidateRouteTargets();

@@ -176,6 +176,8 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
     public async Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(
         DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(token.AccessToken))
+            throw new InvalidOperationException("Copilot 模型目录请求缺少 access token");
         var baseUrl = GetModelsBaseUrl(extraJson);
         using var request = new HttpRequestMessage(HttpMethod.Get, baseUrl + "/models");
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
@@ -186,7 +188,9 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
         request.Headers.TryAddWithoutValidation("User-Agent", "GitHubCopilotChat/0.68.0");
         request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2026-01-09");
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -313,11 +317,13 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + githubToken.Trim());
             request.Headers.TryAddWithoutValidation("User-Agent", "GitHubCopilotChat/0.68.0");
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            string text;
+            try { text = await response.Content.ReadAsStringAsync(cancellationToken); }
+            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { text = string.Empty; }
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
-                return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true };
+                return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized, AccessTokenUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized && githubToken == token.AccessToken };
             }
 
             if (!response.IsSuccessStatusCode)

@@ -36,6 +36,22 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
     }
 
     [Fact]
+    public async Task Provision_and_relogin_do_not_automatically_import_models()
+    {
+        var provisioner = CreateProvisioner();
+        var first = await provisioner.ProvisionFromTokensAsync(Input(accountId: "manual-models", email: "manual@example.com", plan: "plus", token: "at-1"), CancellationToken.None);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await db.ModelLibraryItems.ToListAsync()).Should().BeEmpty();
+        (await db.SiteModelMappings.ToListAsync()).Should().BeEmpty();
+
+        await provisioner.UpsertRemoteModelsAsync(first.LinkedSiteId, [("chosen-model", "chosen-model")], CancellationToken.None);
+        await provisioner.ProvisionFromTokensAsync(Input(accountId: "manual-models", email: "manual@example.com", plan: "pro", token: "at-2"), CancellationToken.None);
+        (await db.ModelLibraryItems.ToListAsync()).Select(x => x.ModelName).Should().Equal("chosen-model");
+        (await db.SiteModelMappings.ToListAsync()).Should().ContainSingle(x => x.RemoteModelName == "chosen-model");
+    }
+
+    [Fact]
     public async Task Same_email_different_account_ids_coexist_as_two_accounts()
     {
         var provisioner = CreateProvisioner();

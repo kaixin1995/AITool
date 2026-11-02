@@ -299,6 +299,10 @@ public static class SqlSugarSetup
             typeof(ProxyProfile),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
 
+        // SQLite CodeFirst may add boolean columns as NULL on populated legacy tables.
+        foreach (var table in new[] { "CodexAccounts", "GoogleAccounts", "KimiAccounts" })
+            db.Ado.ExecuteCommand($"UPDATE {table} SET RequiresReauth = 0 WHERE RequiresReauth IS NULL;");
+
         // 统一模型名称：将历史库中可能残留的 DisplayName 同步对齐为 ModelName。
         try
         {

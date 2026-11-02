@@ -51,6 +51,22 @@ public sealed class ModelHealthRequestServiceTests : IDisposable
         _usageLogService.Entry!.HttpStatusCode.Should().Be(429);
     }
 
+    [Fact]
+    public async Task Ordinary_probe_does_not_configure_managed_credential_callbacks()
+    {
+        var callbacks = new CountingCallbacks();
+        var service = new ModelHealthRequestService(_dbContext, _forwardService, _usageLogService,
+            new SiteKeySelector(_dbContext), credentialCallbacks: callbacks);
+        await service.ProbeMappingAsync(_mappingId, "test", CancellationToken.None);
+        callbacks.Calls.Should().Be(0);
+    }
+
+    private sealed class CountingCallbacks : IHealthCredentialCallbacks
+    {
+        public int Calls { get; private set; }
+        public void Configure(ProxyForwardRequest request) => Calls++;
+    }
+
     private async Task SeedAsync()
     {
         var siteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
