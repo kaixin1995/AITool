@@ -1,3 +1,5 @@
+using AITool.Application.Networking;
+using AITool.Infrastructure.Sites;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -31,6 +33,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly IProxyForwardService _forwardService;
     private readonly IProxyDiagnosticService _diagnosticService;
+    private readonly SiteKeySelector? _siteKeySelector;
+    private readonly AccountSessionIsolationService? _sessionIsolation;
+    private AccountSessionIsolationContext? _sessionContext;
 
     public DeveloperInvocationsApiController(
         ISystemRuntimeSettingsService runtimeSettingsService,
@@ -40,7 +45,8 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         RouteCircuitStateStore circuitStore,
         AppDbContext dbContext,
         IProxyForwardService forwardService,
-        IProxyDiagnosticService diagnosticService)
+        IProxyDiagnosticService diagnosticService,
+        SiteKeySelector? siteKeySelector = null, AccountSessionIsolationService? sessionIsolation = null)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _traceStore = traceStore;
@@ -50,6 +56,30 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         _dbContext = dbContext;
         _forwardService = forwardService;
         _diagnosticService = diagnosticService;
+        _siteKeySelector = siteKeySelector;
+        _sessionIsolation = sessionIsolation;
+    }
+
+    private void CaptureSession(string originalBody)
+    {
+        var scope = "admin:" + (User?.FindFirst("sub")?.Value
+            ?? User?.FindFirst(global::System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "admin");
+        // Diagnostic upstream calls are a server-owned operation, not a client session header passthrough.
+        _sessionContext = AccountSessionIsolationService.Capture(scope,
+            new HeaderDictionary(), originalBody, Guid.NewGuid().ToString("N"));
+    }
+
+    private async Task<ProxyForwardRequest> PrepareForwardAsync(ProxyForwardRequest request, CancellationToken ct)
+    {
+        if (_sessionIsolation is null) return request;
+        if (_sessionContext is null) CaptureSession(request.RequestBody);
+        var context = _sessionContext ?? throw new InvalidOperationException("Session context was not captured.");
+        var isolated = await _sessionIsolation.ApplyAsync(context, request.AccountIdentity,
+            request.ProtocolType, ProxyProtocolBridge.IsAntigravityTarget(request.TargetBaseUrl),
+            request.PreparedRequestBody ?? request.RequestBody, request.ForwardHeaders, ct);
+        request.PreparedRequestBody = isolated.PreparedRequestBody;
+        request.ForwardHeaders = isolated.ForwardHeaders;
+        return request;
     }
 
     /// <summary>
@@ -171,6 +201,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         [FromBody] DeveloperAiDiagnoseRequest request,
         CancellationToken cancellationToken)
     {
+        CaptureSession(JsonSerializer.Serialize(request));
         var settings = await _dbContext.SystemRuntimeSettings
             .FirstAsync(x => x.Id == 1, cancellationToken);
         if (settings is null || !settings.DeveloperFeaturesEnabled || !settings.DeveloperProtocolDiagnosticsEnabled)
@@ -279,7 +310,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             target.GoogleProjectId,
             isAntigravity);
 
-        var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+        var forwardResult = await _forwardService.ForwardAsync(await PrepareForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = target.BaseUrl,
             TargetEndpointPathMode = target.EndpointPathMode,
@@ -293,12 +324,14 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             RetryCount = 0,
             ForwardHeaders = forwardHeaders,
             EgressProxyUrl = target.EgressProxyUrl,
+                AccountIdentity = target.AccountIdentity,
+            SiteId = target.SiteId, ManagedSource = target.ManagedSource,
             TargetPath = isGeminiRoute
                 ? "/v1internal:generateContent"
                 : string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                     ? SiteEndpointPathResolver.ResolvePath(target.EndpointPathMode, "responses")
                     : null
-        }, cancellationToken);
+        }, cancellationToken), cancellationToken);
 
         if (!forwardResult.Success)
         {
@@ -333,6 +366,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         [FromBody] DeveloperAutoDiagnoseLoopRequest request,
         CancellationToken cancellationToken)
     {
+        CaptureSession(JsonSerializer.Serialize(request));
         if (!await IsDeveloperTabEnabledAsync(s => s.DeveloperProtocolDiagnosticsEnabled, cancellationToken))
         {
             return NotFound();
@@ -384,7 +418,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         }
 
         // 2. 解析被测试的上游站点凭据与配置
-        var (testSiteName, testBaseUrl, testApiKey, testEndpointPathMode, testProtocol, testProjectId, testExtraHeaders) =
+        var (testSiteName, testBaseUrl, testApiKey, testEndpointPathMode, testProtocol, testProjectId, testExtraHeaders, testEgressProxyUrl, testAccountIdentity, testSiteId, testManagedSource) =
             await ResolveTestSiteInfoAsync(request, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(testBaseUrl))
@@ -457,7 +491,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                     ? SiteEndpointPathResolver.ResolvePath(testEndpointPathMode, "responses")
                     : null;
 
-            var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+            var forwardResult = await _forwardService.ForwardAsync(await PrepareForwardAsync(new ProxyForwardRequest
             {
                 TargetBaseUrl = testBaseUrl,
                 TargetEndpointPathMode = testEndpointPathMode,
@@ -470,8 +504,10 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 RequestTimeoutSeconds = Math.Min(30, Math.Max(10, runtimeSettings.ProxyRequestTimeoutSeconds)),
                 RetryCount = 0,
                 ForwardHeaders = forwardHeaders,
+                EgressProxyUrl = testEgressProxyUrl, AccountIdentity = testAccountIdentity,
+                SiteId = testSiteId, ManagedSource = testManagedSource, AllowNonSiteTarget = testSiteId is null,
                 TargetPath = targetPath
-            }, cancellationToken);
+            }, cancellationToken), cancellationToken);
 
             var isRoundSuccess = forwardResult.Success && forwardResult.StatusCode is >= 200 and < 300;
             var maxRoundBytes = _diagnosticService.MaxRoundResponseBytes;
@@ -602,6 +638,8 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         ExtraHeaders = target.ExtraHeaders,
         ClientEmulation = target.ClientEmulation,
         EgressProxyUrl = target.EgressProxyUrl,
+        AccountIdentity = target.AccountIdentity,
+        ManagedSource = target.ManagedSource,
         GoogleProjectId = target.GoogleProjectId
     };
 
@@ -620,10 +658,12 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         ExtraHeaders = route.ExtraHeaders,
         ClientEmulation = route.ClientEmulation,
         EgressProxyUrl = route.EgressProxyUrl,
+        AccountIdentity = route.AccountIdentity,
+        ManagedSource = route.ManagedSource,
         GoogleProjectId = route.GoogleProjectId
     };
 
-    private async Task<(string SiteName, string BaseUrl, string ApiKey, string EndpointPathMode, string ProtocolType, string? ProjectId, string? ExtraHeaders)> ResolveTestSiteInfoAsync(
+    private async Task<(string SiteName, string BaseUrl, string ApiKey, string EndpointPathMode, string ProtocolType, string? ProjectId, string? ExtraHeaders, string? EgressProxyUrl, AccountIdentity? AccountIdentity, Guid? SiteId, string? ManagedSource)> ResolveTestSiteInfoAsync(
         DeveloperAutoDiagnoseLoopRequest request,
         CancellationToken cancellationToken)
     {
@@ -632,6 +672,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         {
             site = await _dbContext.Sites.InSingleAsync(request.TargetSiteId.Value);
         }
+
+        if (site == null && request.TargetSiteId is { } requestedSiteId && requestedSiteId != Guid.Empty)
+            throw new InvalidOperationException("The requested target site no longer exists.");
 
         if (site == null && !string.IsNullOrWhiteSpace(request.TargetSiteName))
         {
@@ -685,6 +728,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 apiKey = firstKey?.KeyValue ?? string.Empty;
             }
 
+            var credential = await (_siteKeySelector ?? new SiteKeySelector(_dbContext))
+                .GetActiveCredentialAsync(site.Id, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(credential.ApiKey)) apiKey = credential.ApiKey;
             return (
                 site.Name,
                 site.BaseUrl,
@@ -692,7 +738,8 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 site.EndpointPathMode,
                 !string.IsNullOrWhiteSpace(request.TargetProtocol) ? request.TargetProtocol : site.ProtocolType,
                 projectId,
-                site.ExtraHeadersJson
+                site.ExtraHeadersJson,
+                credential.EgressProxyUrl, credential.AccountIdentity, site.Id, site.ManagedSource
             );
         }
 
@@ -703,7 +750,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             request.TargetEndpointPathMode ?? "standard-root",
             request.TargetProtocol ?? "OpenAI",
             null,
-            null
+            null, null, null, null, null
         );
     }
 
@@ -765,7 +812,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             target.GoogleProjectId,
             isAntigravity);
 
-        var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+        var forwardResult = await _forwardService.ForwardAsync(await PrepareForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = target.BaseUrl,
             TargetEndpointPathMode = target.EndpointPathMode,
@@ -779,12 +826,14 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             RetryCount = 0,
             ForwardHeaders = forwardHeaders,
             EgressProxyUrl = target.EgressProxyUrl,
+        AccountIdentity = target.AccountIdentity,
+            SiteId = target.SiteId, ManagedSource = target.ManagedSource,
             TargetPath = isGeminiRoute
                 ? "/v1internal:generateContent"
                 : string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                     ? SiteEndpointPathResolver.ResolvePath(target.EndpointPathMode, "responses")
                     : null
-        }, cancellationToken);
+        }, cancellationToken), cancellationToken);
 
         if (!forwardResult.Success)
         {

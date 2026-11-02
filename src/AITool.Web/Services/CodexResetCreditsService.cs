@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Net.Http.Json;
 using System.Text.Json;
 using AITool.Application.Codex;
@@ -12,11 +13,14 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed class CodexResetCreditsService : ICodexResetCreditsService
 {
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly HttpClient _httpClient;
     private readonly ILogger<CodexResetCreditsService> _logger;
 
-    public CodexResetCreditsService(HttpClient httpClient, ILogger<CodexResetCreditsService> logger)
+    public CodexResetCreditsService(HttpClient httpClient, ILogger<CodexResetCreditsService> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _httpClient = httpClient;
         _logger = logger;
     }
@@ -34,7 +38,7 @@ public sealed class CodexResetCreditsService : ICodexResetCreditsService
 
         try
         {
-            var request = new HttpRequestMessage(HttpMethod.Get, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits");
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits");
             request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {account.AccessToken}");
             request.Headers.TryAddWithoutValidation("Content-Type", "application/json");
             request.Headers.TryAddWithoutValidation("User-Agent", "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal");
@@ -46,7 +50,9 @@ public sealed class CodexResetCreditsService : ICodexResetCreditsService
                 request.Headers.TryAddWithoutValidation("Chatgpt-Account-Id", account.AccountId);
             }
 
-            var response = await _httpClient.SendAsync(request, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "reset-credits");
+            if (network is not null) network.HttpClient.Timeout = _httpClient.Timeout;
+            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
             info.RawJson = body;
 
@@ -57,7 +63,7 @@ public sealed class CodexResetCreditsService : ICodexResetCreditsService
                 return info;
             }
 
-            var json = JsonDocument.Parse(body);
+            using var json = JsonDocument.Parse(body);
             var root = json.RootElement;
 
             // 解析 available_count
@@ -114,7 +120,7 @@ public sealed class CodexResetCreditsService : ICodexResetCreditsService
 
         try
         {
-            var request = new HttpRequestMessage(HttpMethod.Post, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume");
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume");
             request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {account.AccessToken}");
             request.Headers.TryAddWithoutValidation("Content-Type", "application/json");
             request.Headers.TryAddWithoutValidation("User-Agent", "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal");
@@ -129,7 +135,9 @@ public sealed class CodexResetCreditsService : ICodexResetCreditsService
             var payload = new { redeem_request_id = redeemRequestId };
             request.Content = JsonContent.Create(payload);
 
-            var response = await _httpClient.SendAsync(request, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "reset-credits");
+            if (network is not null) network.HttpClient.Timeout = _httpClient.Timeout;
+            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
 
             if (!response.IsSuccessStatusCode)

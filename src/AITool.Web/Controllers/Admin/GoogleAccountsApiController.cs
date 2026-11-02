@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using AITool.Application.Google;
@@ -19,9 +20,11 @@ namespace AITool.Web.Controllers.Admin;
 public sealed class GoogleAccountsApiController : ControllerBase
 {
     // —— OAuth 会话暂存（state → 会话，TTL 10min）——
-    private sealed record OAuthSession(string State, string AccountKind, DateTimeOffset ExpiresAt);
+    private sealed record OAuthSession(string State, string AccountKind, DateTimeOffset ExpiresAt, NetworkOperationContext Network, bool UpdateNetworkPolicy,
+        IReadOnlyDictionary<Guid, (string? AccessToken, string? RefreshToken, DateTimeOffset? LastRefreshAt)>? CredentialsAtStart);
     private static readonly ConcurrentDictionary<string, OAuthSession> Sessions = new();
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly IGoogleOAuthClient _oauth;
     private readonly GoogleAccountProvisioner _provisioner;
@@ -37,8 +40,10 @@ public sealed class GoogleAccountsApiController : ControllerBase
         IGoogleModelFetcher modelFetcher,
         GoogleAccountQuotaService quotaService,
         GoogleCredentialRefreshService credentialRefreshService,
-        ILogger<GoogleAccountsApiController> logger)
+        ILogger<GoogleAccountsApiController> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _oauth = oauth;
         _provisioner = provisioner;
@@ -50,20 +55,32 @@ public sealed class GoogleAccountsApiController : ControllerBase
 
     /// <summary>启动 OAuth 登录，返回授权 URL 与 state（Antigravity 客户端）。</summary>
     [HttpPost("start-oauth")]
-    public IActionResult StartOAuth([FromBody] GoogleStartOAuthRequest? req)
+    public async Task<IActionResult> StartOAuth([FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] GoogleStartOAuthRequest? req, CancellationToken ct = default)
     {
+        try
+        {
         CleanupExpiredSessions();
+        var operation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, req?.NetworkSelection, ct);
         var kind = GoogleAccountKinds.Normalize(req?.Kind);
         var session = _oauth.CreateSession();
         var url = _oauth.BuildAuthorizeUrl(kind, session);
-        Sessions[session.State] = new OAuthSession(session.State, kind, DateTimeOffset.UtcNow.AddMinutes(10));
+        var credentialsAtStart = _dbContext is null ? null : (await _dbContext.GoogleAccounts.ToListAsync(ct))
+            .ToDictionary(a => a.Id, a => (a.AccessToken, a.RefreshToken, a.LastRefreshAt));
+        Sessions[session.State] = new OAuthSession(session.State, kind, DateTimeOffset.UtcNow.AddMinutes(10), operation, req?.NetworkSelection is not null, credentialsAtStart);
         return Ok(new { url, state = session.State, kind });
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>完成 OAuth 登录：用户粘贴回调 URL，校验 state 后交换 token、探测项目/等级并建账号。</summary>
     [HttpPost("complete-oauth")]
     public async Task<IActionResult> CompleteOAuth([FromBody] GoogleCompleteOAuthRequest req, CancellationToken ct)
     {
+        try
+        {
         if (string.IsNullOrWhiteSpace(req?.CallbackUrl))
         {
             return BadRequest(new { message = "回调 URL 不能为空" });
@@ -100,7 +117,8 @@ public sealed class GoogleAccountsApiController : ControllerBase
         GoogleTokenSet tokens;
         try
         {
-            tokens = await _oauth.ExchangeCodeAsync(session.AccountKind, code, ct);
+            using var network = _networkFactory?.CreateForOperation(session.Network, "login-exchange");
+            tokens = await (network?.GoogleOAuth ?? _oauth).ExchangeCodeAsync(session.AccountKind, code, ct);
         }
         catch (Exception ex)
         {
@@ -108,16 +126,27 @@ public sealed class GoogleAccountsApiController : ControllerBase
             return BadRequest(new { message = "授权码交换失败：" + ex.Message });
         }
 
-        var input = await BuildProvisionInputAsync(session.AccountKind, tokens, req.DisplayName, projectId: null, ct);
-        var account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+        var input = await BuildProvisionInputAsync(session.AccountKind, tokens, req.DisplayName, projectId: null, ct, session.Network);
+        var account = await _provisioner.ProvisionFromTokensAsync(input, ct, session.Network, session.UpdateNetworkPolicy,
+            credentialsBeforeExchange: session.CredentialsAtStart);
         return Ok(ToSummary(account));
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>导入 gcli2api 凭证 JSON（multipart 多文件 或 raw body 单文件；kind 指定接入方式）。</summary>
     [HttpPost("import-credential")]
     [RequestSizeLimit(10 * 1024 * 1024)]
-    public async Task<IActionResult> ImportCredential([FromQuery] string? kind, [FromQuery] string? name, CancellationToken ct)
+    public async Task<IActionResult> ImportCredential([FromQuery] string? kind, [FromQuery] string? name, CancellationToken ct,
+        [FromQuery] int? networkMode = null, [FromQuery] Guid? proxyProfileId = null)
     {
+        try
+        {
+        var selection = NetworkBoundOAuthClientFactory.ImportSelection(networkMode, proxyProfileId);
+        var importOperation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, selection, ct);
         var accountKind = GoogleAccountKinds.Normalize(kind);
         var parseResults = new List<(string FileName, string Json)>();
 
@@ -139,6 +168,8 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var failures = new List<object>();
         foreach (var (fileName, json) in parseResults)
         {
+            var credentialsUpdated = false;
+            var unknownRefreshCompleted = false;
             try
             {
                 var refreshToken = ExtractCredentialField(json, "refresh_token");
@@ -148,15 +179,76 @@ public sealed class GoogleAccountsApiController : ControllerBase
                     continue;
                 }
 
-                var tokens = await _oauth.RefreshTokenAsync(accountKind, refreshToken, ct);
+                // File-provided identity is untrusted. An unknown token can only be sent
+                // through the explicitly selected, frozen operation and must prove its identity.
+                var matches = await _dbContext.GoogleAccounts.Where(a => a.RefreshToken == refreshToken).ToListAsync(ct);
+                if (matches.Count > 1)
+                    throw new NetworkPolicyException("account_identity_required", "Google account identity is ambiguous.");
+                if (matches.Count == 0)
+                {
+                    if (selection is null)
+                        throw new NetworkPolicyException("network_selection_required", "An explicit network selection is required for an unknown credential.");
+                    using var unknownNetwork = _networkFactory!.CreateForOperation(importOperation, "credential-import");
+                    using var unknownSafety = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    ct.ThrowIfCancellationRequested();
+                    var unknownTokens = await unknownNetwork.GoogleOAuth.RefreshTokenAsync(accountKind, refreshToken, unknownSafety.Token);
+                    unknownRefreshCompleted = true;
+                    unknownTokens = unknownTokens with { RefreshToken = string.IsNullOrWhiteSpace(unknownTokens.RefreshToken) ? refreshToken : unknownTokens.RefreshToken };
+                    if (string.IsNullOrWhiteSpace(unknownTokens.AccessToken))
+                        throw new NetworkPolicyException("account_identity_required", "Unable to verify Google account identity.");
+                    await _provisioner.ValidateImportOperationAsync(importOperation, ct);
+                    var unknownInput = await BuildProvisionInputAsync(accountKind, unknownTokens, name,
+                        ExtractCredentialField(json, "project_id"), ct, importOperation);
+                    if (string.IsNullOrWhiteSpace(unknownInput.Email))
+                        throw new NetworkPolicyException("account_identity_required", "Unable to verify Google account identity.");
+                    var imported = await _provisioner.ProvisionFromTokensAsync(unknownInput, ct, importOperation, true,
+                        unknownImportRefreshToken: refreshToken);
+                    summaries.Add(ToSummary(imported));
+                    continue;
+                }
+                var existing = matches[0];
+                var importedRefreshToken = refreshToken;
+                var operation = selection is null
+                    ? importOperation with { Account = new AccountIdentity("google", existing.Id) }
+                    : importOperation;
+                using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", existing.Id, ct);
+                var current = await _dbContext.GoogleAccounts.InSingleAsync(existing.Id)
+                    ?? throw new KeyNotFoundException("Google account no longer exists.");
+                // Recheck identity under the canonical lock. A waiting import of the stored
+                // token must use the replacement if a concurrent refresh already rotated it.
+                refreshToken = current.RefreshToken ?? throw new InvalidOperationException("Google account has no refresh_token.");
+                var conflicts = await _dbContext.GoogleAccounts.Where(a => a.Id != existing.Id &&
+                    (a.RefreshToken == refreshToken || a.RefreshToken == importedRefreshToken)).ToListAsync(ct);
+                if (conflicts.Count != 0)
+                    throw new NetworkPolicyException("account_identity_required", "Google account identity is ambiguous.");
+                existing = current;
+                var refreshKind = current.AccountKind;
+                using var network = _networkFactory?.CreateForOperation(operation, "credential-import");
+                // Once refresh starts, cancellation must not discard a successfully rotated credential.
+                using var refreshSafety = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                ct.ThrowIfCancellationRequested();
+                var tokens = await (network?.GoogleOAuth ?? _oauth).RefreshTokenAsync(refreshKind, refreshToken,
+                    refreshSafety.Token);
+                tokens = tokens with { RefreshToken = string.IsNullOrWhiteSpace(tokens.RefreshToken) ? refreshToken : tokens.RefreshToken };
+                await _provisioner.PersistImportedRotationAsync(existing.Id, tokens);
+                credentialsUpdated = true;
+                // A policy failure cannot roll back the consumed token's replacement.
+                await _provisioner.ValidateImportOperationAsync(operation, ct);
                 var projectId = ExtractCredentialField(json, "project_id");
-                var input = await BuildProvisionInputAsync(accountKind, tokens, name, projectId, ct);
-                var account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+                var input = await BuildProvisionInputAsync(refreshKind, tokens, name, projectId, ct, operation);
+                var publicationOperation = operation with { Account = new AccountIdentity("google", existing.Id) };
+                var account = await _provisioner.ProvisionFromTokensAsync(input, ct, publicationOperation, selection is not null,
+                    credentialsLocked: true);
                 summaries.Add(ToSummary(account));
             }
             catch (Exception ex)
             {
-                failures.Add(new { fileName, error = ex.Message });
+                failures.Add(new { fileName, error = ex is NetworkPolicyException policy && policy.Code == "network_selection_required"
+                        ? "An explicit network selection is required for an unknown credential."
+                        : unknownRefreshCompleted
+                            ? "Google 凭证导入失败；刷新令牌可能已轮换，如凭证失效请重新授权。"
+                            : "Google 凭证导入失败，请检查凭证、账号身份和网络设置。",
+                    code = (ex as NetworkPolicyException)?.Code, credentialsUpdated, networkPolicyUpdated = false });
             }
         }
 
@@ -165,6 +257,11 @@ public sealed class GoogleAccountsApiController : ControllerBase
             return StatusCode(207, new { successes = summaries, failures });
         }
         return Ok(new { successes = summaries });
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>列出全部 Google 账号（含状态/额度缓存字段）。</summary>
@@ -265,9 +362,19 @@ public sealed class GoogleAccountsApiController : ControllerBase
 
         if (!string.IsNullOrWhiteSpace(req.RefreshToken))
         {
-            var tokens = await _oauth.RefreshTokenAsync(account.AccountKind, req.RefreshToken, ct);
-            var input = await BuildProvisionInputAsync(account.AccountKind, tokens, req.DisplayName, account.ProjectId, ct);
-            account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+            using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", account.Id, ct);
+            account = await _dbContext.GoogleAccounts.InSingleAsync(account.Id);
+            if (account is null) return NotFound(new { message = "账号不存在" });
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "manual-token-refresh");
+            using var refreshSafety = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var tokens = await (network?.GoogleOAuth ?? _oauth).RefreshTokenAsync(account.AccountKind, req.RefreshToken, refreshSafety.Token);
+            tokens = tokens with { RefreshToken = string.IsNullOrWhiteSpace(tokens.RefreshToken) ? req.RefreshToken : tokens.RefreshToken };
+            await _provisioner.PersistImportedRotationAsync(account.Id, tokens);
+            var input = await BuildProvisionInputAsync(account.AccountKind, tokens, req.DisplayName, account.ProjectId, ct, new NetworkOperationContext(
+                new AccountIdentity("google", account.Id), account.Id.ToString("N"), new(AITool.Domain.Operations.NetworkMode.Legacy)));
+            account = await _provisioner.ProvisionFromTokensAsync(input, ct, new NetworkOperationContext(
+                new AccountIdentity("google", account.Id), account.Id.ToString("N"), new(AITool.Domain.Operations.NetworkMode.Legacy)), credentialsLocked: true,
+                updateDisplayName: !string.IsNullOrWhiteSpace(req.DisplayName));
             var updatedSelectedModels = await GetSelectedModelsForSiteAsync(account.LinkedSiteId, ct);
             return Ok(ToSummary(account, "凭证已更新", selectedModels: updatedSelectedModels));
         }
@@ -290,7 +397,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var accessToken = account.AccessToken ?? string.Empty;
         if (account.TokenExpiresAt is null || account.TokenExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(2))
         {
-            var refreshed = await _credentialRefreshService.RefreshAsync(account.LinkedSiteId, accessToken, ct);
+            var refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, accessToken, ct);
             if (!string.IsNullOrWhiteSpace(refreshed))
             {
                 accessToken = refreshed;
@@ -300,7 +407,8 @@ public sealed class GoogleAccountsApiController : ControllerBase
         IReadOnlyList<(string Slug, string DisplayName)> models;
         try
         {
-            models = await _modelFetcher.FetchAsync(account.AccountKind, accessToken, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "models");
+            models = await (network?.GoogleModels ?? _modelFetcher).FetchAsync(account.AccountKind, accessToken, ct);
         }
         catch (Exception ex) when (GoogleCredentialRefreshService.IsForbiddenResponse(ex))
         {
@@ -438,15 +546,17 @@ public sealed class GoogleAccountsApiController : ControllerBase
         GoogleTokenSet tokens,
         string? displayName,
         string? projectId,
-        CancellationToken ct)
+        CancellationToken ct, NetworkOperationContext? operation = null)
     {
+        using var network = operation is null ? null : _networkFactory?.CreateForOperation(operation, "account-metadata");
+        var oauth = network?.GoogleOAuth ?? _oauth;
         var kind = GoogleAccountKinds.Normalize(accountKind);
-        var profile = await _oauth.LoadCodeAssistProfileAsync(kind, tokens.AccessToken, ct);
+        var profile = await oauth.LoadCodeAssistProfileAsync(kind, tokens.AccessToken, ct);
         projectId ??= profile.ProjectId;
         var tier = profile.Tier;
         var creditAmount = profile.CreditAmount;
 
-        var email = await _oauth.GetUserEmailAsync(tokens.AccessToken, ct);
+        var email = await oauth.GetUserEmailAsync(tokens.AccessToken, ct);
 
         return new GoogleProvisionInput
         {
@@ -560,6 +670,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
 
 public sealed class GoogleStartOAuthRequest
 {
+    public AccountNetworkSelection? NetworkSelection { get; set; }
     public string? Kind { get; set; }
 }
 

@@ -2,6 +2,7 @@ namespace AITool.Application.Proxy;
 
 using System.Diagnostics.CodeAnalysis;
 using Sites;
+using AITool.Application.Networking;
 
 /// <summary>
 /// 代理转发请求参数，用于描述一次上游调用所需的完整上下文。
@@ -22,6 +23,12 @@ public sealed class ProxyForwardRequest
     /// 目标站点 API 密钥，用于上游鉴权。
     /// </summary>
     public string TargetApiKey { get; set; } = string.Empty;
+
+    /// <summary>Real persisted site identity; never infer this from a cached credential.</summary>
+    public Guid? SiteId { get; set; }
+    public string? ManagedSource { get; set; }
+    /// <summary>Explicitly permits a non-site diagnostic target, never a managed account.</summary>
+    public bool AllowNonSiteTarget { get; set; }
 
     /// <summary>
     /// 协议类型，例如 OpenAI 或 Anthropic，用于决定请求格式和目标接口。
@@ -84,6 +91,12 @@ public sealed class ProxyForwardRequest
     /// 站点专用出口网络代理地址（如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808），为空则走服务器默认网络。
     /// </summary>
     public string? EgressProxyUrl { get; set; }
+
+    /// <summary>Immutable owner identity; the current account policy is re-read before every send.</summary>
+    public AccountIdentity? AccountIdentity { get; set; }
+
+    /// <summary>Optional explicit operation selection/isolation, never ambient request state.</summary>
+    public NetworkOperationContext? NetworkContext { get; set; }
 
     /// <summary>
     /// 上游返回 401 时刷新特定凭证并返回新 API Key；普通站点不设置此回调。
@@ -189,9 +202,37 @@ public sealed class ProxyForwardResult
     public string? ErrorMessage { get; set; }
 }
 
-/// <summary>
-/// 代理转发服务接口，负责将标准化请求发送到目标站点并返回统一结果。
-/// </summary>
+/// <summary>Live credential and optional send-boundary gate. Dispose immediately after SendAsync is initiated.</summary>
+public sealed class ForwardCredentialLease(string apiKey, bool isDeviceOAuth = false, IDisposable? gate = null,
+    bool useResolvedApiKey = false, bool protectAuthenticationHeaders = false) : IDisposable
+{
+    public string ApiKey { get; } = apiKey;
+    public bool IsDeviceOAuth { get; } = isDeviceOAuth;
+    public bool UseResolvedApiKey { get; } = useResolvedApiKey || isDeviceOAuth;
+    public bool ProtectAuthenticationHeaders { get; } = protectAuthenticationHeaders || isDeviceOAuth;
+    private IDisposable? _gate = gate;
+    public void Dispose() => Interlocked.Exchange(ref _gate, null)?.Dispose();
+}
+
+public interface IForwardCredentialResolver
+{
+    Task<ForwardCredentialLease> ResolveAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Validated send-time policy and opaque pool isolation; never serialize transport credentials.</summary>
+public sealed record ForwardNetworkPolicyResolution(
+    ResolvedNetworkConfiguration Configuration,
+    string IsolationKey,
+    bool UseDefaultClient = false);
+
+/// <summary>Must validate the current policy/profile/global switch on every attempt, including 401 retries.</summary>
+public interface IForwardNetworkPolicyResolver
+{
+    Task<ForwardNetworkPolicyResolution> ResolveAsync(ProxyForwardRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>代理转发服务接口，负责将标准化请求发送到目标站点并返回统一结果。</summary>
 public interface IProxyForwardService
 {
     /// <summary>

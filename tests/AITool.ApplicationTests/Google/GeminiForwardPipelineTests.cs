@@ -33,6 +33,7 @@ public sealed class GeminiForwardPipelineTests
     private static ProxyForwardRequest GeminiRequest(bool streaming, string preparedBody) => new()
     {
         TargetBaseUrl = AntigravityBaseUrl,
+        AllowNonSiteTarget = true,
         TargetEndpointPathMode = "standard-root",
         TargetApiKey = "ya29-test-token",
         ProtocolType = "Gemini",

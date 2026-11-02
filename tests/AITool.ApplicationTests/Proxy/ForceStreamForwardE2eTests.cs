@@ -30,6 +30,7 @@ public sealed class ForceStreamForwardE2eTests
     private static ProxyForwardRequest ChatRequest(bool streamInBody) => new()
     {
         TargetBaseUrl = "https://copilot.tencent.com/v2",
+        AllowNonSiteTarget = true,
         TargetEndpointPathMode = "versioned-base",
         TargetApiKey = "at-test",
         ProtocolType = "OpenAI",

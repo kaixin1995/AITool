@@ -31,6 +31,7 @@ public sealed class ModelHealthRequestService
     /// </summary>
     private readonly SiteKeySelector _siteKeySelector;
     private readonly IHeaderProfileCatalogService? _headerProfileCatalogService;
+    private readonly IAuxiliarySessionPreparation? _sessionPreparation;
 
     /// <summary>
     /// 注入数据库上下文、代理转发服务、日志服务、站点密钥选择器与请求头目录服务
@@ -40,13 +41,15 @@ public sealed class ModelHealthRequestService
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
         SiteKeySelector siteKeySelector,
-        IHeaderProfileCatalogService? headerProfileCatalogService = null)
+        IHeaderProfileCatalogService? headerProfileCatalogService = null,
+        IAuxiliarySessionPreparation? sessionPreparation = null)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
         _usageLogService = usageLogService;
         _siteKeySelector = siteKeySelector;
         _headerProfileCatalogService = headerProfileCatalogService;
+        _sessionPreparation = sessionPreparation;
     }
 
     /// <summary>
@@ -88,83 +91,153 @@ public sealed class ModelHealthRequestService
         var runtimeSettings = await _dbContext.SystemRuntimeSettings
             .FirstAsync(x => x.Id == 1, cancellationToken)
             ?? new AITool.Domain.Operations.SystemRuntimeSettings();
-        var requestBody = BuildProbeRequestBody(protocolType, mapping.RemoteModelName, BuildRandomMathPrompt());
-        // Codex 上游（Responses 协议）不接受 max_output_tokens，会返回
-        // {"detail":"Unsupported parameter: max_output_tokens"}（400）。
-        // BuildProbeRequestBody 对 Responses 会设 max_output_tokens，此处按需剔除。
-        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(site.BaseUrl)
-            && ProxyProtocolBridge.IsCodexTarget(site.BaseUrl))
-        {
-            requestBody = StripCodexUnsupportedFields(requestBody);
-        }
+        var forwardResult = await PrepareAndForwardAsync();
 
-        // 级联解析自定义请求头与客户端仿真特征（Mapping > Model > Site）
-        Dictionary<string, string> extraHeaders = new(StringComparer.OrdinalIgnoreCase);
-        var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(site.BaseUrl);
-        var effectiveEmulation = ResolveClientEmulation(mapping.ClientEmulation, model.ClientEmulation, site.ClientEmulation, protocolType, isAntigravity);
-
-        // 命中请求头模板方案（内置预设被编辑 / 自定义 Key）时作为最底层注入，显式 Site/Model/Mapping 头仍可覆盖。
-        if (!string.IsNullOrWhiteSpace(effectiveEmulation) && _headerProfileCatalogService != null)
+        async Task<ProxyForwardResult> PrepareAndForwardAsync()
         {
-            var headerProfile = await _headerProfileCatalogService.GetByKeyAsync(effectiveEmulation, cancellationToken);
-            if (headerProfile?.IsEnabled == true && !string.IsNullOrWhiteSpace(headerProfile.HeadersJson))
+            try
             {
-                MergeHeadersJson(extraHeaders, headerProfile.HeadersJson);
+                var originalRequestBody = BuildProbeRequestBody(protocolType, mapping.RemoteModelName, BuildRandomMathPrompt());
+                var requestBody = originalRequestBody;
+                // Codex 上游（Responses 协议）不接受 max_output_tokens，会返回
+                // {"detail":"Unsupported parameter: max_output_tokens"}（400）。
+                // BuildProbeRequestBody 对 Responses 会设 max_output_tokens，此处按需剔除。
+                if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(site.BaseUrl)
+                    && ProxyProtocolBridge.IsCodexTarget(site.BaseUrl))
+                {
+                    requestBody = StripCodexUnsupportedFields(requestBody);
+                }
+
+                // 级联解析自定义请求头与客户端仿真特征（Mapping > Model > Site）
+                Dictionary<string, string> extraHeaders = new(StringComparer.OrdinalIgnoreCase);
+                var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(site.BaseUrl);
+                var effectiveEmulation = ResolveClientEmulation(mapping.ClientEmulation, model.ClientEmulation, site.ClientEmulation, protocolType, isAntigravity);
+
+                // 命中请求头模板方案（内置预设被编辑 / 自定义 Key）时作为最底层注入，显式 Site/Model/Mapping 头仍可覆盖。
+                if (!string.IsNullOrWhiteSpace(effectiveEmulation) && _headerProfileCatalogService != null)
+                {
+                    var headerProfile = await _headerProfileCatalogService.GetByKeyAsync(effectiveEmulation, cancellationToken);
+                    if (headerProfile?.IsEnabled == true && !string.IsNullOrWhiteSpace(headerProfile.HeadersJson))
+                    {
+                        MergeHeadersJson(extraHeaders, headerProfile.HeadersJson);
+                    }
+                }
+
+                MergeHeadersJson(extraHeaders, site.ExtraHeadersJson);
+                MergeHeadersJson(extraHeaders, model.ExtraHeadersJson);
+                MergeHeadersJson(extraHeaders, mapping.ExtraHeadersJson);
+
+                // Keep selectors unresolved: the shared forwarding resolver validates current policy at send time.
+                var credential = await _siteKeySelector.GetActiveCredentialAsync(site.Id, cancellationToken);
+                var effectiveProxyUrl = !string.IsNullOrWhiteSpace(mapping.EgressProxyUrl)
+                    ? mapping.EgressProxyUrl : credential.EgressProxyUrl ?? site.EgressProxyUrl;
+                string? googleProjectId = null;
+                // Only the managed Antigravity route uses the v1internal envelope. Preserve the
+                // existing probe semantics for ordinary Gemini-compatible sites.
+                var managedAntigravity = isAntigravity
+                    && string.Equals(site.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
+                if (managedAntigravity)
+                {
+                    var googleAccount = await _dbContext.GoogleAccounts.FirstAsync(x => x.LinkedSiteId == site.Id, cancellationToken);
+                    googleProjectId = googleAccount?.ProjectId;
+                    requestBody = ProxyProtocolBridge.PrepareRequestBody(
+                        "OpenAI", "Gemini", originalRequestBody, mapping.RemoteModelName, false,
+                        null, site.BaseUrl, null, isPassthrough: false, isCompact: false,
+                        geminiProjectId: googleProjectId);
+                }
+
+                var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
+                    effectiveEmulation,
+                    extraHeaders,
+                    mapping.RemoteModelName,
+                    googleProjectId,
+                    isAntigravity);
+
+                // Missing owner lookup must not silently turn a managed probe into an ordinary request.
+                if (!string.IsNullOrWhiteSpace(site.ManagedSource) && credential.AccountIdentity is null)
+                    throw new AITool.Application.Networking.NetworkPolicyException(
+                        "managed_account_identity_unavailable", "Managed account identity is unavailable.");
+
+                if (credential.AccountIdentity is { } account)
+                {
+                    var sessionPreparation = _sessionPreparation ?? throw new AITool.Application.Networking.NetworkPolicyException(
+                        "account_session_preparation_unavailable", "Managed account session preparation is unavailable.");
+                    var session = await sessionPreparation.PrepareAsync("admin:health", account, protocolType,
+                        isAntigravity, originalRequestBody, requestBody, forwardHeaders, cancellationToken);
+                    requestBody = session.PreparedRequestBody;
+                    forwardHeaders = session.ForwardHeaders;
+                }
+
+                // 取站点活动密钥：多 Key 站点用优先级最高的启用项，没有 SiteKey 时回退 site.ApiKey（兼容 Codex/未迁移）。
+                var activeApiKey = credential.ApiKey;
+                if (string.IsNullOrEmpty(activeApiKey))
+                {
+                    activeApiKey = site.ApiKey;
+                }
+
+                var result = await _forwardService.ForwardAsync(new ProxyForwardRequest
+                {
+                    TargetBaseUrl = site.BaseUrl,
+                    TargetEndpointPathMode = site.EndpointPathMode,
+                    TargetApiKey = activeApiKey,
+                    ProtocolType = protocolType,
+                    TargetModelName = mapping.RemoteModelName,
+                    RequestBody = originalRequestBody,
+                    PreparedRequestBody = requestBody,
+                    EnableStreaming = false,
+                    RequestTimeoutSeconds = runtimeSettings.DetectionRequestTimeoutSeconds,
+                    RetryCount = runtimeSettings.DetectionRetryCount,
+                    ForwardHeaders = forwardHeaders,
+                    EgressProxyUrl = effectiveProxyUrl,
+                    SiteId = site.Id,
+                    ManagedSource = site.ManagedSource,
+                    AccountIdentity = credential.AccountIdentity,
+                    TargetPath = managedAntigravity
+                        ? "/v1internal:generateContent"
+                        : string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                            ? SiteEndpointPathResolver.ResolvePath(site.EndpointPathMode, "responses")
+                            : null
+                }, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                // A transport interruption may set IsCanceled even when the caller did not
+                // cancel. Only the caller's token can cancel the batch; all other failures are
+                // safe single-item failures and must not expose transport/response text.
+                if (!result.Success || result.IsCanceled)
+                    return new ProxyForwardResult
+                    {
+                        Success = false,
+                        StatusCode = result.StatusCode,
+                        TotalDurationMs = result.TotalDurationMs,
+                        RateLimitRetryCount = result.RateLimitRetryCount,
+                        InputTokens = result.InputTokens,
+                        CachedTokens = result.CachedTokens,
+                        OutputTokens = result.OutputTokens,
+                        IsStreamInterrupted = result.IsStreamInterrupted,
+                        FirstTokenLatencyMs = result.FirstTokenLatencyMs,
+                        StreamDurationMs = result.StreamDurationMs,
+                        ErrorMessage = "检测请求失败"
+                    };
+                return result;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // Owner lookup, session key storage and forwarding dependencies can fail with
+                // arbitrary exceptions. Do not expose their messages (which may contain secrets).
+                cancellationToken.ThrowIfCancellationRequested();
+                return new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 503,
+                    ErrorMessage = "检测因账号或网络安全处理失败"
+                };
             }
         }
-
-        MergeHeadersJson(extraHeaders, site.ExtraHeadersJson);
-        MergeHeadersJson(extraHeaders, model.ExtraHeadersJson);
-        MergeHeadersJson(extraHeaders, mapping.ExtraHeadersJson);
-
-        // 出口网络代理功能关闭时检测探测同样直连（与转发热路径同口径）：
-// 不解析站点/映射的代理字段，不查代理池，不创建代理客户端。
-string? effectiveProxyUrl = null;
-if (runtimeSettings.DeveloperProxyProfilesEnabled)
-{
-    var effectiveProxyRaw = !string.IsNullOrWhiteSpace(mapping.EgressProxyUrl) ? mapping.EgressProxyUrl.Trim() : site.EgressProxyUrl;
-    if (!string.IsNullOrWhiteSpace(effectiveProxyRaw) &&
-        !string.Equals(effectiveProxyRaw, "None", StringComparison.OrdinalIgnoreCase) &&
-        !string.Equals(effectiveProxyRaw, "direct", StringComparison.OrdinalIgnoreCase))
-    {
-        var profile = await _dbContext.ProxyProfiles.FirstAsync(p => p.Key == effectiveProxyRaw && p.IsEnabled, cancellationToken);
-        effectiveProxyUrl = profile != null ? profile.ProxyUrl : effectiveProxyRaw;
-    }
-}
-
-        var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
-            effectiveEmulation,
-            extraHeaders,
-            mapping.RemoteModelName,
-            null,
-            isAntigravity);
-
-        // 取站点活动密钥：多 Key 站点用优先级最高的启用项，没有 SiteKey 时回退 site.ApiKey（兼容 Codex/未迁移）。
-        var activeApiKey = await _siteKeySelector.GetActiveKeyAsync(site.Id, cancellationToken);
-        if (string.IsNullOrEmpty(activeApiKey))
-        {
-            activeApiKey = site.ApiKey;
-        }
-
-        var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
-        {
-            TargetBaseUrl = site.BaseUrl,
-            TargetEndpointPathMode = site.EndpointPathMode,
-            TargetApiKey = activeApiKey,
-            ProtocolType = protocolType,
-            TargetModelName = mapping.RemoteModelName,
-            RequestBody = requestBody,
-            PreparedRequestBody = requestBody,
-            EnableStreaming = false,
-            RequestTimeoutSeconds = runtimeSettings.DetectionRequestTimeoutSeconds,
-            RetryCount = runtimeSettings.DetectionRetryCount,
-            ForwardHeaders = forwardHeaders,
-            EgressProxyUrl = effectiveProxyUrl,
-            TargetPath = string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                ? SiteEndpointPathResolver.ResolvePath(site.EndpointPathMode, "responses")
-                : null
-        }, cancellationToken);
 
         var status = forwardResult.Success ? "success" : "fail";
         mapping.LastStatus = status;

@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using AITool.Application.Xai;
 using AITool.Domain.Models;
 using AITool.Domain.SiteCatalog;
@@ -15,6 +16,8 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed class XaiAccountProvisioner
 {
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
+    private readonly AccountNetworkPolicyStore? _networkPolicies;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IXaiModelFetcher _modelFetcher;
@@ -26,8 +29,12 @@ public sealed class XaiAccountProvisioner
         ProxyRequestMetadataCache metadataCache,
         IXaiModelFetcher modelFetcher,
         SiteCascadeDeleter cascadeDeleter,
-        ILogger<XaiAccountProvisioner> logger)
+        ILogger<XaiAccountProvisioner> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null,
+        AccountNetworkPolicyStore? networkPolicies = null)
     {
+        _networkFactory = networkFactory;
+        _networkPolicies = networkPolicies;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _modelFetcher = modelFetcher;
@@ -39,15 +46,35 @@ public sealed class XaiAccountProvisioner
     /// 用 token 创建或更新 xAI 账号（含隐藏 Site + 模型映射）。按 ExternalUserId（JWT sub）
     /// 匹配既有账号：重复登录同一账号时更新 token 而不是另建。
     /// </summary>
-    public async Task<XaiAccount> ProvisionFromTokensAsync(XaiProvisionInput input, CancellationToken ct)
+    private static readonly SemaphoreSlim ProvisionGate = new(1, 1);
+
+    public async Task<XaiAccount> ProvisionFromTokensAsync(XaiProvisionInput input, CancellationToken ct,
+        NetworkOperationContext? networkOperation = null, bool updateNetworkPolicy = false)
+    {
+        await ProvisionGate.WaitAsync(ct);
+        try { return await ProvisionCoreAsync(input, ct, networkOperation, updateNetworkPolicy); }
+        finally { ProvisionGate.Release(); }
+    }
+
+    private async Task<XaiAccount> ProvisionCoreAsync(XaiProvisionInput input, CancellationToken ct,
+        NetworkOperationContext? networkOperation, bool updateNetworkPolicy)
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-
-        var existing = await FindExistingAsync(input.Email, input.ExternalUserId, ct);
-
         XaiAccount account;
         Site site;
+        client.Ado.BeginTran();
+        try
+        {
+            // Lock publication before identity resolution; policy and credentials become visible together.
+            if (_networkPolicies is not null)
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+
+        var existing = networkOperation?.Account is { } known && known.ProviderKey == "xai"
+            ? await client.Queryable<XaiAccount>().InSingleAsync(known.AccountId)
+            : await FindExistingAsync(input.Email, input.ExternalUserId, ct);
+
+
 
         if (existing != null)
         {
@@ -73,8 +100,8 @@ public sealed class XaiAccountProvisioner
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) site.Name = input.DisplayName;
             site.IsEnabled = true;
 
-            await client.Updateable(account).ExecuteCommandAsync(ct);
-            await client.Updateable(site).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.Scope, a.TokenExpiresAt, a.LastRefreshAt, a.RequiresReauth, a.Email, a.ExternalUserId, a.DisplayName, a.IsEnabled, a.ManuallyDisabled, a.IsDeleted, a.UpdatedAt }).ExecuteCommandAsync(ct);
+            await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name, s.IsEnabled }).ExecuteCommandAsync(ct);
         }
         else
         {
@@ -116,10 +143,27 @@ public sealed class XaiAccountProvisioner
             await client.Insertable(account).ExecuteCommandAsync(ct);
         }
 
+        if (updateNetworkPolicy)
+        {
+            if (_networkPolicies is null || networkOperation is null)
+                throw new NetworkPolicyException("network_policy_unavailable", "Network policy persistence is unavailable.");
+            await _networkPolicies.SetInTransactionAsync(client, new AccountIdentity("xai", account.Id),
+                networkOperation.Selection, expectedProfileRevision: networkOperation.ExpectedProfileRevision,
+                cancellationToken: ct);
+        }
+        client.Ado.CommitTran();
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
+        }
+
         // —— 模型映射 ——
         try
         {
-            var models = await _modelFetcher.FetchAsync(input.AccessToken, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "provision-models");
+            var models = await (network?.XaiModels ?? _modelFetcher).FetchAsync(input.AccessToken, ct);
             if (models.Count > 0)
             {
                 await UpsertModelMappingsCoreAsync(site.Id, models, ct);
@@ -189,11 +233,11 @@ public sealed class XaiAccountProvisioner
         {
             account.RefreshToken = refreshToken.Trim();
             account.RequiresReauth = false;
-            await client.Updateable(account).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.DisplayName, a.RefreshToken, a.UpdatedAt, a.RequiresReauth }).ExecuteCommandAsync(ct);
         }
         else
         {
-            await client.Updateable(account).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.DisplayName, a.RefreshToken, a.UpdatedAt, a.RequiresReauth }).ExecuteCommandAsync(ct);
         }
 
         _metadataCache.InvalidateRouteTargets();
@@ -205,15 +249,22 @@ public sealed class XaiAccountProvisioner
     /// </summary>
     public async Task DeleteAsync(Guid accountId, CancellationToken ct)
     {
-        using var client = _dbContext.Client.CopyNew();
-        var account = await client.Queryable<XaiAccount>().InSingleAsync(accountId);
-        if (account == null) return;
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
+        {
+            var client = _dbContext.Client;
+            var account = await client.Queryable<XaiAccount>().InSingleAsync(accountId);
+            if (account is null) return false;
+            if (_networkPolicies is not null)
+            {
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+                await _networkPolicies.DeleteInTransactionAsync(client, new AccountIdentity("xai", account.Id), cancellationToken: ct);
+            }
+            if (account.LinkedSiteId != Guid.Empty)
+                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+            await client.Deleteable<XaiAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
+            return true;
+        }, ct, _metadataCache);
 
-        await _cascadeDeleter.RemoveSitesAsync([account.LinkedSiteId], ct);
-        await client.Deleteable<XaiAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
-
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateModelMetadata();
     }
 
     /// <summary>

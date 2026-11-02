@@ -1,3 +1,5 @@
+using AITool.Application.Networking;
+using AITool.Application.Proxy;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Sites;
@@ -20,10 +22,19 @@ public sealed class CustomBalanceSiteQuotaProvider : ISiteQuotaProvider
     private readonly HttpClient _httpClient;
     private readonly ILogger<CustomBalanceSiteQuotaProvider> _logger;
 
-    public CustomBalanceSiteQuotaProvider(HttpClient httpClient, ILogger<CustomBalanceSiteQuotaProvider> logger)
+    private readonly AccountNetworkClientFactory? _accountClients;
+    private readonly IForwardNetworkPolicyResolver? _networkPolicies;
+    private readonly INetworkTransport? _networkTransport;
+
+    public CustomBalanceSiteQuotaProvider(HttpClient httpClient, ILogger<CustomBalanceSiteQuotaProvider> logger,
+        AccountNetworkClientFactory? accountClients = null, IForwardNetworkPolicyResolver? networkPolicies = null,
+        INetworkTransport? networkTransport = null)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _accountClients = accountClients;
+        _networkPolicies = networkPolicies;
+        _networkTransport = networkTransport;
     }
 
     public string ProviderKey => "custom-balance";
@@ -43,6 +54,9 @@ public sealed class CustomBalanceSiteQuotaProvider : ISiteQuotaProvider
         var config = site.Balance!;
         try
         {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) timeout.CancelAfter(_httpClient.Timeout);
+            var networkToken = timeout.Token;
             using var request = new HttpRequestMessage(
                 config.Method == "POST" ? HttpMethod.Post : HttpMethod.Get,
                 config.Url);
@@ -53,8 +67,10 @@ public sealed class CustomBalanceSiteQuotaProvider : ISiteQuotaProvider
                 request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
             }
 
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            await using var networkClient = await SiteQuotaNetworkClient.AcquireAsync(site, apiKey,
+                _httpClient, _accountClients, _networkPolicies, _networkTransport, networkToken);
+            using var response = await networkClient.Client.SendAsync(request, networkToken);
+            var body = await response.Content.ReadAsStringAsync(networkToken);
 
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized
                 or System.Net.HttpStatusCode.Forbidden)

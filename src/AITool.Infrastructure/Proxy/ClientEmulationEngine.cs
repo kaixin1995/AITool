@@ -31,11 +31,9 @@ public static partial class ClientEmulationEngine
         string? projectId = null,
         bool isAntigravity = false)
     {
-        var normalizedPreset = ClientEmulationConstants.Normalize(emulationPreset);
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        // 1. 载入预设客户端的基础特征头
-        ApplyPresetHeaders(result, normalizedPreset, modelName, projectId, isAntigravity);
+        // Keep the unevaluated source of preset headers available to reference ownership
+        // verification. Both paths must use the same templates, not a name-only allowlist.
+        var result = GetPresetHeaderTemplates(emulationPreset, modelName, projectId, isAntigravity);
 
         // 2. 覆盖/叠加用户自定义的 ExtraHeaders
         if (extraHeaders != null && extraHeaders.Count > 0)
@@ -57,6 +55,15 @@ public static partial class ClientEmulationEngine
         }
 
         return evaluated;
+    }
+
+    /// <summary>Returns the built-in, unevaluated templates for the selected preset.</summary>
+    public static Dictionary<string, string> GetPresetHeaderTemplates(
+        string? emulationPreset, string? modelName = null, string? projectId = null, bool isAntigravity = false)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        ApplyPresetHeaders(result, ClientEmulationConstants.Normalize(emulationPreset), modelName, projectId, isAntigravity);
+        return result;
     }
 
     /// <summary>

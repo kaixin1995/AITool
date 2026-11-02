@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using AITool.Application.Kimi;
 using AITool.Domain.Kimi;
 using AITool.Domain.Sites;
@@ -14,6 +15,7 @@ public sealed class KimiCredentialRefreshService
 {
     private static readonly KeyedAsyncLock RefreshLocks = new();
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly IKimiOAuthClient _oauth;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -23,8 +25,10 @@ public sealed class KimiCredentialRefreshService
         AppDbContext dbContext,
         IKimiOAuthClient oauth,
         ProxyRequestMetadataCache metadataCache,
-        ILogger<KimiCredentialRefreshService> logger)
+        ILogger<KimiCredentialRefreshService> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _oauth = oauth;
         _metadataCache = metadataCache;
@@ -34,45 +38,41 @@ public sealed class KimiCredentialRefreshService
     /// <summary>
     /// 当代理请求命中 401 时，通过 linkedSiteId 刷新凭证。
     /// </summary>
-    public async Task<string?> RefreshAsync(
-        Guid linkedSiteId,
-        string staleAccessToken,
-        CancellationToken cancellationToken)
+    public async Task<string?> RefreshForAccountAsync(Guid accountId, string staleAccessToken, CancellationToken cancellationToken)
     {
-        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
+        using (await NetworkBoundOAuthClientFactory.LockCredentialsAsync("kimi", accountId, cancellationToken))
         {
-            try
-            {
-                using var client = _dbContext.Client.CopyNew();
-                client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-                var account = await client.Queryable<KimiAccount>()
-                    .FirstAsync(a => !a.IsDeleted && a.LinkedSiteId == linkedSiteId, cancellationToken);
-                if (account == null || string.IsNullOrWhiteSpace(account.RefreshToken))
-                {
-                    return null;
-                }
+            var account = await _dbContext.KimiAccounts.InSingleAsync(accountId);
+            if (account is null || account.IsDeleted || string.IsNullOrWhiteSpace(account.RefreshToken)) return null;
+            if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)) return account.AccessToken;
+            return await RefreshAccountInternalAsync(account, cancellationToken);
+        }
+    }
 
-                if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal))
-                {
-                    return account.AccessToken;
-                }
-
-                return await RefreshAccountInternalAsync(account, cancellationToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Unable to refresh Kimi token for linked site {SiteId}", linkedSiteId);
-                return null;
-            }
+    public async Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
+    {
+        if (linkedSiteId == Guid.Empty) return null;
+        var accounts = await _dbContext.KimiAccounts.Where(a => a.LinkedSiteId == linkedSiteId && !a.IsDeleted)
+            .ToListAsync(cancellationToken);
+        if (accounts.Count != 1) return null;
+        try
+        {
+            return await RefreshForAccountAsync(accounts[0].Id, staleAccessToken, cancellationToken);
+        }
+        catch (NetworkPolicyException) { throw; }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Unable to refresh Kimi token for linked site {SiteId}", linkedSiteId);
+            return null;
         }
     }
 
     /// <summary>
     /// 主动刷新指定 Kimi 账号的凭证（如手动点击刷新或更新 refresh_token 后）。
     /// </summary>
-    public async Task<KimiAccount> RefreshKimiCredentialAsync(Guid accountId, CancellationToken cancellationToken)
+    public async Task<KimiAccount> RefreshKimiCredentialAsync(Guid accountId, CancellationToken cancellationToken, string? replacementRefreshToken = null)
     {
-        using (await RefreshLocks.WaitAsync(accountId.ToString("N"), cancellationToken))
+        using (await NetworkBoundOAuthClientFactory.LockCredentialsAsync("kimi", accountId, cancellationToken))
         {
             using var client = _dbContext.Client.CopyNew();
             client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
@@ -80,6 +80,8 @@ public sealed class KimiCredentialRefreshService
                 .InSingleAsync(accountId)
                 ?? throw new KeyNotFoundException("Kimi 账号不存在");
 
+            if (!string.IsNullOrWhiteSpace(replacementRefreshToken))
+                account.RefreshToken = replacementRefreshToken.Trim();
             if (string.IsNullOrWhiteSpace(account.RefreshToken))
             {
                 throw new InvalidOperationException("Kimi 账号未配置 refresh_token，无法刷新");
@@ -93,7 +95,8 @@ public sealed class KimiCredentialRefreshService
 
     private async Task<string?> RefreshAccountInternalAsync(KimiAccount account, CancellationToken ct)
     {
-        var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken!, account.DeviceId, ct);
+        using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "credential-refresh");
+        var tokens = await (network?.KimiOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken!, account.DeviceId, ct);
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
 
@@ -109,7 +112,12 @@ public sealed class KimiCredentialRefreshService
         account.LastRefreshAt = DateTimeOffset.UtcNow;
         account.UpdatedAt = DateTimeOffset.UtcNow;
 
-        await client.Updateable(account).ExecuteCommandAsync(ct);
+        client.Ado.BeginTran();
+        try
+        {
+        await client.Updateable(account)
+            .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.UpdatedAt })
+            .ExecuteCommandAsync(ct);
 
         var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
@@ -117,6 +125,10 @@ public sealed class KimiCredentialRefreshService
             site.ApiKey = tokens.AccessToken;
             await client.Updateable(site).UpdateColumns(s => new { s.ApiKey }).ExecuteCommandAsync(ct);
         }
+
+            client.Ado.CommitTran();
+        }
+        catch { client.Ado.RollbackTran(); throw; }
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateKimiAccounts();

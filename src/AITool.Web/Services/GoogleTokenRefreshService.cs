@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Collections.Concurrent;
 using AITool.Application.Google;
 using AITool.Domain.Google;
@@ -34,7 +35,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
     private readonly IServiceProvider _services;
     private readonly ILogger<GoogleTokenRefreshService> _logger;
     private readonly IHostEnvironment _environment;
-    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _refreshRetryAt = new();
+    private readonly ConcurrentDictionary<Guid, (DateTimeOffset RetryAt, string? AccessToken, string? RefreshToken)> _refreshRetryAt = new();
 
     public GoogleTokenRefreshService(
         IServiceProvider services,
@@ -75,6 +76,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var oauthClient = scope.ServiceProvider.GetRequiredService<IGoogleOAuthClient>();
+        var networkFactory = scope.ServiceProvider.GetService<NetworkBoundOAuthClientFactory>();
 
         // 尊重 OAuth 功能总开关：关闭时跳过本轮
         var runtime = await cache.GetRuntimeSettingsAsync(ct);
@@ -112,7 +114,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         foreach (var account in due)
         {
             if (ct.IsCancellationRequested) break;
-            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct);
+            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct, networkFactory);
             if (updated) anyUpdated = true;
             await Task.Delay(InterAccountDelay, ct);
         }
@@ -124,34 +126,21 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         }
     }
 
-    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, IGoogleOAuthClient oauthClient, GoogleAccount account, CancellationToken ct)
+    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, IGoogleOAuthClient oauthClient, GoogleAccount account, CancellationToken ct, NetworkBoundOAuthClientFactory? networkFactory = null)
     {
         try
         {
-            var tokens = await oauthClient.RefreshTokenAsync(account.AccountKind, account.RefreshToken!, ct);
-
-            await db.SerialExecuteAsync(async () =>
-            {
-                if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    account.AccessToken = tokens.AccessToken;
-                }
-                // Google 刷新响应通常不回传 refresh_token，保留旧值。
-                if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
-                {
-                    account.RefreshToken = tokens.RefreshToken;
-                }
-                account.TokenExpiresAt = tokens.ExpiresAt;
-                account.LastRefreshAt = DateTimeOffset.UtcNow;
-                await db.UpdateAsync(account, ct);
-
-                var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    site.ApiKey = tokens.AccessToken;
-                    await db.UpdateAsync(site, ct);
-                }
-            }, ct);
+            using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", account.Id, ct);
+            var current = await db.GoogleAccounts.InSingleAsync(account.Id);
+            if (current is null || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
+            account = current;
+            if (string.IsNullOrWhiteSpace(account.RefreshToken)) return false;
+            using var network = networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "background-token-refresh");
+            ct.ThrowIfCancellationRequested();
+            // Once sent, the upstream may consume the old refresh token even if the caller stops.
+            using var refreshSafety = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var tokens = await (network?.GoogleOAuth ?? oauthClient).RefreshTokenAsync(account.AccountKind, account.RefreshToken, refreshSafety.Token);
+            await GoogleAccountProvisioner.PersistRotationAsync(db, cache, account.Id, tokens);
 
             _refreshRetryAt.TryRemove(account.Id, out _);
             _logger.LogInformation("Google account {Id} token refreshed", account.Id);
@@ -166,7 +155,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
             if (IsInvalidGrantFailure(ex, out var reason))
             {
                 var retryAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
-                _refreshRetryAt[account.Id] = retryAt;
+                _refreshRetryAt[account.Id] = (retryAt, account.AccessToken, account.RefreshToken);
                 _logger.LogWarning(
                     "Google 账号 [{Name}] (Id: {Id}) Token 刷新失败：{Reason}，已暂停重试至 {RetryAt}。若需使用请在账号管理中重新授权登录。",
                     accountName,
@@ -177,7 +166,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
             else if (IsForbiddenRefreshFailure(ex))
             {
                 var retryAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
-                _refreshRetryAt[account.Id] = retryAt;
+                _refreshRetryAt[account.Id] = (retryAt, account.AccessToken, account.RefreshToken);
                 _logger.LogWarning(
                     "Google 账号 [{Name}] (Id: {Id}) Token 刷新被上游拒绝 (403 Forbidden)，已暂时跳过重试至 {RetryAt}",
                     accountName,
@@ -196,7 +185,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
     private bool ShouldBackoffRefresh(Guid accountId, DateTimeOffset now)
     {
         if (!_refreshRetryAt.TryGetValue(accountId, out var retryAt)) return false;
-        if (retryAt > now) return true;
+        if (retryAt.RetryAt > now) return true;
         _refreshRetryAt.TryRemove(accountId, out _);
         return false;
     }

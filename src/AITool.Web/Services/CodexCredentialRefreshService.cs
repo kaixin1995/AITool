@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
 using AITool.Infrastructure.Common;
@@ -15,6 +16,7 @@ public sealed class CodexCredentialRefreshService
     /// </summary>
     private static readonly KeyedAsyncLock RefreshLocks = new();
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly ICodexOAuthClient _oauth;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -24,56 +26,43 @@ public sealed class CodexCredentialRefreshService
         AppDbContext dbContext,
         ICodexOAuthClient oauth,
         ProxyRequestMetadataCache metadataCache,
-        ILogger<CodexCredentialRefreshService> logger)
+        ILogger<CodexCredentialRefreshService> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _oauth = oauth;
         _metadataCache = metadataCache;
         _logger = logger;
     }
 
-    public async Task<string?> RefreshAsync(
-        Guid linkedSiteId,
-        string staleAccessToken,
-        CancellationToken cancellationToken)
+    public async Task<string?> RefreshForAccountAsync(Guid accountId, string staleAccessToken, CancellationToken cancellationToken)
     {
-        // 锁获取与前置检查仍受调用方取消约束：此时尚未发出任何刷新请求，取消是安全的。
-        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
+        using (await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", accountId, cancellationToken))
         {
-            var account = (await _dbContext.CodexAccounts
-                .Where(item => item.LinkedSiteId == linkedSiteId)
-                .ToListAsync(cancellationToken))
-                .FirstOrDefault();
-            if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken))
-            {
-                return null;
-            }
-
-            // 其他请求已经完成刷新时直接复用新 token，避免重复轮换。
-            if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal))
-            {
-                return account.AccessToken;
-            }
-
-            // 关键段：OpenAI 每次刷新都会轮换 refresh_token，刷新请求一旦发出，旧 token 即被消费。
-            // 此后即使调用方（代理请求）已断开，也必须等响应落盘完成——否则新 token 丢失、旧 token 作废，
-            // 账号将因 refresh_token_reused 永久失效。因此本段改用内部超时令牌，与调用方取消隔离。
+            var account = await _dbContext.CodexAccounts.InSingleAsync(accountId);
+            if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken)) return null;
+            if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)) return account.AccessToken;
             using var coreCts = new CancellationTokenSource(RefreshSafetyTimeout);
-            try
-            {
-                return await RefreshAndPersistAsync(account, coreCts.Token);
-            }
-            catch (OperationCanceledException exception) when (coreCts.IsCancellationRequested)
-            {
-                _logger.LogWarning(exception,
-                    "Codex token refresh for linked site {SiteId} exceeded {Timeout}s safety timeout", linkedSiteId, RefreshSafetyTimeout.TotalSeconds);
-                return null;
-            }
-            catch (Exception exception)
-            {
-                _logger.LogWarning(exception, "Unable to refresh Codex token for linked site {SiteId}", linkedSiteId);
-                return null;
-            }
+            return await RefreshAndPersistAsync(account, coreCts.Token);
+        }
+    }
+
+    public async Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
+    {
+        if (linkedSiteId == Guid.Empty) return null;
+        var accounts = await _dbContext.CodexAccounts.Where(a => a.LinkedSiteId == linkedSiteId)
+            .ToListAsync(cancellationToken);
+        if (accounts.Count != 1) return null;
+        try
+        {
+            return await RefreshForAccountAsync(accounts[0].Id, staleAccessToken, cancellationToken);
+        }
+        catch (NetworkPolicyException) { throw; }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Unable to refresh Codex token for linked site {SiteId}", linkedSiteId);
+            return null;
         }
     }
 
@@ -84,7 +73,8 @@ public sealed class CodexCredentialRefreshService
         CodexAccount account,
         CancellationToken cancellationToken)
     {
-        var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken!, cancellationToken);
+        using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "credential-refresh");
+        var tokens = await (network?.CodexOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken!, cancellationToken);
         await _dbContext.SerialExecuteAsync(async () =>
         {
             if (!string.IsNullOrWhiteSpace(tokens.AccessToken))

@@ -37,6 +37,17 @@ public static class EgressProxyValidator
             return true;
         }
 
+        if (trimmed.StartsWith("profile:", StringComparison.OrdinalIgnoreCase))
+        {
+            if (Guid.TryParse(trimmed["profile:".Length..], out var profileId) && profileId != Guid.Empty)
+            {
+                errorMessage = null;
+                return true;
+            }
+            errorMessage = "出口代理方案引用必须包含有效的方案 ID";
+            return false;
+        }
+
         if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
         {
             errorMessage = "出口网络代理地址不是合法的绝对 URL，例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:10808";

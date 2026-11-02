@@ -35,17 +35,20 @@ public sealed class AiAssistantService
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IProxyForwardService _forwardService;
     private readonly ILogger<AiAssistantService> _logger;
+    private readonly IAuxiliarySessionPreparation? _sessionPreparation;
 
     public AiAssistantService(
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
         IProxyForwardService forwardService,
-        ILogger<AiAssistantService> logger)
+        ILogger<AiAssistantService> logger,
+        IAuxiliarySessionPreparation? sessionPreparation = null)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _forwardService = forwardService;
         _logger = logger;
+        _sessionPreparation = sessionPreparation;
     }
 
     /// <summary>一次 AI 调用的结果。业务失败（未配置/上游失败）以 Success=false 表达，不抛异常。</summary>
@@ -115,6 +118,31 @@ public sealed class AiAssistantService
 
         try
         {
+            // Read the raw source, rather than the cache's null-to-empty projection; the
+            // send-time credential resolver independently validates the current site owner.
+            var site = await _dbContext.Sites.FirstAsync(x => x.Id == target.SiteId, cancellationToken);
+            if (site is null)
+                return AiAssistantResult.Fail("配置的默认 AI 站点已不存在，请重新选择");
+            // A managed site without its linked owner must never fall back to ordinary egress.
+            if (!string.IsNullOrWhiteSpace(site.ManagedSource) && target.AccountIdentity is null)
+            {
+                throw new AITool.Application.Networking.NetworkPolicyException(
+                    "managed_account_identity_unavailable", "Managed account identity is unavailable.");
+            }
+
+            if (target.AccountIdentity is { } account)
+            {
+                // Server-owned one-shot operation; the scope is trusted and any configured
+                // session fields are scoped to this account. Reuse the result across retries.
+                var sessionPreparation = _sessionPreparation ?? throw new InvalidOperationException(
+                    "Managed account session preparation is unavailable.");
+                var session = await sessionPreparation.PrepareAsync("admin:ai-assistant", account,
+                    target.ProtocolType, isAntigravity, chatRequestBody, preparedRequestBody,
+                    forwardHeaders, cancellationToken);
+                preparedRequestBody = session.PreparedRequestBody;
+                forwardHeaders = session.ForwardHeaders;
+            }
+
             // 思考型模型（GLM/DeepSeek 等）偶发把输出预算全部耗在推理上、正文为空（finish=length），
             // 属瞬态现象：同一请求重试通常即可命中。空内容自动重试一次，仍为空才判失败。
             for (var attempt = 1; ; attempt++)
@@ -131,8 +159,11 @@ public sealed class AiAssistantService
                     EnableStreaming = false,
                     RequestTimeoutSeconds = Math.Max(MinTimeoutSeconds, runtimeSettings.ProxyRequestTimeoutSeconds),
                     RetryCount = 0,
-                    ForwardHeaders = forwardHeaders,
+                    ForwardHeaders = new Dictionary<string, string>(forwardHeaders, StringComparer.OrdinalIgnoreCase),
                     EgressProxyUrl = target.EgressProxyUrl,
+                    SiteId = target.SiteId,
+                    ManagedSource = site.ManagedSource,
+                    AccountIdentity = target.AccountIdentity,
                     TargetPath = isGeminiRoute
                         ? "/v1internal:generateContent"
                         : string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)

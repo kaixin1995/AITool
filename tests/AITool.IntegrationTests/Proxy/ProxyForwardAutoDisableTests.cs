@@ -19,6 +19,7 @@ public sealed class ProxyForwardAutoDisableTests
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = "https://example.com",
+            AllowNonSiteTarget = true,
             TargetPath = "/v1/chat/completions",
             TargetApiKey = "token",
             ProtocolType = "OpenAI",
@@ -51,6 +52,7 @@ public sealed class ProxyForwardAutoDisableTests
             new ProxyForwardRequest
             {
                 TargetBaseUrl = "https://example.com",
+                AllowNonSiteTarget = true,
                 TargetPath = "/v1/chat/completions",
                 TargetApiKey = "token",
                 ProtocolType = "OpenAI",

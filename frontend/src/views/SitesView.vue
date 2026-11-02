@@ -72,16 +72,14 @@ async function loadProxyProfiles(): Promise<void> {
 }
 
 const proxyProfileOptions = computed(() => {
-  const options = [{ label: '直连 (默认不使用代理)', value: '' }]
-  if (proxyProfiles.value && proxyProfiles.value.length > 0) {
-    for (const p of proxyProfiles.value) {
-      if (p.isEnabled) {
-        options.push({
-          label: `🌐 ${p.name} (${p.proxyUrl})`,
-          value: p.proxyUrl
-        })
-      }
-    }
+  const options: Array<{ label: string; value: string; disabled?: boolean }> = [{ label: '直连 (默认不使用代理)', value: '' }]
+  for (const p of proxyProfiles.value) {
+    options.push({ label: p.name + (p.isEnabled ? '' : '（已停用）'), value: 'profile:' + p.id, disabled: !p.isEnabled })
+  }
+  // Preserve old URLs/keys verbatim; never silently convert or clear an existing binding.
+  const current = form.egressProxyUrl
+  if (current && !options.some(p => p.value === current)) {
+    options.push({ label: current.startsWith('profile:') ? '当前方案不可用（保留现值）' : '历史代理配置（保留现值）', value: current })
   }
   return options
 })

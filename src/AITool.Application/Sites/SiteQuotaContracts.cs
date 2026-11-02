@@ -120,7 +120,10 @@ public sealed record SiteQuotaBalanceConfig(
 /// </summary>
 public sealed record SiteQuotaSiteContext(
     string BaseUrl,
-    SiteQuotaBalanceConfig? Balance);
+    SiteQuotaBalanceConfig? Balance,
+    string? EgressProxyUrl = null,
+    AITool.Application.Networking.AccountIdentity? AccountIdentity = null,
+    Guid? SiteKeyId = null);
 
 /// <summary>
 /// 站点套餐额度供应商扩展点：按 base_url 识别站点所属供应商，并用站点密钥查询套餐额度。

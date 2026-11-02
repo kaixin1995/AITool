@@ -1,6 +1,11 @@
 using System.Data.Common;
 using System.Net.Http;
 using AITool.Application.Accounts;
+using AITool.Application.Networking;
+using AITool.Infrastructure.Networking;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
+using Microsoft.Extensions.Options;
 using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Application.Google;
@@ -202,6 +207,29 @@ var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
 // 注册 SqlSugar 数据访问层（SqlSugarScope 单例 + AppDbContext 适配），连接级 PRAGMA 与原 EF 配置一致。
 builder.Services.AddSqlSugar(connectionString);
+
+// The persistent key ring follows the effective database (including test DI replacements).
+builder.Services.AddDataProtection().SetApplicationName("AITool.NetworkSecurity.v1");
+builder.Services.AddSingleton<IConfigureOptions<KeyManagementOptions>, NetworkKeyRingConfiguration>();
+builder.Services.AddSingleton<ProxyProfileSecretService>();
+builder.Services.AddSingleton<AccountNetworkPolicyStore>();
+builder.Services.AddSingleton<IAccountNetworkPolicyStore>(sp => sp.GetRequiredService<AccountNetworkPolicyStore>());
+builder.Services.AddSingleton<IAccountNetworkPolicyResolver>(sp => sp.GetRequiredService<AccountNetworkPolicyStore>());
+if (builder.Environment.IsEnvironment("Testing"))
+    builder.Services.AddSingleton<INetworkTransport, TestingNetworkTransport>();
+else
+    builder.Services.AddSingleton<INetworkTransport, NetworkTransport>();
+builder.Services.AddSingleton<AccountNetworkClientFactory>();
+builder.Services.AddSingleton<IForwardNetworkPolicyResolver, ForwardNetworkPolicyResolver>();
+builder.Services.AddSingleton<IForwardCredentialResolver, ForwardCredentialResolver>();
+builder.Services.AddSingleton<NetworkBoundOAuthClientFactory>();
+builder.Services.AddSingleton<NetworkBoundDeviceOAuthVendorFactory>();
+builder.Services.AddSingleton<SessionIsolationKeyStore>();
+builder.Services.AddSingleton<SessionIsolationDeriver>();
+builder.Services.AddSingleton<AccountSessionIsolationService>();
+builder.Services.AddSingleton<IAuxiliarySessionPreparation, AuxiliarySessionPreparation>();
+builder.Services.AddSingleton<IUpstreamReferenceOwnerStore, UpstreamReferenceOwnerStore>();
+builder.Services.AddSingleton<IUpstreamReferenceGuard, UpstreamReferenceGuard>();
 
 // 注册代理转发配置，统一控制单路由超时和失败重试策略。
 builder.Services.Configure<ProxyForwardingOptions>(
@@ -502,6 +530,9 @@ using (var scope = app.Services.CreateScope())
     // CodeFirst 建表 + 补齐历史库缺失列（差量更新，只增不删）+ 持久化 PRAGMA（WAL、synchronous）。
     // 替代原 EF 的 EnsureCreated + 手写 ALTER TABLE 升级脚本：SqlSugar 的 InitTables 会自动补齐缺失列。
     SqlSugarSetup.InitializeDatabase(sqlSugarClient, dbInitLogger);
+    await scope.ServiceProvider.GetRequiredService<ProxyProfileSecretService>()
+        .MigrateLegacyCredentialsAsync(scope.ServiceProvider.GetRequiredService<AppDbContext>());
+    await scope.ServiceProvider.GetRequiredService<SessionIsolationKeyStore>().EnsureInitializedAsync();
 
     // 预热 SiteUsageTracker：从 DB 读每个 Site 最近一次使用时间，避免重启后历史丢失。
     var siteUsageTracker = scope.ServiceProvider.GetRequiredService<SiteUsageTracker>();
@@ -557,12 +588,13 @@ if (!app.Environment.IsEnvironment("Testing"))
             {
                 var requestBody = await HttpLogFormatter.ReadRequestBodyPreviewAsync(context.Request, context.RequestAborted);
 
-                logger.LogError(feature.Error,
+                var sensitiveNetworkConfiguration = HttpLogFormatter.IsSensitiveNetworkConfiguration(context.Request);
+                logger.LogError(sensitiveNetworkConfiguration ? null : feature.Error,
                     "未处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
                     context.Request.Path,
                     context.Request.Method,
                     context.TraceIdentifier,
-                    context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty,
+                    sensitiveNetworkConfiguration ? "<omitted>" : context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty,
                     HttpLogFormatter.FormatBody(requestBody));
             }
 

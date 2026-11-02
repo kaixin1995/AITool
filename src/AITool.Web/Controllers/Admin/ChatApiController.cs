@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
@@ -329,6 +330,10 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
+    private readonly IForwardNetworkPolicyResolver? _networkPolicies;
+    private readonly INetworkTransport? _networkTransport;
+    private readonly AccountSessionIsolationService? _sessionIsolation;
+    private AccountSessionIsolationContext? _sessionContext;
 
     /// <summary>
     /// 创建调试对话控制器。
@@ -341,7 +346,10 @@ public sealed class ChatApiController : ControllerBase
         ProxyRequestMetadataCache metadataCache,
         IHttpClientFactory httpClientFactory,
         ModelConcurrencyLimiter concurrencyLimiter,
-        GoogleCredentialRefreshService googleCredentialRefreshService)
+        GoogleCredentialRefreshService googleCredentialRefreshService,
+        IForwardNetworkPolicyResolver? networkPolicies = null,
+        INetworkTransport? networkTransport = null,
+        AccountSessionIsolationService? sessionIsolation = null)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
@@ -351,6 +359,29 @@ public sealed class ChatApiController : ControllerBase
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
         _googleCredentialRefreshService = googleCredentialRefreshService;
+        _networkPolicies = networkPolicies;
+        _networkTransport = networkTransport;
+        _sessionIsolation = sessionIsolation;
+    }
+
+    private void CaptureSession(string originalBody)
+    {
+        var scope = "admin:" + (User?.FindFirst("sub")?.Value
+            ?? User?.FindFirst(global::System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "admin");
+        _sessionContext = AccountSessionIsolationService.Capture(scope,
+            HttpContext?.Request.Headers ?? new HeaderDictionary(), originalBody, Guid.NewGuid().ToString("N"));
+    }
+
+    private async Task<ProxyForwardRequest> PrepareForwardAsync(ProxyForwardRequest request, CancellationToken ct)
+    {
+        if (_sessionIsolation is null) return request;
+        if (_sessionContext is null) CaptureSession(request.RequestBody);
+        var isolated = await _sessionIsolation.ApplyAsync(_sessionContext!, request.AccountIdentity,
+            request.ProtocolType, ProxyProtocolBridge.IsAntigravityTarget(request.TargetBaseUrl),
+            request.PreparedRequestBody ?? request.RequestBody, request.ForwardHeaders, ct);
+        request.PreparedRequestBody = isolated.PreparedRequestBody;
+        request.ForwardHeaders = isolated.ForwardHeaders;
+        return request;
     }
 
     private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
@@ -418,6 +449,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpPost("send")]
     public async Task<IActionResult> Send([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
+        CaptureSession(JsonSerializer.Serialize(request));
         if (string.IsNullOrWhiteSpace(request.Message))
             return BadRequest(new { message = "消息不能为空" });
 
@@ -506,7 +538,7 @@ public sealed class ChatApiController : ControllerBase
                     route.GoogleProjectId,
                     isAntigravity);
 
-                var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+                var forwardResult = await _forwardService.ForwardAsync(await PrepareForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
                     TargetEndpointPathMode = route.EndpointPathMode,
@@ -521,13 +553,15 @@ public sealed class ChatApiController : ControllerBase
                     RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
                     ForwardHeaders = chatForwardHeaders,
                     EgressProxyUrl = route.EgressProxyUrl,
+                    AccountIdentity = route.AccountIdentity,
+                    SiteId = route.SiteId, ManagedSource = route.ManagedSource,
                     DisableTargetCredentialAsync = CreateCredentialDisableCallback(route.ManagedSource, route.SiteId),
                     TargetPath = isGeminiRoute
                         ? "/v1internal:generateContent"
                         : string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                             ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
                             : null
-                }, cancellationToken);
+                }, cancellationToken), cancellationToken);
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
                 var canFallback = !forwardResult.Success
@@ -594,6 +628,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpPost("send-stream")]
     public async Task SendStream([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
+        CaptureSession(JsonSerializer.Serialize(request));
         Response.StatusCode = StatusCodes.Status200OK;
         Response.ContentType = "text/event-stream; charset=utf-8";
         Response.Headers.CacheControl = "no-cache, no-transform";
@@ -692,7 +727,8 @@ public sealed class ChatApiController : ControllerBase
                     route.GoogleProjectId,
                     ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)),
                 cancellationToken,
-                googleProjectId: route.GoogleProjectId);
+                googleProjectId: route.GoogleProjectId,
+                egressProxyUrl: route.EgressProxyUrl, accountIdentity: route.AccountIdentity, siteId: route.SiteId, managedSource: route.ManagedSource);
 
             var attemptResult = BuildAttemptResult(
                 attemptIndex,
@@ -851,6 +887,11 @@ public sealed class ChatApiController : ControllerBase
             SiteModelName = selectedTarget.SiteModelName,
             // ExtraHeaders 必须复制：Codex 的 Originator / Chatgpt-Account-Id / User-Agent，
             // 缺失会让上游请求不带任何 Codex 专属头，触发 Cloudflare 拦截页。
+            ClientEmulation = selectedTarget.ClientEmulation,
+            EgressProxyUrl = selectedTarget.EgressProxyUrl,
+            AccountIdentity = selectedTarget.AccountIdentity,
+            GoogleProjectId = selectedTarget.GoogleProjectId,
+            ManagedSource = selectedTarget.ManagedSource,
             ExtraHeaders = selectedTarget.ExtraHeaders
         };
     }
@@ -922,7 +963,7 @@ public sealed class ChatApiController : ControllerBase
             mapping.GoogleProjectId,
             isMappingAntigravity);
 
-        var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+        var forwardResult = await _forwardService.ForwardAsync(await PrepareForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = mapping.BaseUrl,
             TargetEndpointPathMode = mapping.EndpointPathMode,
@@ -937,13 +978,15 @@ public sealed class ChatApiController : ControllerBase
                     RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
             ForwardHeaders = mappingForwardHeaders,
             EgressProxyUrl = mapping.EgressProxyUrl,
+            AccountIdentity = mapping.AccountIdentity,
+            SiteId = mapping.SiteId, ManagedSource = mapping.ManagedSource,
             DisableTargetCredentialAsync = CreateCredentialDisableCallback(mapping.ManagedSource, mapping.SiteId),
             TargetPath = isGeminiMapping
                 ? "/v1internal:generateContent"
                 : string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                     ? SiteEndpointPathResolver.ResolvePath(mapping.EndpointPathMode, "responses")
                     : null
-        }, cancellationToken);
+        }, cancellationToken), cancellationToken);
 
         sw.Stop();
 
@@ -1046,7 +1089,8 @@ public sealed class ChatApiController : ControllerBase
                 mapping.GoogleProjectId,
                 ProxyProtocolBridge.IsAntigravityTarget(mapping.BaseUrl)),
             cancellationToken,
-            googleProjectId: mapping.GoogleProjectId);
+            googleProjectId: mapping.GoogleProjectId,
+                egressProxyUrl: mapping.EgressProxyUrl, accountIdentity: mapping.AccountIdentity, siteId: mapping.SiteId, managedSource: mapping.ManagedSource);
 
         var attemptResult = BuildAttemptResult(
             1,
@@ -1143,7 +1187,8 @@ public sealed class ChatApiController : ControllerBase
         int requestTimeoutSeconds,
         Dictionary<string, string>? extraHeaders,
         CancellationToken cancellationToken,
-        string? googleProjectId = null)
+        string? googleProjectId = null,
+        string? egressProxyUrl = null, AccountIdentity? accountIdentity = null, Guid? siteId = null, string? managedSource = null)
     {
         // 提前构建请求体，供调用方记录到尝试详情
         // BuildChatRequestBody 内部已按协议类型完成转换（Responses 会调用 ConvertChatRequestToResponses），
@@ -1165,15 +1210,54 @@ public sealed class ChatApiController : ControllerBase
                 geminiProjectId: googleProjectId);
         }
 
-        var client = _httpClientFactory.CreateClient();
-        // 这里同样交给运行时设置控制超时，避免落回 HttpClient 默认 100 秒。
-        client.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, requestTimeoutSeconds)));
         var stopwatch = Stopwatch.StartNew();
 
         try
         {
+            var networkRequest = await PrepareForwardAsync(new ProxyForwardRequest
+            {
+                TargetBaseUrl = baseUrl, TargetEndpointPathMode = endpointPathMode,
+                TargetApiKey = apiKey, ProtocolType = protocolType, TargetModelName = targetModelName,
+                RequestBody = requestBody, PreparedRequestBody = requestBody, EnableStreaming = true,
+                EgressProxyUrl = egressProxyUrl, AccountIdentity = accountIdentity,
+                SiteId = siteId, ManagedSource = managedSource,
+                ForwardHeaders = extraHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            }, timeoutCts.Token);
+            requestBody = networkRequest.PreparedRequestBody!;
+            extraHeaders = networkRequest.ForwardHeaders;
+            var credentialResolver = HttpContext.RequestServices.GetService<IForwardCredentialResolver>()
+                ?? throw new InvalidOperationException("Forward credential resolver is unavailable.");
+            ForwardCredentialLease credential;
+            try { credential = await credentialResolver.ResolveAsync(networkRequest, timeoutCts.Token); }
+            catch (OperationCanceledException) { throw new OperationCanceledException(timeoutCts.Token); }
+            catch (Exception) { throw new NetworkPolicyException("forward_credential_invalid", "Forward credential validation failed."); }
+            using var ownedCredential = credential;
+            INetworkTransportLease? acquired = null;
+            HttpClient? defaultClient = null;
+            try
+            {
+                if (_networkPolicies is not null)
+                {
+                    var policy = await _networkPolicies.ResolveAsync(networkRequest, timeoutCts.Token);
+                    if (!policy.UseDefaultClient)
+                        acquired = await (_networkTransport ?? throw new InvalidOperationException("Network transport is unavailable."))
+                            .AcquireAsync(policy.Configuration, policy.IsolationKey, "admin-chat-stream", timeoutCts.Token);
+                }
+                else if (accountIdentity is not null || !string.IsNullOrWhiteSpace(egressProxyUrl))
+                    throw new InvalidOperationException("Network policy resolver is unavailable.");
+            }
+            catch (OperationCanceledException) { throw new OperationCanceledException(timeoutCts.Token); }
+            catch (Exception) { throw new NetworkPolicyException("forward_network_policy_failed", "Forward network policy validation failed."); }
+            await using var lease = acquired;
+            if (lease is null)
+            {
+                defaultClient = _httpClientFactory.CreateClient();
+                defaultClient.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
+            }
+            using var ownedClient = defaultClient;
+            var client = lease?.Client ?? defaultClient!;
             var targetUrl = isGeminiStream
                 ? $"{baseUrl.TrimEnd('/')}/v1internal:streamGenerateContent?alt=sse"
                 : string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
@@ -1186,27 +1270,33 @@ public sealed class ChatApiController : ControllerBase
                 Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
             };
 
-            if (protocolType == "Anthropic")
+            Task<HttpResponseMessage> sendTask;
             {
-                httpRequest.Headers.Add("x-api-key", apiKey);
-                httpRequest.Headers.Add("anthropic-version", "2023-06-01");
-            }
-            else
-            {
-                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            }
-
-            // 注入引擎已解析的转发头（含客户端仿真特征/模板方案/Gemini 预设），
-            // 调用方经 ClientEmulationEngine.ResolveHeaders 生成，此处无需再叠加 Gemini 专用头。
-            if (extraHeaders != null && extraHeaders.Count > 0)
-            {
-                foreach (var header in extraHeaders)
+                var sendKey = credential.UseResolvedApiKey ? credential.ApiKey : apiKey;
+                if (protocolType == "Anthropic")
                 {
-                    httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    foreach (var (name, value) in ProxyForwardService.ResolveAnthropicAuthHeaders(sendKey, networkRequest.ForwardHeaders))
+                        httpRequest.Headers.TryAddWithoutValidation(name, value);
+                    httpRequest.Headers.Add("anthropic-version", "2023-06-01");
                 }
-            }
+                else
+                {
+                    httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", sendKey);
+                }
 
-            using var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                if (extraHeaders != null)
+                {
+                    foreach (var header in extraHeaders)
+                    {
+                        if (credential.IsDeviceOAuth && (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(header.Key, "x-api-key", StringComparison.OrdinalIgnoreCase))) continue;
+                        httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    }
+                }
+                sendTask = client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            }
+            credential.Dispose(); // The gate protects initiation, not response or SSE consumption.
+            using var response = await sendTask;
             if (!response.IsSuccessStatusCode)
             {
                 stopwatch.Stop();

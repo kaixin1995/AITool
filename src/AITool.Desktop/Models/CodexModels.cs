@@ -18,6 +18,23 @@ public partial class CodexAccount : ObservableObject
     public int? ResetCreditsAvailableCount { get; set; }
     public List<CodexQuotaWindow>? Windows { get; set; }
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(NetworkModeText))]
+    private AccountNetworkPolicy? _networkPolicy;
+
+    [ObservableProperty]
+    private string _networkPolicyStatus = "网络策略尚未加载（未更改）";
+
+    public string NetworkModeText => NetworkPolicy?.NetworkSelection is not { } selection
+        ? "网络：未知（不推断为 Direct）"
+        : selection.Mode switch
+        {
+            0 => "网络：Legacy（兼容旧策略）",
+            1 => "网络：Direct（显式直连）",
+            2 => $"网络：Profile · {NetworkPolicy.ProxyProfileName ?? "未命名配置"} · {selection.ProxyProfileId}",
+            _ => $"网络：未知模式 {selection.Mode}（保留）"
+        };
+
     // —— Google 账号（Antigravity）扩展字段；Codex 账号为空 ——
     public string? AccountKind { get; set; }
     public string? ProjectId { get; set; }

@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Text.Json;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
@@ -15,6 +16,7 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
     /// <summary>无明确恢复时间时的默认冷却时长。</summary>
     private static readonly TimeSpan DefaultCooldown = TimeSpan.FromMinutes(30);
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly ICodexOAuthClient _oauth;
@@ -24,8 +26,10 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
         ICodexOAuthClient oauth,
-        ILogger<CodexQuotaCooldownService> logger)
+        ILogger<CodexQuotaCooldownService> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _oauth = oauth;
@@ -93,9 +97,14 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
         {
             // 段 A：上游刷新（HTTP，随调用方取消）。
             CodexTokenSet? tokens = null;
+            using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", account.Id, ct);
+            account = await queryClient.Queryable<CodexAccount>().InSingleAsync(account.Id) ?? account;
+            if (string.IsNullOrWhiteSpace(account.RefreshToken))
+                throw new InvalidOperationException("账号没有 refresh_token");
             try
             {
-                tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
+                using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "quota-reset-token-refresh");
+                tokens = await (network?.CodexOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken, ct);
             }
             catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
             {

@@ -1,4 +1,5 @@
 import { httpGet, httpPost, httpDelete, httpPut } from './http'
+import { withNetworkSelectionQuery, type AccountNetworkSelection } from './accountNetwork'
 
 // 通用额度窗口（进度条数据），与后端 OAuth 账号额度提供程序返回结果对齐。
 export interface OAuthQuotaWindow {
@@ -102,11 +103,12 @@ export interface OAuthCredentialImportResult {
 }
 
 export async function importCredential(
-  jsonText: string
+  jsonText: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<OAuthCredentialImportResult> {
   // 文本导入提供稳定文件名，保持旧页面的默认账号名称。
   const result = await httpPost<Partial<OAuthCredentialImportResult>>(
-    '/api/admin/oauth/import-credential?name=imported.json',
+    withNetworkSelectionQuery('/api/admin/oauth/import-credential?name=imported.json', networkSelection),
     JSON.parse(jsonText)
   )
   return {
@@ -116,12 +118,13 @@ export async function importCredential(
 }
 
 export async function importCredentialFiles(
-  files: File[]
+  files: File[],
+  networkSelection?: AccountNetworkSelection
 ): Promise<OAuthCredentialImportResult> {
   const form = new FormData()
   files.forEach(file => form.append('files', file))
   const result = await httpPost<Partial<OAuthCredentialImportResult>>(
-    '/api/admin/oauth/import-credential',
+    withNetworkSelectionQuery('/api/admin/oauth/import-credential', networkSelection),
     form,
     { headers: { 'Content-Type': 'multipart/form-data' } }
   )
@@ -156,9 +159,9 @@ export async function exportCredentials(
     { accountIds }
   )
 }
-export async function startOAuth(): Promise<{ url: string; state: string }> {
+export async function startOAuth(networkSelection?: AccountNetworkSelection): Promise<{ url: string; state: string }> {
   // 后端返回字段名为 url（不是 authorizeUrl）
-  return httpPost<{ url: string; state: string }>('/api/admin/oauth/start-oauth', {})
+  return httpPost<{ url: string; state: string }>('/api/admin/oauth/start-oauth', { ...(networkSelection ? { networkSelection } : {}) })
 }
 export async function completeOAuth(callbackUrl: string, displayName?: string): Promise<void> {
   await httpPost('/api/admin/oauth/complete-oauth', { callbackUrl, displayName })
@@ -288,9 +291,10 @@ export async function listGoogleAccounts(): Promise<GoogleAccountSummary[]> {
   return httpGet<GoogleAccountSummary[]>('/api/admin/google-accounts/accounts')
 }
 export async function startGoogleOAuth(
-  kind: GoogleAccountKind
+  kind: GoogleAccountKind,
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ url: string; state: string }> {
-  return httpPost<{ url: string; state: string }>('/api/admin/google-accounts/start-oauth', { kind })
+  return httpPost<{ url: string; state: string }>('/api/admin/google-accounts/start-oauth', { kind, ...(networkSelection ? { networkSelection } : {}) })
 }
 export async function completeGoogleOAuth(
   kind: GoogleAccountKind,
@@ -305,10 +309,11 @@ export async function completeGoogleOAuth(
 }
 export async function importGoogleCredential(
   kind: GoogleAccountKind,
-  jsonText: string
+  jsonText: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
   const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
-    `/api/admin/google-accounts/import-credential?kind=${encodeURIComponent(kind)}&name=imported.json`,
+    withNetworkSelectionQuery(`/api/admin/google-accounts/import-credential?kind=${encodeURIComponent(kind)}&name=imported.json`, networkSelection),
     JSON.parse(jsonText)
   )
   return {
@@ -370,6 +375,7 @@ export interface KimiAccountSummary {
 }
 
 export interface KimiDeviceCodeResponse {
+  serverSessionId?: string
   deviceCode: string
   userCode: string
   verificationUri: string
@@ -392,20 +398,23 @@ export async function listKimiAccounts(): Promise<KimiAccountSummary[]> {
 }
 
 export async function startKimiDeviceFlow(
-  deviceId?: string
+  deviceId?: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<KimiDeviceCodeResponse> {
-  return httpPost<KimiDeviceCodeResponse>('/api/admin/kimi-accounts/start-device-flow', { deviceId })
+  return httpPost<KimiDeviceCodeResponse>('/api/admin/kimi-accounts/start-device-flow', { deviceId, ...(networkSelection ? { networkSelection } : {}) })
 }
 
 export async function pollKimiToken(
   deviceCode: string,
   deviceId?: string,
-  displayName?: string
+  displayName?: string,
+  serverSessionId?: string
 ): Promise<KimiPollTokenResponse> {
   return httpPost<KimiPollTokenResponse>('/api/admin/kimi-accounts/poll-token', {
     deviceCode,
     deviceId,
-    displayName
+    displayName,
+    ...(serverSessionId ? { serverSessionId } : {})
   })
 }
 
@@ -458,10 +467,11 @@ export async function batchApplyKimiModels(sourceAccountId: string, selections: 
 }
 
 export async function importKimiCredential(
-  jsonText: string
+  jsonText: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
   const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
-    '/api/admin/kimi-accounts/import-credential?name=imported.json',
+    withNetworkSelectionQuery('/api/admin/kimi-accounts/import-credential?name=imported.json', networkSelection),
     JSON.parse(jsonText)
   )
   return {
@@ -471,12 +481,13 @@ export async function importKimiCredential(
 }
 
 export async function importKimiCredentialFiles(
-  files: File[]
+  files: File[],
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
   const form = new FormData()
   files.forEach(file => form.append('files', file))
   const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
-    '/api/admin/kimi-accounts/import-credential',
+    withNetworkSelectionQuery('/api/admin/kimi-accounts/import-credential', networkSelection),
     form,
     { headers: { 'Content-Type': 'multipart/form-data' } }
   )
@@ -517,6 +528,7 @@ export interface XaiAccountSummary {
 }
 
 export interface XaiDeviceCodeResponse {
+  serverSessionId?: string
   deviceCode: string
   userCode: string
   verificationUri: string
@@ -537,17 +549,19 @@ export async function listXaiAccounts(): Promise<XaiAccountSummary[]> {
   return httpGet<XaiAccountSummary[]>('/api/admin/xai-accounts/accounts')
 }
 
-export async function startXaiDeviceFlow(): Promise<XaiDeviceCodeResponse> {
-  return httpPost<XaiDeviceCodeResponse>('/api/admin/xai-accounts/start-device-flow', {})
+export async function startXaiDeviceFlow(networkSelection?: AccountNetworkSelection): Promise<XaiDeviceCodeResponse> {
+  return httpPost<XaiDeviceCodeResponse>('/api/admin/xai-accounts/start-device-flow', { ...(networkSelection ? { networkSelection } : {}) })
 }
 
 export async function pollXaiToken(
   deviceCode: string,
-  displayName?: string
+  displayName?: string,
+  serverSessionId?: string
 ): Promise<XaiPollTokenResponse> {
   return httpPost<XaiPollTokenResponse>('/api/admin/xai-accounts/poll-token', {
     deviceCode,
-    displayName
+    displayName,
+    ...(serverSessionId ? { serverSessionId } : {})
   })
 }
 
@@ -600,10 +614,11 @@ export async function batchApplyXaiModels(sourceAccountId: string, selections: O
 }
 
 export async function importXaiCredential(
-  jsonText: string
+  jsonText: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
   const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
-    '/api/admin/xai-accounts/import-credential',
+    withNetworkSelectionQuery('/api/admin/xai-accounts/import-credential', networkSelection),
     jsonText,
     { headers: { 'Content-Type': 'application/json' } }
   )

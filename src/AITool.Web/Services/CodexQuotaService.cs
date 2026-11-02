@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Net.Http.Headers;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
@@ -26,6 +27,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     /// <summary>结果缓存 TTL（防抖）。</summary>
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly HttpClient _httpClient;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -46,8 +48,10 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         CodexCredentialRefreshService credentialRefreshService,
         ICodexClientVersionResolver versionResolver,
         ILogger<CodexQuotaService> logger,
-        IQuotaRecheckScheduleStore? scheduleStore = null)
+        IQuotaRecheckScheduleStore? scheduleStore = null,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
@@ -293,7 +297,9 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                 request.Headers.TryAddWithoutValidation("Chatgpt-Account-Id", account.AccountId);
             }
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "quota");
+            if (network is not null) network.HttpClient.Timeout = _httpClient.Timeout;
+            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
 
             var info = new CodexQuotaInfo { RawJson = body, CheckedAt = DateTimeOffset.UtcNow };
@@ -301,8 +307,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             {
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
                 {
-                    var refreshedAccessToken = await _credentialRefreshService.RefreshAsync(
-                        account.LinkedSiteId,
+                    var refreshedAccessToken = await _credentialRefreshService.RefreshForAccountAsync(
+                        account.Id,
                         account.AccessToken,
                         ct);
                     if (!string.IsNullOrWhiteSpace(refreshedAccessToken))

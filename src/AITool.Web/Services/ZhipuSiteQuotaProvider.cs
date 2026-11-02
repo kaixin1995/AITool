@@ -1,3 +1,5 @@
+using AITool.Application.Networking;
+using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Infrastructure.Zhipu;
 
@@ -19,10 +21,19 @@ public sealed class ZhipuSiteQuotaProvider : ISiteQuotaProvider
     private readonly HttpClient _httpClient;
     private readonly ILogger<ZhipuSiteQuotaProvider> _logger;
 
-    public ZhipuSiteQuotaProvider(HttpClient httpClient, ILogger<ZhipuSiteQuotaProvider> logger)
+    private readonly AccountNetworkClientFactory? _accountClients;
+    private readonly IForwardNetworkPolicyResolver? _networkPolicies;
+    private readonly INetworkTransport? _networkTransport;
+
+    public ZhipuSiteQuotaProvider(HttpClient httpClient, ILogger<ZhipuSiteQuotaProvider> logger,
+        AccountNetworkClientFactory? accountClients = null, IForwardNetworkPolicyResolver? networkPolicies = null,
+        INetworkTransport? networkTransport = null)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _accountClients = accountClients;
+        _networkPolicies = networkPolicies;
+        _networkTransport = networkTransport;
     }
 
     public string ProviderKey => "zhipu";
@@ -31,19 +42,22 @@ public sealed class ZhipuSiteQuotaProvider : ISiteQuotaProvider
 
     public bool MatchesBaseUrl(string baseUrl) => ZhipuQuotaParser.MatchesBaseUrl(baseUrl);
 
-    public async Task<SiteQuotaQueryResult> QueryAsync(string baseUrl, string apiKey, CancellationToken cancellationToken)
+    public Task<SiteQuotaQueryResult> QueryAsync(string baseUrl, string apiKey, CancellationToken cancellationToken)
+        => QueryAsync(new SiteQuotaSiteContext(baseUrl, null), apiKey, cancellationToken);
+
+    public async Task<SiteQuotaQueryResult> QueryAsync(SiteQuotaSiteContext site, string apiKey, CancellationToken cancellationToken)
     {
-        var quotaBase = ZhipuQuotaParser.ResolveQuotaBase(baseUrl).TrimEnd('/');
-        var personal = await SendQuotaRequestAsync(quotaBase + ZhipuQuotaParser.QuotaPath, apiKey, cancellationToken);
+        var quotaBase = ZhipuQuotaParser.ResolveQuotaBase(site.BaseUrl).TrimEnd('/');
+        var personal = await SendQuotaRequestAsync(site, quotaBase + ZhipuQuotaParser.QuotaPath, apiKey, cancellationToken);
 
         // 密钥被拒（HTTP 401/403 或 200 信封 code 1000–1005）时团队端点同样会被拒，不重试；
         // 其余失败或个人版无窗口（团队版 key 在个人端点拿不到数据）时尝试团队端点。
         if (!personal.CredentialInvalid && !(personal.Success && personal.Windows.Count > 0))
         {
-            foreach (var root in ResolveTeamRoots(baseUrl))
+            foreach (var root in ResolveTeamRoots(site.BaseUrl))
             {
                 var teamUrl = root.TrimEnd('/') + ZhipuQuotaParser.QuotaPath + "?type=2";
-                var team = await SendQuotaRequestAsync(teamUrl, apiKey, cancellationToken);
+                var team = await SendQuotaRequestAsync(site, teamUrl, apiKey, cancellationToken);
                 if (team.Success && team.Windows.Count > 0)
                 {
                     return team with { Level = string.IsNullOrWhiteSpace(team.Level) ? TeamPlanLabel : team.Level };
@@ -73,18 +87,23 @@ public sealed class ZhipuSiteQuotaProvider : ISiteQuotaProvider
         return [own];
     }
 
-    private async Task<SiteQuotaQueryResult> SendQuotaRequestAsync(string url, string apiKey, CancellationToken cancellationToken)
+    private async Task<SiteQuotaQueryResult> SendQuotaRequestAsync(SiteQuotaSiteContext site, string url, string apiKey, CancellationToken cancellationToken)
     {
         try
         {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) timeout.CancelAfter(_httpClient.Timeout);
+            var networkToken = timeout.Token;
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             // 智谱额度接口鉴权与推理侧不同：Authorization 直接携带 API key，不加 Bearer 前缀。
             request.Headers.TryAddWithoutValidation("Authorization", apiKey.Trim());
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en");
 
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            await using var networkClient = await SiteQuotaNetworkClient.AcquireAsync(site, apiKey,
+                _httpClient, _accountClients, _networkPolicies, _networkTransport, networkToken);
+            using var response = await networkClient.Client.SendAsync(request, networkToken);
+            var body = await response.Content.ReadAsStringAsync(networkToken);
 
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized
                 or System.Net.HttpStatusCode.Forbidden)

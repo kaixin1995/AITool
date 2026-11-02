@@ -25,7 +25,7 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - **查价格**（模型页一键查询：**公开价格源优先**——models.dev 与 LiteLLM 双源拉取、本地匹配（单位统一换算为 USD/百万 tokens、第一方厂商优先、聚合前缀/思考后缀容错）；服务**完全无状态零常驻**（每次现拉现解析，内存优先，代价是每次查询数秒~数十秒）；未收录模型可 **AI 补漏**（分批查询 + 实时进度 + 可停止，单批失败不中断）；另有**一键清理**价格表中不在本地模型库的条目；结果新旧对比、确认后应用，保留峰谷配置）
 - **AI 助手**（设置页选定默认站点/模型，供「查版本 / 查价格 / AI 诊断」全系统共用；`AiAssistantService` 复用代理转发链路，支持 OpenAI/Anthropic/Responses/Gemini 四协议目标；响应提取兼容字符串/数组 content 等形态，思考型模型空正文自动重试）
 - 开发者调试（进程内环形调用追踪 + 客户端模拟器 + 并发/熔断监控 + **离线协议诊断台**（转换链路可视化/字段级对比/规则试运行/一键保存规则）+ **SQL 迁移执行**（密码确认+事务+试运行+全量审计）+ **请求头模板库**（命名档案 + 动态占位符引擎 + **AI 查最新版**：先抓官方发布源（GitHub Releases / npm / 官网 changelog）确定性数据、AI 只做归纳、版本号须出现在事实清单才采信；UA 与独立版本头（如 `x-zcode-app-version`）同步替换）+ **网络代理池**（出口代理方案管理/测速））
-- 客户端特征模拟（`ClientEmulationEngine`：请求头模板库命名档案 + `guid/nanoid/timestamp/model` 动态占位符；站点/模型库/映射三层配置，模板最底层注入、显式配置覆盖；出口代理按站点生效）
+- 客户端特征模拟（`ClientEmulationEngine`：请求头模板库命名档案 + `guid/nanoid/timestamp/model` 动态占位符；站点/模型库/映射三层配置，模板最底层注入、显式配置覆盖；出口支持站点及 OAuth 账号级配置）
 - OpenAI Responses API 代理（HTTP、WebSocket、Compact 三种模式）
 - OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；内置 Codex、Google（Antigravity）、Kimi 与 **xAI/Grok（SuperGrok）** 提供程序——xAI 为 RFC 8628 设备码登录 + grok.com gRPC-web 账单额度（protobuf 启发式解析），详见 [docs/xai-accounts.md](docs/xai-accounts.md)）
 - **Codex 客户端版本单源化**（版本号唯一来源为请求头模板库 CodexCli 档案 User-Agent，转发伪装/拉模型/查额度三路一致，配置兜底；**远端模型目录**按需从 router-for-me/models 刷新（双 URL 回退 + 校验 + 原子替换），新账号默认映射无需发版即可跟上上游新模型）
@@ -45,6 +45,7 @@ README 是全貌入口；`docs/` 下按主题提供**函数级**细节文档：
 | [docs/frontend.md](docs/frontend.md) | 前端工程：路由、页面功能、api 层、stores、composables、UI 规范 |
 | [docs/debug-tools.md](docs/debug-tools.md) | 调试工具六页签：调用追踪 / 模拟器 / 并发 / 熔断 / 协议诊断 / SQL 迁移 |
 | [docs/codex.md](docs/codex.md) | OAuth 账号托管：当前 Codex 提供程序、额度、冷却、通用巡检、credits、禁用状态矩阵 |
+| [docs/account-network-isolation.md](docs/account-network-isolation.md) | 账号级出口、代理认证与密钥备份、会话隔离及有状态引用兼容边界 |
 | [docs/google-accounts.md](docs/google-accounts.md) | Google 账号托管：GeminiCLI/Antigravity 登录、额度、Gemini 协议桥（移植自 gcli2api） |
 | [docs/xai-accounts.md](docs/xai-accounts.md) | xAI 账号托管：SuperGrok 设备码登录、gRPC-web 账单额度（protobuf 启发式解析）、协议路径（移植自 cc-switch） |
 | [docs/testing.md](docs/testing.md) | 测试体系：策略、用例清单、usage 断言口径 |

@@ -51,12 +51,59 @@ public sealed partial class OpenAiProxyController
                 break;
             }
 
-            if (!TryNormalizeResponsesWebSocketRequest(rawRequest, sessionState.LastRequestJson, sessionState.LastResponseOutputJson, out var normalizedRequest, out var errorMessage))
+            AccountSessionIsolationContext isolationContext;
+            UpstreamReferenceRestriction? referenceRestriction;
+            var exactReplay = false;
+            try
+            {
+                var rawRoot = JsonNode.Parse(rawRequest) as JsonObject;
+                var previousId = rawRoot?["previous_response_id"]?.ToString();
+                exactReplay = previousId is not null && sessionState.HasFullTranscript
+                    && previousId == sessionState.ActualLastCompletedResponseId && sessionState.LastCompletedOwner is not null;
+                try
+                {
+                    // Always validate the original wire JSON, including duplicate/invalid fields,
+                    // expiry and ownership. Only a proven local synthetic replay may bypass native replay.
+                    referenceRestriction = await ResolveReferencesAsync(accessKey.Id.ToString("D"), rawRequest, cancellationToken);
+                }
+                catch (UpstreamReferenceException ex) when (exactReplay && ex.Code == "reference_replay_required")
+                {
+                    rawRoot!.Remove("previous_response_id");
+                    referenceRestriction = await ResolveReferencesAsync(accessKey.Id.ToString("D"), rawRoot.ToJsonString(), cancellationToken);
+                }
+                if (previousId is not null && !exactReplay)
+                    throw new UpstreamReferenceException("reference_replay_required", "WebSocket continuation requires the exact last completed response and complete local history.");
+                if (exactReplay)
+                {
+                    if (referenceRestriction is not null && referenceRestriction != sessionState.LastCompletedOwner)
+                        throw new UpstreamReferenceException("reference_conflict", "References must belong to the same upstream owner.");
+                    referenceRestriction = sessionState.LastCompletedOwner;
+                }
+                isolationContext = AccountSessionIsolationService.Capture(accessKey.Id.ToString("D"), Request.Headers,
+                    rawRequest, sessionState.ConnectionSeed);
+            }
+            catch (UpstreamReferenceException ex)
+            {
+                await WriteResponsesWebSocketErrorAsync(webSocket, 400, ex.Code + ": " + ex.Message, cancellationToken);
+                continue;
+            }
+            catch (JsonException)
+            {
+                await WriteResponsesWebSocketErrorAsync(webSocket, 400, "Invalid JSON request.", cancellationToken);
+                continue;
+            }
+            if (!TryNormalizeResponsesWebSocketRequest(rawRequest,
+                sessionState.HasFullTranscript ? sessionState.LastRequestJson : string.Empty,
+                sessionState.HasFullTranscript ? sessionState.LastResponseOutputJson : "[]", out var normalizedRequest, out var errorMessage))
             {
                 await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status400BadRequest, errorMessage ?? "WebSocket 请求无效，请检查请求格式", cancellationToken);
                 continue;
             }
 
+            try
+            {
+            // A failed turn invalidates replay state until a new complete transcript is observed.
+            sessionState.HasFullTranscript = false;
             var turnCompleted = await ProcessResponsesWebSocketTurnAsync(
                 webSocket,
                 accessKey.Id,
@@ -65,11 +112,19 @@ public sealed partial class OpenAiProxyController
                 rawRequest,
                 normalizedRequest!,
                 sessionState,
+                isolationContext,
+                referenceRestriction,
                 cancellationToken);
 
             if (!turnCompleted)
             {
                 continue;
+            }
+            }
+            catch (UpstreamReferenceException ex)
+            {
+                sessionState.HasFullTranscript = false;
+                await TryWriteResponsesWebSocketErrorAsync(webSocket, 400, ex.Code + ": " + ex.Message, cancellationToken);
             }
         }
 
@@ -103,6 +158,15 @@ public sealed partial class OpenAiProxyController
     /// </summary>
     private async Task<IActionResult> ResponsesCore(CancellationToken cancellationToken, bool isCompact)
     {
+        try { return await ResponsesCoreGuarded(cancellationToken, isCompact); }
+        catch (UpstreamReferenceException ex)
+        {
+            return Response.HasStarted ? new EmptyResult() : ReferenceError(ex);
+        }
+    }
+
+    private async Task<IActionResult> ResponsesCoreGuarded(CancellationToken cancellationToken, bool isCompact)
+    {
         using var reader = new StreamReader(Request.Body, Encoding.UTF8);
         var requestBody = await reader.ReadToEndAsync(cancellationToken);
 
@@ -128,6 +192,13 @@ public sealed partial class OpenAiProxyController
             return Unauthorized(new { error = new { message = "访问密钥无效或缺失，请在请求头中携带有效的 Authorization Bearer 令牌", type = "authentication_error", code = "invalid_access_key" } });
         }
 
+        var isolationContext = AccountSessionIsolationService.Capture(accessKey.Id.ToString("D"), Request.Headers, requestBody);
+        UpstreamReferenceRestriction? referenceRestriction;
+        try
+        {
+            referenceRestriction = await ResolveReferencesAsync(accessKey.Id.ToString("D"), requestBody, cancellationToken);
+        }
+        catch (UpstreamReferenceException ex) { return ReferenceError(ex); }
         var requestSource = ResolveRequestSource(Request);
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
         var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "Responses", modelName, requestBody);
@@ -151,8 +222,17 @@ public sealed partial class OpenAiProxyController
         }
 
         // 路由候选策略（全部默认关闭）：会话亲和把上次成功候选挪到最前，配额排序按「最早重置优先」。
-        var conversationKey = ResolveConversationKeySafely(runtimeSettings, Request, modelName, requestBody);
+        allRoutes = await RestrictReferenceRoutesAsync(allRoutes, referenceRestriction, cancellationToken);
+        if (referenceRestriction is not null && allRoutes.Count == 0)
+            return ReferenceError(new UpstreamReferenceException("reference_owner_mismatch", "The reference owner is not available in the authorized route."));
+        var conversationKey = AccountSessionIsolationService.ScopeAffinity(accessKey.Id.ToString("D"),
+            ResolveConversationKeySafely(runtimeSettings, Request, modelName, requestBody));
         allRoutes = await PreorderRoutesByPolicyAsync(allRoutes, runtimeSettings, conversationKey, cancellationToken);
+        if (HasPreviousResponseReference(requestBody) && allRoutes.Any(r =>
+            string.Equals(r.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
+            || ProxyProtocolBridge.IsCodexTarget(r.BaseUrl)
+            || !string.Equals(r.ResolveProtocolForClient("Responses"), "Responses", StringComparison.OrdinalIgnoreCase)))
+            return ReferenceError(new UpstreamReferenceException("reference_replay_required", "This upstream does not support previous_response_id; a complete replay is required."));
 
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();
@@ -203,6 +283,15 @@ public sealed partial class OpenAiProxyController
                 geminiProjectId: route.GoogleProjectId);
 
             var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
+            if (_sessionIsolation is not null)
+            {
+                var isolated = await _sessionIsolation.ApplyAsync(isolationContext, route.AccountIdentity,
+                    actualProtocolType, ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl), preparedRequestBody,
+                    forwardHeaders, cancellationToken);
+                preparedRequestBody = isolated.PreparedRequestBody;
+                forwardHeaders = isolated.ForwardHeaders;
+            }
+            await SetReferenceOutputContextAsync(isolationContext.ClientScope, route, actualProtocolType, referenceRestriction, forwardHeaders, cancellationToken);
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, forwardHeaders);
 
             // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
@@ -216,6 +305,8 @@ public sealed partial class OpenAiProxyController
                 TargetBaseUrl = route.BaseUrl,
                 TargetEndpointPathMode = route.EndpointPathMode,
                 TargetApiKey = route.ApiKey,
+                SiteId = route.SiteId,
+                ManagedSource = route.ManagedSource,
                 ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,
                 RequestBody = requestBody,
@@ -227,6 +318,7 @@ public sealed partial class OpenAiProxyController
                     RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
                 ForwardHeaders = forwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
+                AccountIdentity = route.AccountIdentity,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 // Codex 远程压缩走专用端点 responses/compact（对照 cc-switch endpoint_with_query("/responses/compact")）；
@@ -266,6 +358,7 @@ public sealed partial class OpenAiProxyController
                     streamOutcome = await ForwardAnthropicStreamAsResponsesAsync(forwardRequest, modelName, cancellationToken);
                 }
 
+                if (_referenceOutputError is not null) throw _referenceOutputError;
                 var streamResult = streamOutcome.Result;
                 if (streamResult.IsCanceled)
                 {
@@ -430,6 +523,7 @@ public sealed partial class OpenAiProxyController
                         OutputTokens = result.OutputTokens,
                         TotalDurationMs = result.TotalDurationMs
                     });
+                    await CommitReferenceOutputAsync(result.ResponseBody, cancellationToken);
                     return Content(result.ResponseBody, responseContentType);
                 }
 
@@ -445,6 +539,7 @@ public sealed partial class OpenAiProxyController
                     OutputTokens = result.OutputTokens,
                     TotalDurationMs = result.TotalDurationMs
                 });
+                await CommitReferenceOutputAsync(convertedResponseBody!, cancellationToken);
                 return Content(convertedResponseBody!, "application/json");
             }
 
@@ -471,8 +566,11 @@ public sealed partial class OpenAiProxyController
         }
 
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
-        return StatusCode(statusCode,
-            new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+        return new JsonResult(new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } })
+        {
+            StatusCode = statusCode,
+            ContentType = "application/json"
+        };
     }
 
     /// <summary>
@@ -486,6 +584,8 @@ public sealed partial class OpenAiProxyController
         string rawRequestBody,
         string normalizedRequestBody,
         ResponsesWebSocketSessionState sessionState,
+        AccountSessionIsolationContext isolationContext,
+        UpstreamReferenceRestriction? referenceRestriction,
         CancellationToken cancellationToken)
     {
         var modelName = ProxyProtocolBridge.ExtractResponsesModel(normalizedRequestBody);
@@ -502,6 +602,11 @@ public sealed partial class OpenAiProxyController
 
         // AccessKey 路由限定（同 HTTP 入口）。WebSocket 方法接收的是 accessKeyId，需要从缓存查 accessKey 对象。
         var wsAccessKey = await _metadataCache.GetAccessKeyByIdAsync(accessKeyId, cancellationToken);
+        if (wsAccessKey is null)
+        {
+            await WriteResponsesWebSocketErrorAsync(webSocket, 401, "The access key is no longer enabled.", cancellationToken);
+            return false;
+        }
         var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(wsAccessKey);
         if (allowedRoutes is not null && allRoutes.Count > 0)
         {
@@ -520,7 +625,14 @@ public sealed partial class OpenAiProxyController
         }
 
         // 路由候选策略（全部默认关闭）：会话亲和把上次成功候选挪到最前，配额排序按「最早重置优先」。
-        var conversationKey = ResolveConversationKeySafely(runtimeSettings, Request, modelName, rawRequestBody);
+        allRoutes = await RestrictReferenceRoutesAsync(allRoutes, referenceRestriction, cancellationToken);
+        if (referenceRestriction is not null && allRoutes.Count == 0)
+        {
+            await WriteResponsesWebSocketErrorAsync(webSocket, 400, "The reference owner is not available in the authorized route.", cancellationToken);
+            return false;
+        }
+        var conversationKey = AccountSessionIsolationService.ScopeAffinity(accessKeyId.ToString("D"),
+            ResolveConversationKeySafely(runtimeSettings, Request, modelName, rawRequestBody));
         allRoutes = await PreorderRoutesByPolicyAsync(allRoutes, runtimeSettings, conversationKey, cancellationToken);
 
         ProxyForwardResult? lastResult = null;
@@ -565,6 +677,15 @@ public sealed partial class OpenAiProxyController
                 geminiProjectId: route.GoogleProjectId);
 
             var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
+            if (_sessionIsolation is not null)
+            {
+                var isolated = await _sessionIsolation.ApplyAsync(isolationContext, route.AccountIdentity,
+                    actualProtocolType, ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl), preparedRequestBody,
+                    forwardHeaders, cancellationToken);
+                preparedRequestBody = isolated.PreparedRequestBody;
+                forwardHeaders = isolated.ForwardHeaders;
+            }
+            await SetReferenceOutputContextAsync(isolationContext.ClientScope, route, actualProtocolType, referenceRestriction, forwardHeaders, cancellationToken);
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, forwardHeaders);
 
             // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
@@ -578,6 +699,8 @@ public sealed partial class OpenAiProxyController
                 TargetBaseUrl = route.BaseUrl,
                 TargetEndpointPathMode = route.EndpointPathMode,
                 TargetApiKey = route.ApiKey,
+                SiteId = route.SiteId,
+                ManagedSource = route.ManagedSource,
                 ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,
                 RequestBody = rawRequestBody,
@@ -589,6 +712,7 @@ public sealed partial class OpenAiProxyController
                     RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
                 ForwardHeaders = forwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
+                AccountIdentity = route.AccountIdentity,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
@@ -620,6 +744,7 @@ public sealed partial class OpenAiProxyController
             {
                 streamOutcome = await ForwardAnthropicResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
             }
+            if (_referenceOutputError is not null) throw _referenceOutputError;
             var streamResult = streamOutcome.Result;
             // 客户端断开导致的取消：不记失败、不计熔断、不尝试下一条路由（与 HTTP 路径的 EmptyResult 早退一致）。
             if (streamResult.IsCanceled)
@@ -666,6 +791,11 @@ public sealed partial class OpenAiProxyController
             {
                 SafeSucceedRoute(route.CircuitKey);
                 RecordSessionAffinitySafely(conversationKey, route.CircuitKey);
+                sessionState.ActualLastCompletedResponseId = _observedCompletedResponseId;
+                sessionState.LastCompletedOwner = _observedCompletedResponseId is null ? null
+                    : new UpstreamReferenceRestriction(await ReferenceOwnerAsync(route, cancellationToken), UpstreamReferenceNamespace.Create(route.BaseUrl, actualProtocolType));
+                sessionState.HasFullTranscript = _observedCompletedResponseId is not null
+                    && HasCompleteLocalTranscript(normalizedRequestBody);
                 sessionState.LastRequestJson = normalizedRequestBody;
                 sessionState.LastResponseOutputJson = string.IsNullOrWhiteSpace(streamOutcome.CompletedOutputJson)
                     ? "[]"

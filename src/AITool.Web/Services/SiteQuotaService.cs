@@ -1,4 +1,6 @@
 using AITool.Application.Sites;
+using AITool.Application.Networking;
+using AITool.Application.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
@@ -27,15 +29,18 @@ public sealed class SiteQuotaService
     private readonly AppDbContext _dbContext;
     private readonly IEnumerable<ISiteQuotaProvider> _providers;
     private readonly ILogger<SiteQuotaService> _logger;
+    private readonly IAccountNetworkPolicyStore? _accountPolicies;
 
     public SiteQuotaService(
         AppDbContext dbContext,
         IEnumerable<ISiteQuotaProvider> providers,
-        ILogger<SiteQuotaService> logger)
+        ILogger<SiteQuotaService> logger,
+        IAccountNetworkPolicyStore? accountPolicies = null)
     {
         _dbContext = dbContext;
         _providers = providers;
         _logger = logger;
+        _accountPolicies = accountPolicies;
     }
 
     /// <summary>
@@ -96,9 +101,19 @@ public sealed class SiteQuotaService
                     .ToListAsync(cancellationToken))
                 .ToList();
 
-            var context = BuildContext(site);
+            AccountIdentity? account = null;
+            if (_accountPolicies is not null)
+            {
+                var owners = await _accountPolicies.GetLinkedSiteOwnersAsync([siteId], cancellationToken);
+                owners.TryGetValue(siteId, out account);
+            }
             var results = await Task.WhenAll(keys.Select(k => QueryWithSlotAsync(
-                provider, context, k.KeyValue, cancellationToken)));
+                provider, BuildContext(site) with
+                {
+                    SiteKeyId = k.Id,
+                    AccountIdentity = account,
+                    EgressProxyUrl = !string.IsNullOrWhiteSpace(k.EgressProxyUrl) ? k.EgressProxyUrl : site.EgressProxyUrl
+                }, k.KeyValue, cancellationToken)));
 
             for (var i = 0; i < keys.Count; i++)
             {
@@ -129,7 +144,7 @@ public sealed class SiteQuotaService
 
     /// <summary>构建额度查询的站点上下文（含自定义余额配置）。</summary>
     private static SiteQuotaSiteContext BuildContext(Domain.Sites.Site site)
-        => new(site.BaseUrl, SiteQuotaBalanceConfig.TryParse(site.QuotaBalanceJson));
+        => new(site.BaseUrl, SiteQuotaBalanceConfig.TryParse(site.QuotaBalanceJson), site.EgressProxyUrl);
 
     /// <summary>
     /// 匹配站点的额度供应商：站点配置了自定义余额（QuotaBalanceJson）时自定义余额优先于域名匹配
@@ -252,5 +267,44 @@ public sealed class SiteQuotaService
             return "***";
         }
         return string.Concat(apiKey.AsSpan(0, 4), "***", apiKey.AsSpan(apiKey.Length - 4));
+    }
+}
+
+/// <summary>Operation-owned quota client; its lease encloses response consumption.</summary>
+internal sealed class SiteQuotaNetworkClient(HttpClient client, HttpClient? ownedClient, INetworkTransportLease? lease) : IAsyncDisposable
+{
+    public HttpClient Client { get; } = client;
+
+    public static async Task<SiteQuotaNetworkClient> AcquireAsync(SiteQuotaSiteContext site, string apiKey,
+        HttpClient defaultClient, AccountNetworkClientFactory? accountClients,
+        IForwardNetworkPolicyResolver? policies, INetworkTransport? transport, CancellationToken ct)
+    {
+        if (site.AccountIdentity is { } account)
+        {
+            var owned = (accountClients ?? throw new InvalidOperationException(
+                "Account network client factory is unavailable.")).CreateForAccount(account, "site-quota");
+            owned.Timeout = defaultClient.Timeout;
+            return new(owned, owned, null);
+        }
+        if (policies is null)
+        {
+            if (!string.IsNullOrWhiteSpace(site.EgressProxyUrl))
+                throw new InvalidOperationException("Network policy resolver is unavailable.");
+            return new(defaultClient, null, null);
+        }
+        var policy = await policies.ResolveAsync(new ProxyForwardRequest
+        {
+            TargetBaseUrl = site.BaseUrl, TargetApiKey = apiKey, EgressProxyUrl = site.EgressProxyUrl
+        }, ct);
+        if (policy.UseDefaultClient) return new(defaultClient, null, null);
+        var acquired = await (transport ?? throw new InvalidOperationException(
+            "Network transport is unavailable.")).AcquireAsync(policy.Configuration, policy.IsolationKey, "site-quota", ct);
+        return new(acquired.Client, null, acquired);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        ownedClient?.Dispose();
+        if (lease is not null) await lease.DisposeAsync();
     }
 }

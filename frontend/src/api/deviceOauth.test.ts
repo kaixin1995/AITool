@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { httpGet, httpPost } from './http'
 import {
   fetchDeviceOAuthModels,
+  startDeviceOAuthSignIn,
   importSelectedDeviceModels,
   supportsOAuthModelFetch,
   supportsOAuthModelImport,
@@ -25,6 +26,13 @@ const vendors: DeviceOAuthVendor[] = [
 beforeEach(() => vi.resetAllMocks())
 
 describe('device OAuth model capabilities', () => {
+  it('freezes optional numeric network selection at login start and preserves omitted legacy requests', async () => {
+    await startDeviceOAuthSignIn('kiro')
+    expect(mockedHttpPost).toHaveBeenLastCalledWith('/api/admin/device-oauth/sign-in/start', { vendor: 'kiro' })
+    await startDeviceOAuthSignIn('kiro', { mode: 2, proxyProfileId: 'stable-id' })
+    expect(mockedHttpPost).toHaveBeenLastCalledWith('/api/admin/device-oauth/sign-in/start', { vendor: 'kiro', networkSelection: { mode: 2, proxyProfileId: 'stable-id' } })
+  })
+
   it('gates dynamic model fetch on SupportsModelFetch rather than a static catalog', () => {
     expect(supportsOAuthModelFetch('remote-chat', vendors)).toBe(true)
     expect(supportsOAuthModelFetch('quota-only', vendors)).toBe(true)

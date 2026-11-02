@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Application.Networking;
 using AITool.Application.Proxy;
 using AITool.Domain.Codex;
 using AITool.Domain.Models;
@@ -137,6 +138,19 @@ public sealed class ProxyRequestMetadataCache
     /// 创建独立的 SqlSugarClient（有自己的连接），用完即释放。
     /// 所有缓存未命中时的查库都走这个方法，避免与单例 SqlSugarScope 并发竞态。
     /// </summary>
+    private async Task<IReadOnlyDictionary<Guid, AccountIdentity>> GetLinkedSiteOwnersAsync(
+        IServiceProvider services, IEnumerable<Guid> siteIds, CancellationToken cancellationToken)
+    {
+        var ids = siteIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+        if (ids.Length == 0) return new Dictionary<Guid, AccountIdentity>();
+        // Keep the historical two-dependency cache constructor usable in isolated hosts/tests.
+        // This fallback only performs the store's ID-only owner query; it never resolves secrets.
+        var store = services.GetService<IAccountNetworkPolicyStore>()
+            ?? new AccountNetworkPolicyStore(_scopeFactory, TimeProvider.System,
+                new ProxyProfileSecretService(new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider()));
+        return await store.GetLinkedSiteOwnersAsync(ids, cancellationToken);
+    }
+
     private SqlSugar.ISqlSugarClient CreateIndependentClient()
     {
         using var scope = _scopeFactory.CreateScope();
@@ -439,15 +453,6 @@ public sealed class ProxyRequestMetadataCache
                         .GroupBy(a => a.LinkedSiteId)
                         .ToDictionary(g => g.Key, g => g.First().ProjectId!);
 
-                    var proxyFeatureEnabled = (await GetRuntimeSettingsAsync(cancellationToken)).DeveloperProxyProfilesEnabled;
-                    var proxyProfiles = proxyFeatureEnabled
-                        ? await dbContext.ProxyProfiles
-                            .Where(p => p.IsEnabled)
-                            .ToListAsync(cancellationToken)
-                        : [];
-                    var proxyMap = proxyFeatureEnabled
-                        ? proxyProfiles.ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase)
-                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var headerProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     var baseChatTargets = (
@@ -460,6 +465,9 @@ public sealed class ProxyRequestMetadataCache
                                 mapping, site, model
                             })
                         .ToList();
+
+                    var accountOwners = await GetLinkedSiteOwnersAsync(scope.ServiceProvider,
+                        baseChatTargets.Select(x => x.site.Id), cancellationToken);
 
                     // 按 SiteKey 展开：每个启用 Key 产出一条候选，使聊天/调试页也享受多 Key 调度。
                     var expanded = new List<CachedChatTarget>(baseChatTargets.Count);
@@ -475,9 +483,11 @@ public sealed class ProxyRequestMetadataCache
                         {
                             expanded.Add(new CachedChatTarget
                             {
+                                AccountIdentity = accountOwners.GetValueOrDefault(site.Id),
                                 MappingId = mapping.Id,
                                 ModelId = model.Id,
                                 ModelDisplayName = model.ModelName,
+                                ManagedSource = site.ManagedSource ?? string.Empty,
                                 SiteId = site.Id,
                                 SiteKeyId = candidate.SiteKeyId,
                                 CircuitKey = BuildCircuitKey(site.Id, candidate.SiteKeyId, mapping.RemoteModelName),
@@ -489,9 +499,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteModelName = mapping.RemoteModelName,
                                 ExtraHeaders = BuildEffectiveExtraHeaders(chatEmulation, headerProfileMap, site.ExtraHeadersJson, model.ExtraHeadersJson, mapping.ExtraHeadersJson),
                                 ClientEmulation = chatEmulation,
-                                EgressProxyUrl = proxyFeatureEnabled
-                                    ? ResolveEgressProxyUrl(mapping.EgressProxyUrl, candidate.EgressProxyUrl ?? site.EgressProxyUrl, proxyMap)
-                                    : null,
+                                EgressProxyUrl = SelectEgressProxy(mapping.EgressProxyUrl, candidate.EgressProxyUrl, site.EgressProxyUrl),
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var chatGoogleProject) ? chatGoogleProject : string.Empty
                             });
                         }
@@ -1520,15 +1528,6 @@ public sealed class ProxyRequestMetadataCache
                         p => p.Id,
                         p => ParseCompatibilityRules(p.RulesJson));
 
-                    var proxyFeatureEnabled = (await GetRuntimeSettingsAsync(cancellationToken)).DeveloperProxyProfilesEnabled;
-                    var proxyProfiles = proxyFeatureEnabled
-                        ? await dbContext.ProxyProfiles
-                            .Where(p => p.IsEnabled)
-                            .ToListAsync(cancellationToken)
-                        : [];
-                    var proxyMap = proxyFeatureEnabled
-                        ? proxyProfiles.ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase)
-                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var headerProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     // 基础路由投影（每条 route × site × model 一条），不含 Key 维度。
@@ -1543,6 +1542,9 @@ public sealed class ProxyRequestMetadataCache
                                 route, site, model
                             })
                         .ToList();
+
+                    var accountOwners = await GetLinkedSiteOwnersAsync(scope.ServiceProvider,
+                        baseRoutes.Select(x => x.site.Id), cancellationToken);
 
                     // 按 SiteKey 展开：同一路由的每个启用 Key 各产出一条候选，实现"主备 Key + 各自独立并发计数"。
                     // 站点没有启用的 SiteKey（Codex 托管站点 / 未迁移）回退用 site.ApiKey 产出单条候选。
@@ -1574,12 +1576,12 @@ public sealed class ProxyRequestMetadataCache
                         foreach (var candidate in candidates)
                         {
                             // 出口代理优先级：站点映射 > 密钥级 > 站点级（密钥级覆盖站点级）。
-                            var egressProxyUrl = proxyFeatureEnabled
-                                ? ResolveEgressProxyUrl(mapping?.EgressProxyUrl, candidate.EgressProxyUrl ?? site.EgressProxyUrl, proxyMap)
-                                : null;
+                            // Preserve keys/profile IDs and global-off selections for live send-time validation.
+                            var egressProxyUrl = SelectEgressProxy(mapping?.EgressProxyUrl, candidate.EgressProxyUrl, site.EgressProxyUrl);
                             expanded.Add(new CachedProxyRouteTarget
                             {
                                 RouteId = route.Id,
+                                AccountIdentity = accountOwners.GetValueOrDefault(site.Id),
                                 SiteId = site.Id,
                                 SiteKeyId = candidate.SiteKeyId,
                                 CircuitKey = BuildCircuitKey(site.Id, candidate.SiteKeyId, route.SiteModelName),
@@ -1751,15 +1753,6 @@ public sealed class ProxyRequestMetadataCache
                         .GroupBy(a => a.LinkedSiteId)
                         .ToDictionary(g => g.Key, g => g.First().ProjectId!);
 
-                    var proxyFeatureEnabled = (await GetRuntimeSettingsAsync(cancellationToken)).DeveloperProxyProfilesEnabled;
-                    var proxyProfiles = proxyFeatureEnabled
-                        ? await dbContext.ProxyProfiles
-                            .Where(p => p.IsEnabled)
-                            .ToListAsync(cancellationToken)
-                        : [];
-                    var proxyMap = proxyFeatureEnabled
-                        ? proxyProfiles.ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase)
-                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var fallbackHeaderProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     var rawMappings = (
@@ -1794,6 +1787,11 @@ public sealed class ProxyRequestMetadataCache
                             })
                         .ToList();
 
+                    var accountOwners = await GetLinkedSiteOwnersAsync(scope.ServiceProvider,
+                        rawMappings.GroupBy(x => x.ModelId)
+                            .Select(g => g.OrderBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase).First().SiteId),
+                        cancellationToken);
+
                     // 每个模型取优先级最高的一个站点（与原逻辑一致：按站点名排序取第一个），
                     // 然后把该站点的所有启用 Key 展开为多条兜底候选，使 fallback 也支持多 Key。
                     var mappings = rawMappings
@@ -1808,6 +1806,7 @@ public sealed class ProxyRequestMetadataCache
                             var fallbackEmulation = ResolveClientEmulation(first.MappingClientEmulation, first.ModelClientEmulation, first.SiteClientEmulation);
                             return candidates.Select(candidate => new CachedFallbackTarget
                             {
+                                AccountIdentity = accountOwners.GetValueOrDefault(first.SiteId),
                                 ModelId = grouped.Key,
                                 ModelName = first.ModelName,
                                 SiteId = first.SiteId,
@@ -1822,9 +1821,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteModelName = first.SiteModelName,
                                 ExtraHeaders = BuildEffectiveExtraHeaders(fallbackEmulation, fallbackHeaderProfileMap, first.SiteExtraHeadersJson, first.ModelExtraHeadersJson, first.MappingExtraHeadersJson),
                                 ClientEmulation = fallbackEmulation,
-                                EgressProxyUrl = proxyFeatureEnabled
-                                    ? ResolveEgressProxyUrl(first.MappingEgressProxyUrl, first.SiteEgressProxyUrl, proxyMap)
-                                    : null,
+                                EgressProxyUrl = SelectEgressProxy(first.MappingEgressProxyUrl, candidate.EgressProxyUrl, first.SiteEgressProxyUrl),
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(first.SiteId, out var fallbackGoogleProject) ? fallbackGoogleProject : string.Empty
                             });
                         })
@@ -2025,6 +2022,9 @@ public sealed class ProxyRequestMetadataCache
     /// <summary>
     /// 解析站点专属出口网络代理（优先级：SiteModelMapping > Site > Direct 直连）。
     /// </summary>
+    private static string? SelectEgressProxy(params string?[] selections) =>
+        selections.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+
     internal static string? ResolveEgressProxyUrl(string? mappingProxy, string? siteProxy, IReadOnlyDictionary<string, string>? proxyMap = null)
     {
         var raw = !string.IsNullOrWhiteSpace(mappingProxy)
@@ -2037,6 +2037,8 @@ public sealed class ProxyRequestMetadataCache
         {
             return null;
         }
+
+        if (raw.StartsWith("profile:", StringComparison.OrdinalIgnoreCase)) return raw;
 
         if (proxyMap != null && proxyMap.TryGetValue(raw, out var mappedUrl))
         {
@@ -2419,6 +2421,9 @@ internal sealed class CachedRouteTimeRange
 /// </summary>
 public sealed class CachedProxyRouteTarget
 {
+    /// <summary>Immutable live owner identity, retained by every clone/reference/deferred snapshot.</summary>
+    public AccountIdentity? AccountIdentity { get; init; }
+
     /// <summary>Outer rule identity; null for legacy direct-only roots.</summary>
     public Guid? FallbackGroupId { get; set; }
     /// <summary>Contiguous outer-rule order, independent of source leaf priorities.</summary>
@@ -2650,6 +2655,9 @@ public sealed class CachedChatModel
 /// </summary>
 public sealed class CachedChatTarget
 {
+    public AccountIdentity? AccountIdentity { get; init; }
+    public string ManagedSource { get; set; } = string.Empty;
+
     /// <summary>
     /// 站点模型映射标识。
     /// </summary>
@@ -2740,6 +2748,8 @@ public sealed class CachedEnabledModel
 /// </summary>
 public sealed class CachedFallbackTarget
 {
+    public AccountIdentity? AccountIdentity { get; init; }
+
     /// <summary>
     /// 模型标识。
     /// </summary>

@@ -109,6 +109,8 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<CompatibilityProfile> CompatibilityProfiles => _client.Queryable<CompatibilityProfile>();
     public ISugarQueryable<SqlMigrationExecution> SqlMigrationExecutions => _client.Queryable<SqlMigrationExecution>();
     public ISugarQueryable<QuotaRecheckSchedule> QuotaRecheckSchedules => _client.Queryable<QuotaRecheckSchedule>();
+    public ISugarQueryable<AccountNetworkPolicy> AccountNetworkPolicies => _client.Queryable<AccountNetworkPolicy>();
+    public ISugarQueryable<SessionIsolationKey> SessionIsolationKeys => _client.Queryable<SessionIsolationKey>();
     public ISugarQueryable<ProxyProfile> ProxyProfiles => _client.Queryable<ProxyProfile>();
 
     /// <summary>
@@ -281,6 +283,7 @@ public static class SqlSugarSetup
             typeof(DetectionTaskExecution),
             typeof(ProxyRouteEntry),
             typeof(ProxyRouteRule),
+            typeof(UpstreamReferenceOwner),
             typeof(Domain.Proxy.AccountPool),
             typeof(Domain.Proxy.AccountPoolMember),
             typeof(ProxyAccessKey),
@@ -290,6 +293,9 @@ public static class SqlSugarSetup
             typeof(CompatibilityProfile),
             typeof(SqlMigrationExecution),
             typeof(QuotaRecheckSchedule),
+            typeof(AccountNetworkPolicy),
+            typeof(SessionIsolationKey),
+            typeof(SessionIsolationKeyMetadata),
             typeof(ProxyProfile),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
 

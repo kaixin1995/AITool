@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using AITool.Application.Networking;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -26,72 +26,108 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// 日志记录器，用于记录转发超时和异常
     /// </summary>
     private readonly ILogger<ProxyForwardService> _logger;
-    /// <summary>
-    /// 站点专属出口网络代理客户端缓存（Key: 代理 URL，如 http://127.0.0.1:7890）
-    /// </summary>
-    private readonly ConcurrentDictionary<string, ProxyClientEntry> _proxyClients = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>
-    /// 已从缓存淘汰、等待延迟销毁的客户端（含淘汰时间），由 <see cref="_retireLock"/> 保护
-    /// </summary>
-    private readonly List<RetiredProxyClient> _retiredClients = [];
-    private readonly object _retireLock = new();
+    private readonly INetworkTransport? _networkTransport;
+    private readonly IForwardNetworkPolicyResolver? _networkPolicyResolver;
+    private readonly IForwardCredentialResolver? _credentialResolver;
 
-    /// <summary>
-    /// 出口代理客户端缓存上限：每个客户端独享一套 SocketsHttpHandler + 连接池，
-    /// 无上限时异常配置（如映射里误填变量拼出的 URL）会让缓存无限增长。16 覆盖所有合理配置规模。
-    /// </summary>
-    private const int MaxProxyClients = 16;
-
-    /// <summary>
-    /// 淘汰客户端的延迟销毁宽限期：保证淘汰瞬间仍在途的请求（拿到旧客户端引用的转发）
-    /// 能自然完成，之后才真正 Dispose 连接池。取 30 分钟以覆盖超长流式响应
-    /// （流式空闲超时只在无数据时触发，持续输出的流可远超请求级超时）。
-    /// </summary>
-    private static readonly TimeSpan RetiredClientDisposeDelay = TimeSpan.FromMinutes(30);
-
-    /// <summary>
-    /// 注入 HTTP 客户端和日志记录器
-    /// </summary>
-    public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger)
+    // A single public constructor keeps typed HttpClient activation unambiguous while
+    // optional dependencies preserve existing source calls using just client and logger.
+    public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger,
+        INetworkTransport? networkTransport = null, IForwardNetworkPolicyResolver? networkPolicyResolver = null,
+        IForwardCredentialResolver? credentialResolver = null)
     {
-        // 真实超时统一交给每次请求的 CancellationToken 控制，避免 HttpClient 默认 100 秒提前截断。
         httpClient.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         _httpClient = httpClient;
         _logger = logger;
+        _networkTransport = networkTransport;
+        _networkPolicyResolver = networkPolicyResolver;
+        _credentialResolver = credentialResolver;
     }
 
-    /// <summary>
-    /// 根据请求中的 EgressProxyUrl 获取对应的 HttpClient（配置了代理则走代理池，否则走默认直连）。
-    /// </summary>
-    private HttpClient GetClientForRequest(ProxyForwardRequest request)
+    private async Task<ForwardCredentialLease> ResolveCredentialAsync(ProxyForwardRequest request, string fallbackKey, CancellationToken ct)
     {
+        if (_credentialResolver is null)
+        {
+            if (!request.AllowNonSiteTarget || request.SiteId is not null || request.AccountIdentity is not null || !string.IsNullOrWhiteSpace(request.ManagedSource))
+                throw new NetworkPolicyException("forward_credential_resolver_unavailable", "Forward credential resolver is unavailable.");
+            return new ForwardCredentialLease(fallbackKey);
+        }
+        try { return await _credentialResolver.ResolveAsync(request, ct); }
+        catch (OperationCanceledException) { throw new OperationCanceledException(ct); }
+        catch (NetworkPolicyException ex) when (IsSafePolicyCode(ex.Code)) { throw new NetworkPolicyException(ex.Code, "Forward credential validation failed."); }
+        catch (Exception) { throw new NetworkPolicyException("forward_credential_invalid", "Forward credential validation failed."); }
+    }
+
+    private async Task<ForwardNetworkPolicyResolution> ResolveNetworkAsync(ProxyForwardRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_networkPolicyResolver is not null)
+        {
+            try { return await _networkPolicyResolver.ResolveAsync(request, cancellationToken); }
+            catch (OperationCanceledException) { throw new OperationCanceledException(cancellationToken); }
+            catch (NetworkPolicyException ex) when (IsSafePolicyCode(ex.Code)) { throw new NetworkPolicyException(ex.Code, "Forward network policy validation failed."); }
+            catch (Exception) { throw new NetworkPolicyException("forward_network_policy_failed", "Forward network policy validation failed."); }
+        }
+        if (request.AccountIdentity is not null || request.NetworkContext is not null)
+            throw new NetworkPolicyException("forward_network_resolver_unavailable", "The account forwarding network policy resolver is unavailable.");
         if (string.IsNullOrWhiteSpace(request.EgressProxyUrl))
-        {
-            return _httpClient;
-        }
+            return new(ResolvedNetworkConfiguration.Legacy, "ordinary-forward", true);
+        throw new NetworkPolicyException("forward_network_resolver_unavailable", "An explicit egress selection requires a forwarding network policy resolver.");
+    }
 
-        var proxyUrl = request.EgressProxyUrl.Trim();
-        if (!EgressProxyValidator.TryValidate(proxyUrl, out var validateError))
-        {
-            _logger.LogWarning("无效的出口网络代理格式 '{ProxyUrl}' ({Error})，将回退默认直连", proxyUrl, validateError);
-            return _httpClient;
-        }
+    private async ValueTask<INetworkTransportLease?> AcquireNetworkAsync(ForwardNetworkPolicyResolution policy,
+        CancellationToken cancellationToken)
+    {
+        if (policy.UseDefaultClient) return null;
+        if (_networkTransport is null)
+            throw new NetworkPolicyException("forward_network_transport_unavailable", "The selected forwarding network transport is unavailable.");
+        try { return await _networkTransport.AcquireAsync(policy.Configuration, policy.IsolationKey, "proxy-forward", cancellationToken); }
+        catch (OperationCanceledException) { throw new OperationCanceledException(cancellationToken); }
+        catch (NetworkPolicyException ex) when (IsSafePolicyCode(ex.Code)) { throw new NetworkPolicyException(ex.Code, "Forward network transport acquisition failed."); }
+        catch (Exception) { throw new NetworkPolicyException("forward_network_transport_failed", "Forward network transport acquisition failed."); }
+    }
 
+    private static bool IsSafePolicyCode(string? code) => code is
+        "forward_credential_invalid" or "forward_credential_resolver_unavailable" or
+        "account_network_revision_conflict" or "account_network_identity_conflict" or "account_not_found" or
+        "ambiguous_account_owner" or "invalid_account_identity" or "invalid_isolation_key" or
+        "invalid_network_selection" or "invalid_profile_revision" or "invalid_proxy_profile" or
+        "invalid_proxy_profile_reference" or "invalid_egress_proxy" or "proxy_credentials_unavailable" or
+        "proxy_profile_disabled" or "proxy_profile_not_found" or "proxy_profile_revision_conflict" or
+        "proxy_profiles_disabled" or "forward_network_transport_unavailable" or "forward_network_resolver_unavailable";
+
+    private sealed class StartedForward(HttpRequestMessage request, Task<HttpResponseMessage> response,
+        INetworkTransportLease? networkLease, string apiKey) : IAsyncDisposable
+    {
+        public Task<HttpResponseMessage> Response { get; } = response;
+        public string ApiKey { get; } = apiKey;
+        public async ValueTask DisposeAsync()
+        {
+            request.Dispose();
+            if (networkLease is not null) await networkLease.DisposeAsync();
+        }
+    }
+
+    private async Task<StartedForward> StartForwardAsync(ProxyForwardRequest request, string requestBody,
+        string currentApiKey, CancellationToken ct)
+    {
+        using var credential = await ResolveCredentialAsync(request, currentApiKey, ct);
+        // The gate can have been queued behind refresh; policy must be read after that wait.
+        var policy = await ResolveNetworkAsync(request, ct);
+        var lease = await AcquireNetworkAsync(policy, ct);
+        HttpRequestMessage? message = null;
         try
         {
-            var entry = _proxyClients.GetOrAdd(proxyUrl, url => new ProxyClientEntry(
-                new HttpClient(CreateProxyHandler(url), disposeHandler: true)
-                {
-                    Timeout = global::System.Threading.Timeout.InfiniteTimeSpan
-                }));
-            entry.LastUsedUtc = DateTime.UtcNow;
-            EvictStaleClients();
-            return entry.Client;
+            var key = credential.UseResolvedApiKey ? credential.ApiKey : currentApiKey;
+            message = BuildRequestMessage(request, requestBody, key, credential.ProtectAuthenticationHeaders);
+            var response = (lease?.Client ?? _httpClient).SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
+            return new StartedForward(message, response, lease, key);
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogWarning(ex, "初始化站点专属出口代理客户端失败，ProxyUrl: {ProxyUrl}，将回退默认直连", proxyUrl);
-            return _httpClient;
+            message?.Dispose();
+            if (lease is not null) await lease.DisposeAsync();
+            throw;
         }
     }
 
@@ -156,84 +192,6 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 构建走指定出口代理的 Handler（连接池参数与主客户端口径一致）。
-    /// </summary>
-    private static SocketsHttpHandler CreateProxyHandler(string url)
-    {
-        return new SocketsHttpHandler
-        {
-            Proxy = new WebProxy(new Uri(url)),
-            UseProxy = true,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(15),
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
-            KeepAlivePingDelay = TimeSpan.FromSeconds(30),
-            KeepAlivePingTimeout = TimeSpan.FromSeconds(5)
-        };
-    }
-
-    /// <summary>
-    /// 超过 <see cref="MaxProxyClients"/> 时淘汰最久未使用的客户端，并顺带销毁宽限期已过的退役客户端。
-    /// 并发窗口内可能误淘汰"刚被使用"的条目——后果只是下次请求重建客户端，无正确性影响。
-    /// </summary>
-    private void EvictStaleClients()
-    {
-        while (_proxyClients.Count > MaxProxyClients)
-        {
-            var victim = _proxyClients.OrderBy(kvp => kvp.Value.LastUsedUtc).FirstOrDefault();
-            if (victim.Value is null)
-            {
-                break;
-            }
-
-            if (_proxyClients.TryRemove(victim.Key, out var removed))
-            {
-                lock (_retireLock)
-                {
-                    _retiredClients.Add(new RetiredProxyClient(removed.Client, DateTime.UtcNow));
-                }
-                _logger.LogInformation("出口代理客户端缓存超过 {Limit}，已淘汰最久未使用的 {ProxyUrl}", MaxProxyClients, victim.Key);
-            }
-        }
-
-        // 退役宽限期已过的客户端可以安全销毁：引用它的在途请求早已完成。
-        List<RetiredProxyClient>? expired = null;
-        lock (_retireLock)
-        {
-            var cutoff = DateTime.UtcNow - RetiredClientDisposeDelay;
-            for (var i = _retiredClients.Count - 1; i >= 0; i--)
-            {
-                if (_retiredClients[i].RetiredAtUtc <= cutoff)
-                {
-                    (expired ??= []).Add(_retiredClients[i]);
-                    _retiredClients.RemoveAt(i);
-                }
-            }
-        }
-
-        if (expired is not null)
-        {
-            foreach (var retired in expired)
-            {
-                retired.Client.Dispose();
-            }
-        }
-    }
-
-    /// <summary>
-    /// 代理客户端缓存条目（LRU 用）。
-    /// </summary>
-    private sealed class ProxyClientEntry(HttpClient client)
-    {
-        public HttpClient Client { get; } = client;
-        public DateTime LastUsedUtc { get; set; } = DateTime.UtcNow;
-    }
-
-    /// <summary>
-    /// 已淘汰待延迟销毁的客户端。
-    /// </summary>
-    private sealed record RetiredProxyClient(HttpClient Client, DateTime RetiredAtUtc);
-
-    /// <summary>
     /// 将请求转发到目标站点并解析响应中的 Token 用量。
     /// 上游异常仍可按单路由重试；若调用方的取消令牌已触发，则直接结束，不再继续重试。
     /// </summary>
@@ -242,6 +200,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         var attempts = Math.Max(0, request.RetryCount) + 1;
         var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
         var tokenRefreshAttempted = false;
+        var currentApiKey = request.TargetApiKey;
         var rateLimit429Count = 0;
         // 实际执行的 429 重试次数（不随连续计数归零），用于结果上报与 usage 链路展示。
         var rateLimit429Retries = 0;
@@ -260,7 +219,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             requestBody = ForceStreamTrue(requestBody);
         }
 
-        await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: false);
+        var credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -270,12 +229,15 @@ public sealed class ProxyForwardService : IProxyForwardService
 
             try
             {
-                using var httpRequest = BuildRequestMessage(request, requestBody);
-                var client = GetClientForRequest(request);
-                using var response = await client.SendAsync(
-                    httpRequest,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    timeoutCts.Token);
+                if (credentialPreparationPending)
+                {
+                    await ResolveNetworkAsync(request, timeoutCts.Token);
+                    await TryPrepareTargetCredentialAsync(request, currentApiKey, cancellationToken, request.EnableStreaming);
+                    credentialPreparationPending = false;
+                }
+                await using var started = await StartForwardAsync(request, requestBody, currentApiKey, timeoutCts.Token);
+                var sentApiKey = started.ApiKey;
+                using var response = await started.Response;
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -285,14 +247,16 @@ public sealed class ProxyForwardService : IProxyForwardService
                         && request.RefreshTargetApiKeyAsync is not null
                         && !tokenRefreshAttempted)
                     {
+                        // Preflight before the credential refresh callback can perform network I/O.
+                        await ResolveNetworkAsync(request, cancellationToken);
                         tokenRefreshAttempted = true;
                         var refreshedApiKey = await request.RefreshTargetApiKeyAsync(
-                            request.TargetApiKey,
+                            sentApiKey,
                             cancellationToken);
                         if (!string.IsNullOrWhiteSpace(refreshedApiKey))
                         {
-                            request.TargetApiKey = refreshedApiKey;
-                            await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: false);
+                            currentApiKey = refreshedApiKey;
+                            credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
                             attempt--;
                             continue;
                         }
@@ -452,6 +416,21 @@ public sealed class ProxyForwardService : IProxyForwardService
                     };
                 }
             }
+            catch (UpstreamReferenceException)
+            {
+                // A failed pre-exposure ownership commit is terminal, even before first content.
+                throw;
+            }
+            catch (NetworkPolicyException ex)
+            {
+                return new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 503,
+                    IsStreaming = request.EnableStreaming,
+                    ErrorMessage = $"Network policy blocked forwarding ({ex.Code})."
+                };
+            }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
                 // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义。
@@ -535,6 +514,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         var attempts = Math.Max(0, request.RetryCount) + 1;
         var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
         var tokenRefreshAttempted = false;
+        var currentApiKey = request.TargetApiKey;
         var rateLimit429Count = 0;
         // 实际执行的 429 重试次数（不随连续计数归零），用于结果上报与 usage 链路展示。
         var rateLimit429Retries = 0;
@@ -542,7 +522,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
 
-        await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: true);
+        var credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -552,12 +532,15 @@ public sealed class ProxyForwardService : IProxyForwardService
 
             try
             {
-                using var httpRequest = BuildRequestMessage(request, requestBody);
-                var client = GetClientForRequest(request);
-                using var response = await client.SendAsync(
-                    httpRequest,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    timeoutCts.Token);
+                if (credentialPreparationPending)
+                {
+                    await ResolveNetworkAsync(request, timeoutCts.Token);
+                    await TryPrepareTargetCredentialAsync(request, currentApiKey, cancellationToken, request.EnableStreaming);
+                    credentialPreparationPending = false;
+                }
+                await using var started = await StartForwardAsync(request, requestBody, currentApiKey, timeoutCts.Token);
+                var sentApiKey = started.ApiKey;
+                using var response = await started.Response;
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -567,14 +550,16 @@ public sealed class ProxyForwardService : IProxyForwardService
                         && request.RefreshTargetApiKeyAsync is not null
                         && !tokenRefreshAttempted)
                     {
+                        // Preflight before the credential refresh callback can perform network I/O.
+                        await ResolveNetworkAsync(request, cancellationToken);
                         tokenRefreshAttempted = true;
                         var refreshedApiKey = await request.RefreshTargetApiKeyAsync(
-                            request.TargetApiKey,
+                            sentApiKey,
                             cancellationToken);
                         if (!string.IsNullOrWhiteSpace(refreshedApiKey))
                         {
-                            request.TargetApiKey = refreshedApiKey;
-                            await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: true);
+                            currentApiKey = refreshedApiKey;
+                            credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
                             attempt--;
                             continue;
                         }
@@ -669,6 +654,21 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                 continue;
             }
+            catch (UpstreamReferenceException)
+            {
+                // A failed pre-exposure ownership commit is terminal, even before first content.
+                throw;
+            }
+            catch (NetworkPolicyException ex)
+            {
+                return new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 503,
+                    IsStreaming = request.EnableStreaming,
+                    ErrorMessage = $"Network policy blocked forwarding ({ex.Code})."
+                };
+            }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
                 // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义。
@@ -759,6 +759,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
     private async Task TryPrepareTargetCredentialAsync(
         ProxyForwardRequest request,
+        string apiKey,
         CancellationToken cancellationToken,
         bool isStreaming)
     {
@@ -769,9 +770,13 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         try
         {
-            await request.PrepareTargetCredentialAsync(request.TargetApiKey, cancellationToken);
+            await request.PrepareTargetCredentialAsync(apiKey, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (NetworkPolicyException)
         {
             throw;
         }
@@ -994,6 +999,16 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
             }
         }
+        catch (UpstreamReferenceException)
+        {
+            // Preserve the terminal guard exception for the controller; never expose or retry output.
+            throw;
+        }
+        catch (NetworkPolicyException)
+        {
+            // Let the outer attempt return its blocked-policy result without retrying this stream.
+            throw;
+        }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
             stopwatch.Stop();
@@ -1105,7 +1120,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// <summary>
     /// 构建发送到上游的 HTTP 请求对象
     /// </summary>
-    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody)
+    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody, string apiKey, bool trustedDeviceCredential)
     {
         var targetPath = string.IsNullOrWhiteSpace(request.TargetPath)
             ? request.ProtocolType == "Anthropic"
@@ -1124,9 +1139,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         // 根据协议类型设置认证头
         if (request.ProtocolType == "Anthropic")
         {
-            if (!string.IsNullOrEmpty(request.TargetApiKey))
+            if (!string.IsNullOrEmpty(apiKey))
             {
-                foreach (var (name, value) in ResolveAnthropicAuthHeaders(request.TargetApiKey, request.ForwardHeaders))
+                foreach (var (name, value) in ResolveAnthropicAuthHeaders(apiKey, request.ForwardHeaders))
                 {
                     httpRequest.Headers.TryAddWithoutValidation(name, value);
                 }
@@ -1140,14 +1155,17 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
         else
         {
-            if (!string.IsNullOrEmpty(request.TargetApiKey))
+            if (!string.IsNullOrEmpty(apiKey))
             {
-                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.TargetApiKey);
+                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             }
         }
 
         foreach (var header in request.ForwardHeaders)
         {
+            if (trustedDeviceCredential && (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(header.Key, "x-api-key", StringComparison.OrdinalIgnoreCase)))
+                continue;
             if (string.Equals(header.Key, "anthropic-version", StringComparison.OrdinalIgnoreCase))
             {
                 continue;

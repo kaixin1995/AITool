@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using AITool.Application.Accounts;
@@ -25,6 +26,7 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
 {
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly HttpClient _httpClient;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -43,8 +45,10 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
         IMemoryCache resultCache,
         IXaiOAuthClient oauthClient,
         ILogger<XaiQuotaService> logger,
-        IQuotaRecheckScheduleStore? scheduleStore = null)
+        IQuotaRecheckScheduleStore? scheduleStore = null,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
@@ -288,7 +292,9 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
             request.Headers.TryAddWithoutValidation("x-user-agent", "connect-es/2.1.1");
             request.Headers.TryAddWithoutValidation("User-Agent", "AITool");
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "quota");
+            if (network is not null) network.HttpClient.Timeout = _httpClient.Timeout;
+            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, ct);
             var status = response.StatusCode;
 
             if (status is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)

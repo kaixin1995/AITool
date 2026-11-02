@@ -39,12 +39,13 @@ public sealed class HttpExceptionLoggingFilter : IAsyncExceptionFilter
         var request = context.HttpContext.Request;
         var requestBody = await HttpLogFormatter.ReadRequestBodyPreviewAsync(request, context.HttpContext.RequestAborted);
 
-        _logger.LogError(context.Exception,
+        var sensitiveNetworkConfiguration = HttpLogFormatter.IsSensitiveNetworkConfiguration(request);
+        _logger.LogError(sensitiveNetworkConfiguration ? null : context.Exception,
             "请求处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
             request.Path,
             request.Method,
             context.HttpContext.TraceIdentifier,
-            request.QueryString.HasValue ? request.QueryString.Value : string.Empty,
+            sensitiveNetworkConfiguration ? "<omitted>" : request.QueryString.HasValue ? request.QueryString.Value : string.Empty,
             HttpLogFormatter.FormatBody(requestBody));
 
         // 后台 API 统一返回 ApiResponse JSON（500）。代理端点不设 Result，交给 UseExceptionHandler。

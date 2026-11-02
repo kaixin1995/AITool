@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using AITool.Application.Common;
@@ -17,6 +18,8 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed class KimiAccountProvisioner
 {
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
+    private readonly AccountNetworkPolicyStore? _networkPolicies;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IKimiModelFetcher _modelFetcher;
@@ -30,8 +33,12 @@ public sealed class KimiAccountProvisioner
         IKimiModelFetcher modelFetcher,
         KimiCredentialRefreshService credentialRefreshService,
         SiteCascadeDeleter cascadeDeleter,
-        ILogger<KimiAccountProvisioner> logger)
+        ILogger<KimiAccountProvisioner> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null,
+        AccountNetworkPolicyStore? networkPolicies = null)
     {
+        _networkFactory = networkFactory;
+        _networkPolicies = networkPolicies;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _modelFetcher = modelFetcher;
@@ -43,15 +50,35 @@ public sealed class KimiAccountProvisioner
     /// <summary>
     /// 用 token 创建或更新 Kimi 账号（含隐藏 Site + 模型映射）。
     /// </summary>
-    public async Task<KimiAccount> ProvisionFromTokensAsync(KimiProvisionInput input, CancellationToken ct)
+    private static readonly SemaphoreSlim ProvisionGate = new(1, 1);
+
+    public async Task<KimiAccount> ProvisionFromTokensAsync(KimiProvisionInput input, CancellationToken ct,
+        NetworkOperationContext? networkOperation = null, bool updateNetworkPolicy = false)
+    {
+        await ProvisionGate.WaitAsync(ct);
+        try { return await ProvisionCoreAsync(input, ct, networkOperation, updateNetworkPolicy); }
+        finally { ProvisionGate.Release(); }
+    }
+
+    private async Task<KimiAccount> ProvisionCoreAsync(KimiProvisionInput input, CancellationToken ct,
+        NetworkOperationContext? networkOperation, bool updateNetworkPolicy)
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-
-        var existing = await FindExistingAsync(input.Email, input.UserId, input.DeviceId, ct);
-
         KimiAccount account;
         Site site;
+        client.Ado.BeginTran();
+        try
+        {
+            // Lock publication before identity resolution; policy and credentials become visible together.
+            if (_networkPolicies is not null)
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+
+        var existing = networkOperation?.Account is { } known && known.ProviderKey == "kimi"
+            ? await client.Queryable<KimiAccount>().InSingleAsync(known.AccountId)
+            : await FindExistingAsync(input.Email, input.UserId, input.DeviceId, ct);
+
+
 
         var deviceId = NormalizeDeviceId(input.DeviceId) ?? Guid.NewGuid().ToString("N");
         // 静态指纹（KimiCLI UA + x-msh-platform/version + x-stainless-*）由内置客户端仿真预设 Kimi 提供，
@@ -92,8 +119,8 @@ public sealed class KimiAccountProvisioner
             site.ClientEmulation = ClientEmulationConstants.Kimi;
             site.IsEnabled = true;
 
-            await client.Updateable(account).ExecuteCommandAsync(ct);
-            await client.Updateable(site).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenType, a.Scope, a.TokenExpiresAt, a.LastRefreshAt, a.Email, a.UserId, a.DeviceId, a.DisplayName, a.IsEnabled, a.ManuallyDisabled, a.IsDeleted, a.UpdatedAt }).ExecuteCommandAsync(ct);
+            await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name, s.ExtraHeadersJson, s.ClientEmulation, s.IsEnabled }).ExecuteCommandAsync(ct);
         }
         else
         {
@@ -139,10 +166,27 @@ public sealed class KimiAccountProvisioner
             await client.Insertable(account).ExecuteCommandAsync(ct);
         }
 
+        if (updateNetworkPolicy)
+        {
+            if (_networkPolicies is null || networkOperation is null)
+                throw new NetworkPolicyException("network_policy_unavailable", "Network policy persistence is unavailable.");
+            await _networkPolicies.SetInTransactionAsync(client, new AccountIdentity("kimi", account.Id),
+                networkOperation.Selection, expectedProfileRevision: networkOperation.ExpectedProfileRevision,
+                cancellationToken: ct);
+        }
+        client.Ado.CommitTran();
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
+        }
+
         // —— 模型映射 ——
         try
         {
-            var models = await _modelFetcher.FetchAsync(input.AccessToken, account.DeviceId, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "provision-models");
+            var models = await (network?.KimiModels ?? _modelFetcher).FetchAsync(input.AccessToken, account.DeviceId, ct);
             if (models.Count > 0)
             {
                 await UpsertModelMappingsCoreAsync(site.Id, models, ct);
@@ -191,39 +235,32 @@ public sealed class KimiAccountProvisioner
     /// </summary>
     public async Task<KimiAccount> UpdateAsync(Guid accountId, string displayName, string? refreshToken, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(displayName))
+            throw new ArgumentException("账号展示名不能为空", nameof(displayName));
+
+        // Validate/refresh a candidate credential before changing any persisted account or site fields.
+        // No writer transaction spans upstream I/O; a blocked policy leaves the old credential untouched.
+        if (!string.IsNullOrWhiteSpace(refreshToken))
+            await _credentialRefreshService.RefreshKimiCredentialAsync(accountId, ct, refreshToken);
+
         using var client = _dbContext.Client.CopyNew();
         var account = await client.Queryable<KimiAccount>().InSingleAsync(accountId)
             ?? throw new KeyNotFoundException("账号不存在");
-
-        if (string.IsNullOrWhiteSpace(displayName))
-        {
-            throw new ArgumentException("账号展示名不能为空", nameof(displayName));
-        }
-
         account.DisplayName = displayName.Trim();
         account.UpdatedAt = DateTimeOffset.UtcNow;
-
-        var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
-        if (site != null)
+        client.Ado.BeginTran();
+        try
         {
-            site.Name = account.DisplayName;
-            await client.Updateable(site).UpdateColumns(s => new { s.Name }).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.DisplayName, a.UpdatedAt }).ExecuteCommandAsync(ct);
+            var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
+            if (site is not null)
+            {
+                site.Name = account.DisplayName;
+                await client.Updateable(site).UpdateColumns(s => s.Name).ExecuteCommandAsync(ct);
+            }
+            client.Ado.CommitTran();
         }
-
-        if (!string.IsNullOrWhiteSpace(refreshToken))
-        {
-            account.RefreshToken = refreshToken.Trim();
-            await client.Updateable(account).ExecuteCommandAsync(ct);
-
-            // 立即用新凭证刷新一次 token
-            await _credentialRefreshService.RefreshKimiCredentialAsync(account.Id, ct);
-            account = await client.Queryable<KimiAccount>().InSingleAsync(accountId) ?? account;
-        }
-        else
-        {
-            await client.Updateable(account).ExecuteCommandAsync(ct);
-        }
-
+        catch { client.Ado.RollbackTran(); throw; }
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateKimiAccounts();
         return account;
@@ -234,15 +271,21 @@ public sealed class KimiAccountProvisioner
     /// </summary>
     public async Task DeleteAsync(Guid accountId, CancellationToken ct)
     {
-        using var client = _dbContext.Client.CopyNew();
-        var account = await client.Queryable<KimiAccount>().InSingleAsync(accountId);
-        if (account == null) return;
-
-        await _cascadeDeleter.RemoveSitesAsync([account.LinkedSiteId], ct);
-        await client.Deleteable<KimiAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
-
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateModelMetadata();
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
+        {
+            var client = _dbContext.Client;
+            var account = await client.Queryable<KimiAccount>().InSingleAsync(accountId);
+            if (account is null) return false;
+            if (_networkPolicies is not null)
+            {
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+                await _networkPolicies.DeleteInTransactionAsync(client, new AccountIdentity("kimi", account.Id), cancellationToken: ct);
+            }
+            if (account.LinkedSiteId != Guid.Empty)
+                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+            await client.Deleteable<KimiAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
+            return true;
+        }, ct, _metadataCache);
         _metadataCache.InvalidateKimiAccounts();
     }
 

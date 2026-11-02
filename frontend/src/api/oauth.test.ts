@@ -13,6 +13,15 @@ import {
   importSelectedOAuthModels,
   runOAuthInspection,
   startOAuth,
+  startGoogleOAuth,
+  startKimiDeviceFlow,
+  startXaiDeviceFlow,
+  pollKimiToken,
+  pollXaiToken,
+  importGoogleCredential,
+  importKimiCredential,
+  importKimiCredentialFiles,
+  importXaiCredential,
   type OAuthModelSelection
 } from './oauth'
 
@@ -31,6 +40,55 @@ beforeEach(() => {
 })
 
 describe('OAuth 与凭证合同', () => {
+  it('保留专用设备码登录的 serverSessionId 并在轮询时发送，不混用通用 sessionId', async () => {
+    mockedHttpPost.mockResolvedValueOnce({ deviceCode: 'kimi-code', serverSessionId: 'kimi-server' })
+    const kimi = await startKimiDeviceFlow(undefined, { mode: 1 })
+    await pollKimiToken(kimi.deviceCode, 'device-id', 'Kimi', kimi.serverSessionId)
+    expect(mockedHttpPost).toHaveBeenLastCalledWith('/api/admin/kimi-accounts/poll-token', { deviceCode: 'kimi-code', deviceId: 'device-id', displayName: 'Kimi', serverSessionId: 'kimi-server' })
+    mockedHttpPost.mockResolvedValueOnce({ deviceCode: 'xai-code', serverSessionId: 'xai-server' })
+    const xai = await startXaiDeviceFlow({ mode: 0 })
+    await pollXaiToken(xai.deviceCode, 'Grok', xai.serverSessionId)
+    expect(mockedHttpPost).toHaveBeenLastCalledWith('/api/admin/xai-accounts/poll-token', { deviceCode: 'xai-code', displayName: 'Grok', serverSessionId: 'xai-server' })
+  })
+  it('旧设备码轮询省略 serverSessionId 时仍保留原合同', async () => {
+    await pollKimiToken('old-kimi', 'device', 'Kimi')
+    expect(mockedHttpPost).toHaveBeenLastCalledWith('/api/admin/kimi-accounts/poll-token', { deviceCode: 'old-kimi', deviceId: 'device', displayName: 'Kimi' })
+    await pollXaiToken('old-xai', 'Grok')
+    expect(mockedHttpPost).toHaveBeenLastCalledWith('/api/admin/xai-accounts/poll-token', { deviceCode: 'old-xai', displayName: 'Grok' })
+  })
+  it('所有登录入口使用精确 networkSelection 数字枚举合同', async () => {
+    const networkSelection = { mode: 2 as const, proxyProfileId: 'profile-id' }
+    await startOAuth(networkSelection)
+    await startGoogleOAuth('Antigravity', networkSelection)
+    await startKimiDeviceFlow(undefined, networkSelection)
+    await startXaiDeviceFlow(networkSelection)
+    for (const [, body] of mockedHttpPost.mock.calls) expect(body).toMatchObject({ networkSelection })
+  })
+
+  it('所有原始凭证导入通过查询传网络选择，不改写凭证内容', async () => {
+    mockedHttpPost.mockResolvedValue({ successes: [], failures: [] })
+    const networkSelection = { mode: 1 as const }
+    await importCredential('{"refresh_token":"secret"}', networkSelection)
+    await importKimiCredential('{"refresh_token":"secret"}', networkSelection)
+    await importGoogleCredential('Antigravity', '{"refresh_token":"secret"}', networkSelection)
+    await importXaiCredential('{"refresh_token":"secret"}', networkSelection)
+    for (const [url, body] of mockedHttpPost.mock.calls) {
+      expect(url).toContain('networkMode=1')
+      expect(typeof body === 'string' ? JSON.parse(body) : body).toEqual({ refresh_token: 'secret' })
+    }
+  })
+
+  it('文件导入保留 multipart 且网络策略不写入凭证文件', async () => {
+    mockedHttpPost.mockResolvedValue({ successes: [], failures: [] })
+    await importCredentialFiles([new File(['{}'], 'a.json')], { mode: 2, proxyProfileId: 'stable-id' })
+    await importKimiCredentialFiles([new File(['{}'], 'b.json')], { mode: 0 })
+    for (const [url, body] of mockedHttpPost.mock.calls) {
+      expect(url).toContain('networkMode=')
+      expect(body).toBeInstanceOf(FormData)
+      expect((body as FormData).get('networkSelection')).toBeNull()
+    }
+  })
+
   it('启动 OAuth 时发送后端要求的 JSON 请求体', async () => {
     mockedHttpPost.mockResolvedValueOnce({
       url: 'https://example.test/oauth',

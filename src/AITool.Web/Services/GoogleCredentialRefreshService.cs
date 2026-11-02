@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using AITool.Application.Google;
 using AITool.Domain.Google;
 using AITool.Infrastructure.Common;
@@ -17,6 +18,7 @@ public sealed class GoogleCredentialRefreshService
     /// </summary>
     private static readonly KeyedAsyncLock RefreshLocks = new();
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly IGoogleOAuthClient _oauth;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -26,30 +28,54 @@ public sealed class GoogleCredentialRefreshService
         AppDbContext dbContext,
         IGoogleOAuthClient oauth,
         ProxyRequestMetadataCache metadataCache,
-        ILogger<GoogleCredentialRefreshService> logger)
+        ILogger<GoogleCredentialRefreshService> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _oauth = oauth;
         _metadataCache = metadataCache;
         _logger = logger;
     }
 
-    public async Task<string?> RefreshAsync(
-        Guid linkedSiteId,
-        string staleAccessToken,
-        CancellationToken cancellationToken)
+    public async Task<string?> RefreshForAccountAsync(Guid accountId, string staleAccessToken, CancellationToken cancellationToken)
     {
-        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
+        using (await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", accountId, cancellationToken))
         {
-            return await RefreshCoreAsync(linkedSiteId, staleAccessToken, cancellationToken);
+            var account = await _dbContext.GoogleAccounts.InSingleAsync(accountId);
+            if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken)) return null;
+            if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)) return account.AccessToken;
+            return await RefreshCoreAsync(account.LinkedSiteId, staleAccessToken, cancellationToken, accountId);
+        }
+    }
+
+    public async Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
+    {
+        if (linkedSiteId == Guid.Empty) return null;
+        var accounts = await _dbContext.GoogleAccounts.Where(a => a.LinkedSiteId == linkedSiteId)
+            .ToListAsync(cancellationToken);
+        if (accounts.Count != 1) return null;
+        try
+        {
+            return await RefreshForAccountAsync(accounts[0].Id, staleAccessToken, cancellationToken);
+        }
+        catch (NetworkPolicyException) { throw; }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Unable to refresh Google token for linked site {SiteId}", linkedSiteId);
+            return null;
         }
     }
 
     public async Task<bool> DisableAsync(
         Guid linkedSiteId,
         string reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? staleAccessToken = null)
     {
+        var candidates = await _dbContext.GoogleAccounts.Where(a => a.LinkedSiteId == linkedSiteId).ToListAsync(cancellationToken);
+        if (candidates.Count != 1) return false;
+        using (await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", candidates[0].Id, cancellationToken))
         using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
         {
             try
@@ -60,11 +86,13 @@ public sealed class GoogleCredentialRefreshService
                     .Where(item => item.LinkedSiteId == linkedSiteId)
                     .ToListAsync(cancellationToken))
                     .FirstOrDefault();
-                if (account is null)
-                {
+                if (account is null || account.Id != candidates[0].Id ||
+                    (staleAccessToken is not null && !string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)))
                     return false;
-                }
 
+                client.Ado.BeginTran();
+                try
+                {
                 account.IsEnabled = false;
                 account.DisabledByUpstream = true;
                 await client.Updateable(account)
@@ -80,8 +108,14 @@ public sealed class GoogleCredentialRefreshService
                         .ExecuteCommandAsync(cancellationToken);
                 }
 
-                _metadataCache.InvalidateRouteTargets();
-                _metadataCache.InvalidateGoogleAccounts();
+                client.Ado.CommitTran();
+                }
+                catch { client.Ado.RollbackTran(); throw; }
+                finally
+                {
+                    _metadataCache.InvalidateRouteTargets();
+                    _metadataCache.InvalidateGoogleAccounts();
+                }
                 _logger.LogWarning(
                     "Google account {Id} auto-disabled after upstream 403: {Reason}",
                     account.Id,
@@ -98,6 +132,7 @@ public sealed class GoogleCredentialRefreshService
 
     internal static bool IsForbiddenResponse(Exception exception)
     {
+        if (exception is NetworkPolicyException) return false;
         if (exception is HttpRequestException { StatusCode: HttpStatusCode.Forbidden })
         {
             return true;
@@ -114,12 +149,12 @@ public sealed class GoogleCredentialRefreshService
     private async Task<string?> RefreshCoreAsync(
         Guid linkedSiteId,
         string staleAccessToken,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Guid? accountId = null)
     {
         try
         {
             var account = (await _dbContext.GoogleAccounts
-                .Where(item => item.LinkedSiteId == linkedSiteId)
+                .Where(item => accountId.HasValue ? item.Id == accountId.Value : item.LinkedSiteId == linkedSiteId)
                 .ToListAsync(cancellationToken))
                 .FirstOrDefault();
             if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken))
@@ -133,37 +168,19 @@ public sealed class GoogleCredentialRefreshService
                 return account.AccessToken;
             }
 
-            var tokens = await _oauth.RefreshTokenAsync(account.AccountKind, account.RefreshToken, cancellationToken);
-            await _dbContext.SerialExecuteAsync(async () =>
-            {
-                if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    account.AccessToken = tokens.AccessToken;
-                }
-
-                // Google 刷新响应通常不回传 refresh_token，保留旧值。
-                if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
-                {
-                    account.RefreshToken = tokens.RefreshToken;
-                }
-
-                account.TokenExpiresAt = tokens.ExpiresAt;
-                account.LastRefreshAt = DateTimeOffset.UtcNow;
-                await _dbContext.UpdateAsync(account, cancellationToken);
-
-                var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    site.ApiKey = tokens.AccessToken;
-                    await _dbContext.UpdateAsync(site, cancellationToken);
-                }
-            }, cancellationToken);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "credential-refresh");
+            cancellationToken.ThrowIfCancellationRequested();
+            // A sent request can rotate the credential even if the original request is cancelled.
+            using var refreshSafety = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var tokens = await (network?.GoogleOAuth ?? _oauth).RefreshTokenAsync(account.AccountKind, account.RefreshToken, refreshSafety.Token);
+            await GoogleAccountProvisioner.PersistRotationAsync(_dbContext, _metadataCache, account.Id, tokens);
 
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateGoogleAccounts();
             _logger.LogInformation("Google account {Id} token refreshed after upstream unauthorized", account.Id);
             return tokens.AccessToken;
         }
+        catch (NetworkPolicyException) { throw; }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             _logger.LogWarning(exception, "Unable to refresh Google token for linked site {SiteId}", linkedSiteId);

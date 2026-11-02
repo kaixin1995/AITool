@@ -374,6 +374,8 @@ FodyWeavers.xsd
 /aitool.db
 /aitool.db-shm
 /aitool.db-wal
+# Data Protection key rings may contain unencrypted key material.
+.aitool-secrets/
 /.claude/
 /.artifacts
 *.lscache

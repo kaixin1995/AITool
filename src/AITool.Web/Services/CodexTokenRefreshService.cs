@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Collections.Concurrent;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
@@ -77,6 +78,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         // 现取 typed HttpClient，避免单例持有导致 HttpMessageHandler 被钉死（DNS 陈旧）。
         var oauthClient = scope.ServiceProvider.GetRequiredService<ICodexOAuthClient>();
+        var networkFactory = scope.ServiceProvider.GetService<NetworkBoundOAuthClientFactory>();
 
         // 尊重 Codex 功能总开关：关闭时跳过本轮
         var runtime = await cache.GetRuntimeSettingsAsync(ct);
@@ -116,7 +118,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
         foreach (var account in due)
         {
             if (ct.IsCancellationRequested) break;
-            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct);
+            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct, networkFactory);
             if (updated) anyUpdated = true;
             // 错峰
             await Task.Delay(InterAccountDelay, ct);
@@ -129,13 +131,18 @@ public sealed class CodexTokenRefreshService : BackgroundService
         }
     }
 
-    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, ICodexOAuthClient oauthClient, CodexAccount account, CancellationToken ct)
+    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, ICodexOAuthClient oauthClient, CodexAccount account, CancellationToken ct, NetworkBoundOAuthClientFactory? networkFactory = null)
     {
         try
         {
             // single-flight：OAuth 客户端内部保证同 refresh_token 并发只刷一次
             // HTTP 调用在锁外执行，避免长时间持有串行锁
-            var tokens = await oauthClient.RefreshTokenAsync(account.RefreshToken!, ct);
+            using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", account.Id, ct);
+            var current = await db.CodexAccounts.InSingleAsync(account.Id);
+            if (current is null || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
+            account = current;
+            using var network = networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "background-token-refresh");
+            var tokens = await (network?.CodexOAuth ?? oauthClient).RefreshTokenAsync(account.RefreshToken!, ct);
 
             // DB 写入用串行锁包裹，避免并发竞态
             await db.SerialExecuteAsync(async () =>

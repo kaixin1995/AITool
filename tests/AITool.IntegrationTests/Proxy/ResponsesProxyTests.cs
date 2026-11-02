@@ -94,9 +94,11 @@ public sealed class ResponsesProxyTests
         forwarded["X-Codex-Turn-Metadata"].Should().Be("{\"turn_id\":\"turn-1\"}");
         forwarded["X-Client-Request-Id"].Should().Be("request-id-1");
         forwarded["X-Codex-Window-Id"].Should().Be("window-1");
-        forwarded["Thread-Id"].Should().Be("thread-1");
-        forwarded["Session-Id"].Should().Be("cache-key-from-body");
-        forwarded["Conversation_id"].Should().Be("conversation-1");
+        forwarded["Thread-Id"].Should().MatchRegex("^[0-9a-f]{64}$").And.NotBe("thread-1");
+        forwarded["Session-Id"].Should().MatchRegex("^[0-9a-f]{64}$").And.NotBe("cache-key-from-body");
+        forwarded["Conversation_id"].Should().MatchRegex("^[0-9a-f]{64}$").And.NotBe("conversation-1");
+        using var isolatedBody = JsonDocument.Parse(fakeForwardService.Requests[0].PreparedRequestBody!);
+        isolatedBody.RootElement.GetProperty("prompt_cache_key").GetString().Should().Be(forwarded["Session-Id"]);
         forwarded["X-Openai-Internal-Codex-Responses-Lite"].Should().Be("1");
         forwarded.Should().NotContainKey("Authorization");
         forwarded.Should().NotContainKey("Originator");
@@ -1319,10 +1321,12 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-responses-test-{Guid.NewGuid():N}.db");
     private readonly ResponsesFakeProxyForwardService _fakeForwardService;
+    private readonly IUpstreamReferenceGuard? _referenceGuard;
 
-    public ResponsesWebApplicationFactory(ResponsesFakeProxyForwardService fakeForwardService)
+    public ResponsesWebApplicationFactory(ResponsesFakeProxyForwardService fakeForwardService, IUpstreamReferenceGuard? referenceGuard = null)
     {
         _fakeForwardService = fakeForwardService;
+        _referenceGuard = referenceGuard;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -1333,6 +1337,11 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
             IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
+            if (_referenceGuard is not null)
+            {
+                services.RemoveAll<IUpstreamReferenceGuard>();
+                services.AddSingleton<IUpstreamReferenceGuard>(_referenceGuard);
+            }
         });
     }
 
@@ -1350,6 +1359,12 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
 
         var openAiSiteId = Guid.Parse("a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1");
         var anthropicSiteId = Guid.Parse("b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2");
+        if (string.Equals(_fakeForwardService.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase))
+            db.Client.Insertable(new AITool.Domain.Codex.CodexAccount
+            {
+                Id = Guid.Parse("acacacac-acac-acac-acac-acacacacacac"),
+                DisplayName = "Isolation fixture", LinkedSiteId = openAiSiteId, IsEnabled = true
+            }).ExecuteCommand();
         var accessKeyRaw = "responses-test-key";
         var accessKeyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(accessKeyRaw)));
 
@@ -1359,7 +1374,7 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
             {
                 Id = openAiSiteId,
                 Name = "OpenAI Site",
-                BaseUrl = "https://openai.example.com",
+                BaseUrl = _fakeForwardService.BaseUrl ?? "https://openai.example.com",
                 ApiKey = "openai-key",
                 ProtocolType = _fakeForwardService.IsOpenAiChatOnly ? "OpenAI" : "Responses",
                 SupportsOpenAi = _fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
@@ -1429,6 +1444,7 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
             Id = 1,
             ProxyRequestTimeoutSeconds = 12,
             ProxyRetryCount = 0,
+            StreamHeadBufferEnabled = _fakeForwardService.StreamHeadBufferEnabled,
             DetectionRequestTimeoutSeconds = 60,
             DetectionRetryCount = 0,
             DetectionConcurrency = 1,
@@ -1454,6 +1470,11 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
     public bool IsOpenAiChatOnly { get; set; }
     public bool SupportsOpenAiAndResponses { get; set; }
     public string? ManagedSource { get; set; }
+    public string? BaseUrl { get; set; }
+    public bool StreamHeadBufferEnabled { get; set; }
+    public bool CancelAfterStreamingCallbacks { get; set; }
+    public bool FailStreamingBeforeCallbacks { get; set; }
+    public Func<int, string, Task>? AfterStreamingLineAsync { get; set; }
 
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
@@ -1490,6 +1511,8 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
         CancellationToken cancellationToken = default)
     {
         Requests.Add(CloneRequest(request));
+        if (FailStreamingBeforeCallbacks)
+            return new ProxyForwardResult { Success = false, StatusCode = 503, IsStreaming = true, ErrorMessage = "Network policy blocked forwarding (network_policy_unavailable)." };
 
         var callIndex = Requests.Count - 1;
         var lines = StreamingLinesByCall is not null && callIndex >= 0 && callIndex < StreamingLinesByCall.Count
@@ -1502,14 +1525,18 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
                 string.Empty
             ];
 
-        foreach (var line in lines)
+        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
+            var line = lines[lineIndex];
             await onSseDataAsync(line, cancellationToken);
+            if (AfterStreamingLineAsync is not null)
+                await AfterStreamingLineAsync(lineIndex, line);
         }
 
         return new ProxyForwardResult
         {
-            Success = true,
+            Success = !CancelAfterStreamingCallbacks,
+            IsCanceled = CancelAfterStreamingCallbacks,
             StatusCode = 200,
             ResponseBody = string.Join("\n", lines),
             InputTokens = 10,
@@ -1526,6 +1553,8 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
         {
             TargetBaseUrl = request.TargetBaseUrl,
             TargetApiKey = request.TargetApiKey,
+            AccountIdentity = request.AccountIdentity,
+            EgressProxyUrl = request.EgressProxyUrl,
             ProtocolType = request.ProtocolType,
             TargetModelName = request.TargetModelName,
             RequestBody = request.RequestBody,

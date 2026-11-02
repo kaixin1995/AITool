@@ -26,6 +26,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
     private readonly DeviceOAuthCredentialRefreshService _credentialRefresh;
     private readonly ILogger<DeviceOAuthQuotaService> _logger;
     private readonly IQuotaRecheckScheduleStore? _scheduleStore;
+    private readonly NetworkBoundDeviceOAuthVendorFactory? _networkVendors;
 
     public DeviceOAuthQuotaService(
         AppDbContext dbContext,
@@ -34,7 +35,8 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         IMemoryCache resultCache,
         DeviceOAuthCredentialRefreshService credentialRefresh,
         ILogger<DeviceOAuthQuotaService> logger,
-        IQuotaRecheckScheduleStore? scheduleStore = null)
+        IQuotaRecheckScheduleStore? scheduleStore = null,
+        NetworkBoundDeviceOAuthVendorFactory? networkVendors = null)
     {
         _dbContext = dbContext;
         _registry = registry;
@@ -43,6 +45,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         _credentialRefresh = credentialRefresh;
         _logger = logger;
         _scheduleStore = scheduleStore;
+        _networkVendors = networkVendors;
     }
 
     string IAccountQuotaProvider.ProviderKey => ProviderKey;
@@ -163,14 +166,16 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
             ExpiresAt = current.TokenExpiresAt,
         };
 
-        var result = await vendor.QueryQuotaAsync(token, current.ExtraJson, ct);
+        using var boundVendor = _networkVendors?.ForAccount(current, "device-oauth-quota");
+        var remoteVendor = boundVendor?.Vendor ?? vendor;
+        var result = await remoteVendor.QueryQuotaAsync(token, current.ExtraJson, ct);
         if (result.CredentialInvalid && allowTokenRefresh && !string.IsNullOrWhiteSpace(current.RefreshToken))
         {
-            var refreshed = await _credentialRefresh.RefreshAsync(current.LinkedSiteId, current.AccessToken!, ct);
+            var refreshed = await _credentialRefresh.RefreshForAccountAsync(current.Id, current.AccessToken!, ct);
             if (!string.IsNullOrWhiteSpace(refreshed))
             {
                 token = token with { AccessToken = refreshed };
-                result = await vendor.QueryQuotaAsync(token, current.ExtraJson, ct);
+                result = await remoteVendor.QueryQuotaAsync(token, current.ExtraJson, ct);
             }
         }
 

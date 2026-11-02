@@ -77,8 +77,9 @@ public sealed partial class OpenAiProxyController
                         }
 
                         if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(convertedPayload); }
-                        await SendWebSocketJsonPayloadAsync(webSocket, convertedPayload, token);
+                        await CommitReferenceOutputAsync(convertedPayload, token);
                         startedWriting = true;
+                        await SendWebSocketJsonPayloadAsync(webSocket, convertedPayload, token);
                     }
                 }
             }
@@ -130,7 +131,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting,
+            CanFallback = !startedWriting && _referenceOutputError is null,
             CompletedOutputJson = completedOutputJson
         };
     }
@@ -200,8 +201,9 @@ public sealed partial class OpenAiProxyController
                 }
 
                 if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(wsPayload); }
-                await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
+                await CommitReferenceOutputAsync(wsPayload, token);
                 startedWriting = true;
+                await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
             }
         }
 
@@ -249,7 +251,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting,
+            CanFallback = !startedWriting && _referenceOutputError is null,
             CompletedOutputJson = completedOutputJson
         };
     }
@@ -308,9 +310,10 @@ public sealed partial class OpenAiProxyController
             if (!string.IsNullOrEmpty(responsesChunk))
             {
                 if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(responsesChunk); }
+                await CommitReferenceOutputAsync(responsesChunk, token);
+                startedWriting = true;
                 await Response.WriteAsync(responsesChunk, token);
                 await Response.Body.FlushAsync(token);
-                startedWriting = true;
             }
 
             // 提取用量
@@ -384,7 +387,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null
         };
     }
 
@@ -496,9 +499,10 @@ public sealed partial class OpenAiProxyController
         async Task WriteChunkDirectAsync(string chunk, CancellationToken token)
         {
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await CommitReferenceOutputAsync(chunk, token);
+            startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
-            startedWriting = true;
         }
 
         async Task WriteRawSseBlockAsync(List<string> lines, CancellationToken token)
@@ -666,7 +670,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null
         };
     }
 
@@ -770,9 +774,10 @@ public sealed partial class OpenAiProxyController
             }
 
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await CommitReferenceOutputAsync(chunk, token);
+            startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
-            startedWriting = true;
         }
 
         async Task FlushResponsesSseBlockAsync(CancellationToken token)
@@ -873,7 +878,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null
         };
     }
 
@@ -918,9 +923,10 @@ public sealed partial class OpenAiProxyController
             }
 
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await CommitReferenceOutputAsync(chunk, token);
+            startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
-            startedWriting = true;
         }
 
         async Task EnsureRoleChunkAsync(CancellationToken token)
@@ -1184,7 +1190,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null
         };
     }
 

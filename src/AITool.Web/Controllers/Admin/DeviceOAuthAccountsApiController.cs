@@ -1,4 +1,6 @@
 using AITool.Application.OAuth;
+using AITool.Application.Networking;
+using AITool.Domain.Operations;
 using AITool.Domain.OAuth;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Contracts;
@@ -23,17 +25,20 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
     private readonly DeviceOAuthAccountProvisioner _provisioner;
     private readonly DeviceOAuthQuotaService _quotaService;
     private readonly AppDbContext _dbContext;
+    private readonly NetworkBoundDeviceOAuthVendorFactory? _networkVendors;
 
     public DeviceOAuthAccountsApiController(
         DeviceOAuthVendorRegistry registry,
         DeviceOAuthAccountProvisioner provisioner,
         DeviceOAuthQuotaService quotaService,
-        AppDbContext dbContext)
+        AppDbContext dbContext,
+        NetworkBoundDeviceOAuthVendorFactory? networkVendors = null)
     {
         _registry = registry;
         _provisioner = provisioner;
         _quotaService = quotaService;
         _dbContext = dbContext;
+        _networkVendors = networkVendors;
     }
 
     /// <summary>可登录的厂商列表。</summary>
@@ -59,10 +64,21 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             return BadRequest(ApiResponse.Fail($"未知厂商 {request.Vendor}", "unknown_vendor"));
         }
 
+        var sessionId = Guid.NewGuid().ToString("N");
+        NetworkOperationContext? network = null;
         DeviceOAuthStartResult start;
         try
         {
-            start = await vendor.StartSignInAsync(ct);
+            if (_networkVendors is null && request.NetworkSelection is not null)
+                throw new NetworkPolicyException("network_policy_unavailable", "Account network binding is unavailable.");
+            if (_networkVendors is not null)
+                network = await _networkVendors.CreateOperationAsync(request.NetworkSelection, "device-oauth-login:" + sessionId, ct);
+            using var boundVendor = network is null ? null : _networkVendors!.ForOperation(vendor.VendorKey, network, "device-oauth-login");
+            start = await (boundVendor?.Vendor ?? vendor).StartSignInAsync(ct);
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, ex.Code));
         }
         catch (Exception ex)
         {
@@ -70,8 +86,8 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             return Ok(ApiResponse.Fail($"发起登录失败：{ex.Message}", "sign_in_start_failed"));
         }
 
-        var sessionId = Guid.NewGuid().ToString("N");
-        Sessions[sessionId] = new PendingSession(vendor.VendorKey, start.SessionJson, DateTimeOffset.UtcNow.AddMinutes(15));
+        Sessions[sessionId] = new PendingSession(vendor.VendorKey, start.SessionJson,
+            DateTimeOffset.UtcNow.AddMinutes(15), network, request.NetworkSelection);
         PruneExpiredSessions();
 
         return Ok(ApiResponse.Ok(new
@@ -93,6 +109,16 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             return BadRequest(ApiResponse.Fail("登录会话已过期，请重新发起", "session_expired"));
         }
 
+        await session.Gate.WaitAsync(ct);
+        try
+        {
+        // Waiters must recheck after taking the lease: only one caller may consume a code.
+        if (!Sessions.TryGetValue(request.SessionId!, out var active) || !ReferenceEquals(active, session)
+            || session.DeadlineUtc < DateTimeOffset.UtcNow)
+            return BadRequest(ApiResponse.Fail("登录会话已过期，请重新发起", "session_expired"));
+        if (session.CompletedAccountId is { } completed)
+            return Ok(ApiResponse.Ok(new { status = "success", accountId = completed }));
+
         var vendor = _registry.Find(session.VendorKey);
         if (vendor is null)
         {
@@ -104,9 +130,18 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
         // 厂商任何异常（网络错误、上游拒绝、响应畸形）统一兜底为登录失败，不向上抛 500。
         try
         {
-            poll = !string.IsNullOrWhiteSpace(request.CallbackUrl)
-                ? await vendor.CompleteWithCallbackAsync(session.SessionJson, request.CallbackUrl!, ct)
-                : await vendor.PollSignInAsync(session.SessionJson, ct);
+            if (session.Network is not null && _networkVendors is null)
+                throw new NetworkPolicyException("network_policy_unavailable", "Account network binding is unavailable.");
+            using var boundVendor = session.Network is null ? null
+                : _networkVendors!.ForOperation(session.VendorKey, session.Network, "device-oauth-login");
+            var remoteVendor = boundVendor?.Vendor ?? vendor;
+            poll = session.SuccessfulPoll ?? (!string.IsNullOrWhiteSpace(request.CallbackUrl)
+                ? await remoteVendor.CompleteWithCallbackAsync(session.SessionJson, request.CallbackUrl!, ct)
+                : await remoteVendor.PollSignInAsync(session.SessionJson, ct));
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, ex.Code));
         }
         catch (NotSupportedException ex)
         {
@@ -133,7 +168,7 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             // 多段登录续跳（如 Kiro 的 AWS Builder ID）：更新会话并引导用户打开下一地址。
             if (!string.IsNullOrWhiteSpace(poll.UpdatedSessionJson))
             {
-                Sessions[request.SessionId!] = new PendingSession(session.VendorKey, poll.UpdatedSessionJson!, session.DeadlineUtc);
+                session.SessionJson = poll.UpdatedSessionJson!;
             }
 
             return Ok(ApiResponse.Ok(new
@@ -144,9 +179,9 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             }));
         }
 
-        Sessions.TryRemove(request.SessionId ?? string.Empty, out _);
         if (poll.Tokens is null || poll.IsDenied || poll.IsExpired || !string.IsNullOrEmpty(poll.Error))
         {
+            Sessions.TryRemove(request.SessionId ?? string.Empty, out _);
             return Ok(ApiResponse.Ok(new
             {
                 status = "failed",
@@ -154,19 +189,34 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             }));
         }
 
+        // Preserve consumed authorization results if a DB/policy write fails; retries must not
+        // exchange the same one-time code again. Nothing is published until provision commits.
+        session.SuccessfulPoll = poll;
         var displayName = string.IsNullOrWhiteSpace(request.DisplayName)
             ? poll.DisplayName ?? poll.Email
             : request.DisplayName!.Trim();
         var account = await _provisioner.ProvisionAsync(
             vendor, displayName, poll.Email, poll.ExternalUserId, poll.Tokens, poll.ExtraJson, ct,
             // 请求体里用户明确命名才算自定义名；上游昵称/邮箱兜底名跟随重登刷新。
-            isUserSuppliedName: !string.IsNullOrWhiteSpace(request.DisplayName));
+            isUserSuppliedName: !string.IsNullOrWhiteSpace(request.DisplayName),
+            networkSelection: session.Selection,
+            expectedProfileRevision: session.Network?.ExpectedProfileRevision);
+        session.CompletedAccountId = account.Id;
 
         return Ok(ApiResponse.Ok(new
         {
             status = "success",
             accountId = account.Id,
         }));
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, ex.Code));
+        }
+        finally
+        {
+            session.Gate.Release();
+        }
     }
 
     /// <summary>账号列表（含额度缓存窗口）。</summary>
@@ -240,7 +290,8 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
         IReadOnlyList<Application.OAuth.DeviceOAuthRemoteModel> models;
         try
         {
-            models = await vendor.FetchModelsAsync(token, account.ExtraJson, ct);
+            using var boundVendor = _networkVendors?.ForAccount(account, "device-oauth-models");
+            models = await (boundVendor?.Vendor ?? vendor).FetchModelsAsync(token, account.ExtraJson, ct);
         }
         catch (NotSupportedException)
         {
@@ -429,11 +480,23 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
         }
     }
 
-    private sealed record PendingSession(string VendorKey, string SessionJson, DateTimeOffset DeadlineUtc);
+    private sealed class PendingSession(string vendorKey, string sessionJson, DateTimeOffset deadlineUtc,
+        NetworkOperationContext? network, AccountNetworkSelection? selection)
+    {
+        public string VendorKey { get; } = vendorKey;
+        public string SessionJson { get; set; } = sessionJson;
+        public DateTimeOffset DeadlineUtc { get; } = deadlineUtc;
+        public NetworkOperationContext? Network { get; } = network;
+        public AccountNetworkSelection? Selection { get; } = selection;
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public Guid? CompletedAccountId { get; set; }
+        public DeviceOAuthPollResult? SuccessfulPoll { get; set; }
+    }
 
     public sealed class StartSignInRequest
     {
         public string? Vendor { get; set; }
+        public AccountNetworkSelection? NetworkSelection { get; set; }
     }
 
     public sealed class PollSignInRequest

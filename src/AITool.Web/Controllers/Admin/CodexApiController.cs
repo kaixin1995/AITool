@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using AITool.Application.Accounts;
@@ -23,9 +24,10 @@ namespace AITool.Web.Controllers.Admin;
 public sealed class CodexApiController : ControllerBase
 {
     // —— OAuth 会话暂存（state → verifier，TTL 10min）——
-    private sealed record OAuthSession(string State, string Verifier, DateTimeOffset ExpiresAt);
+    private sealed record OAuthSession(string State, string Verifier, DateTimeOffset ExpiresAt, NetworkOperationContext Network, bool UpdateNetworkPolicy);
     private static readonly ConcurrentDictionary<string, OAuthSession> Sessions = new();
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly ICodexOAuthClient _oauth;
     private readonly CodexAccountProvisioner _provisioner;
@@ -49,8 +51,10 @@ public sealed class CodexApiController : ControllerBase
         ICodexResetCreditsService resetCreditsService,
         AccountQuotaInspectionService inspectionService,
         ILogger<CodexApiController> logger,
-        ProxyRequestMetadataCache metadataCache)
+        ProxyRequestMetadataCache metadataCache,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _oauth = oauth;
         _provisioner = provisioner;
@@ -66,19 +70,31 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>启动 OAuth 登录，返回授权 URL 与 state。</summary>
     [HttpPost("start-oauth")]
-    public async Task<IActionResult> StartOAuth([FromBody] StartOAuthRequest? req, CancellationToken ct)
+    public async Task<IActionResult> StartOAuth([FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] StartOAuthRequest? req, CancellationToken ct)
     {
+        try
+        {
         CleanupExpiredSessions();
-        var (state, verifier) = _oauth.CreateOAuthSession();
-        var url = await _oauth.BuildAuthorizeUrlAsync(state, verifier, ct);
-        Sessions[state] = new OAuthSession(state, verifier, DateTimeOffset.UtcNow.AddMinutes(10));
+        var operation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, req?.NetworkSelection, ct);
+        using var network = _networkFactory?.CreateForOperation(operation, "login-start");
+        var oauth = network?.CodexOAuth ?? _oauth;
+        var (state, verifier) = oauth.CreateOAuthSession();
+        var url = await oauth.BuildAuthorizeUrlAsync(state, verifier, ct);
+        Sessions[state] = new OAuthSession(state, verifier, DateTimeOffset.UtcNow.AddMinutes(10), operation, req?.NetworkSelection is not null);
         return Ok(new { url, state });
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>完成 OAuth 登录：用户粘贴回调 URL，校验 state 后交换 token 并建账号。</summary>
     [HttpPost("complete-oauth")]
     public async Task<IActionResult> CompleteOAuth([FromBody] CompleteOAuthRequest req, CancellationToken ct)
     {
+        try
+        {
         if (string.IsNullOrWhiteSpace(req?.CallbackUrl))
         {
             return BadRequest(new { message = "回调 URL 不能为空" });
@@ -115,7 +131,8 @@ public sealed class CodexApiController : ControllerBase
         CodexTokenSet tokens;
         try
         {
-            tokens = await _oauth.ExchangeCodeAsync(code, session.Verifier, ct);
+            using var network = _networkFactory?.CreateForOperation(session.Network, "login-exchange");
+            tokens = await (network?.CodexOAuth ?? _oauth).ExchangeCodeAsync(code, session.Verifier, ct);
         }
         catch (Exception ex)
         {
@@ -137,15 +154,25 @@ public sealed class CodexApiController : ControllerBase
             PlanType = claims?.PlanType,
             TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600),
         };
-        var account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+        var account = await _provisioner.ProvisionFromTokensAsync(input, ct, session.Network, session.UpdateNetworkPolicy);
         return Ok(ToSummary(account));
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>导入凭证文件（multipart 多文件 或 raw body 单文件）。</summary>
     [HttpPost("import-credential")]
     [RequestSizeLimit(10 * 1024 * 1024)]
-    public async Task<IActionResult> ImportCredential([FromQuery] string? name, CancellationToken ct)
+    public async Task<IActionResult> ImportCredential([FromQuery] string? name, CancellationToken ct,
+        [FromQuery] int? networkMode = null, [FromQuery] Guid? proxyProfileId = null)
     {
+        try
+        {
+        var selection = NetworkBoundOAuthClientFactory.ImportSelection(networkMode, proxyProfileId);
+        var importOperation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, selection, ct);
         var parseResults = new List<CodexCredentialParseResult>();
 
         if (Request.HasFormContentType && Request.Form.Files.Count > 0)
@@ -180,7 +207,7 @@ public sealed class CodexApiController : ControllerBase
                 PlanType = r.PlanType,
                 TokenExpiresAt = r.TokenExpiresAt,
             };
-            var account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+            var account = await _provisioner.ProvisionFromTokensAsync(input, ct, importOperation, selection is not null);
             summaries.Add(ToSummary(account));
         }
 
@@ -190,6 +217,11 @@ public sealed class CodexApiController : ControllerBase
             return StatusCode(207, new { successes = summaries, failures });
         }
         return Ok(new { successes = summaries });
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>列出全部 OAuth 账号（含状态/额度缓存字段）。</summary>
@@ -221,6 +253,10 @@ public sealed class CodexApiController : ControllerBase
         {
             await _cooldownService.ResetAsync(id, ct);
             return Ok(new { message = "已重置" });
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
         }
         catch (InvalidOperationException)
         {
@@ -264,6 +300,10 @@ public sealed class CodexApiController : ControllerBase
             await _provisioner.DeprovisionAsync(id, ct);
             return Ok(new { message = "已删除" });
         }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
         catch (InvalidOperationException)
         {
             return NotFound(new { message = "账号不存在" });
@@ -293,7 +333,12 @@ public sealed class CodexApiController : ControllerBase
                 CancellationTokenSource? persistCts = null;
                 try
                 {
-                    var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
+                    using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", account.Id, ct);
+                    account = await _dbContext.CodexAccounts.InSingleAsync(account.Id) ?? account;
+                    if (string.IsNullOrWhiteSpace(account.RefreshToken))
+                        return BadRequest(new { message = "账号没有 refresh_token" });
+                    using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "manual-token-refresh");
+                    var tokens = await (network?.CodexOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken, ct);
                     // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token。
                     if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
                     {
@@ -342,6 +387,10 @@ public sealed class CodexApiController : ControllerBase
             var updated = await GetAccountAsync(id, ct);
             return Ok(ToSummary(updated!));
         }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
         catch (InvalidOperationException)
         {
             return NotFound(new { message = "账号不存在" });
@@ -363,7 +412,12 @@ public sealed class CodexApiController : ControllerBase
         CancellationTokenSource? persistCts = null;
         try
         {
-            var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
+            using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", account.Id, ct);
+                    account = await _dbContext.CodexAccounts.InSingleAsync(account.Id) ?? account;
+                    if (string.IsNullOrWhiteSpace(account.RefreshToken))
+                        return BadRequest(new { message = "账号没有 refresh_token" });
+                    using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "manual-token-refresh");
+                    var tokens = await (network?.CodexOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken, ct);
             // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token 导致永久无法刷新。
             if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
             {
@@ -408,7 +462,7 @@ public sealed class CodexApiController : ControllerBase
         }
     }
 
-    /// <summary>拉取该账号的上游模型列表（预览，不立即导入）。顺带 best-effort 刷新远端分层目录（供新账号供给使用）。</summary>
+    /// <summary>拉取该账号的上游模型列表（预览，不立即导入）；全局公共目录仅使用已有缓存。</summary>
     [HttpGet("accounts/{id}/fetch-models")]
     public async Task<IActionResult> FetchModels(Guid id, CancellationToken ct)
     {
@@ -419,13 +473,12 @@ public sealed class CodexApiController : ControllerBase
             return BadRequest(new { message = "账号无 access_token" });
         }
 
-        // best-effort 刷新远端分层目录（router-for-me/models，失败沿用本地），让新账号默认映射跟上上游新模型。
-        // 先启动不等待：与拉上游模型并行执行，避免目录源不可达（最坏两个 URL 串行超时）拖慢本次请求。
-        var catalogRefreshTask = _modelCatalog.TryRefreshFromRemoteAsync(ct);
+        // Global catalog refresh is independent and must not bypass this account's network policy.
 
         try
         {
-            var remoteModels = (await _modelFetcher.FetchAsync(account.AccessToken, account.AccountId ?? string.Empty, ct)).ToList();
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "models");
+            var remoteModels = (await (network?.CodexModels ?? _modelFetcher).FetchAsync(account.AccessToken, account.AccountId ?? string.Empty, ct)).ToList();
             var existingMappings = await _dbContext.SiteModelMappings
                 .Where(m => m.SiteId == account.LinkedSiteId)
                 .ToListAsync(ct);
@@ -462,38 +515,18 @@ public sealed class CodexApiController : ControllerBase
                 });
             }
 
-            var catalogRefresh = await catalogRefreshTask;
             return Ok(new
             {
-                catalogRefreshed = catalogRefresh.Success,
-                catalogChanged = catalogRefresh.Changed,
-                catalogNote = catalogRefresh.Success
-                    ? (catalogRefresh.Changed ? "远端模型目录已刷新" : "远端模型目录无变化")
-                    : catalogRefresh.Error,
+                catalogRefreshed = false,
+                catalogChanged = false,
+                catalogNote = "公共模型目录使用缓存；本次仅拉取账号模型",
                 models = result
             });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Fetch OAuth account models failed for account {AccountId}", id);
-            // 拉模型已失败，不等目录刷新结果直接返回；后台回收任务避免未观察的取消异常。
-            _ = ObserveCatalogRefreshAsync(catalogRefreshTask);
             return Ok(new { success = false, message = ex.Message });
-        }
-    }
-
-    /// <summary>
-    /// 吸收目录刷新任务的取消/异常（仅用于错误路径的 fire-and-forget 回收，结果丢弃）。
-    /// </summary>
-    private static async Task ObserveCatalogRefreshAsync(Task<CodexCatalogRefreshResult> task)
-    {
-        try
-        {
-            await task;
-        }
-        catch (OperationCanceledException)
-        {
-            // 请求结束时 ct 取消属预期。
         }
     }
 
@@ -550,6 +583,10 @@ public sealed class CodexApiController : ControllerBase
                 succeeded = results.Count(r => r.Ok),
                 failed = results.Count(r => !r.Ok),
             });
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
         }
         catch (InvalidOperationException)
         {
@@ -749,6 +786,7 @@ public sealed class CodexApiController : ControllerBase
 
 public sealed class StartOAuthRequest
 {
+    public AccountNetworkSelection? NetworkSelection { get; set; }
     public string? DisplayName { get; set; }
 }
 

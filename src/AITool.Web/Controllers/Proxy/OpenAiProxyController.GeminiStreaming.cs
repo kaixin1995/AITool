@@ -46,9 +46,10 @@ public sealed partial class OpenAiProxyController
             }
 
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await CommitReferenceOutputAsync(chunk, token);
+            startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
-            startedWriting = true;
         }
 
         async Task FlushGeminiBlockAsync(CancellationToken token)
@@ -134,7 +135,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null
         };
     }
 
@@ -172,9 +173,10 @@ public sealed partial class OpenAiProxyController
             }
 
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await CommitReferenceOutputAsync(chunk, token);
+            startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
-            startedWriting = true;
         }
 
         async Task FlushGeminiBlockAsync(CancellationToken token)
@@ -294,7 +296,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null
         };
     }
 
@@ -343,8 +345,9 @@ public sealed partial class OpenAiProxyController
                     }
 
                     if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(wsPayload); }
-                    await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
+                    await CommitReferenceOutputAsync(wsPayload, token);
                     startedWriting = true;
+                    await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
                 }
             }
         }
@@ -417,7 +420,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting,
+            CanFallback = !startedWriting && _referenceOutputError is null,
             CompletedOutputJson = completedOutputJson
         };
     }

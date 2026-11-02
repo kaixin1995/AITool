@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Text.Json;
 using AITool.Application.Codex;
 using AITool.Application.Common;
@@ -22,6 +23,8 @@ public sealed class CodexAccountProvisioner
     private const string CodexManagedSource = "Codex";
     private const string CodexBaseUrl = "https://chatgpt.com/backend-api/codex";
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
+    private readonly AccountNetworkPolicyStore? _networkPolicies;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly ICodexModelCatalog _modelCatalog;
@@ -33,8 +36,12 @@ public sealed class CodexAccountProvisioner
         ProxyRequestMetadataCache metadataCache,
         ICodexModelCatalog modelCatalog,
         SiteCascadeDeleter cascadeDeleter,
-        ILogger<CodexAccountProvisioner> logger)
+        ILogger<CodexAccountProvisioner> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null,
+        AccountNetworkPolicyStore? networkPolicies = null)
     {
+        _networkFactory = networkFactory;
+        _networkPolicies = networkPolicies;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _modelCatalog = modelCatalog;
@@ -51,12 +58,13 @@ public sealed class CodexAccountProvisioner
     /// </summary>
     private static readonly SemaphoreSlim _provisionGate = new(1, 1);
 
-    public async Task<CodexAccount> ProvisionFromTokensAsync(CodexProvisionInput input, CancellationToken ct)
+    public async Task<CodexAccount> ProvisionFromTokensAsync(CodexProvisionInput input, CancellationToken ct,
+        NetworkOperationContext? networkOperation = null, bool updateNetworkPolicy = false)
     {
         await _provisionGate.WaitAsync(ct);
         try
         {
-            return await ProvisionFromTokensCoreAsync(input, ct);
+            return await ProvisionFromTokensCoreAsync(input, ct, networkOperation, updateNetworkPolicy);
         }
         finally
         {
@@ -64,17 +72,27 @@ public sealed class CodexAccountProvisioner
         }
     }
 
-    private async Task<CodexAccount> ProvisionFromTokensCoreAsync(CodexProvisionInput input, CancellationToken ct)
+    private async Task<CodexAccount> ProvisionFromTokensCoreAsync(CodexProvisionInput input, CancellationToken ct,
+        NetworkOperationContext? networkOperation, bool updateNetworkPolicy)
     {
         // 用 CopyNew 独立连接做所有 DB 操作
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-
-        // —— 去重：按 AccountId（兜底 Email）查现有账号 ——
-        var existing = await FindExistingAsync(input.AccountId, input.Email, ct);
-
         CodexAccount account;
         Site site;
+        client.Ado.BeginTran();
+        try
+        {
+            // Lock publication before identity resolution; policy and credentials become visible together.
+            if (_networkPolicies is not null)
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+
+        // —— 去重：按 AccountId（兜底 Email）查现有账号 ——
+        var existing = networkOperation?.Account is { } known && known.ProviderKey == "codex"
+            ? await client.Queryable<CodexAccount>().InSingleAsync(known.AccountId)
+            : await FindExistingAsync(input.AccountId, input.Email, ct);
+
+
 
         if (existing != null)
         {
@@ -163,6 +181,22 @@ public sealed class CodexAccountProvisioner
             await client.Insertable(account).ExecuteCommandAsync(ct);
         }
 
+        if (updateNetworkPolicy)
+        {
+            if (_networkPolicies is null || networkOperation is null)
+                throw new NetworkPolicyException("network_policy_unavailable", "Network policy persistence is unavailable.");
+            await _networkPolicies.SetInTransactionAsync(client, new AccountIdentity("codex", account.Id),
+                networkOperation.Selection, expectedProfileRevision: networkOperation.ExpectedProfileRevision,
+                cancellationToken: ct);
+        }
+        client.Ado.CommitTran();
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
+        }
+
         // —— 模型映射（按 plan 分层）——
         await UpsertModelMappingsAsync(site.Id, account.PlanType, ct);
 
@@ -194,24 +228,22 @@ public sealed class CodexAccountProvisioner
 
     private async Task DeprovisionCoreAsync(Guid codexAccountId, CancellationToken ct)
     {
-        using var client = _dbContext.Client.CopyNew();
-        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-        var account = (await client.Queryable<CodexAccount>()
-            .Where(a => a.Id == codexAccountId)
-            .ToListAsync(ct)).FirstOrDefault();
-        if (account == null)
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
         {
-            throw new InvalidOperationException($"Codex account {codexAccountId} not found");
-        }
-
-        await _cascadeDeleter.RemoveSitesAsync([account.LinkedSiteId], ct);
-        await client.Deleteable<CodexAccount>().Where(a => a.Id == codexAccountId).ExecuteCommandAsync(ct);
-
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateModelMetadata();
+            var client = _dbContext.Client;
+            var account = await client.Queryable<CodexAccount>().InSingleAsync(codexAccountId);
+            if (account is null) throw new InvalidOperationException("Codex account not found");
+            if (_networkPolicies is not null)
+            {
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+                await _networkPolicies.DeleteInTransactionAsync(client, new AccountIdentity("codex", account.Id), cancellationToken: ct);
+            }
+            if (account.LinkedSiteId != Guid.Empty)
+                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+            await client.Deleteable<CodexAccount>().Where(a => a.Id == codexAccountId).ExecuteCommandAsync(ct);
+            return true;
+        }, ct, _metadataCache);
         _metadataCache.InvalidateCodexAccounts();
-
-        _logger.LogInformation("Codex account {Id} deprovisioned", codexAccountId);
     }
 
     /// <summary>

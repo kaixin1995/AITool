@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Net.Http.Headers;
 using AITool.Application.Accounts;
 using AITool.Application.Kimi;
@@ -21,6 +22,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
 {
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly HttpClient _httpClient;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -39,8 +41,10 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         IMemoryCache resultCache,
         KimiCredentialRefreshService credentialRefreshService,
         ILogger<KimiQuotaService> logger,
-        IQuotaRecheckScheduleStore? scheduleStore = null)
+        IQuotaRecheckScheduleStore? scheduleStore = null,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
@@ -281,14 +285,16 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
                 request.Headers.TryAddWithoutValidation("X-Msh-Device-Id", account.DeviceId.Trim());
             }
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "quota");
+            if (network is not null) network.HttpClient.Timeout = _httpClient.Timeout;
+            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
 
             if (!response.IsSuccessStatusCode)
             {
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
                 {
-                    var refreshed = await _credentialRefreshService.RefreshAsync(account.LinkedSiteId, account.AccessToken, ct);
+                    var refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, account.AccessToken, ct);
                     if (!string.IsNullOrWhiteSpace(refreshed))
                     {
                         account.AccessToken = refreshed;

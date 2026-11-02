@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using AITool.Application.Networking;
 using AITool.Domain.Google;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
@@ -222,6 +223,19 @@ public sealed class GeminiProxyEndToEndTests
         mappings.Single(mapping => mapping.RemoteModelName == "new-antigravity-model").IsEnabled.Should().BeTrue();
     }
 
+    private sealed class StubNetworkTransport(Func<HttpRequestMessage, HttpResponseMessage> responder) : INetworkTransport
+    {
+        public ValueTask<INetworkTransportLease> AcquireAsync(ResolvedNetworkConfiguration configuration,
+            string isolationScope, string purpose, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<INetworkTransportLease>(new Lease(new HttpClient(new StubHandler(responder))));
+
+        private sealed class Lease(HttpClient client) : INetworkTransportLease
+        {
+            public HttpClient Client => client;
+            public ValueTask DisposeAsync() { client.Dispose(); return ValueTask.CompletedTask; }
+        }
+    }
+
     private sealed class GeminiProxyWebApplicationFactory : WebApplicationFactory<Program>
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
@@ -251,6 +265,10 @@ public sealed class GeminiProxyEndToEndTests
                 var httpClient = new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
                 services.RemoveAll<IHttpClientFactory>();
                 services.AddSingleton<IHttpClientFactory>(new SingletonHttpClientFactory(httpClient));
+                // Account management uses the policy-bound transport, not the old typed-client factory.
+                // Keep policy resolution real while every transport send stays in this fixture's stub.
+                services.RemoveAll<INetworkTransport>();
+                services.AddSingleton<INetworkTransport>(new StubNetworkTransport(_responder));
             });
         }
 

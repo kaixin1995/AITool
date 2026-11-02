@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -22,6 +23,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
 {
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);
 
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly HttpClient _httpClient;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -40,8 +42,10 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         IMemoryCache resultCache,
         GoogleCredentialRefreshService credentialRefreshService,
         ILogger<GoogleAccountQuotaService> logger,
-        IQuotaRecheckScheduleStore? scheduleStore = null)
+        IQuotaRecheckScheduleStore? scheduleStore = null,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
@@ -309,7 +313,9 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
             request.Headers.TryAddWithoutValidation("requestId", $"req-{Guid.NewGuid():N}");
             request.Headers.TryAddWithoutValidation("requestType", "agent");
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "quota");
+            if (network is not null) network.HttpClient.Timeout = _httpClient.Timeout;
+            using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
 
             if (!response.IsSuccessStatusCode)
@@ -321,7 +327,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
 
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
                 {
-                    var refreshed = await _credentialRefreshService.RefreshAsync(account.LinkedSiteId, account.AccessToken, ct);
+                    var refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, account.AccessToken, ct);
                     if (!string.IsNullOrWhiteSpace(refreshed))
                     {
                         account.AccessToken = refreshed;

@@ -37,6 +37,7 @@ public sealed class AnthropicProxyController : ControllerBase
     /// 负责把代理请求转发到上游站点。
     /// </summary>
     private readonly IProxyForwardService _forwardService;
+    private readonly AccountSessionIsolationService? _sessionIsolation;
     /// <summary>
     /// 负责记录代理请求的用量与结果。
     /// </summary>
@@ -105,9 +106,11 @@ public sealed class AnthropicProxyController : ControllerBase
         KimiCredentialRefreshService kimiCredentialRefreshService,
         DeviceOAuthCredentialRefreshService deviceOAuthCredentialRefreshService,
         IProxyDiagnosticService diagnosticService,
-        ILogger<AnthropicProxyController> logger)
+        ILogger<AnthropicProxyController> logger,
+        AccountSessionIsolationService? sessionIsolation = null)
     {
         _forwardService = forwardService;
+        _sessionIsolation = sessionIsolation;
         _usageLogService = usageLogService;
         _circuitStore = circuitStore;
         _routeCandidatePolicy = routeCandidatePolicy;
@@ -245,6 +248,7 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         // 优先读取显式来源标记，其次退回到 User-Agent 识别常见客户端工具。
+        var isolationContext = AccountSessionIsolationService.Capture(accessKey.Id.ToString("D"), Request.Headers, requestBody);
         var requestSource = ResolveRequestSource(Request);
         var forwardHeaders = CollectAnthropicForwardHeaders(Request);
 
@@ -272,7 +276,8 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         // 路由候选策略（全部默认关闭）：会话亲和把上次成功候选挪到最前，配额排序按「最早重置优先」。
-        var conversationKey = ResolveConversationKeySafely(runtimeSettings, Request, modelName, requestBody);
+        var conversationKey = AccountSessionIsolationService.ScopeAffinity(accessKey.Id.ToString("D"),
+            ResolveConversationKeySafely(runtimeSettings, Request, modelName, requestBody));
         allRoutes = await PreorderRoutesByPolicyAsync(allRoutes, runtimeSettings, conversationKey, cancellationToken);
 
         // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个
@@ -362,6 +367,13 @@ public sealed class AnthropicProxyController : ControllerBase
                 }
             }
 
+            if (_sessionIsolation is not null)
+            {
+                var isolated = await _sessionIsolation.ApplyAsync(isolationContext, route.AccountIdentity,
+                    actualProtocolType, isAntigravity, preparedRequestBody, effectiveForwardHeaders, cancellationToken);
+                preparedRequestBody = isolated.PreparedRequestBody;
+                effectiveForwardHeaders = isolated.ForwardHeaders;
+            }
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, effectiveForwardHeaders);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
@@ -386,6 +398,8 @@ public sealed class AnthropicProxyController : ControllerBase
                     RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
                 ForwardHeaders = effectiveForwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
+                AccountIdentity = route.AccountIdentity,
+                SiteId = route.SiteId, ManagedSource = route.ManagedSource,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
@@ -616,8 +630,11 @@ public sealed class AnthropicProxyController : ControllerBase
 
         // 所有路由均失败
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
-        return StatusCode(statusCode,
-            new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+        return new JsonResult(new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } })
+        {
+            StatusCode = statusCode,
+            ContentType = "application/json"
+        };
     }
 
     /// <summary>
@@ -650,9 +667,9 @@ public sealed class AnthropicProxyController : ControllerBase
         async Task WriteChunkDirectAsync(string chunk, CancellationToken token)
         {
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
-            startedWriting = true;
         }
 
         async Task WriteRawSseBlockAsync(List<string> lines, CancellationToken token)
@@ -836,9 +853,9 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
-            startedWriting = true;
         }
 
         async Task FlushOpenAiSseBlockAsync(CancellationToken token)
@@ -1952,9 +1969,9 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
-            startedWriting = true;
         }
 
         async Task FlushGeminiBlockAsync(CancellationToken token)

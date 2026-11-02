@@ -1,4 +1,5 @@
 import { httpGet, httpPost, httpPut, httpDelete } from './http'
+import type { AccountNetworkSelection } from './accountNetwork'
 
 export interface DeviceOAuthVendor {
   vendorKey: string
@@ -69,8 +70,8 @@ export async function fetchDeviceOAuthAccounts(): Promise<DeviceOAuthAccount[]> 
   return httpGet<DeviceOAuthAccount[]>('/api/admin/device-oauth/accounts')
 }
 
-export async function startDeviceOAuthSignIn(vendor: string): Promise<DeviceOAuthStartResult> {
-  return httpPost<DeviceOAuthStartResult>('/api/admin/device-oauth/sign-in/start', { vendor })
+export async function startDeviceOAuthSignIn(vendor: string, networkSelection?: AccountNetworkSelection): Promise<DeviceOAuthStartResult> {
+  return httpPost<DeviceOAuthStartResult>('/api/admin/device-oauth/sign-in/start', { vendor, ...(networkSelection ? { networkSelection } : {}) })
 }
 
 export async function pollDeviceOAuthSignIn(

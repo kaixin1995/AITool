@@ -10,6 +10,9 @@ public static class HttpLogFormatter
 {
     public const int DefaultMaxBodyLength = 12000;
 
+    public static bool IsSensitiveNetworkConfiguration(HttpRequest request) =>
+        request.Path.StartsWithSegments("/api/admin/developer/proxy-profiles", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// 规范化正文内容，并在超过长度上限时截断输出。
     /// 先截断再做换行归一：对多 MB 的失败正文只复制截断后的片段，避免热路径整串复制。
@@ -39,6 +42,11 @@ public static class HttpLogFormatter
         CancellationToken cancellationToken,
         int maxLength = DefaultMaxBodyLength)
     {
+        // Proxy configuration can contain passwords even in malformed JSON or URL userinfo.
+        // Never collect a partial body that might bypass field-based redaction.
+        if (IsSensitiveNetworkConfiguration(request))
+            return "<proxy configuration omitted>";
+
         maxLength = Math.Max(1, maxLength);
         try
         {

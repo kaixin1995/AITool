@@ -14,6 +14,9 @@ public class EgressProxyValidatorTests
     [InlineData("socks5://127.0.0.1:10808")]
     [InlineData("socks4://10.0.0.1:1080")]
     [InlineData("socks4a://10.0.0.1:1080")]
+    [InlineData("profile:11111111-2222-3333-4444-555555555555")]
+    [InlineData("None")]
+    [InlineData("direct")]
     public void TryValidate_ValidProxies_ReturnsTrue(string? proxyUrl)
     {
         var isValid = EgressProxyValidator.TryValidate(proxyUrl, out var error);
@@ -28,6 +31,8 @@ public class EgressProxyValidatorTests
     [InlineData("not a valid uri")]
     [InlineData("http://:8080")]
     [InlineData("socks5://127.0.0.1:70000")]
+    [InlineData("profile:not-a-guid")]
+    [InlineData("profile:00000000-0000-0000-0000-000000000000")]
     public void TryValidate_InvalidProxies_ReturnsFalse(string proxyUrl)
     {
         var isValid = EgressProxyValidator.TryValidate(proxyUrl, out var error);

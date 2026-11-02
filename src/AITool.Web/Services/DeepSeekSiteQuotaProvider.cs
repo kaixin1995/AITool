@@ -1,3 +1,5 @@
+using AITool.Application.Networking;
+using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Infrastructure.DeepSeek;
 
@@ -17,10 +19,19 @@ public sealed class DeepSeekSiteQuotaProvider : ISiteQuotaProvider
     private readonly HttpClient _httpClient;
     private readonly ILogger<DeepSeekSiteQuotaProvider> _logger;
 
-    public DeepSeekSiteQuotaProvider(HttpClient httpClient, ILogger<DeepSeekSiteQuotaProvider> logger)
+    private readonly AccountNetworkClientFactory? _accountClients;
+    private readonly IForwardNetworkPolicyResolver? _networkPolicies;
+    private readonly INetworkTransport? _networkTransport;
+
+    public DeepSeekSiteQuotaProvider(HttpClient httpClient, ILogger<DeepSeekSiteQuotaProvider> logger,
+        AccountNetworkClientFactory? accountClients = null, IForwardNetworkPolicyResolver? networkPolicies = null,
+        INetworkTransport? networkTransport = null)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _accountClients = accountClients;
+        _networkPolicies = networkPolicies;
+        _networkTransport = networkTransport;
     }
 
     public string ProviderKey => "deepseek";
@@ -29,15 +40,23 @@ public sealed class DeepSeekSiteQuotaProvider : ISiteQuotaProvider
 
     public bool MatchesBaseUrl(string baseUrl) => DeepSeekBalanceParser.MatchesBaseUrl(baseUrl);
 
-    public async Task<SiteQuotaQueryResult> QueryAsync(string baseUrl, string apiKey, CancellationToken cancellationToken)
+    public Task<SiteQuotaQueryResult> QueryAsync(string baseUrl, string apiKey, CancellationToken cancellationToken)
+        => QueryAsync(new SiteQuotaSiteContext(baseUrl, null), apiKey, cancellationToken);
+
+    public async Task<SiteQuotaQueryResult> QueryAsync(SiteQuotaSiteContext site, string apiKey, CancellationToken cancellationToken)
     {
         try
         {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) timeout.CancelAfter(_httpClient.Timeout);
+            var networkToken = timeout.Token;
             using var request = new HttpRequestMessage(HttpMethod.Get, DeepSeekBalanceParser.BalancePath);
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
 
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            await using var networkClient = await SiteQuotaNetworkClient.AcquireAsync(site, apiKey,
+                _httpClient, _accountClients, _networkPolicies, _networkTransport, networkToken);
+            using var response = await networkClient.Client.SendAsync(request, networkToken);
+            var body = await response.Content.ReadAsStringAsync(networkToken);
 
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized
                 or System.Net.HttpStatusCode.Forbidden)

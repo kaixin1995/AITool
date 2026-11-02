@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
+import AccountNetworkSelector from '@/components/AccountNetworkSelector.vue'
+import { getAccountNetworkCapabilities, getAccountProxyOptions, getAccountNetworkSummaries, saveAccountNetworkPolicy, batchSaveAccountNetworkPolicies, networkSelectionValid, networkSummaryLabel, type AccountIdentity, type AccountNetworkSelection, type AccountNetworkSummary, type AccountProxyOption } from '@/api/accountNetwork'
 import { syncAllAccountPools } from '@/api/accountPools'
 import {
   importSelectedDeviceModels,
@@ -305,6 +307,12 @@ const accountTableColumns = [
     }
   },
   {
+    title: '账户网络',
+    key: 'network',
+    minWidth: 170,
+    render(row: AccountTableRow) { return networkReady.value ? networkLabel(row.raw) : '—' }
+  },
+  {
     title: 'Token 到期',
     key: 'tokenExpiry',
     width: 125,
@@ -385,6 +393,58 @@ function getOAuthTabFromHash(): 'accounts' | 'inspection' {
 const activeTab = ref(getOAuthTabFromHash())
 const loading = ref(false)
 const accounts = ref<UnifiedAccount[]>([])
+const networkReady = ref(false)
+const networkOptions = ref<AccountProxyOption[]>([])
+const networkSummaries = ref<Record<string, AccountNetworkSummary>>({})
+const networkError = ref('')
+const oauthNetworkSelection = ref<AccountNetworkSelection>({ mode: 0 })
+const importNetworkSelection = ref<AccountNetworkSelection>()
+const editNetworkSelection = ref<AccountNetworkSelection>()
+const editNetworkOriginal = ref<AccountNetworkSummary>()
+const editPartialError = ref('')
+const editNetworkConflict = ref(false)
+const networkBatchModal = ref(false)
+const networkBatchAccounts = ref<string[]>([])
+const networkBatchSelection = ref<AccountNetworkSelection>({ mode: 0 })
+const networkBatchLoading = ref(false)
+const networkBatchErrors = ref<string[]>([])
+function networkIdentity(acc: UnifiedAccount): AccountIdentity {
+  const providerKey = acc.provider === 'antigravity' ? 'google' : ['codex', 'kimi', 'xai'].includes(acc.provider) ? acc.provider : 'device-oauth'
+  return { providerKey, accountId: acc.id }
+}
+function networkKey(acc: UnifiedAccount): string {
+  const identity = networkIdentity(acc)
+  return `${identity.providerKey}:${identity.accountId}`
+}
+function networkSummary(acc: UnifiedAccount): AccountNetworkSummary | undefined { return networkSummaries.value[networkKey(acc)] }
+function networkLabel(acc: UnifiedAccount): string { return networkSummaryLabel(networkSummary(acc)) }
+const networkBatchOptions = computed(() => accounts.value.map(acc => ({ label: `${providerLabel(acc)} · ${acc.displayName}`, value: networkKey(acc) })))
+async function loadNetwork(): Promise<void> {
+  try {
+    const capability = await getAccountNetworkCapabilities()
+    networkReady.value = capability.ready === true
+    if (!networkReady.value) return
+    const [options, summaries] = await Promise.all([getAccountProxyOptions(), getAccountNetworkSummaries()])
+    networkOptions.value = options
+    networkSummaries.value = Object.fromEntries(summaries.map(s => [`${s.providerKey}:${s.accountId}`, s]))
+    networkError.value = ''
+  } catch {
+    networkError.value = '网络策略加载失败；不会修改或清除现有策略。'
+  }
+}
+async function handleNetworkBatch(): Promise<void> {
+  if (!networkSelectionValid(networkBatchSelection.value) || !networkBatchAccounts.value.length) return
+  networkBatchLoading.value = true
+  networkBatchErrors.value = []
+  try {
+    const identities = accounts.value.filter(acc => networkBatchAccounts.value.includes(networkKey(acc))).map(networkIdentity)
+    const result = await batchSaveAccountNetworkPolicies(identities, networkBatchSelection.value)
+    networkBatchErrors.value = result.results.filter(r => !r.success).map(r => `${r.providerKey}/${r.accountId}：${r.error ?? r.errorCode}`)
+    if (result.failed) message.warning(`网络策略成功 ${result.succeeded} 个，失败 ${result.failed} 个；已成功的更改不会回滚`)
+    else { message.success(`已更新 ${result.succeeded} 个账户的网络策略`); networkBatchModal.value = false }
+    await loadNetwork()
+  } catch (e) { networkBatchErrors.value = [(e as Error).message] } finally { networkBatchLoading.value = false }
+}
 const inspection = ref<OAuthInspectionStatus | null>(null)
 const inspectionLastRun = ref<OAuthInspectionRunResult | null>(null)
 const inspectionLogs = ref<OAuthInspectionLog[]>([])
@@ -584,6 +644,7 @@ async function loadAccounts(showError: boolean): Promise<void> {
     (a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
   )
   featureDisabled.value = false
+  void loadNetwork()
 }
 
 async function loadInspection(force = false): Promise<void> {
@@ -669,6 +730,8 @@ function googleKindOf(_provider?: ProviderKind): GoogleAccountKind {
 
 // Kimi 设备码授权状态
 const kimiDeviceCode = ref('')
+const kimiServerSessionId = ref('')
+const deviceFlowError = ref('')
 const kimiUserCode = ref('')
 const kimiVerificationUri = ref('')
 const kimiVerificationUriComplete = ref('')
@@ -688,6 +751,7 @@ function clearKimiDeviceFlow(): void {
     kimiCountdownTimer = null
   }
   kimiDeviceCode.value = ''
+  kimiServerSessionId.value = ''
   kimiUserCode.value = ''
   kimiVerificationUri.value = ''
   kimiVerificationUriComplete.value = ''
@@ -698,6 +762,7 @@ function clearKimiDeviceFlow(): void {
 
 // xAI 设备码授权状态（流程与 Kimi 同构：RFC 8628）
 const xaiDeviceCode = ref('')
+const xaiServerSessionId = ref('')
 const xaiUserCode = ref('')
 const xaiVerificationUri = ref('')
 const xaiVerificationUriComplete = ref('')
@@ -716,6 +781,7 @@ function clearXaiDeviceFlow(): void {
     xaiCountdownTimer = null
   }
   xaiDeviceCode.value = ''
+  xaiServerSessionId.value = ''
   xaiUserCode.value = ''
   xaiVerificationUri.value = ''
   xaiVerificationUriComplete.value = ''
@@ -743,6 +809,20 @@ function clearAllDeviceFlows(): void {
   clearDeviceFlow()
 }
 
+function handleDeviceFlowPollError(error: unknown, clear: () => void, manual = false): void {
+  const failure = error as { status?: number; errorCode?: string; message?: string; response?: { status?: number; data?: { errorCode?: string } } }
+  const status = failure.status ?? failure.response?.status ?? 0
+  const code = failure.errorCode ?? failure.response?.data?.errorCode ?? ''
+  const terminal = (status >= 400 && status < 500 && status !== 408 && status !== 429)
+    || /session|network|proxy|profile|isolation/.test(code)
+    || /serverSessionId|会话.*(无效|过期)|登录.*过期/.test(failure.message ?? '')
+  if (terminal) {
+    clear()
+    deviceFlowError.value = (failure.message || '登录会话或网络策略已失效') + '。登录已停止，请重新开始登录。'
+    message.error(deviceFlowError.value)
+  } else if (manual) message.error(failure.message || '授权检查失败，请稍后重试')
+}
+
 function formatSeconds(secs: number): string {
   const m = Math.floor(secs / 60)
   const s = secs % 60
@@ -751,6 +831,8 @@ function formatSeconds(secs: number): string {
 
 function openOAuthModal(provider: string = 'codex'): void {
   oauthProvider.value = provider
+  deviceFlowError.value = ''
+  oauthNetworkSelection.value = { mode: 0 }
   oauthUrl.value = ''
   oauthCallbackInput.value = ''
   oauthDisplayName.value = ''
@@ -759,12 +841,15 @@ function openOAuthModal(provider: string = 'codex'): void {
 }
 
 async function handleStartOAuth(): Promise<void> {
+  if (networkReady.value && !networkSelectionValid(oauthNetworkSelection.value)) { message.warning('请选择有效网络出口'); return }
+  const networkSelection = networkReady.value ? oauthNetworkSelection.value : undefined
   oauthStartLoading.value = true
+  deviceFlowError.value = ''
   clearAllDeviceFlows()
   try {
     const deviceVendor = deviceVendorOf(oauthProvider.value)
     if (deviceVendor) {
-      const result = await startDeviceOAuthSignIn(deviceVendor.vendorKey)
+      const result = await startDeviceOAuthSignIn(deviceVendor.vendorKey, networkSelection)
       deviceSessionId.value = result.sessionId
       deviceInstructions.value = result.instructions
       oauthUrl.value = result.authorizeUrl
@@ -772,8 +857,9 @@ async function handleStartOAuth(): Promise<void> {
       // 3 秒自动轮询（粘贴回调流自动轮询无害：后端返回 pending）。
       devicePollTimer = setInterval(() => void pollDeviceSignIn(false), 3000)
     } else if (oauthProvider.value === 'kimi') {
-      const result = await api.startKimiDeviceFlow()
+      const result = await api.startKimiDeviceFlow(undefined, networkSelection)
       kimiDeviceCode.value = result.deviceCode
+      kimiServerSessionId.value = result.serverSessionId ?? ''
       kimiUserCode.value = result.userCode
       kimiVerificationUri.value = result.verificationUri
       kimiVerificationUriComplete.value = result.verificationUriComplete
@@ -796,7 +882,8 @@ async function handleStartOAuth(): Promise<void> {
           const pollRes = await api.pollKimiToken(
             kimiDeviceCode.value,
             kimiDeviceId.value || undefined,
-            oauthDisplayName.value.trim() || undefined
+            oauthDisplayName.value.trim() || undefined,
+            kimiServerSessionId.value || undefined
           )
           if (pollRes.status === 'success') {
             clearKimiDeviceFlow()
@@ -807,13 +894,14 @@ async function handleStartOAuth(): Promise<void> {
             clearKimiDeviceFlow()
             message.error(pollRes.errorDescription || 'Kimi 授权失败')
           }
-        } catch {
-          // 轮询异常静默
+        } catch (e) {
+          handleDeviceFlowPollError(e, clearKimiDeviceFlow)
         }
       }, (result.interval || 5) * 1000)
     } else if (oauthProvider.value === 'xai') {
-      const result = await api.startXaiDeviceFlow()
+      const result = await api.startXaiDeviceFlow(networkSelection)
       xaiDeviceCode.value = result.deviceCode
+      xaiServerSessionId.value = result.serverSessionId ?? ''
       xaiUserCode.value = result.userCode
       xaiVerificationUri.value = result.verificationUri
       xaiVerificationUriComplete.value = result.verificationUriComplete
@@ -834,7 +922,8 @@ async function handleStartOAuth(): Promise<void> {
         try {
           const pollRes = await api.pollXaiToken(
             xaiDeviceCode.value,
-            oauthDisplayName.value.trim() || undefined
+            oauthDisplayName.value.trim() || undefined,
+            xaiServerSessionId.value || undefined
           )
           if (pollRes.status === 'success') {
             clearXaiDeviceFlow()
@@ -845,14 +934,14 @@ async function handleStartOAuth(): Promise<void> {
             clearXaiDeviceFlow()
             message.error(pollRes.errorDescription || 'Grok 授权失败')
           }
-        } catch {
-          // 轮询异常静默
+        } catch (e) {
+          handleDeviceFlowPollError(e, clearXaiDeviceFlow)
         }
       }, (result.interval || 5) * 1000)
     } else {
       const result = oauthProvider.value === 'codex'
-        ? await api.startOAuth()
-        : await api.startGoogleOAuth(googleKindOf(oauthProvider.value))
+        ? await api.startOAuth(networkSelection)
+        : await api.startGoogleOAuth(googleKindOf(oauthProvider.value), networkSelection)
       oauthUrl.value = result.url
       oauthCallbackInput.value = ''
     }
@@ -892,7 +981,7 @@ async function pollDeviceSignIn(manual: boolean): Promise<void> {
       message.info(result.message || '尚未完成授权，请继续')
     }
   } catch (e) {
-    if (manual) message.error((e as Error).message)
+    handleDeviceFlowPollError(e, clearDeviceFlow, manual)
   } finally {
     oauthLoading.value = false
   }
@@ -905,11 +994,12 @@ async function handleManualCheckDeviceAuth(): Promise<void> {
   oauthLoading.value = true
   try {
     const pollRes = isXai
-      ? await api.pollXaiToken(xaiDeviceCode.value, oauthDisplayName.value.trim() || undefined)
+      ? await api.pollXaiToken(xaiDeviceCode.value, oauthDisplayName.value.trim() || undefined, xaiServerSessionId.value || undefined)
       : await api.pollKimiToken(
           kimiDeviceCode.value,
           kimiDeviceId.value || undefined,
-          oauthDisplayName.value.trim() || undefined
+          oauthDisplayName.value.trim() || undefined,
+          kimiServerSessionId.value || undefined
         )
     if (pollRes.status === 'success') {
       clearAllDeviceFlows()
@@ -921,10 +1011,12 @@ async function handleManualCheckDeviceAuth(): Promise<void> {
     } else if (pollRes.status === 'slow_down') {
       message.warning('操作过于频繁，请稍候重试')
     } else {
-      message.error(pollRes.errorDescription || '授权未成功')
+      clearAllDeviceFlows()
+      deviceFlowError.value = pollRes.errorDescription || '授权未成功，请重新开始登录'
+      message.error(deviceFlowError.value)
     }
   } catch (e) {
-    message.error((e as Error).message)
+    handleDeviceFlowPollError(e, clearAllDeviceFlows, true)
   } finally {
     oauthLoading.value = false
   }
@@ -1035,12 +1127,41 @@ function openEdit(acc: UnifiedAccount): void {
   editAccount.value = acc
   editDisplayName.value = acc.displayName
   editRefreshToken.value = ''
+  editPartialError.value = ''
+  editNetworkConflict.value = false
+  editNetworkOriginal.value = networkSummary(acc)
+  editNetworkSelection.value = editNetworkOriginal.value ? { ...editNetworkOriginal.value.networkSelection } : undefined
   editModal.value = true
 }
+async function rebaseEditNetwork(): Promise<void> {
+  if (!editAccount.value) return
+  await loadNetwork()
+  const latest = networkSummary(editAccount.value)
+  if (!latest || networkError.value) { message.error('无法读取最新网络策略，请稍后重试'); return }
+  // Explicit user action keeps their pending selection but uses the freshly reviewed revision.
+  editNetworkOriginal.value = latest
+  editNetworkConflict.value = false
+  editPartialError.value = '已载入最新网络策略；请核对待保存选择后再次保存。账户资料尚未提交。'
+}
 async function handleSaveEdit(): Promise<void> {
+  if (editNetworkConflict.value) { message.warning('网络策略已变化，请先确认基于最新策略重新编辑'); return }
   if (!editAccount.value || !editDisplayName.value.trim()) { message.warning('名称不能为空'); return }
+  if (networkReady.value && editNetworkSelection.value && !networkSelectionValid(editNetworkSelection.value)) { message.warning('请选择有效代理方案'); return }
   editLoading.value = true
+  editPartialError.value = ''
+  let networkSaved = false
+  let credentialsStarted = false
   try {
+    // Save a repaired network first so credential refresh cannot reuse a broken old profile.
+    const original = editNetworkOriginal.value
+    const selected = editNetworkSelection.value
+    if (networkReady.value && selected && (!original || selected.mode !== original.networkSelection.mode || (selected.proxyProfileId ?? null) !== (original.networkSelection.proxyProfileId ?? null))) {
+      const saved = await saveAccountNetworkPolicy(networkIdentity(editAccount.value), selected, original?.revision)
+      networkSummaries.value[networkKey(editAccount.value)] = saved
+      editNetworkOriginal.value = saved
+      networkSaved = true
+    }
+    credentialsStarted = true
     if (editAccount.value.provider === 'codex') {
       const result = await api.updateOAuthAccount(
         editAccount.value.id,
@@ -1049,10 +1170,6 @@ async function handleSaveEdit(): Promise<void> {
       )
       if (result.message) {
         message.warning(result.message)
-      } else if (editRefreshToken.value) {
-        message.success('凭证已更新并刷新')
-      } else {
-        message.success('已更新')
       }
     } else if (editAccount.value.provider === 'antigravity') {
       await api.updateGoogleAccount(
@@ -1060,32 +1177,45 @@ async function handleSaveEdit(): Promise<void> {
         editDisplayName.value.trim(),
         editRefreshToken.value || undefined
       )
-      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
     } else if (editAccount.value.provider === 'kimi') {
       await api.updateKimiAccount(
         editAccount.value.id,
         editDisplayName.value.trim(),
         editRefreshToken.value || undefined
       )
-      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
     } else if (editAccount.value.provider === 'xai') {
       await api.updateXaiAccount(
         editAccount.value.id,
         editDisplayName.value.trim(),
         editRefreshToken.value || undefined
       )
-      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
     } else if (deviceVendorOf(editAccount.value.provider)) {
       await updateDeviceOAuthAccount(
         editAccount.value.id,
         editDisplayName.value.trim(),
         editRefreshToken.value || undefined
       )
-      message.success(editRefreshToken.value ? '凭证已更新（额度查询将按需重登）' : '已更新')
+      // Final success is shown only after the independent network write succeeds.
     }
+    message.success('账户更改已保存')
+    editRefreshToken.value = ''
     editModal.value = false
     await load()
-  } catch (e) { message.error((e as Error).message) } finally { editLoading.value = false }
+  } catch (e) {
+    const failure = e as { message?: string; status?: number; errorCode?: string }
+    if (!credentialsStarted && (failure.status === 409 || failure.errorCode === 'account_network_revision_conflict')) {
+      editNetworkConflict.value = true
+      // Invalidate the captured revision, but keep all dirty fields until explicit rebase/reopen.
+      editNetworkOriginal.value = undefined
+      await loadNetwork()
+      editPartialError.value = '网络策略已被其他操作修改，未提交账户资料。已刷新策略和代理选项；请核对后明确选择基于最新策略重新编辑。'
+    } else if (networkSaved) {
+      editPartialError.value = '网络配置已保存，账号资料更新失败：' + (failure.message || '未知错误') + '。网络配置不会回滚；账号资料可能部分保存，请核对后重试。'
+    } else {
+      editPartialError.value = (credentialsStarted ? '账号资料更新失败：' : '网络策略保存失败，未提交账号资料：') + (failure.message || '未知错误')
+    }
+    message.error(editPartialError.value)
+  } finally { editLoading.value = false }
 }
 
 // 手动刷新 access_token（兜底手段：自动刷新未生效时用此恢复）
@@ -1288,6 +1418,8 @@ async function handleImportModels(): Promise<void> {
 
 function openImportCredential(provider: string = 'codex'): void {
   importProvider.value = provider
+  // Import may update an existing account: omission must preserve its policy.
+  importNetworkSelection.value = undefined
   importJsonText.value = ''
   importFiles.value = []
   importFailures.value = []
@@ -1311,19 +1443,21 @@ async function handleImportCredential(): Promise<void> {
     message.warning('请选择凭证文件或粘贴凭证 JSON')
     return
   }
+  if (networkReady.value && importNetworkSelection.value && !networkSelectionValid(importNetworkSelection.value)) { message.warning('请选择有效网络出口'); return }
+  const networkSelection = networkReady.value ? importNetworkSelection.value : undefined
   importLoading.value = true
   importFailures.value = []
   try {
     let result: { successes: unknown[]; failures: OAuthCredentialImportFailure[] }
     if (importProvider.value === 'codex') {
       const codexResult = importFiles.value.length > 0
-        ? await api.importCredentialFiles(importFiles.value)
-        : await api.importCredential(importJsonText.value.trim())
+        ? await api.importCredentialFiles(importFiles.value, networkSelection)
+        : await api.importCredential(importJsonText.value.trim(), networkSelection)
       result = codexResult
     } else if (importProvider.value === 'kimi') {
       const kimiResult = importFiles.value.length > 0
-        ? await api.importKimiCredentialFiles(importFiles.value)
-        : await api.importKimiCredential(importJsonText.value.trim())
+        ? await api.importKimiCredentialFiles(importFiles.value, networkSelection)
+        : await api.importKimiCredential(importJsonText.value.trim(), networkSelection)
       result = kimiResult
     } else if (importProvider.value === 'xai') {
       // xAI 凭证仅支持粘贴 JSON（grok auth.json 或平铺 token），文件走 Kimi/Codex。
@@ -1331,14 +1465,14 @@ async function handleImportCredential(): Promise<void> {
         message.warning('请粘贴 Grok 凭证 JSON（auth.json 或平铺 access_token/refresh_token）')
         return
       }
-      result = await api.importXaiCredential(importJsonText.value.trim())
+      result = await api.importXaiCredential(importJsonText.value.trim(), networkSelection)
     } else {
       // Google 凭证：仅支持粘贴 JSON（需含 refresh_token），文件导入走 Codex。
       if (!importJsonText.value.trim()) {
         message.warning('请粘贴 gcli2api 凭证 JSON（需包含 refresh_token 字段）')
         return
       }
-      result = await api.importGoogleCredential(googleKindOf(importProvider.value), importJsonText.value.trim())
+      result = await api.importGoogleCredential(googleKindOf(importProvider.value), importJsonText.value.trim(), networkSelection)
     }
     importJsonText.value = ''
     importFiles.value = []
@@ -1613,6 +1747,7 @@ onUnmounted(() => {
             size="small"
             style="width: 110px"
           />
+          <NButton v-if="networkReady" size="small" secondary @click="networkBatchErrors = []; networkBatchModal = true">批量网络策略</NButton>
           <NButton size="small" secondary :disabled="codexAccountCount === 0" @click="beginExportCredentials">导出凭证</NButton>
           <NDropdown trigger="click" :options="loginDropdownOptions" @select="handleSelectLoginProvider">
             <NButton size="small" type="primary">＋ OAuth 登录</NButton>
@@ -1631,6 +1766,7 @@ onUnmounted(() => {
             <NButton size="small" type="warning" :loading="exportLoading" :disabled="selectedExportAccountIds.length === 0" @click="handleExportCredentials">下载凭证 JSON</NButton>
             <NButton size="small" secondary @click="cancelExportCredentials">取消</NButton>
           </div>
+          <NAlert v-if="networkReady && networkError" type="warning">{{ networkError }}</NAlert>
           <div class="oauth-stack">
             <NEmpty v-if="featureDisabled" description="OAuth 功能未开启，请在系统设置中开启" />
             <NEmpty v-else-if="accounts.length === 0" description="暂无 OAuth 账号，可使用右上角 OAuth 登录或导入凭证" />
@@ -1697,6 +1833,7 @@ onUnmounted(() => {
                         Token：{{ formatDateTime(acc.tokenExpiresAt) }}
                       </span>
                     </div>
+                    <div v-if="networkReady" class="oauth-project-id" :title="networkSummary(acc)?.blockReason ?? undefined">{{ networkLabel(acc) }}</div>
                     <div v-if="acc.projectId" class="oauth-project-id">项目：{{ acc.projectId }}</div>
                   </div>
                 </div>
@@ -1853,9 +1990,12 @@ onUnmounted(() => {
         <p class="oauth-form-label">账号显示名称（可选）</p>
         <NInput v-model:value="oauthDisplayName" :placeholder="oauthProvider === 'kimi' ? '留空则默认 Kimi 账号' : oauthProvider === 'xai' ? '留空则默认 Grok 账号' : '留空则用邮箱'" />
       </div>
+      <AccountNetworkSelector v-if="networkReady" v-model="oauthNetworkSelection" :options="networkOptions" :disabled="oauthStartLoading || !!oauthUrl || !!kimiDeviceCode || !!xaiDeviceCode" style="margin-bottom: 16px" />
       <NButton type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">
         {{ (oauthProvider === 'kimi' && kimiUserCode) || (oauthProvider === 'xai' && xaiUserCode) ? '重新获取验证码' : '开始登录' }}
       </NButton>
+
+      <NAlert v-if="deviceFlowError" type="error" style="margin-top: 12px">{{ deviceFlowError }}</NAlert>
 
       <!-- Kimi / xAI RFC 8628 设备码授权区域（两厂商流程同构） -->
       <div v-if="(oauthProvider === 'kimi' && kimiUserCode) || (oauthProvider === 'xai' && xaiUserCode)" class="oauth-auth-area">
@@ -1916,6 +2056,11 @@ onUnmounted(() => {
 
     <!-- 导入凭证弹窗：Codex / Kimi 支持文件+JSON；Google 仅支持粘贴 gcli2api 凭证 JSON -->
     <NModal v-model:show="importModal" :title="`导入 ${providerLabelOf(importProvider)} 凭证`" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
+      <template v-if="networkReady">
+        <NAlert type="info" style="margin-bottom: 12px">不选择时保留已有账户策略；新账户使用兼容旧行为。选择后会明确更新导入账户策略。</NAlert>
+        <AccountNetworkSelector v-model="importNetworkSelection" :options="networkOptions" :disabled="importLoading" style="margin-bottom: 12px" />
+        <NButton v-if="importNetworkSelection" size="small" :disabled="importLoading" @click="importNetworkSelection = undefined">保持现有策略（不提交更改）</NButton>
+      </template>
       <template v-if="importProvider === 'codex' || importProvider === 'kimi'">
         <p class="credential-import-label">选择一个或多个 {{ importProvider === 'kimi' ? 'Kimi' : 'CPA' }} 凭证 JSON 文件：</p>
         <input class="credential-file-input" type="file" accept=".json,application/json" multiple @change="handleCredentialFiles">
@@ -1947,9 +2092,23 @@ onUnmounted(() => {
       </template>
     </NModal>
 
+    <NModal v-model:show="networkBatchModal" title="批量设置账户网络（与凭证导出选择无关）" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false">
+      <NSpace vertical :size="16">
+        <NSelect v-model:value="networkBatchAccounts" multiple filterable :options="networkBatchOptions" placeholder="选择要更新的账户" :disabled="networkBatchLoading" />
+        <AccountNetworkSelector v-model="networkBatchSelection" :options="networkOptions" :disabled="networkBatchLoading" />
+        <NAlert type="warning">逐账户保存，部分失败不会回滚已成功的账户。</NAlert>
+        <NAlert v-for="error in networkBatchErrors" :key="error" type="error">{{ error }}</NAlert>
+      </NSpace>
+      <template #footer><NSpace justify="end"><NButton :disabled="networkBatchLoading" @click="networkBatchModal = false">关闭</NButton><NButton type="primary" :loading="networkBatchLoading" :disabled="!networkBatchAccounts.length || !networkSelectionValid(networkBatchSelection)" @click="handleNetworkBatch">应用网络策略</NButton></NSpace></template>
+    </NModal>
+
     <!-- 编辑账号（重命名）弹窗 -->
     <NModal v-model:show="editModal" title="编辑账号" preset="card" style="width: 480px; max-width: 92vw">
       <NSpace vertical :size="16">
+        <NAlert v-if="editPartialError" type="error">{{ editPartialError }}</NAlert>
+        <NButton v-if="editNetworkConflict" :loading="editLoading" @click="rebaseEditNetwork">确认基于最新策略重新编辑（保留待保存输入）</NButton>
+        <NAlert v-if="networkReady" type="info">网络策略先独立保存，再更新账户资料和刷新凭证；资料失败不会回滚已保存的网络配置。</NAlert>
+        <AccountNetworkSelector v-if="networkReady" v-model="editNetworkSelection" :options="networkOptions" :block-reason="editNetworkOriginal?.blockReason" :disabled="editLoading || !editNetworkOriginal" />
         <div>
           <p class="edit-label">显示名称</p>
           <NInput v-model:value="editDisplayName" placeholder="显示名称" />
@@ -1978,7 +2137,7 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="editModal = false">取消</NButton>
-          <NButton type="primary" :loading="editLoading" @click="handleSaveEdit">保存</NButton>
+          <NButton type="primary" :loading="editLoading" :disabled="editNetworkConflict" @click="handleSaveEdit">保存</NButton>
         </NSpace>
       </template>
     </NModal>

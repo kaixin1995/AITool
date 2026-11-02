@@ -54,6 +54,205 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private CodexAccount? _resetCreditAccount;
     [ObservableProperty] private CodexResetCreditsInfo? _resetCreditInfo;
     [ObservableProperty] private string _loginProvider = "Codex";
+    [ObservableProperty] private bool _networkReady;
+    [ObservableProperty] private bool _isNetworkLoading;
+    [ObservableProperty] private string _networkStatus = "网络选择能力尚未加载；未指定时保留服务端策略。";
+    [ObservableProperty] private bool _editorNetworkPolicyLoaded;
+    [ObservableProperty] private string _editorNetworkStatus = string.Empty;
+    [ObservableProperty] private bool _accountPolicyNeedsReload;
+    partial void OnAccountPolicyNeedsReloadChanged(bool value) => OnPropertyChanged(nameof(CanSaveAccount));
+    private AccountNetworkPolicy? _editingNetworkPolicy;
+    private bool _editingUnknownNetworkMode;
+    private const string NetworkApiPath = "/api/admin/oauth/network-policies";
+
+    public AccountNetworkEditor LoginNetwork { get; } = new();
+    public AccountNetworkEditor ImportNetwork { get; } = new();
+    public AccountNetworkEditor EditNetwork { get; } = new();
+    public AccountNetworkEditor BatchNetwork { get; } = new();
+    [ObservableProperty] private bool _isNetworkBatchSaving;
+    [ObservableProperty] private string _networkBatchResult = string.Empty;
+    public bool CanApplySelectedNetworks => IsNetworkSelectionEnabled && !IsNetworkBatchSaving && HasSelectedExports;
+    public bool IsNetworkSelectionEnabled => NetworkReady && !IsNetworkLoading;
+    public bool IsEditorNetworkSelectionEnabled => IsNetworkSelectionEnabled && EditorNetworkPolicyLoaded;
+
+    partial void OnNetworkReadyChanged(bool value) => NotifyNetworkSelectionProperties();
+    partial void OnIsNetworkLoadingChanged(bool value) => NotifyNetworkSelectionProperties();
+    partial void OnEditorNetworkPolicyLoadedChanged(bool value) => NotifyNetworkSelectionProperties();
+
+    partial void OnIsNetworkBatchSavingChanged(bool value) => OnPropertyChanged(nameof(CanApplySelectedNetworks));
+
+    private void NotifyNetworkSelectionProperties()
+    {
+        OnPropertyChanged(nameof(IsNetworkSelectionEnabled));
+        OnPropertyChanged(nameof(IsEditorNetworkSelectionEnabled));
+        OnPropertyChanged(nameof(CanApplySelectedNetworks));
+    }
+
+    [RelayCommand]
+    private async Task ApplySelectedNetworksAsync()
+    {
+        if (!CanApplySelectedNetworks) return;
+        IsNetworkBatchSaving = true;
+        NetworkBatchResult = string.Empty;
+        try
+        {
+            var selection = ExplicitNetworkSelection(BatchNetwork)
+                ?? throw new InvalidOperationException("请先显式选择网络模式；未指定不会更改任何账号。");
+            // Reuse only existing export selection. Do not expand selection to other vendors.
+            var accounts = Accounts.Where(account => account.IsCodex && account.IsExportSelected).ToArray();
+            var results = new List<string>();
+            var succeeded = 0;
+            foreach (var account in accounts)
+            {
+                try
+                {
+                    var policies = await _apiService.SendAsync<List<AccountNetworkPolicy>>(HttpMethod.Get,
+                        $"{NetworkApiPath}?providerKey=codex&accountId={Uri.EscapeDataString(account.Id)}", null);
+                    var original = policies.FirstOrDefault(row => row.ProviderKey == "codex"
+                        && row.AccountId.ToString().Equals(account.Id, StringComparison.OrdinalIgnoreCase))
+                        ?? throw new InvalidOperationException("Missing network policy summary.");
+                    var policy = await _apiService.SendAsync<AccountNetworkPolicy>(HttpMethod.Put, NetworkApiPath, new
+                    {
+                        providerKey = "codex", accountId = account.Id, networkSelection = selection, expectedRevision = original.Revision
+                    });
+                    var current = Accounts.FirstOrDefault(item => item.IsCodex && item.Id == account.Id);
+                    if (current is not null)
+                    {
+                        current.NetworkPolicy = policy;
+                        current.NetworkPolicyStatus = NetworkPolicyStatusText(policy);
+                    }
+                    succeeded++;
+                    results.Add($"{account.DisplayName}：已保存");
+                }
+                catch (ApiException exception) when (exception.StatusCode == 409)
+                {
+                    results.Add($"{account.DisplayName}：版本冲突，未覆盖；请重试前读取最新策略");
+                }
+                catch (Exception)
+                {
+                    results.Add($"{account.DisplayName}：失败或结果未确认；请刷新核实，不会回退到 Direct");
+                }
+            }
+            NetworkBatchResult = $"逐账号保存完成：成功 {succeeded}，失败或未确认 {accounts.Length - succeeded}（非原子批量操作）。\n" + string.Join("\n", results);
+        }
+        catch (Exception exception)
+        {
+            NetworkBatchResult = exception.Message;
+        }
+        finally
+        {
+            IsNetworkBatchSaving = false;
+        }
+    }
+
+    private static string NetworkProviderKey(CodexAccount account) => account.IsCodex ? "codex" : "google";
+
+    [RelayCommand]
+    private async Task RefreshNetworkAsync()
+    {
+        if (IsNetworkLoading) return;
+        IsNetworkLoading = true;
+        NetworkReady = false;
+        NetworkStatus = "正在加载网络选择能力与代理配置…（不会更改策略）";
+        try
+        {
+            var capabilities = await _apiService.SendAsync<AccountNetworkCapabilities>(HttpMethod.Get, $"{NetworkApiPath}/capabilities", null);
+            if (!capabilities.Ready)
+            {
+                NetworkStatus = "服务端网络链路尚未就绪，选择已禁用；保留现有策略。";
+                return;
+            }
+            var options = await _apiService.SendAsync<List<AccountNetworkProxyOption>>(HttpMethod.Get, $"{NetworkApiPath}/proxy-options", null);
+            LoginNetwork.SetOptions(options);
+            ImportNetwork.SetOptions(options);
+            EditNetwork.SetOptions(options);
+            BatchNetwork.SetOptions(options);
+            NetworkReady = true;
+            NetworkStatus = options.Count == 0
+                ? "暂无代理配置；可显式选择 Legacy 或 Direct。未指定时保留服务端策略。"
+                : "未指定时保留服务端策略；Legacy 不是 Direct。仅显示配置名称 / ID，不显示代理地址或密钥。";
+        }
+        catch (ApiException exception) when (exception.StatusCode == 404)
+        {
+            NetworkStatus = "旧版服务端不支持网络选择（404），选择已禁用；现有策略不会被清除。";
+        }
+        catch (Exception)
+        {
+            // Do not present a discovery failure as an empty pool, or expose backend proxy diagnostics.
+            NetworkStatus = "网络能力或代理配置加载失败（不是空列表）；选择已禁用，保留现有策略。请重试。";
+        }
+        finally
+        {
+            IsNetworkLoading = false;
+        }
+    }
+
+    [RelayCommand]
+    private void ClearNewAccountNetworkSelections()
+    {
+        // Clear drafts only, never an existing account policy or in-flight OAuth session.
+        LoginNetwork.Load(null);
+        ImportNetwork.Load(null);
+    }
+
+    private AccountNetworkSelection? ExplicitNetworkSelection(AccountNetworkEditor editor)
+    {
+        if (editor.GetSelection(false) is null) return null;
+        if (!IsNetworkSelectionEnabled)
+            throw new InvalidOperationException("网络选择当前不可用。请重新检测，或选择未指定以保留服务端策略；不会静默回退。");
+        return editor.GetSelection();
+    }
+
+    private static string ImportNetworkQuery(AccountNetworkSelection? selection) => selection is null
+        ? string.Empty
+        : $"&networkMode={selection.Mode}" + (selection.ProxyProfileId is { } id ? $"&proxyProfileId={id:D}" : string.Empty);
+
+    private async Task LoadAccountNetworkPoliciesAsync(List<CodexAccount> accounts)
+    {
+        var previous = await Dispatcher.UIThread.InvokeAsync(() => Accounts
+            .ToDictionary(account => (NetworkProviderKey(account), account.Id), account => account.NetworkPolicy));
+        foreach (var group in accounts.GroupBy(NetworkProviderKey))
+        {
+            try
+            {
+                var policies = await _apiService.SendAsync<List<AccountNetworkPolicy>>(
+                    HttpMethod.Get, $"{NetworkApiPath}?providerKey={group.Key}", null);
+                foreach (var account in group)
+                {
+                    var policy = policies.FirstOrDefault(row => row.ProviderKey == group.Key && row.AccountId.ToString().Equals(account.Id, StringComparison.OrdinalIgnoreCase));
+                    account.NetworkPolicy = policy ?? previous.GetValueOrDefault((group.Key, account.Id));
+                    account.NetworkPolicyStatus = policy is null
+                        ? "未返回网络策略（保留已知值，不推断为 Direct）"
+                        : NetworkPolicyStatusText(policy);
+                }
+            }
+            catch (ApiException exception) when (exception.StatusCode == 404)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    NetworkReady = false;
+                    NetworkStatus = "服务端网络策略端点不可用（404），选择已禁用；现有策略不会被清除。";
+                });
+                foreach (var account in group)
+                {
+                    account.NetworkPolicy = previous.GetValueOrDefault((group.Key, account.Id));
+                    account.NetworkPolicyStatus = "旧版服务端不支持网络策略（404）；未更改";
+                }
+            }
+            catch (Exception)
+            {
+                foreach (var account in group)
+                {
+                    account.NetworkPolicy = previous.GetValueOrDefault((group.Key, account.Id));
+                    account.NetworkPolicyStatus = "网络策略加载失败（不是空策略）；保留已知值，请重试";
+                }
+            }
+        }
+    }
+
+    private static string NetworkPolicyStatusText(AccountNetworkPolicy policy) => string.IsNullOrWhiteSpace(policy.BlockReason)
+        ? "策略已加载（不代表网络连通性检测）"
+        : $"网络阻止状态：{policy.BlockReason}";
 
     /// <summary>登录/导入凭证的厂商选项（Codex / Antigravity，与网页端下拉一致）。</summary>
     public IReadOnlyList<string> ProviderOptions { get; } = ["Codex", "Antigravity"];
@@ -107,7 +306,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public string InspectionRunSummary => InspectionLastRun is null
         ? string.Empty
         : $"{InspectionLastRun.RunModeText} · {InspectionLastRun.RefreshModeText}";
-    public bool CanSaveAccount => !IsAccountSaving && EditingAccount is not null && !string.IsNullOrWhiteSpace(AccountDisplayName);
+    public bool CanSaveAccount => !IsAccountSaving && !AccountPolicyNeedsReload && EditingAccount is not null && !string.IsNullOrWhiteSpace(AccountDisplayName);
     public string EditingAccountEmailText => string.IsNullOrWhiteSpace(EditingAccount?.Email) ? "未提供邮箱" : $"账号：{EditingAccount.Email}";
     public bool CanImportCredentials => !IsCredentialImporting && !string.IsNullOrWhiteSpace(CredentialJson);
     public bool HasCredentialImportResult => !string.IsNullOrWhiteSpace(CredentialImportResultText);
@@ -151,6 +350,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         try
         {
+            await RefreshNetworkAsync();
             try
             {
                 var accounts = await LoadUnifiedAccountsAsync();
@@ -409,11 +609,13 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             // 旧版后端无 google-accounts 端点（404）或瞬时失败：跳过 Google 列表，Codex 正常展示。
         }
 
-        return codexAccounts
+        var accounts = codexAccounts
             .Concat(googleAccounts)
             .OrderBy(account => account.IsCodex ? 0 : 1)
             .ThenBy(account => account.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        await LoadAccountNetworkPoliciesAsync(accounts);
+        return accounts;
     }
 
     private void ReplaceAccount(CodexAccount account)
@@ -423,6 +625,9 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             AttachAccount(account);
             account.IsExportSelected = Accounts[index].IsExportSelected;
+            // Credential/quota responses do not carry the separate network policy.
+            account.NetworkPolicy ??= Accounts[index].NetworkPolicy;
+            account.NetworkPolicyStatus = Accounts[index].NetworkPolicyStatus;
             Accounts[index] = account;
             NotifyExportSelectionProperties();
         }
@@ -448,6 +653,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(SelectedExportText));
         OnPropertyChanged(nameof(HasSelectedExports));
         OnPropertyChanged(nameof(AllAccountsSelected));
+        OnPropertyChanged(nameof(CanApplySelectedNetworks));
     }
 
     private void NotifyAccountProperties()
@@ -467,20 +673,24 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         try
         {
+            var selection = ExplicitNetworkSelection(LoginNetwork);
+            var body = new Dictionary<string, object>();
+            if (selection is not null) body["networkSelection"] = selection;
             CodexOAuthResult result;
             if (IsCodexProvider)
             {
                 result = await _apiService.SendAsync<CodexOAuthResult>(
                     HttpMethod.Post,
                     "/api/admin/oauth/start-oauth",
-                    new { });
+                    body);
             }
             else
             {
+                body["kind"] = LoginProvider;
                 result = await _apiService.SendAsync<CodexOAuthResult>(
                     HttpMethod.Post,
                     GoogleApiPath("/start-oauth"),
-                    new { kind = LoginProvider });
+                    body);
             }
 
             OAuthUrl = result.Url;
@@ -892,6 +1102,10 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         try
         {
+            // Snapshot one explicit choice for the whole existing file-import operation.
+            var networkQuery = ImportNetworkQuery(ExplicitNetworkSelection(ImportNetwork));
+            var isCodex = IsCodexProvider;
+            var provider = LoginProvider;
             var successes = new List<CodexAccount>();
             var failures = new List<CodexCredentialImportFailure>();
 
@@ -900,11 +1114,11 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                 try
                 {
                     using var document = JsonDocument.Parse(jsonText);
-                    if (IsCodexProvider)
+                    if (isCodex)
                     {
                         var result = await _apiService.SendAsync<CodexCredentialImportResult>(
                             HttpMethod.Post,
-                            $"/api/admin/oauth/import-credential?name={Uri.EscapeDataString(fileName)}",
+                            $"/api/admin/oauth/import-credential?name={Uri.EscapeDataString(fileName)}{networkQuery}",
                             document.RootElement);
                         successes.AddRange(result.Successes);
                         failures.AddRange(result.Failures);
@@ -914,9 +1128,9 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                         // Google（Antigravity）：gcli2api 凭证 JSON，仅需 refresh_token 字段。
                         var googleResult = await _apiService.SendAsync<GoogleCredentialImportResult>(
                             HttpMethod.Post,
-                            $"{GoogleApiPath($"/import-credential?kind={LoginProvider}")}&name={Uri.EscapeDataString(fileName)}",
+                            $"{GoogleApiPath($"/import-credential?kind={provider}")}&name={Uri.EscapeDataString(fileName)}{networkQuery}",
                             document.RootElement);
-                        successes.AddRange(googleResult.Successes.Select(_ => new CodexAccount { DisplayName = LoginProvider }));
+                        successes.AddRange(googleResult.Successes.Select(_ => new CodexAccount { DisplayName = provider }));
                         failures.AddRange(googleResult.Failures);
                     }
                 }
@@ -962,14 +1176,48 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
-    private void OpenAccountEditor(CodexAccount? account)
+    private async Task OpenAccountEditorAsync(CodexAccount? account)
     {
-        if (account is null) return;
+        if (account is null || IsAccountSaving) return;
         EditingAccount = account;
+        AccountPolicyNeedsReload = false;
         AccountDisplayName = account.DisplayName;
         AccountRefreshToken = string.Empty;
+        EditorNetworkPolicyLoaded = false;
+        _editingNetworkPolicy = null;
+        _editingUnknownNetworkMode = false;
+        EditNetwork.Load(account.NetworkPolicy?.NetworkSelection, account.NetworkPolicy?.ProxyProfileName);
+        EditorNetworkStatus = "正在读取当前网络策略；读取成功前仅能编辑凭证，不会覆盖策略。";
         IsAccountEditorOpen = true;
         OnPropertyChanged(nameof(CanSaveAccount));
+        try
+        {
+            var policies = await _apiService.SendAsync<List<AccountNetworkPolicy>>(
+                HttpMethod.Get, $"{NetworkApiPath}?providerKey={NetworkProviderKey(account)}&accountId={Uri.EscapeDataString(account.Id)}", null);
+            if (!ReferenceEquals(EditingAccount, account) || !IsAccountEditorOpen) return;
+            var policy = policies.FirstOrDefault(row => row.ProviderKey == NetworkProviderKey(account)
+                && row.AccountId.ToString().Equals(account.Id, StringComparison.OrdinalIgnoreCase));
+            if (policy is null) throw new InvalidOperationException("Missing network policy summary.");
+            _editingNetworkPolicy = policy;
+            _editingUnknownNetworkMode = policy.NetworkSelection.Mode is < 0 or > 2;
+            EditNetwork.Load(policy.NetworkSelection, policy.ProxyProfileName);
+            account.NetworkPolicy = policy;
+            account.NetworkPolicyStatus = NetworkPolicyStatusText(policy);
+            EditorNetworkPolicyLoaded = !_editingUnknownNetworkMode;
+            EditorNetworkStatus = _editingUnknownNetworkMode
+                ? "当前策略模式不受此客户端支持；仅保留，不会覆盖。"
+                : $"{account.NetworkModeText}；{account.NetworkPolicyStatus}。凭证与策略通过两个独立请求保存，并非原子操作。";
+        }
+        catch (ApiException exception) when (exception.StatusCode == 404)
+        {
+            if (ReferenceEquals(EditingAccount, account))
+                EditorNetworkStatus = "服务端不支持网络策略（404），选择已禁用；保存凭证不会清除策略。";
+        }
+        catch (Exception)
+        {
+            if (ReferenceEquals(EditingAccount, account))
+                EditorNetworkStatus = "网络策略读取失败（不是空策略），选择已禁用；保存凭证不会清除策略。请关闭后重试。";
+        }
     }
 
     [RelayCommand]
@@ -979,6 +1227,8 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         EditingAccount = null;
         AccountDisplayName = string.Empty;
         AccountRefreshToken = string.Empty;
+        _editingNetworkPolicy = null;
+        EditorNetworkPolicyLoaded = false;
         OnPropertyChanged(nameof(CanSaveAccount));
     }
 
@@ -988,19 +1238,58 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         if (!CanSaveAccount || EditingAccount is null) return;
         IsAccountSaving = true;
         ErrorMessage = string.Empty;
+        var editingAccount = EditingAccount;
+        var originalPolicy = _editingNetworkPolicy;
+        var policySaveAttempted = false;
+        var policySaved = false;
         try
         {
+            var draft = EditNetwork.GetSelection(false);
+            var policyChanged = EditorNetworkPolicyLoaded && !_editingUnknownNetworkMode && draft is not null
+                && draft != originalPolicy?.NetworkSelection;
+            AccountNetworkSelection? selection = null;
+            if (policyChanged)
+            {
+                if (!EditorNetworkPolicyLoaded)
+                    throw new InvalidOperationException("当前策略未成功读取，不能覆盖；请重新打开编辑器。");
+                selection = ExplicitNetworkSelection(EditNetwork);
+            }
             var body = new
             {
                 displayName = AccountDisplayName.Trim(),
                 refreshToken = string.IsNullOrWhiteSpace(AccountRefreshToken) ? null : AccountRefreshToken.Trim()
             };
 
-            if (EditingAccount.IsCodex)
+            // Repair a blocked policy before a credential update can trigger an immediate refresh.
+            // A policy conflict/failure must prevent either provider's credential PUT entirely.
+            if (selection is not null)
+            {
+                policySaveAttempted = true;
+                var policy = await _apiService.SendAsync<AccountNetworkPolicy>(HttpMethod.Put, NetworkApiPath, new
+                {
+                    providerKey = NetworkProviderKey(editingAccount),
+                    accountId = editingAccount.Id,
+                    networkSelection = selection,
+                    expectedRevision = originalPolicy?.Revision
+                });
+                policySaved = true;
+                _editingNetworkPolicy = policy;
+                editingAccount.NetworkPolicy = policy;
+                editingAccount.NetworkPolicyStatus = NetworkPolicyStatusText(policy);
+                var current = Accounts.FirstOrDefault(account => account.Id == editingAccount.Id
+                    && NetworkProviderKey(account) == NetworkProviderKey(editingAccount));
+                if (current is not null)
+                {
+                    current.NetworkPolicy = policy;
+                    current.NetworkPolicyStatus = NetworkPolicyStatusText(policy);
+                }
+            }
+
+            if (editingAccount.IsCodex)
             {
                 var account = await _apiService.SendAsync<CodexAccount>(
                     HttpMethod.Put,
-                    $"/api/admin/oauth/accounts/{EditingAccount.Id}",
+                    $"/api/admin/oauth/accounts/{editingAccount.Id}",
                     body);
                 ReplaceAccount(account);
             }
@@ -1008,18 +1297,35 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             {
                 await _apiService.SendAsync<object>(
                     HttpMethod.Put,
-                    GoogleApiPath($"/accounts/{EditingAccount.Id}"),
+                    GoogleApiPath($"/accounts/{editingAccount.Id}"),
                     body);
-                EditingAccount.DisplayName = AccountDisplayName.Trim();
-                ReplaceAccount(EditingAccount);
+                editingAccount.DisplayName = AccountDisplayName.Trim();
+                ReplaceAccount(editingAccount);
             }
+            AccountRefreshToken = string.Empty;
 
-            Message = "OAuth 账号已更新";
+            Message = selection is null ? "OAuth 账号已更新；网络策略未更改" : "OAuth 凭证与网络策略已分别保存（两个独立请求）";
             CloseAccountEditor();
         }
         catch (Exception exception)
         {
-            ErrorMessage = exception.Message;
+            if (policySaveAttempted)
+            {
+                Message = policySaved ? "部分成功：网络配置已保存，账号资料更新失败。" : string.Empty;
+                ErrorMessage = policySaved
+                    ? "网络配置已保存，账号资料更新失败或结果未确认。已保留当前网络选择，不会回滚策略；请关闭后重新打开编辑器核实账号资料，再重试。"
+                    : exception is ApiException { StatusCode: 409 }
+                        ? "网络策略版本冲突，账号资料 / 凭证请求未发送。请关闭后重新打开编辑器读取最新策略，不会自动覆盖。"
+                        : "网络策略保存失败或结果未确认，账号资料 / 凭证请求未发送。请关闭后重新打开编辑器核实策略，不会回退到 Direct。";
+                EditorNetworkStatus = ErrorMessage;
+                // Keep the successful policy/revision and draft; require a fresh read, never blind retry.
+                EditorNetworkPolicyLoaded = false;
+                AccountPolicyNeedsReload = true;
+            }
+            else
+            {
+                ErrorMessage = exception.Message;
+            }
         }
         finally
         {

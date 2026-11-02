@@ -47,6 +47,7 @@ public sealed class ProxyForwardServiceRealHttpTests
     private static ProxyForwardRequest ResponsesRequest(string baseUrl = "https://cpa.example/v1/responses") => new()
     {
         TargetBaseUrl = baseUrl,
+        AllowNonSiteTarget = true,
         TargetEndpointPathMode = "standard-root",
         TargetApiKey = "sk-test",
         ProtocolType = "Responses",

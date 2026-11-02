@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using AITool.Application.Common;
 using AITool.Application.Google;
 using AITool.Domain.Google;
@@ -51,6 +52,8 @@ public sealed record GoogleProvisionInput
 /// </summary>
 public sealed class GoogleAccountProvisioner
 {
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
+    private readonly AccountNetworkPolicyStore? _networkPolicies;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IGoogleModelFetcher _modelFetcher;
@@ -64,8 +67,12 @@ public sealed class GoogleAccountProvisioner
         IGoogleModelFetcher modelFetcher,
         GoogleCredentialRefreshService credentialRefreshService,
         SiteCascadeDeleter cascadeDeleter,
-        ILogger<GoogleAccountProvisioner> logger)
+        ILogger<GoogleAccountProvisioner> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null,
+        AccountNetworkPolicyStore? networkPolicies = null)
     {
+        _networkFactory = networkFactory;
+        _networkPolicies = networkPolicies;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _modelFetcher = modelFetcher;
@@ -77,15 +84,139 @@ public sealed class GoogleAccountProvisioner
     /// <summary>
     /// 用 token 创建或更新 Google 账号（含隐藏 Site + 模型映射）。同 (AccountKind, Email) 二次供给视为更新。
     /// </summary>
-    public async Task<GoogleAccount> ProvisionFromTokensAsync(GoogleProvisionInput input, CancellationToken ct)
+    private static readonly SemaphoreSlim ProvisionGate = new(1, 1);
+
+    public async Task<GoogleAccount> ProvisionFromTokensAsync(GoogleProvisionInput input, CancellationToken ct,
+        NetworkOperationContext? networkOperation = null, bool updateNetworkPolicy = false,
+        bool credentialsLocked = false,
+        IReadOnlyDictionary<Guid, (string? AccessToken, string? RefreshToken, DateTimeOffset? LastRefreshAt)>? credentialsBeforeExchange = null,
+        bool updateDisplayName = false, bool persistUnknownRotation = false, Action? rotationPersisted = null,
+        string? unknownImportRefreshToken = null)
+    {
+        // Always acquire the account lock before the provisioning gate or a database transaction.
+        // The identity can become known only after remote metadata has been retrieved.
+        while (true)
+        {
+            var knownId = networkOperation?.Account is { ProviderKey: "google" } known ? known.AccountId : (Guid?)null;
+            var candidate = knownId is { } id
+                ? await _dbContext.GoogleAccounts.InSingleAsync(id)
+                : await FindExistingAsync(input.AccountKind, input.Email, ct, unknownImportRefreshToken is not null);
+            if (knownId.HasValue && candidate is null)
+                throw new KeyNotFoundException("Google account no longer exists.");
+            using var lease = candidate is null || credentialsLocked ? null
+                : await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", candidate.Id, ct);
+            await ProvisionGate.WaitAsync(ct);
+            try
+            {
+                var current = knownId is { } accountId
+                    ? await _dbContext.GoogleAccounts.InSingleAsync(accountId)
+                    : await FindExistingAsync(input.AccountKind, input.Email, ct, unknownImportRefreshToken is not null);
+                if (knownId.HasValue && current is null)
+                    throw new KeyNotFoundException("Google account no longer exists.");
+                if (current?.Id != candidate?.Id) continue;
+
+                if (unknownImportRefreshToken is not null)
+                {
+                    // A verified email is not sufficient authority to replace another credential.
+                    // Also reject tokens claimed by an account while the refresh was in flight.
+                    var accounts = await _dbContext.GoogleAccounts.ToListAsync(ct);
+                    if (current is not null || accounts.Any(a =>
+                        a.RefreshToken == unknownImportRefreshToken ||
+                        (!string.IsNullOrWhiteSpace(input.RefreshToken) && a.RefreshToken == input.RefreshToken)))
+                        throw new NetworkPolicyException("account_identity_required", "Google account identity or credential conflicts with an existing account.");
+                }
+
+                var preserveCredentials = current is not null && credentialsBeforeExchange is not null
+                    && (!credentialsBeforeExchange.TryGetValue(current.Id, out var before)
+                        || !string.Equals(before.AccessToken, current.AccessToken, StringComparison.Ordinal)
+                        || !string.Equals(before.RefreshToken, current.RefreshToken, StringComparison.Ordinal)
+                        || before.LastRefreshAt != current.LastRefreshAt);
+                if (persistUnknownRotation && current is not null)
+                {
+                    if (preserveCredentials)
+                        throw new NetworkPolicyException("credential_version_conflict", "账号凭证在导入期间已更改，不能覆盖。");
+                    await PersistRotationValuesAsync(_dbContext, _metadataCache, current.Id,
+                        input.AccessToken, input.RefreshToken, input.TokenExpiresAt);
+                    rotationPersisted?.Invoke();
+                }
+                var result = await ProvisionCoreAsync(input, ct, networkOperation, updateNetworkPolicy, current?.Id, preserveCredentials, updateDisplayName);
+                if (persistUnknownRotation) rotationPersisted?.Invoke();
+                return result;
+            }
+            finally { ProvisionGate.Release(); }
+        }
+    }
+
+    /// <summary>
+    /// A successful refresh may consume the stored refresh token. Persist that irreversible result
+    /// independently of a pending policy change, while the caller holds the canonical credential lock.
+    /// No profile validation or metadata request may run before these narrow writes are durable.
+    /// </summary>
+    public Task<GoogleAccount> PersistImportedRotationAsync(Guid accountId, GoogleTokenSet tokens)
+        => PersistRotationAsync(_dbContext, _metadataCache, accountId, tokens);
+
+    // Caller must hold the canonical account credential lock across the remote refresh and this write.
+    internal static async Task<GoogleAccount> PersistRotationAsync(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache,
+        Guid accountId, GoogleTokenSet tokens)
+        => await PersistRotationValuesAsync(dbContext, metadataCache, accountId, tokens.AccessToken, tokens.RefreshToken, tokens.ExpiresAt);
+
+    private static async Task<GoogleAccount> PersistRotationValuesAsync(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache,
+        Guid accountId, string accessToken, string? refreshToken, DateTimeOffset expiresAt)
+    {
+        using var safety = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = safety.Token;
+        using var client = dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var account = await client.Queryable<GoogleAccount>().InSingleAsync(accountId)
+            ?? throw new KeyNotFoundException("Google account no longer exists.");
+        if (string.IsNullOrWhiteSpace(accessToken))
+            throw new InvalidOperationException("Google refresh response is missing access_token.");
+        account.AccessToken = accessToken;
+        if (!string.IsNullOrWhiteSpace(refreshToken)) account.RefreshToken = refreshToken;
+        account.TokenExpiresAt = expiresAt;
+        account.LastRefreshAt = DateTimeOffset.UtcNow;
+        // The irreversible rotated credential commits first. Site failure must never roll it back.
+        await client.Updateable(account)
+            .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt })
+            .ExecuteCommandAsync(ct);
+        metadataCache.InvalidateGoogleAccounts();
+        metadataCache.InvalidateRouteTargets();
+        try
+        {
+            var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
+            if (site is not null)
+            {
+                site.ApiKey = accessToken;
+                await client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(ct);
+            }
+        }
+        finally { metadataCache.InvalidateRouteTargets(); }
+        return account;
+    }
+
+    public async Task ValidateImportOperationAsync(NetworkOperationContext operation, CancellationToken ct)
+    {
+        if (_networkPolicies is not null) await _networkPolicies.ResolveAsync(operation, ct);
+    }
+
+    private async Task<GoogleAccount> ProvisionCoreAsync(GoogleProvisionInput input, CancellationToken ct,
+        NetworkOperationContext? networkOperation, bool updateNetworkPolicy, Guid? existingId, bool preserveCredentials, bool updateDisplayName)
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-
-        var existing = await FindExistingAsync(input.AccountKind, input.Email, ct);
-
         GoogleAccount account;
         Site site;
+        client.Ado.BeginTran();
+        try
+        {
+            // Lock publication before identity resolution; policy and credentials become visible together.
+            if (_networkPolicies is not null)
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+
+        var existing = existingId is { } id
+            ? await client.Queryable<GoogleAccount>().InSingleAsync(id)
+                ?? throw new KeyNotFoundException("Google account no longer exists.")
+            : null;
 
         if (existing != null)
         {
@@ -93,21 +224,24 @@ public sealed class GoogleAccountProvisioner
             site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId)
                 ?? throw new InvalidOperationException($"Linked site {account.LinkedSiteId} not found for Google account {account.Id}");
 
-            account.AccessToken = input.AccessToken;
-            if (!string.IsNullOrWhiteSpace(input.RefreshToken)) account.RefreshToken = input.RefreshToken;
-            account.TokenExpiresAt = input.TokenExpiresAt;
-            account.LastRefreshAt = DateTimeOffset.UtcNow;
+            if (!preserveCredentials)
+            {
+                account.AccessToken = input.AccessToken;
+                if (!string.IsNullOrWhiteSpace(input.RefreshToken)) account.RefreshToken = input.RefreshToken;
+                account.TokenExpiresAt = input.TokenExpiresAt;
+                account.LastRefreshAt = DateTimeOffset.UtcNow;
+            }
             if (!string.IsNullOrEmpty(input.Email)) account.Email = input.Email;
             if (!string.IsNullOrEmpty(input.ProjectId)) account.ProjectId = input.ProjectId;
             if (!string.IsNullOrEmpty(input.SubscriptionTier)) account.SubscriptionTier = input.SubscriptionTier;
             if (input.CreditAmount.HasValue) account.CreditAmount = input.CreditAmount;
-            account.DisabledByUpstream = false;
 
-            site.ApiKey = input.AccessToken;
+            if (!preserveCredentials) site.ApiKey = input.AccessToken;
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) site.Name = input.DisplayName;
+            if (updateDisplayName && !string.IsNullOrWhiteSpace(input.DisplayName)) account.DisplayName = input.DisplayName;
 
-            await client.Updateable(account).ExecuteCommandAsync(ct);
-            await client.Updateable(site).ExecuteCommandAsync(ct);
+            await client.Updateable(account).UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.Email, a.ProjectId, a.SubscriptionTier, a.CreditAmount, a.DisplayName }).ExecuteCommandAsync(ct);
+            await client.Updateable(site).UpdateColumns(s => new { s.ApiKey, s.Name }).ExecuteCommandAsync(ct);
         }
         else
         {
@@ -148,10 +282,31 @@ public sealed class GoogleAccountProvisioner
             await client.Insertable(account).ExecuteCommandAsync(ct);
         }
 
+        if (updateNetworkPolicy)
+        {
+            if (_networkPolicies is null || networkOperation is null)
+                throw new NetworkPolicyException("network_policy_unavailable", "Network policy persistence is unavailable.");
+            await _networkPolicies.SetInTransactionAsync(client, new AccountIdentity("google", account.Id),
+                networkOperation.Selection, expectedProfileRevision: networkOperation.ExpectedProfileRevision,
+                cancellationToken: ct);
+        }
+        client.Ado.CommitTran();
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
+        }
+
         // —— 模型映射 ——
+        // A concurrent refresh can make the login access token stale; do not send it or
+        // allow its 403 to change the newly refreshed account's enabled state.
+        if (!preserveCredentials)
+        {
         try
         {
-            var models = await _modelFetcher.FetchAsync(account.AccountKind, input.AccessToken, ct);
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "provision-models");
+            var models = await (network?.GoogleModels ?? _modelFetcher).FetchAsync(account.AccountKind, input.AccessToken, ct);
             if (models.Count > 0)
             {
                 await UpsertModelMappingsCoreAsync(site.Id, models, account.AccountKind, ct);
@@ -170,6 +325,7 @@ public sealed class GoogleAccountProvisioner
             }
             _logger.LogWarning(ex, "Antigravity 模型拉取失败（账号供给继续）: {AccountId}", account.Id);
         }
+        }
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
@@ -184,24 +340,23 @@ public sealed class GoogleAccountProvisioner
     /// </summary>
     public async Task DeprovisionAsync(Guid accountId, CancellationToken ct)
     {
-        using var client = _dbContext.Client.CopyNew();
-        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-        var account = (await client.Queryable<GoogleAccount>()
-            .Where(a => a.Id == accountId)
-            .ToListAsync(ct)).FirstOrDefault();
-        if (account == null)
+        using var credentialLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", accountId, ct);
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
         {
-            throw new InvalidOperationException($"Google account {accountId} not found");
-        }
-
-        await _cascadeDeleter.RemoveSitesAsync([account.LinkedSiteId], ct);
-        await client.Deleteable<GoogleAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
-
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateModelMetadata();
+            var client = _dbContext.Client;
+            var account = await client.Queryable<GoogleAccount>().InSingleAsync(accountId);
+            if (account is null) throw new InvalidOperationException("Google account not found");
+            if (_networkPolicies is not null)
+            {
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountNetworkPolicies SET Revision=Revision WHERE 1=0;");
+                await _networkPolicies.DeleteInTransactionAsync(client, new AccountIdentity("google", account.Id), cancellationToken: ct);
+            }
+            if (account.LinkedSiteId != Guid.Empty)
+                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+            await client.Deleteable<GoogleAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
+            return true;
+        }, ct, _metadataCache);
         _metadataCache.InvalidateGoogleAccounts();
-
-        _logger.LogInformation("Google account {Id} deprovisioned", account.Id);
     }
 
     /// <summary>
@@ -221,10 +376,10 @@ public sealed class GoogleAccountProvisioner
             if (site != null)
             {
                 site.Name = displayName;
-                await client.Updateable(site).ExecuteCommandAsync(ct);
+                await client.Updateable(site).UpdateColumns(s => s.Name).ExecuteCommandAsync(ct);
             }
         }
-        await client.Updateable(account).ExecuteCommandAsync(ct);
+        await client.Updateable(account).UpdateColumns(a => a.DisplayName).ExecuteCommandAsync(ct);
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateGoogleAccounts();
@@ -260,11 +415,20 @@ public sealed class GoogleAccountProvisioner
 
     // —— 私有 ——
 
-    private async Task<GoogleAccount?> FindExistingAsync(string accountKind, string? email, CancellationToken ct)
+    private async Task<GoogleAccount?> FindExistingAsync(string accountKind, string? email, CancellationToken ct, bool strictIdentity = false)
     {
         var normalizedKind = GoogleAccountKinds.Normalize(accountKind);
         if (!string.IsNullOrEmpty(email))
         {
+            if (strictIdentity)
+            {
+                var accounts = await _dbContext.GoogleAccounts.ToListAsync(ct);
+                var matches = accounts.Where(a => string.Equals(a.Email?.Trim(), email.Trim(), StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(a.AccountKind, normalizedKind, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (matches.Count > 1)
+                    throw new NetworkPolicyException("account_identity_required", "Google account identity is ambiguous.");
+                return matches.FirstOrDefault();
+            }
             var byEmailAndKind = (await _dbContext.GoogleAccounts
                 .Where(a => a.Email == email && a.AccountKind == normalizedKind)
                 .ToListAsync(ct)).FirstOrDefault();

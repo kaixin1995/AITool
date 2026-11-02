@@ -12,6 +12,70 @@ namespace AITool.ApplicationTests.Routing;
 /// </summary>
 public sealed class ProxyForwardServiceTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Forward_without_resolvers_blocks_non_site_target_by_default(bool streaming)
+    {
+        var handler = new SequenceHandler();
+        var service = new ProxyForwardService(new HttpClient(handler), NullLogger<ProxyForwardService>.Instance);
+        var request = new ProxyForwardRequest
+        {
+            TargetBaseUrl = "https://unit.test",
+            TargetApiKey = "token",
+            RequestBody = "{}",
+            EnableStreaming = streaming,
+            RequestTimeoutSeconds = 5,
+            RetryCount = 2
+        };
+        var chunks = 0;
+
+        var result = streaming
+            ? await service.ForwardStreamingAsync(request, (_, _) => { chunks++; return Task.CompletedTask; })
+            : await service.ForwardAsync(request);
+
+        request.AllowNonSiteTarget.Should().BeFalse();
+        result.Success.Should().BeFalse();
+        result.StatusCode.Should().Be(503);
+        result.ErrorMessage.Should().Contain("forward_credential_resolver_unavailable");
+        handler.CallCount.Should().Be(0);
+        chunks.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Non_site_opt_in_does_not_authorize_site_or_managed_target_without_resolvers(bool streaming, bool managed)
+    {
+        var handler = new SequenceHandler();
+        var service = new ProxyForwardService(new HttpClient(handler), NullLogger<ProxyForwardService>.Instance);
+        var request = new ProxyForwardRequest
+        {
+            TargetBaseUrl = "https://unit.test",
+            TargetApiKey = "token",
+            RequestBody = "{}",
+            AllowNonSiteTarget = true,
+            SiteId = managed ? null : Guid.NewGuid(),
+            ManagedSource = managed ? "device_oauth" : null,
+            EnableStreaming = streaming,
+            RequestTimeoutSeconds = 5,
+            RetryCount = 2
+        };
+        var chunks = 0;
+
+        var result = streaming
+            ? await service.ForwardStreamingAsync(request, (_, _) => { chunks++; return Task.CompletedTask; })
+            : await service.ForwardAsync(request);
+
+        result.Success.Should().BeFalse();
+        result.StatusCode.Should().Be(503);
+        result.ErrorMessage.Should().Contain("forward_credential_resolver_unavailable");
+        handler.CallCount.Should().Be(0);
+        chunks.Should().Be(0);
+    }
+
     /// <summary>
     /// 单路由第一次失败、第二次成功时，应在允许的重试次数内返回最终成功结果。
     /// </summary>
@@ -36,6 +100,7 @@ public sealed class ProxyForwardServiceTests
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = "https://unit.test",
+            AllowNonSiteTarget = true,
             TargetApiKey = "token",
             ProtocolType = "OpenAI",
             TargetModelName = "gpt-5.5-a",
@@ -65,6 +130,7 @@ public sealed class ProxyForwardServiceTests
             new ProxyForwardRequest
             {
                 TargetBaseUrl = "https://unit.test",
+                AllowNonSiteTarget = true,
                 TargetApiKey = "token",
                 ProtocolType = "OpenAI",
                 TargetModelName = "gpt-5.5-a",
@@ -107,6 +173,7 @@ public sealed class ProxyForwardServiceTests
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = "https://unit.test",
+            AllowNonSiteTarget = true,
             TargetApiKey = "token",
             ProtocolType = "OpenAI",
             TargetModelName = "gpt-5.5-a",
@@ -144,6 +211,7 @@ public sealed class ProxyForwardServiceTests
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = "https://unit.test",
+            AllowNonSiteTarget = true,
             TargetApiKey = "token",
             ProtocolType = "OpenAI",
             TargetModelName = "gpt-5.5-a",
@@ -185,6 +253,7 @@ public sealed class ProxyForwardServiceTests
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = "https://unit.test",
+            AllowNonSiteTarget = true,
             TargetApiKey = "token",
             ProtocolType = "Anthropic",
             TargetModelName = "claude-sonnet",
@@ -221,6 +290,7 @@ public sealed class ProxyForwardServiceTests
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = "https://unit.test",
+            AllowNonSiteTarget = true,
             TargetApiKey = "token",
             ProtocolType = "OpenAI",
             TargetModelName = "gpt-5.5-a",

@@ -1,3 +1,4 @@
+using AITool.Application.Networking;
 using System.Collections.Concurrent;
 using AITool.Application.Kimi;
 using AITool.Domain.Kimi;
@@ -71,6 +72,7 @@ public sealed class KimiTokenRefreshService : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var oauthClient = scope.ServiceProvider.GetRequiredService<IKimiOAuthClient>();
+        var networkFactory = scope.ServiceProvider.GetService<NetworkBoundOAuthClientFactory>();
 
         var runtime = await cache.GetRuntimeSettingsAsync(ct);
         if (!runtime.OAuthFeaturesEnabled)
@@ -107,7 +109,7 @@ public sealed class KimiTokenRefreshService : BackgroundService
         foreach (var account in due)
         {
             if (ct.IsCancellationRequested) break;
-            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct);
+            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct, networkFactory);
             if (updated) anyUpdated = true;
             await Task.Delay(InterAccountDelay, ct);
         }
@@ -119,11 +121,16 @@ public sealed class KimiTokenRefreshService : BackgroundService
         }
     }
 
-    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, IKimiOAuthClient oauthClient, KimiAccount account, CancellationToken ct)
+    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, IKimiOAuthClient oauthClient, KimiAccount account, CancellationToken ct, NetworkBoundOAuthClientFactory? networkFactory = null)
     {
         try
         {
-            var tokens = await oauthClient.RefreshTokenAsync(account.RefreshToken!, account.DeviceId, ct);
+            using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("kimi", account.Id, ct);
+            var current = await db.KimiAccounts.InSingleAsync(account.Id);
+            if (current is null || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
+            account = current;
+            using var network = networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "background-token-refresh");
+            var tokens = await (network?.KimiOAuth ?? oauthClient).RefreshTokenAsync(account.RefreshToken!, account.DeviceId, ct);
 
             using var client = db.Client.CopyNew();
             client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
@@ -140,7 +147,9 @@ public sealed class KimiTokenRefreshService : BackgroundService
             account.LastRefreshAt = DateTimeOffset.UtcNow;
             account.UpdatedAt = DateTimeOffset.UtcNow;
 
-            await client.Updateable(account).ExecuteCommandAsync(ct);
+            await client.Updateable(account)
+                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.UpdatedAt })
+                .ExecuteCommandAsync(ct);
 
             var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
             if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))

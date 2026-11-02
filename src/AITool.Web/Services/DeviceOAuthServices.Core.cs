@@ -1,7 +1,13 @@
 using System.Collections.Concurrent;
 using AITool.Application.OAuth;
+using AITool.Application.Networking;
+using AITool.Domain.Operations;
 using AITool.Domain.OAuth;
 using AITool.Domain.Sites;
+using AITool.Domain.Codex;
+using AITool.Domain.Google;
+using AITool.Domain.Kimi;
+using AITool.Domain.Xai;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Hosting;
@@ -42,17 +48,21 @@ public sealed class DeviceOAuthAccountProvisioner
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly SiteCascadeDeleter _cascadeDeleter;
     private readonly ILogger<DeviceOAuthAccountProvisioner> _logger;
+    private readonly IAccountNetworkPolicyStore? _networkPolicies;
+    private static readonly KeyedAsyncLock ProvisionLocks = new();
 
     public DeviceOAuthAccountProvisioner(
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
         SiteCascadeDeleter cascadeDeleter,
-        ILogger<DeviceOAuthAccountProvisioner> logger)
+        ILogger<DeviceOAuthAccountProvisioner> logger,
+        IAccountNetworkPolicyStore? networkPolicies = null)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _cascadeDeleter = cascadeDeleter;
         _logger = logger;
+        _networkPolicies = networkPolicies;
     }
 
     public async Task<DeviceOAuthAccount> ProvisionAsync(
@@ -63,12 +73,29 @@ public sealed class DeviceOAuthAccountProvisioner
         DeviceOAuthTokenSet tokens,
         string? extraJson,
         CancellationToken ct,
-        bool isUserSuppliedName = false)
+        bool isUserSuppliedName = false,
+        AccountNetworkSelection? networkSelection = null,
+        long? expectedProfileRevision = null)
     {
+        if (networkSelection is not null && _networkPolicies is not AccountNetworkPolicyStore)
+            throw new NetworkPolicyException("network_policy_unavailable", "Transactional account network policy storage is unavailable.");
+        // Serialize deduplication through publication, including concurrent sessions for one vendor.
+        using var provisionLock = await ProvisionLocks.WaitAsync(vendor.VendorKey.ToLowerInvariant(), ct);
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-
+        // Never wait for the credential gate while holding the SQLite writer. The vendor
+        // provision lease keeps the dedup probe stable against other provisioning calls;
+        // deletion can still win, so the authoritative lookup is repeated in the transaction.
+        var probe = await FindExistingAsync(client, vendor.VendorKey, email, externalUserId, ct);
+        using var credentialLease = probe is null ? null : await DeviceOAuthRefreshGate.AcquireAsync(probe.Id, ct);
+        client.Ado.BeginTran();
+        try
+        {
+        // Take the SQLite write lock before reading dedup/policy state (no read-to-write upgrade).
+        await client.Ado.ExecuteCommandAsync("UPDATE DeviceOAuthAccounts SET UpdatedAt=UpdatedAt WHERE 1=0;");
         var existing = await FindExistingAsync(client, vendor.VendorKey, email, externalUserId, ct);
+        if (existing is not null && existing.Id != probe?.Id)
+            throw new InvalidOperationException("Device OAuth account changed during provisioning; retry login.");
         DeviceOAuthAccount account;
         Site? site = null;
 
@@ -192,9 +219,23 @@ public sealed class DeviceOAuthAccountProvisioner
             await UpsertDefaultModelMappingsAsync(client, site.Id, vendor, ct);
         }
 
+        // Missing selection on relogin preserves existing policy; an explicit Legacy selection
+        // is still an update. New unspecified accounts inherit Legacy without a policy row.
+        if (networkSelection is not null)
+            await ((AccountNetworkPolicyStore)_networkPolicies!).SetInTransactionAsync(client,
+                NetworkBoundDeviceOAuthVendorFactory.Identity(account.Id), networkSelection,
+                expectedProfileRevision: expectedProfileRevision, cancellationToken: ct);
+        ct.ThrowIfCancellationRequested();
+        client.Ado.CommitTran();
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
         return account;
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
+        }
     }
 
     public async Task ToggleAsync(Guid accountId, bool isEnabled, CancellationToken ct)
@@ -223,6 +264,7 @@ public sealed class DeviceOAuthAccountProvisioner
 
     public async Task UpdateAsync(Guid accountId, string displayName, string? refreshToken, CancellationToken ct)
     {
+        using var credentialLease = await DeviceOAuthRefreshGate.AcquireAsync(accountId, ct);
         using var client = _dbContext.Client.CopyNew();
         var account = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(accountId)
             ?? throw new KeyNotFoundException("账号不存在");
@@ -257,18 +299,21 @@ public sealed class DeviceOAuthAccountProvisioner
 
     public async Task DeleteAsync(Guid accountId, CancellationToken ct)
     {
-        using var client = _dbContext.Client.CopyNew();
-        var account = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(accountId);
-        if (account == null) return;
-
-        if (account.LinkedSiteId != Guid.Empty)
+        using var credentialLease = await DeviceOAuthRefreshGate.AcquireAsync(accountId, ct);
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
         {
-            await _cascadeDeleter.RemoveSitesAsync([account.LinkedSiteId], ct);
-        }
-
-        await client.Deleteable<DeviceOAuthAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
-        _metadataCache.InvalidateRouteTargets();
-        _metadataCache.InvalidateModelMetadata();
+            // Cascade and policy/account removal share the graph owner's client and transaction.
+            var client = _dbContext.Client;
+            var account = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(accountId);
+            if (account is null) return false;
+            if (account.LinkedSiteId != Guid.Empty)
+                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+            await client.Deleteable<AccountNetworkPolicy>()
+                .Where(p => p.ProviderKey == DeviceOAuthQuotaService.ProviderKey && p.AccountId == accountId)
+                .ExecuteCommandAsync(ct);
+            await client.Deleteable<DeviceOAuthAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
+            return true;
+        }, ct, _metadataCache);
     }
 
     /// <summary>
@@ -702,22 +747,55 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
     }
 
     internal async Task RefreshDueAccountsAsync(CancellationToken ct)
-    {        using var scope = _services.CreateScope();
+    {
+        using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var registry = scope.ServiceProvider.GetRequiredService<DeviceOAuthVendorRegistry>();
         var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-        var httpClientFactory = scope.ServiceProvider.GetRequiredService<IHttpClientFactory>();
+        var networkVendors = scope.ServiceProvider.GetService<NetworkBoundDeviceOAuthVendorFactory>();
 
         var now = DateTimeOffset.UtcNow;
         var due = await db.DeviceOAuthAccounts
             .Where(a => !a.IsDeleted && a.IsEnabled && !a.RequiresReauth
                         && a.RefreshToken != null && a.RefreshToken != "")
             .ToListAsync(ct);
+        var dueSiteIds = due.Select(a => a.LinkedSiteId).Where(id => id != Guid.Empty).Distinct().ToList();
+        var dueSites = dueSiteIds.Count == 0 ? new List<Site>()
+            : await db.Sites.Where(s => dueSiteIds.Contains(s.Id)).ToListAsync(ct);
+        var siteKeys = dueSites.ToDictionary(s => s.Id, s => s.ApiKey);
 
-        foreach (var account in due)
+        foreach (var candidate in due)
         {
             if (ct.IsCancellationRequested) break;
+            var mayNeedRepair = candidate.LinkedSiteId != Guid.Empty
+                && !string.IsNullOrWhiteSpace(candidate.AccessToken)
+                && siteKeys.TryGetValue(candidate.LinkedSiteId, out var siteKey)
+                && !string.Equals(siteKey, candidate.AccessToken, StringComparison.Ordinal);
+            var candidateVendor = registry.Find(candidate.VendorKey);
+            if (!mayNeedRepair && (candidateVendor is null || candidate.TokenExpiresAt is not { } candidateExpiry
+                || candidateExpiry - now > candidateVendor.RefreshLead
+                || (candidate.LastRefreshAt is { } candidateLast && now - candidateLast < MinRefreshInterval)))
+                continue;
 
+            using (await DeviceOAuthRefreshGate.AcquireAsync(candidate.Id, ct))
+            {
+            // The scan is only a candidate list. A 401/manual refresh may have rotated it while
+            // this worker waited, so never send its captured refresh token or write its entity.
+            var account = await db.DeviceOAuthAccounts.InSingleAsync(candidate.Id);
+            if (account is null || account.IsDeleted || !account.IsEnabled || account.RequiresReauth
+                || string.IsNullOrWhiteSpace(account.RefreshToken)) continue;
+            // Repair previously committed rotations before checking due/backoff or stale scan.
+            try
+            {
+                await DeviceOAuthSiteCredentialSync.ReconcileAsync(db, metadataCache, account.Id, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Device OAuth site credential repair failed for {Id}", account.Id);
+                continue;
+            }
+            if (!string.Equals(account.AccessToken, candidate.AccessToken, StringComparison.Ordinal)
+                || !string.Equals(account.RefreshToken, candidate.RefreshToken, StringComparison.Ordinal)) continue;
             var vendor = registry.Find(account.VendorKey);
             if (vendor is null)
             {
@@ -734,8 +812,10 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
 
             try
             {
+                using var boundVendor = networkVendors?.ForAccount(account, "device-oauth-background-refresh");
+                var remoteVendor = boundVendor?.Vendor ?? vendor;
                 // 刷新→写回为不可取消段（stoppingToken 不进 vendor/DB 调用），防止半途丢轮换。
-                var tokens = await vendor.RefreshTokenAsync(
+                var tokens = await remoteVendor.RefreshTokenAsync(
                     new DeviceOAuthTokenSet
                     {
                         AccessToken = account.AccessToken ?? string.Empty,
@@ -750,20 +830,9 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
                 account.LastRefreshAt = DateTimeOffset.UtcNow;
                 account.RequiresReauth = false;
                 account.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.Client.Updateable(account).ExecuteCommandAsync(CancellationToken.None);
-
-                if (account.LinkedSiteId != Guid.Empty)
-                {
-                    var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
-                    if (site is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                    {
-                        site.ApiKey = tokens.AccessToken;
-                        await db.Client.Updateable(site).ExecuteCommandAsync(CancellationToken.None);
-                    }
-                }
-
+                await DeviceOAuthSiteCredentialSync.PersistRotationAsync(db, metadataCache, account);
+                await DeviceOAuthSiteCredentialSync.ReconcileAsync(db, metadataCache, account.Id, CancellationToken.None);
                 _retryAt.TryRemove(account.Id, out _);
-                metadataCache.InvalidateRouteTargets();
                 _logger.LogInformation("Device OAuth account {Vendor}/{Id} token refreshed", account.VendorKey, account.Id);
             }
             catch (DeviceOAuthRefreshRefusedException ex)
@@ -781,33 +850,117 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
             }
 
             await Task.Delay(500, ct);
+            }
         }
     }
 }
 
+/// <summary>Persist the rotated token even when publishing its site key fails.</summary>
+internal static class DeviceOAuthSiteCredentialSync
+{
+    internal static async Task PersistRotationAsync(AppDbContext db, ProxyRequestMetadataCache cache, DeviceOAuthAccount account)
+    {
+        try
+        {
+            // This commit is independent of site publication: a rejected Site update must never
+            // roll back the rotated refresh token, which the provider may already have consumed.
+            var count = await db.Client.Updateable(account).UpdateColumns(a => new
+            {
+                a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.RequiresReauth, a.UpdatedAt
+            }).Where(a => a.Id == account.Id && !a.IsDeleted).ExecuteCommandAsync(CancellationToken.None);
+            if (count != 1) throw new InvalidOperationException("Device OAuth account no longer exists.");
+        }
+        finally { cache.InvalidateRouteTargets(); }
+    }
+
+    internal static async Task ReconcileAsync(AppDbContext db, ProxyRequestMetadataCache cache, Guid accountId, CancellationToken ct)
+    {
+        using var client = db.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        client.Ado.BeginTran();
+        var changed = false;
+        try
+        {
+            // Acquire the SQLite writer before reading ownership; a concurrent relink, deletion,
+            // or provisioning transaction cannot invalidate the binding before this update commits.
+            await client.Ado.ExecuteCommandAsync("UPDATE DeviceOAuthAccounts SET UpdatedAt=UpdatedAt WHERE 1=0;");
+            var account = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(accountId);
+            if (account is null || account.IsDeleted) throw new InvalidOperationException("Device OAuth account no longer exists.");
+            if (account.LinkedSiteId != Guid.Empty)
+            {
+                if (string.IsNullOrWhiteSpace(account.AccessToken))
+                    throw new InvalidOperationException("Device OAuth account has no usable access token.");
+                var siteId = account.LinkedSiteId;
+                // Keep live-owner semantics identical to AccountNetworkPolicyStore. Query only
+                // identities on this same writer transaction, never a separately cached snapshot.
+                var owners = await client.Queryable<DeviceOAuthAccount>()
+                    .Where(a => a.LinkedSiteId == siteId && !a.IsDeleted).Select(a => a.Id).ToListAsync(ct);
+                var otherOwner = await client.Queryable<CodexAccount>().AnyAsync(a => a.LinkedSiteId == siteId, ct)
+                    || await client.Queryable<GoogleAccount>().AnyAsync(a => a.LinkedSiteId == siteId, ct)
+                    || await client.Queryable<KimiAccount>().AnyAsync(a => a.LinkedSiteId == siteId && !a.IsDeleted, ct)
+                    || await client.Queryable<XaiAccount>().AnyAsync(a => a.LinkedSiteId == siteId && !a.IsDeleted, ct);
+                var site = await client.Queryable<Site>().InSingleAsync(siteId);
+                if (owners.Count != 1 || owners[0] != accountId || otherOwner || site is null
+                    || site.ManagedSource != DeviceOAuthAccountProvisioner.ManagedSource)
+                    throw new InvalidOperationException("Device OAuth site ownership changed.");
+                if (!string.Equals(site.ApiKey, account.AccessToken, StringComparison.Ordinal))
+                {
+                    site.ApiKey = account.AccessToken ?? string.Empty;
+                    await client.Updateable(site).UpdateColumns(s => new { s.ApiKey }).ExecuteCommandAsync(ct);
+                    changed = true;
+                }
+            }
+            ct.ThrowIfCancellationRequested();
+            client.Ado.CommitTran();
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
+        }
+        finally { if (changed) cache.InvalidateRouteTargets(); }
+    }
+}
+
+/// <summary>One canonical lease for every device OAuth credential refresh entry point.</summary>
+public static class DeviceOAuthRefreshGate
+{
+    private static readonly KeyedAsyncLock Locks = new();
+    internal static event Action<Guid>? Queued;
+
+    public static Task<IDisposable> AcquireAsync(Guid accountId, CancellationToken ct)
+    {
+        var wait = Locks.WaitAsync($"device-oauth:{accountId:D}", ct);
+        if (!wait.IsCompleted) Queued?.Invoke(accountId);
+        return wait;
+    }
+}
+
 /// <summary>
-/// 代理 401 命中 device_oauth 托管站点时的实时凭证刷新（single-flight 按站点，对齐 Codex 模式）。
+/// 代理 401 / 额度手动刷新按本地账号 ID single-flight，与后台刷新共用同一把锁。
 /// </summary>
 public sealed class DeviceOAuthCredentialRefreshService
 {
-    private static readonly KeyedAsyncLock RefreshLocks = new();
     private static readonly TimeSpan RefreshSafetyTimeout = TimeSpan.FromSeconds(30);
 
     private readonly AppDbContext _dbContext;
     private readonly DeviceOAuthVendorRegistry _registry;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly ILogger<DeviceOAuthCredentialRefreshService> _logger;
+    private readonly NetworkBoundDeviceOAuthVendorFactory? _networkVendors;
 
     public DeviceOAuthCredentialRefreshService(
         AppDbContext dbContext,
         DeviceOAuthVendorRegistry registry,
         ProxyRequestMetadataCache metadataCache,
-        ILogger<DeviceOAuthCredentialRefreshService> logger)
+        ILogger<DeviceOAuthCredentialRefreshService> logger,
+        NetworkBoundDeviceOAuthVendorFactory? networkVendors = null)
     {
         _dbContext = dbContext;
         _registry = registry;
         _metadataCache = metadataCache;
         _logger = logger;
+        _networkVendors = networkVendors;
     }
 
     public async Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
@@ -819,14 +972,36 @@ public sealed class DeviceOAuthCredentialRefreshService
             return null;
         }
 
-        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
+        var owners = await _dbContext.DeviceOAuthAccounts
+            .Where(a => a.LinkedSiteId == linkedSiteId && !a.IsDeleted).ToListAsync(cancellationToken);
+        if (owners.Count != 1) return null;
+        return await RefreshCoreAsync(owners[0].Id, linkedSiteId, staleAccessToken, cancellationToken);
+    }
+
+    /// <summary>Quota refresh is keyed by local account identity, including accounts without a site.</summary>
+    public Task<string?> RefreshForAccountAsync(Guid accountId, string staleAccessToken, CancellationToken cancellationToken)
+        => RefreshCoreAsync(accountId, null, staleAccessToken, cancellationToken);
+
+    private async Task<string?> RefreshCoreAsync(Guid accountId, Guid? expectedSiteId, string staleAccessToken, CancellationToken cancellationToken)
+    {
+        using (await DeviceOAuthRefreshGate.AcquireAsync(accountId, cancellationToken))
         {
-            var account = (await _dbContext.DeviceOAuthAccounts
-                .Where(a => a.LinkedSiteId == linkedSiteId && !a.IsDeleted)
-                .ToListAsync(cancellationToken))
-                .FirstOrDefault();
-            if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken)) return null;
+            var account = await _dbContext.DeviceOAuthAccounts.InSingleAsync(accountId);
+            if (account is null || account.IsDeleted) return null;
+            if (expectedSiteId is { } siteId && (account.LinkedSiteId != siteId
+                || (await _dbContext.DeviceOAuthAccounts.Where(a => a.LinkedSiteId == siteId && !a.IsDeleted)
+                    .ToListAsync(cancellationToken)).Count != 1)) return null;
+            try
+            {
+                await DeviceOAuthSiteCredentialSync.ReconcileAsync(_dbContext, _metadataCache, accountId, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Device OAuth site credential repair failed for {AccountId}", accountId);
+                return null;
+            }
             if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)) return account.AccessToken;
+            if (string.IsNullOrWhiteSpace(account.RefreshToken)) return null;
 
             var vendor = _registry.Find(account.VendorKey);
             if (vendor is null) return null;
@@ -835,7 +1010,9 @@ public sealed class DeviceOAuthCredentialRefreshService
             using var coreCts = new CancellationTokenSource(RefreshSafetyTimeout);
             try
             {
-                var tokens = await vendor.RefreshTokenAsync(
+                using var boundVendor = _networkVendors?.ForAccount(account, "device-oauth-credential-refresh");
+                var remoteVendor = boundVendor?.Vendor ?? vendor;
+                var tokens = await remoteVendor.RefreshTokenAsync(
                     new DeviceOAuthTokenSet
                     {
                         AccessToken = account.AccessToken ?? string.Empty,
@@ -849,16 +1026,9 @@ public sealed class DeviceOAuthCredentialRefreshService
                 account.TokenExpiresAt = tokens.ExpiresAt;
                 account.LastRefreshAt = DateTimeOffset.UtcNow;
                 account.RequiresReauth = false;
-                await _dbContext.Client.Updateable(account).ExecuteCommandAsync(coreCts.Token);
-
-                var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    site.ApiKey = tokens.AccessToken;
-                    await _dbContext.Client.Updateable(site).ExecuteCommandAsync(coreCts.Token);
-                }
-
-                _metadataCache.InvalidateRouteTargets();
+                account.UpdatedAt = DateTimeOffset.UtcNow;
+                await DeviceOAuthSiteCredentialSync.PersistRotationAsync(_dbContext, _metadataCache, account);
+                await DeviceOAuthSiteCredentialSync.ReconcileAsync(_dbContext, _metadataCache, account.Id, CancellationToken.None);
                 return tokens.AccessToken;
             }
             catch (DeviceOAuthRefreshRefusedException)
@@ -867,9 +1037,14 @@ public sealed class DeviceOAuthCredentialRefreshService
                 await _dbContext.Client.Updateable(account).UpdateColumns(a => new { a.RequiresReauth }).ExecuteCommandAsync(CancellationToken.None);
                 return null;
             }
+            catch (NetworkPolicyException)
+            {
+                // A revoked network is not an authentication failure and must not be hidden.
+                throw;
+            }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Device OAuth credential refresh failed for site {SiteId}", linkedSiteId);
+                _logger.LogWarning(ex, "Device OAuth credential refresh failed for account {AccountId}", accountId);
                 return null;
             }
         }

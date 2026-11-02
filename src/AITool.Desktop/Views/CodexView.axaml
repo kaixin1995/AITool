@@ -5,6 +5,18 @@
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:CodexViewModel"
     x:CompileBindings="False">
+  <UserControl.Resources>
+    <DataTemplate x:Key="NetworkEditorTemplate">
+      <StackPanel Spacing="6">
+        <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding ModeOptions}" SelectedItem="{Binding SelectedMode, Mode=TwoWay}">
+          <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" TextWrapping="Wrap" /></DataTemplate></ComboBox.ItemTemplate>
+        </ComboBox>
+        <ComboBox HorizontalAlignment="Stretch" IsVisible="{Binding IsProfile}" ItemsSource="{Binding ProxyOptions}" SelectedItem="{Binding SelectedProfile, Mode=TwoWay}" PlaceholderText="选择已启用的代理配置（名称 / ID）">
+          <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayLabel}" TextWrapping="Wrap" /></DataTemplate></ComboBox.ItemTemplate>
+        </ComboBox>
+      </StackPanel>
+    </DataTemplate>
+  </UserControl.Resources>
   <Grid MinWidth="0" RowDefinitions="Auto,Auto,*" RowSpacing="12">
     <Grid ColumnDefinitions="*,1.8*" ColumnSpacing="16" VerticalAlignment="Center">
       <StackPanel Spacing="4">
@@ -71,6 +83,30 @@
         </Border>
         <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
           <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+        </Border>
+
+        <Border Classes="content-card" Padding="14">
+          <StackPanel Spacing="10">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <TextBlock FontWeight="SemiBold" Text="登录网络（开始授权时生效）" VerticalAlignment="Center" />
+              <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshNetworkCommand}" Content="重新检测网络能力" />
+            </Grid>
+            <ContentControl Content="{Binding LoginNetwork}" ContentTemplate="{StaticResource NetworkEditorTemplate}" IsEnabled="{Binding IsNetworkSelectionEnabled}" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding NetworkStatus}" TextWrapping="Wrap" />
+            <TextBlock FontWeight="SemiBold" Text="凭证导入网络（粘贴 JSON / 顶部导入文件共用）" />
+            <ContentControl Content="{Binding ImportNetwork}" ContentTemplate="{StaticResource NetworkEditorTemplate}" IsEnabled="{Binding IsNetworkSelectionEnabled}" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="未指定时不发送网络字段，保留服务端策略；不会将未知或加载失败当作 Direct。已有 OAuth 会话网络不随选择变化。" TextWrapping="Wrap" />
+            <Button Classes="secondary-button" Command="{Binding ClearNewAccountNetworkSelectionsCommand}" Content="登录 / 导入恢复未指定（仅清除草稿，不清除账号策略）" />
+          </StackPanel>
+        </Border>
+
+        <Border Classes="content-card" Padding="14" IsVisible="{Binding HasAccounts}">
+          <StackPanel Spacing="8">
+            <TextBlock FontWeight="SemiBold" Text="批量设置网络（仅使用现有已选 Codex 账号）" />
+            <ContentControl Content="{Binding BatchNetwork}" ContentTemplate="{StaticResource NetworkEditorTemplate}" IsEnabled="{Binding CanApplySelectedNetworks}" />
+            <Button Classes="secondary-button" Command="{Binding ApplySelectedNetworksCommand}" Content="应用到已选 Codex 账号" IsEnabled="{Binding CanApplySelectedNetworks}" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding NetworkBatchResult}" TextWrapping="Wrap" />
+          </StackPanel>
         </Border>
 
         <TabControl TabStripPlacement="Top">
@@ -146,6 +182,11 @@
                             </Border>
                           </StackPanel>
                         </Grid>
+
+                        <StackPanel Spacing="4">
+                          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding NetworkModeText}" TextWrapping="Wrap" />
+                          <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding NetworkPolicyStatus}" TextWrapping="Wrap" />
+                        </StackPanel>
 
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,14,0,0">
                           <StackPanel Spacing="2">
@@ -330,6 +371,10 @@
         <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="显示名称" /><TextBox Classes="form-input" Text="{Binding AccountDisplayName, Mode=TwoWay}" /></StackPanel>
         <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="新的 Refresh Token（可选）" /><TextBox Classes="form-input" PasswordChar="●" Text="{Binding AccountRefreshToken, Mode=TwoWay}" Watermark="留空表示保留当前凭证" /></StackPanel>
         <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="Refresh Token 仅用于本次请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
+        <TextBlock FontWeight="SemiBold" Text="账号网络策略" />
+        <ContentControl Content="{Binding EditNetwork}" ContentTemplate="{StaticResource NetworkEditorTemplate}" IsEnabled="{Binding IsEditorNetworkSelectionEnabled}" />
+        <TextBlock FontSize="12" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding EditorNetworkStatus}" TextWrapping="Wrap" />
+        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding NetworkStatus}" TextWrapping="Wrap" />
         <Button Classes="primary-button" Command="{Binding SaveAccountCommand}" Content="保存账号" IsEnabled="{Binding CanSaveAccount}" HorizontalContentAlignment="Center" Padding="12,9" />
       </StackPanel>
     </Border>
@@ -348,6 +393,9 @@
           <TextBlock Foreground="{DynamicResource AppCodeForegroundBrush}" Text="粘贴凭证 JSON" />
           <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding CredentialImportHint}" TextWrapping="Wrap" />
           <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="凭证只用于本次导入请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
+          <TextBlock FontWeight="SemiBold" Text="导入账号网络" />
+          <ContentControl Content="{Binding ImportNetwork}" ContentTemplate="{StaticResource NetworkEditorTemplate}" IsEnabled="{Binding IsNetworkSelectionEnabled}" />
+          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding NetworkStatus}" TextWrapping="Wrap" />
         </StackPanel>
         <TextBox
             Grid.Row="3"
