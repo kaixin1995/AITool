@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using AITool.Domain.Operations;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
@@ -30,19 +31,20 @@ public sealed class SessionIsolationKeyTests : IDisposable
     }
 
     [Fact]
-    public async Task Initialization_persists_only_protected_random_256_bit_key_and_fixed_version()
+    public async Task Initialization_persists_raw_v2_key_directly_in_the_database()
     {
         var deriver = Deriver(_provider);
         var first = await Derive(deriver);
         first.Should().MatchRegex("^[0-9a-f]{64}$");
         var row = Row();
         row.Id.Should().Be(1);
-        row.Version.Should().Be(1);
-        var key = Protector(_provider).Unprotect(Convert.FromBase64String(row.ProtectedKey));
+        row.Version.Should().Be(SessionIsolationKey.CurrentVersion);
+        // v2 = 裸 base64 直存：数据库文件本身就是这个密钥的持久化单元，不再有任何外部依赖。
+        var key = Convert.FromBase64String(row.ProtectedKey);
         try
         {
             key.Should().HaveCount(32);
-            row.ProtectedKey.Should().NotBe(Convert.ToBase64String(key));
+            row.ProtectedKey.Should().Be(Convert.ToBase64String(key));
             (await Derive(deriver)).Should().Be(first);
             Row().ProtectedKey.Should().Be(row.ProtectedKey);
             Rows().Should().ContainSingle();
@@ -51,7 +53,7 @@ public sealed class SessionIsolationKeyTests : IDisposable
     }
 
     [Fact]
-    public async Task Startup_bootstrap_is_idempotent_and_validates_existing_key_instead_of_rotating()
+    public async Task Startup_bootstrap_is_idempotent_and_corrupt_persisted_state_rotates_automatically()
     {
         var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<IDataProtectionProvider>());
@@ -63,9 +65,15 @@ public sealed class SessionIsolationKeyTests : IDisposable
             restarted.GetRequiredService<IDataProtectionProvider>());
         await restartedStore.EnsureInitializedAsync();
         Row().ProtectedKey.Should().Be(ciphertext);
+        // A deployment that lost its Data Protection key ring must come back up on its own:
+        // startup repairs the state by rotation instead of crash-looping until an operator
+        // restores files that may no longer exist anywhere.
         SetCiphertext("corrupted");
-        await Assert.ThrowsAsync<CryptographicException>(() => restartedStore.EnsureInitializedAsync());
-        Row().ProtectedKey.Should().Be("corrupted");
+        await restartedStore.EnsureInitializedAsync();
+        Rows().Should().ContainSingle();
+        Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
+        Row().ProtectedKey.Should().NotBe("corrupted").And.NotBe(ciphertext);
+        Convert.FromBase64String(Row().ProtectedKey).Should().HaveCount(32);
     }
 
     [Fact]
@@ -115,6 +123,7 @@ public sealed class SessionIsolationKeyTests : IDisposable
         var key = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
         try
         {
+            // 经 legacy v1 密文行喂入密钥：既钉 HMAC 契约，也钉 v1 兼容解码路径。
             InsertKey(Protector(_provider).Protect(key));
             string[] fields = ["1", "client/雪", "provider", _accountId.ToString("D"), "session", "seed\0😀"];
             using var encoded = new MemoryStream();
@@ -129,6 +138,8 @@ public sealed class SessionIsolationKeyTests : IDisposable
             var expected = Convert.ToHexString(HMACSHA256.HashData(key, encoded.ToArray())).ToLowerInvariant();
             (await Deriver(_provider).DeriveAsync(fields[1], fields[2], _accountId, fields[4], fields[5]))
                 .Should().Be(expected);
+            Row().Version.Should().Be(SessionIsolationKey.CurrentVersion, "v1 读取顺带原地升级为 v2");
+            Row().ProtectedKey.Should().Be(Convert.ToBase64String(key));
         }
         finally { CryptographicOperations.ZeroMemory(key); }
     }
@@ -146,13 +157,13 @@ public sealed class SessionIsolationKeyTests : IDisposable
     }
 
     [Fact]
-    public async Task Restart_with_same_database_and_key_ring_preserves_output_and_ciphertext()
+    public async Task Restart_with_same_database_preserves_output_and_storage()
     {
         var first = await Derive(Deriver(_provider));
-        var ciphertext = Row().ProtectedKey;
+        var stored = Row().ProtectedKey;
         var restarted = CreateProvider();
         (await Derive(Deriver(restarted))).Should().Be(first);
-        Row().ProtectedKey.Should().Be(ciphertext);
+        Row().ProtectedKey.Should().Be(stored);
     }
 
     [Fact]
@@ -168,95 +179,155 @@ public sealed class SessionIsolationKeyTests : IDisposable
     [InlineData("")]
     [InlineData("not-base64-ciphertext")]
     [InlineData("AQIDBA==")]
-    public async Task Corrupt_or_missing_secret_fails_without_replacement_and_restore_recovers_original(string corrupted)
+    public async Task Corrupt_or_missing_secret_rotates_atomically_and_derivation_recovers(string corrupted)
     {
         var deriver = Deriver(_provider);
         var original = await Derive(deriver);
-        var ciphertext = Row().ProtectedKey;
         SetCiphertext(corrupted);
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(deriver));
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(CreateProvider())));
-        Row().ProtectedKey.Should().Be(corrupted);
-        SetCiphertext(ciphertext); // Simulate restoring the previous DB backup, not rotating.
-        (await Derive(deriver)).Should().Be(original);
+        var repaired = await Derive(deriver);
+        repaired.Should().HaveLength(64).And.NotBe(original);
+        Rows().Should().ContainSingle();
+        Row().ProtectedKey.Should().NotBe(corrupted);
+        Convert.FromBase64String(Row().ProtectedKey).Should().HaveCount(32);
+        (await Derive(Deriver(CreateProvider()))).Should().Be(repaired);
+        Rows().Should().ContainSingle("the replacement commits as exactly one marker and key pair");
     }
 
     [Fact]
-    public async Task Unavailable_key_ring_and_wrong_purpose_fail_without_modifying_database()
+    public async Task Legacy_v1_row_upgrades_in_place_to_raw_v2_without_rotating()
     {
-        var original = await Derive(Deriver(_provider));
-        var ciphertext = Row().ProtectedKey;
-        var otherRing = CreateProvider(keyRingPath: Path.Combine(_directory, "other-ring"));
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(otherRing)));
-        Row().ProtectedKey.Should().Be(ciphertext);
+        // 部署库从 v1 密文升级：原地改写为裸 v2，密钥材料与全部派生标识保持不变。
+        var legacyKey = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            InsertKey(Protector(_provider).Protect(legacyKey));
+            var original = await Derive(Deriver(_provider));
+            Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
+            Row().ProtectedKey.Should().Be(Convert.ToBase64String(legacyKey));
+            Rows().Should().ContainSingle();
+            (await Derive(Deriver(_provider))).Should().Be(original, "升级幂等：第二次读不再改行");
+            // v2 与 Data Protection 圈彻底无关：换一个全新圈照样直接读，不轮换。
+            var otherRing = CreateProvider(keyRingPath: Path.Combine(_directory, "other-ring"));
+            (await Derive(Deriver(otherRing))).Should().Be(original);
+            Row().ProtectedKey.Should().Be(Convert.ToBase64String(legacyKey));
+        }
+        finally { CryptographicOperations.ZeroMemory(legacyKey); }
+    }
+
+    [Fact]
+    public async Task Legacy_v1_row_under_lost_ring_or_wrong_purpose_rotates_to_v2_once()
+    {
+        // 钥匙圈真丢了（别机重部署）：v1 密文解不开 → 只轮换一次，产出 v2 裸存；
+        // 之后任何圈（包括原来的）读的都是同一 v2 值，不再反复翻转。
+        var legacyKey = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            InsertKey(Protector(_provider).Protect(legacyKey));
+            var otherRing = CreateProvider(keyRingPath: Path.Combine(_directory, "other-ring"));
+            var rotated = await Derive(Deriver(otherRing));
+            rotated.Should().HaveLength(64);
+            Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
+            var rotatedRaw = Row().ProtectedKey;
+            Convert.FromBase64String(rotatedRaw).Should().HaveCount(32);
+            (await Derive(Deriver(otherRing))).Should().Be(rotated);
+            (await Derive(Deriver(_provider))).Should().Be(rotated, "原圈回来后读到的也是 v2 裸值");
+            Row().ProtectedKey.Should().Be(rotatedRaw);
+        }
+        finally { CryptographicOperations.ZeroMemory(legacyKey); }
+        // 错 purpose 的 v1 密文（指纹同步）同样解不开 → 轮换一次到 v2。
         var wrongProtector = _provider.GetRequiredService<IDataProtectionProvider>().CreateProtector("unrelated-purpose");
-        var wrongCiphertext = Convert.ToBase64String(wrongProtector.Protect(new byte[32]));
-        SetCiphertext(wrongCiphertext);
-        SetFingerprint(wrongCiphertext); // Reach purpose validation, not just fingerprint validation.
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(_provider)));
-        SetFingerprint(ciphertext);
-        SetCiphertext(ciphertext);
-        (await Derive(Deriver(CreateProvider()))).Should().Be(original);
+        var wrongCiphertext = Convert.ToBase64String(wrongProtector.Protect(RandomNumberGenerator.GetBytes(32)));
+        SetLegacy(wrongCiphertext);
+        var healed = await Derive(Deriver(_provider));
+        healed.Should().HaveLength(64);
+        Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
+        Convert.FromBase64String(Row().ProtectedKey).Should().HaveCount(32);
+        Rows().Should().ContainSingle();
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(31)]
     [InlineData(33)]
-    public async Task Valid_protection_of_wrong_key_length_is_not_initialization_authority(int length)
+    public async Task Valid_v1_protection_of_wrong_key_length_rotates_instead_of_failing(int length)
     {
         InsertKey(Protector(_provider).Protect(new byte[length]));
-        var ciphertext = Row().ProtectedKey;
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(_provider)));
-        Row().ProtectedKey.Should().Be(ciphertext);
+        var healed = await Derive(Deriver(_provider));
+        healed.Should().HaveLength(64);
+        Convert.FromBase64String(Row().ProtectedKey).Should().HaveCount(32);
+        Rows().Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(31)]
+    [InlineData(33)]
+    public async Task Raw_v2_key_of_wrong_length_rotates_instead_of_failing(int length)
+    {
+        SetRaw(Convert.ToBase64String(RandomNumberGenerator.GetBytes(length)));
+        var healed = await Derive(Deriver(_provider));
+        healed.Should().HaveLength(64);
+        Convert.FromBase64String(Row().ProtectedKey).Should().HaveCount(32);
+        Rows().Should().ContainSingle();
     }
 
     [Fact]
-    public async Task Unknown_version_or_wrong_singleton_row_is_not_silently_reinitialized()
+    public async Task Unknown_version_or_wrong_singleton_row_rotates_back_to_current_version()
     {
         await Derive(Deriver(_provider));
-        var ciphertext = Row().ProtectedKey;
         using var client = Client();
-        client.Ado.ExecuteCommand("UPDATE SessionIsolationKeys SET Version = 2;");
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(_provider)));
-        Row().Version.Should().Be(2);
+        client.Ado.ExecuteCommand("UPDATE SessionIsolationKeys SET Version = 3;");
+        await Derive(Deriver(_provider));
+        Rows().Should().ContainSingle().Which.Version.Should().Be(SessionIsolationKey.CurrentVersion);
         client.Ado.ExecuteCommand("UPDATE SessionIsolationKeys SET Id = 2, Version = 1;");
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(_provider)));
-        Rows().Should().ContainSingle().Which.Id.Should().Be(2);
-        Row().ProtectedKey.Should().Be(ciphertext);
+        await Derive(Deriver(_provider));
+        Rows().Should().ContainSingle().Which.Id.Should().Be(SessionIsolationKey.SingletonId);
+        Rows().Should().ContainSingle("rotation never leaves a second row behind");
     }
 
     [Fact]
-    public async Task Deleted_key_on_live_and_restarted_stores_fails_closed_instead_of_rotating()
+    public async Task Deleted_key_rows_self_heal_and_full_deletion_reinitializes()
     {
         var deriver = Deriver(_provider);
-        await Derive(deriver);
+        var original = await Derive(deriver);
         using var client = Client();
         client.Deleteable<SessionIsolationKey>().ExecuteCommand();
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(deriver));
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(CreateProvider())));
-        Rows().Should().BeEmpty();
+        // Key row deleted while the marker remains: not a first deployment — the rotation
+        // transaction restores the pair together instead of crash-looping forever.
+        var healed = await Derive(deriver);
+        healed.Should().HaveLength(64).And.NotBe(original);
+        Rows().Should().ContainSingle();
         client.Queryable<SessionIsolationKeyMetadata>().ToList().Should().ContainSingle();
-        // Deleting BOTH the marker and key is indistinguishable from a first deployment;
-        // operators must restore the complete DB together with its Data Protection key ring.
+        var ciphertext = Row().ProtectedKey;
+        (await Derive(Deriver(CreateProvider()))).Should().Be(healed);
+        Row().ProtectedKey.Should().Be(ciphertext);
+        // Deleting BOTH the marker and the key is indistinguishable from a first deployment;
+        // the store reinitializes transparently instead of refusing to start.
+        client.Deleteable<SessionIsolationKeyMetadata>().ExecuteCommand();
+        client.Deleteable<SessionIsolationKey>().ExecuteCommand();
+        var reinitialized = await Derive(Deriver(_provider));
+        reinitialized.Should().HaveLength(64);
+        Rows().Should().ContainSingle();
+        Row().ProtectedKey.Should().NotBe(ciphertext);
     }
 
     [Fact]
-    public async Task Missing_metadata_or_replaced_ciphertext_is_not_silently_blessed()
+    public async Task Missing_metadata_or_replaced_ciphertext_rotates_automatically()
     {
-        var original = await Derive(Deriver(_provider));
-        var ciphertext = Row().ProtectedKey;
+        var deriver = Deriver(_provider);
+        var original = await Derive(deriver);
         using var client = Client();
-        var marker = client.Queryable<SessionIsolationKeyMetadata>().ToList().Single();
         client.Deleteable<SessionIsolationKeyMetadata>().ExecuteCommand();
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(CreateProvider())));
-        Row().ProtectedKey.Should().Be(ciphertext);
-        client.Queryable<SessionIsolationKeyMetadata>().ToList().Should().BeEmpty();
-        client.Insertable(marker).ExecuteCommand();
+        var healedMarker = await Derive(Deriver(CreateProvider()));
+        healedMarker.Should().HaveLength(64).And.NotBe(original);
+        Rows().Should().ContainSingle();
+        var ciphertext = Row().ProtectedKey;
         SetCiphertext(Convert.ToBase64String(Protector(_provider).Protect(RandomNumberGenerator.GetBytes(32))));
-        await Assert.ThrowsAsync<CryptographicException>(() => Derive(Deriver(CreateProvider())));
-        SetCiphertext(ciphertext);
-        (await Derive(Deriver(CreateProvider()))).Should().Be(original);
+        var healedReplaced = await Derive(Deriver(_provider));
+        healedReplaced.Should().HaveLength(64).And.NotBe(healedMarker);
+        Row().ProtectedKey.Should().NotBe(ciphertext);
+        Rows().Should().ContainSingle();
+        (await Derive(Deriver(CreateProvider()))).Should().Be(healedReplaced);
     }
 
     [Fact]
@@ -376,35 +447,38 @@ public sealed class SessionIsolationKeyTests : IDisposable
     }
 
     [Fact]
-    public async Task Cancellation_after_protection_is_observed_before_atomic_insert()
+    public async Task Cancellation_while_unlocking_legacy_row_is_observed_before_upgrade_write()
     {
+        InsertKey(Protector(_provider).Protect(RandomNumberGenerator.GetBytes(32)));
         using var cancellation = new CancellationTokenSource();
-        var provider = new CancelOnProtectProvider(_provider.GetRequiredService<IDataProtectionProvider>(), cancellation);
+        var provider = new CancelOnUnprotectProvider(_provider.GetRequiredService<IDataProtectionProvider>(), cancellation);
         var deriver = new SessionIsolationDeriver(new SessionIsolationKeyStore(
             _provider.GetRequiredService<IServiceScopeFactory>(), provider));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             deriver.DeriveAsync("client", "provider", _accountId, "session", "seed", cancellation.Token));
-        Rows().Should().BeEmpty();
+        Rows().Should().ContainSingle().Which.Version.Should().Be(SessionIsolationKey.LegacyCiphertextVersion,
+            "取消发生在解码之后、升级写回之前，行保持原样");
         (await Derive(Deriver(_provider))).Should().HaveLength(64);
+        Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
         Rows().Should().ContainSingle();
     }
 
-    private sealed class CancelOnProtectProvider(IDataProtectionProvider inner, CancellationTokenSource cancellation)
+    private sealed class CancelOnUnprotectProvider(IDataProtectionProvider inner, CancellationTokenSource cancellation)
         : IDataProtectionProvider
     {
-        public IDataProtector CreateProtector(string purpose) => new CancelOnProtect(inner.CreateProtector(purpose), cancellation);
+        public IDataProtector CreateProtector(string purpose) => new CancelOnUnprotect(inner.CreateProtector(purpose), cancellation);
     }
 
-    private sealed class CancelOnProtect(IDataProtector inner, CancellationTokenSource cancellation) : IDataProtector
+    private sealed class CancelOnUnprotect(IDataProtector inner, CancellationTokenSource cancellation) : IDataProtector
     {
-        public IDataProtector CreateProtector(string purpose) => new CancelOnProtect(inner.CreateProtector(purpose), cancellation);
-        public byte[] Protect(byte[] plaintext)
+        public IDataProtector CreateProtector(string purpose) => new CancelOnUnprotect(inner.CreateProtector(purpose), cancellation);
+        public byte[] Protect(byte[] plaintext) => inner.Protect(plaintext);
+        public byte[] Unprotect(byte[] protectedData)
         {
-            var result = inner.Protect(plaintext);
+            var result = inner.Unprotect(protectedData);
             cancellation.Cancel();
             return result;
         }
-        public byte[] Unprotect(byte[] protectedData) => inner.Unprotect(protectedData);
     }
 
     private ServiceProvider CreateProvider(string? databasePath = null, string? keyRingPath = null)
@@ -424,7 +498,10 @@ public sealed class SessionIsolationKeyTests : IDisposable
     {
         var client = provider.GetRequiredService<ISqlSugarClient>();
         client.Ado.ExecuteCommand("PRAGMA journal_mode=WAL;");
-        client.CodeFirst.InitTables(typeof(SessionIsolationKey), typeof(SessionIsolationKeyMetadata));
+        // Rotation clears derived owner identities in the same transaction, so the full
+        // schema rotation touches must exist here exactly as production InitTables creates it.
+        client.CodeFirst.InitTables(typeof(SessionIsolationKey), typeof(SessionIsolationKeyMetadata),
+            typeof(UpstreamReferenceOwner));
     }
 
     private static SessionIsolationDeriver Deriver(ServiceProvider provider) => new(new SessionIsolationKeyStore(
@@ -440,15 +517,37 @@ public sealed class SessionIsolationKeyTests : IDisposable
         return client.Queryable<SessionIsolationKey>().ToList();
     }
     private SessionIsolationKey Row() => Rows().Single();
+    /// <summary>Seeds a legacy v1 row (Data Protection ciphertext) with a matching marker.</summary>
     private void InsertKey(byte[] protectedBytes)
     {
         using var client = Client();
         var ciphertext = Convert.ToBase64String(protectedBytes);
-        client.Insertable(new SessionIsolationKey { ProtectedKey = ciphertext }).ExecuteCommand();
+        client.Insertable(new SessionIsolationKey { Version = SessionIsolationKey.LegacyCiphertextVersion, ProtectedKey = ciphertext }).ExecuteCommand();
         client.Insertable(new SessionIsolationKeyMetadata
         {
+            Version = SessionIsolationKey.LegacyCiphertextVersion,
             ProtectedKeyFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ciphertext)))
         }).ExecuteCommand();
+    }
+    /// <summary>Rewrites the existing row as a legacy v1 pair (marker fingerprint resynced).</summary>
+    private void SetLegacy(string ciphertext)
+    {
+        using var client = Client();
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ciphertext)));
+        client.Ado.ExecuteCommand("UPDATE SessionIsolationKeys SET Version = 1, ProtectedKey = @k WHERE Id = 1;",
+            new SugarParameter("@k", ciphertext));
+        client.Ado.ExecuteCommand("UPDATE SessionIsolationKeyMetadata SET Version = 1, ProtectedKeyFingerprint = @f WHERE Id = 1;",
+            new SugarParameter("@f", fingerprint));
+    }
+    /// <summary>Rewrites the existing row as a raw v2 pair (marker fingerprint resynced).</summary>
+    private void SetRaw(string raw)
+    {
+        using var client = Client();
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)));
+        client.Ado.ExecuteCommand("UPDATE SessionIsolationKeys SET Version = 2, ProtectedKey = @k WHERE Id = 1;",
+            new SugarParameter("@k", raw));
+        client.Ado.ExecuteCommand("UPDATE SessionIsolationKeyMetadata SET Version = 2, ProtectedKeyFingerprint = @f WHERE Id = 1;",
+            new SugarParameter("@f", fingerprint));
     }
     private void SetFingerprint(string ciphertext)
     {

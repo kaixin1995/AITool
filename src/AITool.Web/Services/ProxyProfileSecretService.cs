@@ -6,20 +6,27 @@ using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Logging;
 
 namespace AITool.Web.Services;
 
 /// <summary>
-/// Protects proxy credentials independently from the public endpoint. The host must persist
-/// its DataProtection key ring and migrate legacy URLs before accepting requests.
+/// Protects proxy credentials independently from the public endpoint. The host persists its
+/// DataProtection key ring and migrates legacy URLs before accepting requests. A lost or
+/// replaced key ring is not allowed to keep the host from starting: startup migration
+/// quarantines profiles whose stored secrets became unreadable instead of failing.
 /// </summary>
 public sealed class ProxyProfileSecretService
 {
+    /// <summary>ConfigurationError marker for profiles quarantined by an unreadable key ring.</summary>
+    public const string UndecryptableReason = "proxy_secrets_undecryptable";
     private readonly IDataProtector _protector;
+    private readonly ILogger<ProxyProfileSecretService>? _logger;
 
-    public ProxyProfileSecretService(IDataProtectionProvider provider)
+    public ProxyProfileSecretService(IDataProtectionProvider provider, ILogger<ProxyProfileSecretService>? logger = null)
     {
         _protector = provider.CreateProtector("AITool.ProxyProfile.Credentials.v1");
+        _logger = logger;
     }
 
     public static bool HasCredentials(ProxyProfile profile) =>
@@ -189,8 +196,10 @@ public sealed class ProxyProfileSecretService
 
     // Validate each optional field independently: historical quarantine rows may have only
     // a repair payload (or partial credentials). Do not require ReadCredentials' complete
-    // username/password pair here, but never silently accept an unreadable existing field.
-    private void ValidateProtectedFields(ProxyProfile profile)
+    // username/password pair here. Returns false when any existing field is unreadable;
+    // callers must then quarantine the profile — never protect remaining plaintext with a
+    // ring that cannot read the row's old payloads. Never include payloads or inner errors.
+    private bool TryValidateProtectedFields(ProxyProfile profile)
     {
         var protector = ForProfile(profile);
         try
@@ -201,12 +210,11 @@ public sealed class ProxyProfileSecretService
                 protector.CreateProtector("password").Unprotect(profile.ProtectedPassword);
             if (!string.IsNullOrEmpty(profile.ProtectedLegacyConfiguration))
                 protector.CreateProtector("legacy-configuration").Unprotect(profile.ProtectedLegacyConfiguration);
+            return true;
         }
         catch (Exception ex) when (ex is CryptographicException or FormatException)
         {
-            // In particular, a missing/replaced ring must not be allowed to protect any
-            // remaining plaintext with a new key. Never include payloads or inner errors.
-            throw new CryptographicException("Existing proxy profile secrets could not be decrypted.");
+            return false;
         }
     }
 
@@ -258,16 +266,42 @@ public sealed class ProxyProfileSecretService
             // updates and commit; no deferred transaction upgrade or stale snapshot.
             ct.ThrowIfCancellationRequested();
             var profiles = await client.Queryable<ProxyProfile>().ToListAsync(ct);
+            var quarantined = 0;
             foreach (var profile in profiles)
             {
                 ct.ThrowIfCancellationRequested();
-                ValidateProtectedFields(profile);
+                if (TryValidateProtectedFields(profile)) continue;
+                // A lost/replaced key ring must not block host startup (the session isolation
+                // key self-heals the same way), and it must never mix freshly protected
+                // payloads into a row whose existing ones are unreadable. Quarantine: disable
+                // with an explicit error, payloads untouched; credentials are re-entered to
+                // reactivate. The marker makes repeated startups idempotent no-ops.
+                if (!profile.IsEnabled && string.Equals(profile.ConfigurationError, UndecryptableReason, StringComparison.Ordinal))
+                    continue;
+                var oldRevision = profile.Revision;
+                profile.IsEnabled = false;
+                profile.ConfigurationError = UndecryptableReason;
+                profile.UpdatedAt = DateTimeOffset.UtcNow;
+                profile.Revision = Math.Max(1, oldRevision + 1);
+                var updated = await client.Updateable(profile)
+                    .Where(x => x.Id == profile.Id && x.Revision == oldRevision)
+                    .ExecuteCommandAsync(ct);
+                if (updated != 1)
+                    throw new InvalidOperationException("Proxy profile migration encountered a concurrent change.");
+                quarantined++;
             }
+            if (quarantined > 0)
+                _logger?.LogWarning(
+                    "{Count} proxy profile(s) hold secrets that cannot be decrypted with the current Data Protection key ring; "
+                    + "they were disabled instead of blocking startup. Re-enter their credentials to reactivate them.",
+                    quarantined);
 
             var changed = 0;
             foreach (var profile in profiles)
             {
                 ct.ThrowIfCancellationRequested();
+                if (!profile.IsEnabled && string.Equals(profile.ConfigurationError, UndecryptableReason, StringComparison.Ordinal))
+                    continue; // Quarantined above (or by an earlier startup): never re-protect into an unreadable row.
                 var original = profile.ProxyUrl ?? string.Empty;
                 var valid = TryNormalizeProxyUrl(original, out var endpoint, out var credentials, out _);
                 if (!valid)

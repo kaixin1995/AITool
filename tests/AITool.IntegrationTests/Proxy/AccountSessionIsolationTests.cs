@@ -36,7 +36,9 @@ public sealed class AccountSessionIsolationTests : IDisposable
         services.AddDataProtection().SetApplicationName("AccountSessionIsolationTests")
             .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(_directory, "keyring")));
         _provider = services.BuildServiceProvider();
-        _provider.GetRequiredService<ISqlSugarClient>().CodeFirst.InitTables(typeof(SessionIsolationKey), typeof(SessionIsolationKeyMetadata), typeof(DeviceOAuthAccount));
+        // Derivation may self-heal by rotation, which clears derived owner identities in the
+        // same transaction — the fixture schema must match the tables rotation touches.
+        _provider.GetRequiredService<ISqlSugarClient>().CodeFirst.InitTables(typeof(SessionIsolationKey), typeof(SessionIsolationKeyMetadata), typeof(DeviceOAuthAccount), typeof(AITool.Domain.Proxy.UpstreamReferenceOwner));
         _service = new AccountSessionIsolationService(new SessionIsolationDeriver(new SessionIsolationKeyStore(
             _provider.GetRequiredService<IServiceScopeFactory>(), _provider.GetRequiredService<IDataProtectionProvider>())),
             _provider.GetRequiredService<IServiceScopeFactory>());

@@ -320,10 +320,10 @@ public sealed class ProxyProfileCredentialTests
     [InlineData("username")]
     [InlineData("password")]
     [InlineData("quarantine")]
-    public async Task Migration_EmptyOrWrongRing_FailsBeforeWriting_AndOriginalRingRecovers(string kind)
+    public async Task Migration_EmptyOrWrongRing_QuarantinesUnreadableRows_AndOtherRowsMigrate(string kind)
     {
         using var fixture = new Fixture();
-        var protectedRow = new ProxyProfile { Key = "existing", ProxyUrl = "http://localhost:7101" };
+        var protectedRow = new ProxyProfile { Key = "existing", ProxyUrl = "http://localhost:7101", IsEnabled = true };
         fixture.Secrets.TryApplyForSave(protectedRow, protectedRow.ProxyUrl, "Replace", "a", "b", out _).Should().BeTrue();
         if (kind == "username") protectedRow.ProtectedPassword = null;
         if (kind == "password") protectedRow.ProtectedUsername = null;
@@ -344,26 +344,75 @@ public sealed class ProxyProfileCredentialTests
         var emptyRing = Path.Combine(fixture.DirectoryPath, "empty-ring");
         Directory.CreateDirectory(emptyRing);
         var restarted = new ProxyProfileSecretService(DataProtectionProvider.Create(new DirectoryInfo(emptyRing)));
-        Func<Task> migrate = () => restarted.MigrateLegacyCredentialsAsync(fixture.Db);
-        var failure = await migrate.Should().ThrowAsync<CryptographicException>();
-        failure.Which.Message.Should().Be("Existing proxy profile secrets could not be decrypted.");
-        var unchanged = await fixture.Db.ProxyProfiles.InSingleAsync(remaining.Id);
-        (unchanged.ProxyUrl == remaining.ProxyUrl && unchanged.ProtectedUsername is null && unchanged.Revision == 1).Should().BeTrue();
-        var originalRing = new ProxyProfileSecretService(DataProtectionProvider.Create(new DirectoryInfo(fixture.KeyDirectory)));
-        (await originalRing.MigrateLegacyCredentialsAsync(fixture.Db)).Should().Be(1);
+        // A lost/replaced key ring must not block startup: unreadable rows are quarantined
+        // with their payloads untouched while other rows migrate normally under this ring.
+        (await restarted.MigrateLegacyCredentialsAsync(fixture.Db)).Should().Be(1);
+        var quarantined = await fixture.Db.ProxyProfiles.InSingleAsync(protectedRow.Id);
+        quarantined.IsEnabled.Should().BeFalse();
+        quarantined.ConfigurationError.Should().Be(ProxyProfileSecretService.UndecryptableReason);
+        quarantined.ProtectedUsername.Should().Be(protectedRow.ProtectedUsername);
+        quarantined.ProtectedPassword.Should().Be(protectedRow.ProtectedPassword);
+        quarantined.ProtectedLegacyConfiguration.Should().Be(protectedRow.ProtectedLegacyConfiguration);
         var migrated = await fixture.Db.ProxyProfiles.InSingleAsync(remaining.Id);
-        (originalRing.ReadCredentials(migrated) is not null).Should().BeTrue();
+        (migrated.ProtectedUsername is not null && migrated.Revision >= 1).Should().BeTrue();
+        // Re-running under the same broken ring is an idempotent no-op.
+        (await restarted.MigrateLegacyCredentialsAsync(fixture.Db)).Should().Be(0);
+        quarantined.Revision.Should().Be((await fixture.Db.ProxyProfiles.InSingleAsync(protectedRow.Id)).Revision);
+        // The original ring still reads the untouched payloads, but the explicit re-save via
+        // the update endpoint remains the only path that clears the quarantine marker.
+        var originalRing = new ProxyProfileSecretService(DataProtectionProvider.Create(new DirectoryInfo(fixture.KeyDirectory)));
         (await originalRing.MigrateLegacyCredentialsAsync(fixture.Db)).Should().Be(0);
+        var preserved = await fixture.Db.ProxyProfiles.InSingleAsync(protectedRow.Id);
+        preserved.ConfigurationError.Should().Be(ProxyProfileSecretService.UndecryptableReason);
+        if (kind != "quarantine")
+        {
+            var username = preserved.ProtectedUsername is null ? null
+                : DataProtectionProvider.Create(new DirectoryInfo(fixture.KeyDirectory))
+                    .CreateProtector("AITool.ProxyProfile.Credentials.v1").CreateProtector(preserved.Id.ToString("N"))
+                    .CreateProtector("username").Unprotect(preserved.ProtectedUsername);
+            username.Should().Be(kind == "password" ? null : "a");
+        }
+    }
+
+    [Fact]
+    public async Task Migration_LostRing_QuarantinesProtectedProfilesInsteadOfBlockingStartup()
+    {
+        using var fixture = new Fixture();
+        var profile = new ProxyProfile { Key = "lost-ring", Name = "Lost ring", IsEnabled = true };
+        fixture.Secrets.TryApplyForSave(profile, "http://localhost:7890", "Replace", "user", "lost-secret", out _).Should().BeTrue();
+        await fixture.Db.InsertAsync(profile);
+        var healthy = new ProxyProfile { Key = "healthy", Name = "Healthy", ProxyUrl = "http://healthy:healthy-secret@localhost:7891" };
+        await fixture.Db.InsertAsync(healthy);
+        // A deployment restored without its Data Protection key ring: startup migration
+        // quarantines the unreadable profile and proceeds instead of crash-looping.
+        var otherRing = new ProxyProfileSecretService(DataProtectionProvider.Create(
+            new DirectoryInfo(Path.Combine(fixture.DirectoryPath, "other-ring"))));
+        (await otherRing.MigrateLegacyCredentialsAsync(fixture.Db)).Should().Be(1, "the healthy legacy row still migrates");
+        var quarantined = await fixture.Db.ProxyProfiles.InSingleAsync(profile.Id);
+        quarantined.IsEnabled.Should().BeFalse();
+        quarantined.ConfigurationError.Should().Be(ProxyProfileSecretService.UndecryptableReason);
+        quarantined.ProxyUrl.Should().Be("http://localhost:7890");
+        quarantined.ProtectedUsername.Should().Be(profile.ProtectedUsername);
+        quarantined.ProtectedPassword.Should().Be(profile.ProtectedPassword);
+        quarantined.Revision.Should().Be(2, "TryApplyForSave already set Revision 1 and quarantine bumps it once");
+        var healthyAfter = await fixture.Db.ProxyProfiles.InSingleAsync(healthy.Id);
+        healthyAfter.IsEnabled.Should().BeTrue();
+        healthyAfter.ConfigurationError.Should().BeNull();
+        otherRing.ReadCredentials(healthyAfter)!.Password.Should().Be("healthy-secret");
+        // Re-running is an idempotent no-op, and the API still hides the quarantined payloads.
+        (await otherRing.MigrateLegacyCredentialsAsync(fixture.Db)).Should().Be(0);
+        var response = Json(await fixture.Controller.Get(profile.Id, default));
+        response.GetRawText().Should().NotContain("lost-secret");
     }
 
     [Theory]
     [InlineData("username")]
     [InlineData("password")]
     [InlineData("quarantine")]
-    public async Task Migration_CorruptExistingField_LeavesOtherRowsUntouched(string field)
+    public async Task Migration_CorruptExistingField_QuarantinesRow_AndOtherRowsMigrate(string field)
     {
         using var fixture = new Fixture();
-        var existing = new ProxyProfile { Key = "corrupt", ProxyUrl = "http://localhost:7101" };
+        var existing = new ProxyProfile { Key = "corrupt", ProxyUrl = "http://localhost:7101", IsEnabled = true };
         fixture.Secrets.TryApplyForSave(existing, existing.ProxyUrl, "Replace", "a", "b", out _).Should().BeTrue();
         if (field == "username") existing.ProtectedUsername = "invalid";
         if (field == "password") existing.ProtectedPassword = "invalid";
@@ -371,11 +420,18 @@ public sealed class ProxyProfileCredentialTests
         var remaining = new ProxyProfile { Key = "remaining", ProxyUrl = "http://c:d@localhost:7102" };
         await fixture.Db.InsertAsync(existing);
         await fixture.Db.InsertAsync(remaining);
-        Func<Task> migrate = () => fixture.Secrets.MigrateLegacyCredentialsAsync(fixture.Db);
-        await migrate.Should().ThrowAsync<CryptographicException>()
-            .WithMessage("Existing proxy profile secrets could not be decrypted.");
-        var unchanged = await fixture.Db.ProxyProfiles.InSingleAsync(remaining.Id);
-        (unchanged.ProxyUrl == remaining.ProxyUrl && unchanged.ProtectedUsername is null && unchanged.Revision == 1).Should().BeTrue();
+        // Corrupt stored payloads quarantine their own row (payloads preserved untouched)
+        // instead of preventing the host — and every unrelated row — from starting.
+        (await fixture.Secrets.MigrateLegacyCredentialsAsync(fixture.Db)).Should().Be(1);
+        var quarantined = await fixture.Db.ProxyProfiles.InSingleAsync(existing.Id);
+        quarantined.IsEnabled.Should().BeFalse();
+        quarantined.ConfigurationError.Should().Be(ProxyProfileSecretService.UndecryptableReason);
+        quarantined.ProtectedUsername.Should().Be(existing.ProtectedUsername);
+        quarantined.ProtectedPassword.Should().Be(existing.ProtectedPassword);
+        quarantined.ProtectedLegacyConfiguration.Should().Be(existing.ProtectedLegacyConfiguration);
+        var migrated = await fixture.Db.ProxyProfiles.InSingleAsync(remaining.Id);
+        (migrated.ProtectedUsername is not null && fixture.Secrets.ReadCredentials(migrated) is not null).Should().BeTrue();
+        (await fixture.Secrets.MigrateLegacyCredentialsAsync(fixture.Db)).Should().Be(0);
     }
 
     [Fact]
@@ -561,14 +617,19 @@ public sealed class ProxyProfileCredentialTests
         Task<int>? migration = null;
         try
         {
-            await writer.Updateable(concurrent).Where(x => x.Id == profile.Id).ExecuteCommandAsync();
-            migration = Task.Run(() => fixture.Secrets.MigrateLegacyCredentialsAsync(fixture.Db));
-            attempted.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
-            writer.Ado.CommitTran();
-            Func<Task> completion = async () => await migration;
-            await completion.Should().ThrowAsync<CryptographicException>();
-            var stored = await fixture.Db.ProxyProfiles.InSingleAsync(profile.Id);
-            (stored.ProtectedUsername == concurrent.ProtectedUsername && stored.ProxyUrl == concurrent.ProxyUrl).Should().BeTrue();
+        await writer.Updateable(concurrent).Where(x => x.Id == profile.Id).ExecuteCommandAsync();
+        migration = Task.Run(() => fixture.Secrets.MigrateLegacyCredentialsAsync(fixture.Db));
+        attempted.Wait(TimeSpan.FromSeconds(3)).Should().BeTrue();
+        writer.Ado.CommitTran();
+        // The preflight still reads the COMMITTED state after the writer releases. The
+        // concurrently written payloads are unreadable under this ring, so the row is
+        // quarantined untouched (never re-protected, never blocking startup) instead of
+        // throwing and abandoning the whole migration.
+        (await migration).Should().Be(0);
+        var stored = await fixture.Db.ProxyProfiles.InSingleAsync(profile.Id);
+        (stored.ProtectedUsername == concurrent.ProtectedUsername && stored.ProxyUrl == concurrent.ProxyUrl).Should().BeTrue();
+        stored.IsEnabled.Should().BeFalse();
+        stored.ConfigurationError.Should().Be(ProxyProfileSecretService.UndecryptableReason);
         }
         finally
         {

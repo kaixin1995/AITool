@@ -953,7 +953,7 @@ public sealed class AuxiliaryNetworkPolicyTests
             if (ownerStore is not null) services.AddSingleton(ownerStore);
             _services = services.BuildServiceProvider();
             Db = _services.GetRequiredService<AppDbContext>();
-            Db.Client.CodeFirst.InitTables(typeof(Site), typeof(SiteKey), typeof(ModelLibraryItem), typeof(SiteModelMapping), typeof(SystemRuntimeSettings), typeof(AITool.Domain.Google.GoogleAccount), typeof(SessionIsolationKey), typeof(SessionIsolationKeyMetadata));
+            Db.Client.CodeFirst.InitTables(typeof(Site), typeof(SiteKey), typeof(ModelLibraryItem), typeof(SiteModelMapping), typeof(SystemRuntimeSettings), typeof(AITool.Domain.Google.GoogleAccount), typeof(SessionIsolationKey), typeof(SessionIsolationKeyMetadata), typeof(AITool.Domain.Proxy.UpstreamReferenceOwner));
         }
         public IAuxiliarySessionPreparation SessionPreparation() => new AuxiliarySessionPreparation(
             new AccountSessionIsolationService(new SessionIsolationDeriver(new SessionIsolationKeyStore(

@@ -15,6 +15,12 @@ public sealed class SessionIsolationDeriver(SessionIsolationKeyStore keyStore)
 {
     // Bound work and memory for hostile inputs, without truncation/normalization collisions.
     public const int MaxFieldUtf8Bytes = 1024 * 1024;
+    /// <summary>
+    /// Derivation wire-protocol version (the first HMAC field). Independent of the key's
+    /// storage format version: bumping storage v1→v2 changed no field encoding, so every
+    /// derived identifier must stay byte-identical across that migration.
+    /// </summary>
+    public const int DerivationProtocolVersion = 1;
     private static readonly UTF8Encoding ExactUtf8 = new(false, true);
 
     /// <summary>Returns a fixed 64-character lowercase hexadecimal HMAC-SHA256.</summary>
@@ -61,7 +67,10 @@ public sealed class SessionIsolationDeriver(SessionIsolationKeyStore keyStore)
         // v1 wire encoding: six ordered fields, each a 4-byte unsigned big-endian byte
         // length followed by exact strict UTF-8. Version is decimal invariant; GUID is D.
         // Strings are NOT trimmed, case-folded, normalized, truncated, or concatenated.
-        string[] fields = [SessionIsolationKey.CurrentVersion.ToString(CultureInfo.InvariantCulture),
+        // The derivation protocol version is decoupled from the key's storage format
+        // version (SessionIsolationKey.Version): a storage migration (v1 ciphertext →
+        // v2 raw) must not change any derived identifier.
+        string[] fields = [DerivationProtocolVersion.ToString(CultureInfo.InvariantCulture),
             clientScope, providerKey, accountId.ToString("D"), fieldDomain, seed];
         // Six fields: version, clientScope, accountProvider, accountGuid, fieldDomain, originalSeed.
         foreach (var field in fields)
