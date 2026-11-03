@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using AITool.Application.Accounts;
 using AITool.Application.OAuth;
+using AITool.Domain.Sites;
 
 namespace AITool.Infrastructure.OAuth;
 
@@ -16,15 +17,16 @@ namespace AITool.Infrastructure.OAuth;
 /// refresh_token 放 <c>X-Refresh-Token</c> 头（Authorization 仍带旧 access，<c>X-Auth-Refresh-Source: plugin</c>
 /// 为官方客户端渠道标识）；额度走 billing 域 get-user-resource（个人）与 get-enterprise-user-usage（企业），
 /// 余额为积分制（无百分比，窗口只展示套餐到期时刻，不参与自动禁用——空 UsedPercent 的窗口天然被巡检忽略）。
-/// 聊天为 OpenAI 兼容（{chat}/v2，X-Agent-Type: main）；每账号稳定设备指纹头
-/// （X-Machine-ID/X-Session-ID = sha256("wb2a:{purpose}:{uid}")[:36]）在登录时算好并写入站点头。
-/// 已知限制：部分 Agent 的身份行会被 11128「未授权渠道」拒绝（需请求体改写的协议适配器，暂不覆盖）。
+/// 聊天为 OpenAI 兼容（{chat}/v2）；转发请求带全套官方客户端指纹头（x-stainless / X-IDE / X-Agent /
+/// X-Conversation 等对齐真实抓包，版本常量见 WorkBuddyClientConstants）；每账号稳定设备指纹头
+/// （X-Machine-ID/X-Session-ID = sha256("wb2a:{purpose}:{uid}")[:36]）与身份头（X-User-Id/X-Domain）
+/// 在登录时算好并写入站点头。
 /// </para>
 /// </summary>
 public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
 {
-    private const string ClientVersion = "5.5.4";
-    private const string CliVersion = "2.137.1";
+    private const string ClientVersion = WorkBuddyClientConstants.ClientVersion;
+    private const string CliVersion = WorkBuddyClientConstants.CliVersion;
 
     private sealed record SiteSpec(string Key, string Label, string ChatBase, string BillingBase, string Origin, string Language, string PlatformSegment)
     {
@@ -65,7 +67,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         ("hy4-preview", "Hunyuan HY4 Preview (WorkBuddy)"),
     ];
 
-    /// <summary>聊天站点：OpenAI 兼容 + 官方客户端静态头；每账号头（指纹/身份）由供给器从 ExtraJson.chatHeaders 合并。</summary>
+    /// <summary>聊天站点：OpenAI 兼容 + 官方客户端全套指纹头；每账号头（指纹/身份）由供给器从 ExtraJson.chatHeaders 合并。</summary>
     public bool SupportsModelFetch => true;
 
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => new(
@@ -76,9 +78,32 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         SupportsResponses: false,
         new Dictionary<string, string>
         {
+            // 官方客户端静态指纹（对齐 5.9.3 / CLI 2.165.0 真实抓包，渠道校验 code 11128 要求完整客户端形态）。
             ["User-Agent"] = ChatUserAgent,
+            ["Accept-Language"] = _site.Language,
+            ["X-Requested-With"] = "XMLHttpRequest",
+            ["X-Agent-Intent"] = "craft",
+            ["X-Agent-Purpose"] = "conversation",
+            ["X-Agent-Runtime"] = "local-agent",
             ["X-Agent-Type"] = "main",
             ["X-CodeBuddy-Request"] = "1",
+            ["X-Conversation-ID"] = "${guid}",
+            ["X-Conversation-Message-ID"] = "${guid}",
+            ["X-Conversation-Request-ID"] = "${guid}",
+            ["X-Root-Request-ID"] = "${guid}",
+            ["acp-connection-id"] = "${guid}",
+            ["X-IDE-Type"] = _site.PlatformSegment,
+            ["X-IDE-Name"] = _site.PlatformSegment,
+            ["X-IDE-Version"] = ClientVersion,
+            ["X-Product"] = "SaaS",
+            ["X-Request-ID"] = "${guid}",
+            ["x-stainless-arch"] = "x64",
+            ["x-stainless-lang"] = "js",
+            ["x-stainless-os"] = "Windows",
+            ["x-stainless-package-version"] = WorkBuddyClientConstants.StainlessPackageVersion,
+            ["x-stainless-retry-count"] = "0",
+            ["x-stainless-runtime"] = "node",
+            ["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion,
             ["Origin"] = _site.Origin,
             ["Referer"] = _site.Origin + "/",
             // 上游只接受流式请求（code 11101「Non-stream chat request is currently not supported」）。
@@ -185,6 +210,8 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         if (!string.IsNullOrWhiteSpace(domain))
         {
             extra["domain"] = domain!;
+            // 官方客户端聊天请求携带账号域身份头（X-Domain），渠道校验的一部分。
+            chatHeaders["X-Domain"] = domain!;
         }
 
         return new DeviceOAuthPollResult

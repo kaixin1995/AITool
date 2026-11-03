@@ -52,6 +52,24 @@ public sealed class ClientReleaseFeedServiceTests
     }
 
     [Fact]
+    public void Changelog_digest_handles_workbuddy_release_headings()
+    {
+        // WorkBuddy 官方更新日志形态：「x.y.z 版本发布 🚀（日期）」标题按时间倒序；
+        // 长功能行丢弃不影响版本归纳（真实页面降噪后 88 个版本标题全保留）。
+        const string html = """
+        <html><head><script>var tracking=1;</script></head><body>
+        <nav>WorkBuddy 更新日志</nav>
+        <h2 id="_5-9-3-版本发布-🚀-2026-10-27">5.9.3 版本发布 🚀（2026-10-27）</h2>
+        <p>CLI 优先使用 unpacked 路径，减少启动耗时；修复 CLI 连接器按需托管 Node.js 运行时与首次连接进度提示的问题。</p>
+        <h2 id="_5-9-2-版本发布-2026-10-26">5.9.2 版本发布（2026-10-26）</h2>
+        </body></html>
+        """;
+        var digest = ClientReleaseFeedService.ExtractChangelogDigest(html);
+
+        digest.Should().Contain("5.9.3 版本发布").And.Contain("2026-10-27").And.Contain("5.9.2 版本发布");
+    }
+
+    [Fact]
     public void Changelog_digest_keeps_short_fact_lines_and_strips_noise()
     {
         // 结构无关的降噪契约：script/style 块整体移除；标签剥成文本行；

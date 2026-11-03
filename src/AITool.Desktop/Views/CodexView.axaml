@@ -95,7 +95,7 @@
             <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding NetworkStatus}" TextWrapping="Wrap" />
             <TextBlock FontWeight="SemiBold" Text="凭证导入网络（粘贴 JSON / 顶部导入文件共用）" />
             <ContentControl Content="{Binding ImportNetwork}" ContentTemplate="{StaticResource NetworkEditorTemplate}" IsEnabled="{Binding IsNetworkSelectionEnabled}" />
-            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="未指定时不发送网络字段，保留服务端策略；不会将未知或加载失败当作 Direct。已有 OAuth 会话网络不随选择变化。" TextWrapping="Wrap" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="未指定时不发送网络字段，保留服务端策略；不会将未知或加载失败当作直连。已有 OAuth 会话网络不随选择变化。" TextWrapping="Wrap" />
             <Button Classes="secondary-button" Command="{Binding ClearNewAccountNetworkSelectionsCommand}" Content="登录 / 导入恢复未指定（仅清除草稿，不清除账号策略）" />
           </StackPanel>
         </Border>

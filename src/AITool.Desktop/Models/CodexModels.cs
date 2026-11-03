@@ -26,12 +26,12 @@ public partial class CodexAccount : ObservableObject
     private string _networkPolicyStatus = "网络策略尚未加载（未更改）";
 
     public string NetworkModeText => NetworkPolicy?.NetworkSelection is not { } selection
-        ? "网络：未知（不推断为 Direct）"
+        ? "网络：未知（不推断为直连）"
         : selection.Mode switch
         {
-            0 => "网络：Legacy（兼容旧策略）",
-            1 => "网络：Direct（显式直连）",
-            2 => $"网络：Profile · {NetworkPolicy.ProxyProfileName ?? "未命名配置"} · {selection.ProxyProfileId}",
+            0 => "网络：默认",
+            1 => "网络：直连",
+            2 => $"网络：代理 · {NetworkPolicy.ProxyProfileName ?? "未命名方案"} · {selection.ProxyProfileId}",
             _ => $"网络：未知模式 {selection.Mode}（保留）"
         };
 

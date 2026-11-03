@@ -154,6 +154,48 @@ public sealed class ClientEmulationEngineTests
     }
 
     [Fact]
+    public void ResolveHeaders_WorkBuddy_GeneratesOfficialClientFingerprint()
+    {
+        var headers = ClientEmulationEngine.ResolveHeaders(
+            ClientEmulationConstants.WorkBuddy,
+            null,
+            "deepseek-v4.1",
+            null,
+            false);
+
+        // 官方客户端 UA 三段式（对齐 5.9.3 / CLI 2.165.0 真实抓包）。
+        Assert.Equal("WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0", headers["User-Agent"]);
+        // 渠道校验（code 11128）关键指纹族。
+        Assert.Equal("js", headers["x-stainless-lang"]);
+        Assert.Equal("6.25.0", headers["x-stainless-package-version"]);
+        Assert.Equal("node", headers["x-stainless-runtime"]);
+        Assert.Equal("v22.21.1", headers["x-stainless-runtime-version"]);
+        Assert.Equal("WorkBuddy", headers["X-IDE-Type"]);
+        Assert.Equal("5.9.3", headers["X-IDE-Version"]);
+        Assert.Equal("SaaS", headers["X-Product"]);
+        Assert.Equal("1", headers["X-CodeBuddy-Request"]);
+        Assert.Equal("craft", headers["X-Agent-Intent"]);
+        // 会话类 ID 占位符已求值为 GUID，不再残留模板。
+        Assert.DoesNotContain("${", headers["X-Conversation-ID"]);
+        Assert.Matches("^[0-9a-f-]{36}$", headers["X-Conversation-ID"]);
+        Assert.DoesNotContain("${", headers["acp-connection-id"]);
+        Assert.NotEqual(headers["X-Conversation-ID"], headers["X-Conversation-Message-ID"]);
+        // 账号级身份头不在静态预设中：由托管站点按账号注入或站点自定义头覆盖。
+        Assert.False(headers.ContainsKey("X-User-Id"));
+        Assert.False(headers.ContainsKey("X-Domain"));
+        Assert.False(headers.ContainsKey("X-Machine-ID"));
+    }
+
+    [Fact]
+    public void Normalize_AcceptsWorkBuddyAliases()
+    {
+        Assert.Equal(ClientEmulationConstants.WorkBuddy, ClientEmulationConstants.Normalize("WorkBuddy"));
+        Assert.Equal(ClientEmulationConstants.WorkBuddy, ClientEmulationConstants.Normalize("workbuddy"));
+        Assert.Equal(ClientEmulationConstants.WorkBuddy, ClientEmulationConstants.Normalize("CodeBuddy"));
+        Assert.Equal(ClientEmulationConstants.WorkBuddy, ClientEmulationConstants.Normalize("codebuddy-ide"));
+    }
+
+    [Fact]
     public void ResolveHeaders_ExtraHeaders_OverridePresets()
     {
         var extraHeaders = new Dictionary<string, string>

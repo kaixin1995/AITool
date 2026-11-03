@@ -47,6 +47,28 @@ public sealed class DeviceOAuthSiteHeaderSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Startup_sync_backfills_domain_identity_header_for_legacy_accounts()
+    {
+        // 存量账号：chatHeaders（旧登录遗留）不含 X-Domain，但 ExtraJson 已有 domain —— 同步时兜底注入。
+        var vendor = new HeaderedVendor("workbuddy-cn");
+        _vendors.Add(vendor);
+        var account = await ProvisionWithStaleHeadersAsync(vendor, staleJson: """{"User-Agent":"HeaderedCli/1.0"}""",
+            extraJson: """{"chatHeaders":{"X-Account-Fingerprint":"fp-1"},"domain":"www.codebuddy.cn"}""");
+
+        await CreateRefreshService().SyncManagedSiteHeadersAsync(CancellationToken.None);
+
+        var headers = ReadSiteHeaders(account.LinkedSiteId);
+        headers["X-Domain"].Should().Be("www.codebuddy.cn", "存量账号从 extra.domain 兜底注入，无需重新扫码");
+        headers["X-Account-Fingerprint"].Should().Be("fp-1");
+
+        // chatHeaders 显式携带 X-Domain 时以账号值为准（不被兜底覆盖）。
+        var explicitAccount = await ProvisionWithStaleHeadersAsync(vendor, staleJson: null,
+            extraJson: """{"chatHeaders":{"X-Domain":"custom.example"},"domain":"www.codebuddy.cn"}""");
+        await CreateRefreshService().SyncManagedSiteHeadersAsync(CancellationToken.None);
+        ReadSiteHeaders(explicitAccount.LinkedSiteId)["X-Domain"].Should().Be("custom.example");
+    }
+
+    [Fact]
     public async Task Startup_sync_is_idempotent_when_headers_already_match()
     {
         var vendor = new HeaderedVendor();
@@ -159,7 +181,7 @@ public sealed class DeviceOAuthSiteHeaderSyncTests : IDisposable
         return new DeviceOAuthTokenRefreshService(_services, NullLogger<DeviceOAuthTokenRefreshService>.Instance);
     }
 
-    private async Task<DeviceOAuthAccount> ProvisionWithStaleHeadersAsync(HeaderedVendor vendor, string? staleJson)
+    private async Task<DeviceOAuthAccount> ProvisionWithStaleHeadersAsync(HeaderedVendor vendor, string? staleJson, string? extraJson = null)
     {
         await using var scope = _services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -173,7 +195,7 @@ public sealed class DeviceOAuthSiteHeaderSyncTests : IDisposable
         var account = await provisioner.ProvisionAsync(
             vendor, "header-sync", null, $"u-{Guid.NewGuid():N}",
             new DeviceOAuthTokenSet { AccessToken = "at" },
-            """{"chatHeaders":{"X-Account-Fingerprint":"fp-1"}}""",
+            extraJson ?? """{"chatHeaders":{"X-Account-Fingerprint":"fp-1"}}""",
             CancellationToken.None);
         account.LinkedSiteId.Should().NotBe(Guid.Empty);
 

@@ -156,6 +156,37 @@ public static partial class ClientEmulationEngine
                 headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
                 break;
 
+            case ClientEmulationConstants.WorkBuddy:
+                // WorkBuddy（腾讯 CodeBuddy）官方客户端特征（对齐 5.9.3 / CLI 2.165.0 真实抓包，渠道校验通过形态）。
+                // 会话类 ID 每请求动态生成；X-User-Id / X-Domain / X-Machine-ID / X-Session-ID 为账号级身份头，
+                // 由设备 OAuth 托管站点按账号注入，或由站点自定义头（ExtraHeaders）覆盖。
+                headers["User-Agent"] = WorkBuddyClientConstants.ChatUserAgent("WorkBuddy");
+                headers["Accept-Language"] = "zh-CN";
+                headers["X-Requested-With"] = "XMLHttpRequest";
+                headers["X-Agent-Intent"] = "craft";
+                headers["X-Agent-Purpose"] = "conversation";
+                headers["X-Agent-Runtime"] = "local-agent";
+                headers["X-Agent-Type"] = "main";
+                headers["X-CodeBuddy-Request"] = "1";
+                headers["X-Conversation-ID"] = "${guid}";
+                headers["X-Conversation-Message-ID"] = "${guid}";
+                headers["X-Conversation-Request-ID"] = "${guid}";
+                headers["X-Root-Request-ID"] = "${guid}";
+                headers["acp-connection-id"] = "${guid}";
+                headers["X-IDE-Type"] = "WorkBuddy";
+                headers["X-IDE-Name"] = "WorkBuddy";
+                headers["X-IDE-Version"] = WorkBuddyClientConstants.ClientVersion;
+                headers["X-Product"] = "SaaS";
+                headers["X-Request-ID"] = "${guid}";
+                headers["x-stainless-arch"] = "x64";
+                headers["x-stainless-lang"] = "js";
+                headers["x-stainless-os"] = "Windows";
+                headers["x-stainless-package-version"] = WorkBuddyClientConstants.StainlessPackageVersion;
+                headers["x-stainless-retry-count"] = "0";
+                headers["x-stainless-runtime"] = "node";
+                headers["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion;
+                break;
+
             case ClientEmulationConstants.None:
             case ClientEmulationConstants.Custom:
             default:

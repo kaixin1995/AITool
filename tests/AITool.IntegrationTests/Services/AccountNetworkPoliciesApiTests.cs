@@ -48,12 +48,15 @@ public sealed class AccountNetworkPoliciesApiTests : IDisposable
     }
 
     [Fact]
-    public void ControllerRequiresAuthenticationAndOAuthFeatureGate()
+    public async Task ControllerRequiresAuthenticationAndOAuthFeatureGate()
     {
         typeof(AccountNetworkPoliciesApiController).GetCustomAttributes(typeof(AuthorizeAttribute), true).Should().NotBeEmpty();
         typeof(AccountNetworkPoliciesApiController).GetCustomAttributes(typeof(ServiceFilterAttribute), true)
             .Cast<ServiceFilterAttribute>().Should().Contain(a => a.ServiceType == typeof(OAuthFeatureToggleAttribute));
-        Data(_controller.Capabilities()).GetProperty("ready").GetBoolean().Should().Be(AccountNetworkPoliciesApiController.PipelineReady);
+        Data(await _controller.Capabilities(default)).GetProperty("ready").GetBoolean().Should().Be(AccountNetworkPoliciesApiController.PipelineReady);
+        // The egress selector is part of the proxy-pool feature surface: capabilities must hide it while the toggle is off.
+        _client.Updateable(new SystemRuntimeSettings { Id = 1, OAuthFeaturesEnabled = true, DeveloperFeaturesEnabled = false, DeveloperProxyProfilesEnabled = false }).ExecuteCommand();
+        Data(await _controller.Capabilities(default)).GetProperty("ready").GetBoolean().Should().BeFalse();
     }
 
     [Fact]

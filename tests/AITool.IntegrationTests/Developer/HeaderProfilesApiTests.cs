@@ -36,6 +36,7 @@ public sealed class HeaderProfilesApiTests
         profiles.Should().Contain(p => p.Key == "CodexVsCode" && p.IsBuiltIn);
         profiles.Should().Contain(p => p.Key == "ZCode" && p.IsBuiltIn);
         profiles.Should().Contain(p => p.Key == "Antigravity" && p.IsBuiltIn);
+        profiles.Should().Contain(p => p.Key == "WorkBuddy" && p.IsBuiltIn);
     }
 
     [Fact]

@@ -63,11 +63,12 @@ public sealed class WorkBuddyVendorTests
         pending.DisplayName.Should().Be("测试号");
         pending.ExternalUserId.Should().Be("u-77");
 
-        // ExtraJson：指纹头（可复算校验）+ chatHeaders 结构 + realm。
+        // ExtraJson：指纹头（可复算校验）+ chatHeaders 结构 + realm + 账号域身份头。
         var extra = JsonDocument.Parse(pending.ExtraJson!);
         extra.RootElement.GetProperty("chatHeaders").GetProperty("X-Machine-ID").GetString()
             .Should().Be(Derive("machine", "u-77"), "指纹 = sha256(wb2a:machine:uid)[:36]");
         extra.RootElement.GetProperty("chatHeaders").GetProperty("X-User-Id").GetString().Should().Be("u-77");
+        extra.RootElement.GetProperty("chatHeaders").GetProperty("X-Domain").GetString().Should().Be("www.codebuddy.cn");
         extra.RootElement.GetProperty("realm").GetString().Should().Be("workbuddy-cn");
 
         // 聊天站点：OpenAI 兼容 + 官方静态头（每账号头由供给器合并，不在 ChatSiteConfig）。
@@ -77,6 +78,15 @@ public sealed class WorkBuddyVendorTests
         chat.ExtraHeaders["X-Agent-Type"].Should().Be("main");
         // 上游只接受流式（11101）：标记头驱动代理层强制 stream:true + SSE 聚合。
         chat.ExtraHeaders["X-AITool-Force-Stream"].Should().Be("true");
+        // 渠道校验（code 11128）要求完整官方客户端指纹：UA 版本 / x-stainless / X-IDE / 会话 ID 模板。
+        chat.ExtraHeaders["User-Agent"].Should().Be("WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0");
+        chat.ExtraHeaders["x-stainless-lang"].Should().Be("js");
+        chat.ExtraHeaders["x-stainless-package-version"].Should().Be("6.25.0");
+        chat.ExtraHeaders["X-IDE-Type"].Should().Be("WorkBuddy");
+        chat.ExtraHeaders["X-IDE-Version"].Should().Be("5.9.3");
+        chat.ExtraHeaders["X-Product"].Should().Be("SaaS");
+        chat.ExtraHeaders["X-Conversation-ID"].Should().Be("${guid}");
+        chat.ExtraHeaders["acp-connection-id"].Should().Be("${guid}");
     }
 
     [Fact]

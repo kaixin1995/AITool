@@ -50,4 +50,7 @@ describe('account network policies', () => {
     expect(networkSummaryLabel()).toContain('未加载')
     expect(networkSummaryLabel({ providerKey: 'codex', accountId: 'id', networkSelection: { mode: 2, proxyProfileId: 'profile' }, proxyProfileName: 'Proxy', blockReason: 'proxy_profile_disabled', revision: 'r' })).toContain('已阻断：proxy_profile_disabled')
   })
+  it('labels mode 0 as 默认 without leaking implementation jargon', () => {
+    expect(networkSummaryLabel({ providerKey: 'codex', accountId: 'id', networkSelection: { mode: 0 }, proxyProfileName: null, blockReason: null, revision: null })).toBe('默认')
+  })
 })

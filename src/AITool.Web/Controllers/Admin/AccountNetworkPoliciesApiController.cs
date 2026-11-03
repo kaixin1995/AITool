@@ -19,7 +19,12 @@ public sealed class AccountNetworkPoliciesApiController(
     public const bool PipelineReady = true;
 
     [HttpGet("capabilities")]
-    public IActionResult Capabilities() => Ok(ApiResponse.Ok(new { ready = PipelineReady }));
+    public async Task<IActionResult> Capabilities(CancellationToken ct) => Ok(ApiResponse.Ok(new
+    {
+        // The account egress selector belongs to the proxy-pool feature surface:
+        // report not-ready while the pool toggle is off so clients hide the UI.
+        ready = PipelineReady && await db.SystemRuntimeSettings.AnyAsync(s => s.Id == 1 && s.DeveloperProxyProfilesEnabled, ct)
+    }));
 
     // Discovery deliberately does not depend on the developer settings-page visibility gate.
     [HttpGet("proxy-options")]

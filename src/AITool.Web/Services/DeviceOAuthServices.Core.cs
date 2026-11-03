@@ -353,6 +353,13 @@ public sealed class DeviceOAuthAccountProvisioner
             }
         }
 
+        // WorkBuddy 账号域身份头：存量账号 chatHeaders 未含 X-Domain 时从 extra.domain 兜底（与新扫码登录一致）。
+        if (!effectiveHeaders.ContainsKey("X-Domain")
+            && TryGetExtraString(extraJson, "domain") is { } domain && !string.IsNullOrWhiteSpace(domain))
+        {
+            effectiveHeaders["X-Domain"] = domain;
+        }
+
         return System.Text.Json.JsonSerializer.Serialize(
             effectiveHeaders, AITool.Application.Common.JsonSerializerPresets.Compact);
     }

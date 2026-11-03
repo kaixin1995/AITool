@@ -35,9 +35,9 @@ public sealed class AccountNetworkEditor : ObservableObject
     public IReadOnlyList<AccountNetworkModeOption> ModeOptions { get; } =
     [
         new(null, "未指定（保留服务端策略）"),
-        new(0, "Legacy（兼容旧策略，非显式直连）"),
-        new(1, "Direct（显式直连）"),
-        new(2, "Profile（代理配置）")
+        new(0, "默认（跟随站点配置）"),
+        new(1, "直连"),
+        new(2, "代理方案")
     ];
 
     public AccountNetworkEditor() => _selectedMode = ModeOptions[0];
@@ -100,7 +100,7 @@ public sealed class AccountNetworkEditor : ObservableObject
     {
         if (SelectedMode?.Mode is not { } mode) return null;
         if (mode == 2 && validate && (SelectedProfile is null || !SelectedProfile.IsEnabled || SelectedProfile.Id == Guid.Empty))
-            throw new InvalidOperationException("请选择一个已启用的代理配置；不会自动回退到 Direct。");
+            throw new InvalidOperationException("请选择一个已启用的代理方案；不会自动回退为直连。");
         return new(mode, mode == 2 ? SelectedProfile?.Id : null);
     }
 }

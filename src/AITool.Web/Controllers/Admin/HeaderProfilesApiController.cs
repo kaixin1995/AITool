@@ -449,8 +449,9 @@ public class HeaderProfilesApiController : ControllerBase
             {
                 if (string.Equals(key, "User-Agent", StringComparison.OrdinalIgnoreCase))
                 {
-                    // UA 里只替换第一个版本段（产品版本），后面的依赖库版本保持原样。
-                    proposed[key] = ClientVersionText.ReplaceVersion(userAgent, latestVersion);
+                    // UA 中所有等于当前产品版本的段同步替换（WorkBuddy 三段式 UA 产品版本出现两次）；
+                    // 依赖库 / 系统版本段（CLI/2.165.0、Windows 10.0.19045）精确匹配不中，原样保留。
+                    proposed[key] = ClientVersionText.ReplaceProductVersions(userAgent, currentVersion, latestVersion);
                 }
                 else if (string.Equals(proposed[key]?.Trim(), currentVersion, StringComparison.OrdinalIgnoreCase))
                 {

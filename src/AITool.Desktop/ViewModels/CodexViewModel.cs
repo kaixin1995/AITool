@@ -130,7 +130,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                 }
                 catch (Exception)
                 {
-                    results.Add($"{account.DisplayName}：失败或结果未确认；请刷新核实，不会回退到 Direct");
+                    results.Add($"{account.DisplayName}：失败或结果未确认；请刷新核实，不会回退为直连");
                 }
             }
             NetworkBatchResult = $"逐账号保存完成：成功 {succeeded}，失败或未确认 {accounts.Length - succeeded}（非原子批量操作）。\n" + string.Join("\n", results);
@@ -159,7 +159,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             var capabilities = await _apiService.SendAsync<AccountNetworkCapabilities>(HttpMethod.Get, $"{NetworkApiPath}/capabilities", null);
             if (!capabilities.Ready)
             {
-                NetworkStatus = "服务端网络链路尚未就绪，选择已禁用；保留现有策略。";
+                NetworkStatus = "网络代理池未开启或链路未就绪，网络选择已禁用；保留现有策略。";
                 return;
             }
             var options = await _apiService.SendAsync<List<AccountNetworkProxyOption>>(HttpMethod.Get, $"{NetworkApiPath}/proxy-options", null);
@@ -169,8 +169,8 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             BatchNetwork.SetOptions(options);
             NetworkReady = true;
             NetworkStatus = options.Count == 0
-                ? "暂无代理配置；可显式选择 Legacy 或 Direct。未指定时保留服务端策略。"
-                : "未指定时保留服务端策略；Legacy 不是 Direct。仅显示配置名称 / ID，不显示代理地址或密钥。";
+                ? "暂无代理方案；可显式选择默认或直连。未指定时保留服务端策略。"
+                : "未指定时保留服务端策略；默认不是直连。仅显示方案名称 / ID，不显示代理地址或密钥。";
         }
         catch (ApiException exception) when (exception.StatusCode == 404)
         {
@@ -222,7 +222,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                     var policy = policies.FirstOrDefault(row => row.ProviderKey == group.Key && row.AccountId.ToString().Equals(account.Id, StringComparison.OrdinalIgnoreCase));
                     account.NetworkPolicy = policy ?? previous.GetValueOrDefault((group.Key, account.Id));
                     account.NetworkPolicyStatus = policy is null
-                        ? "未返回网络策略（保留已知值，不推断为 Direct）"
+                        ? "未返回网络策略（保留已知值，不推断为直连）"
                         : NetworkPolicyStatusText(policy);
                 }
             }
@@ -1316,7 +1316,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                     ? "网络配置已保存，账号资料更新失败或结果未确认。已保留当前网络选择，不会回滚策略；请关闭后重新打开编辑器核实账号资料，再重试。"
                     : exception is ApiException { StatusCode: 409 }
                         ? "网络策略版本冲突，账号资料 / 凭证请求未发送。请关闭后重新打开编辑器读取最新策略，不会自动覆盖。"
-                        : "网络策略保存失败或结果未确认，账号资料 / 凭证请求未发送。请关闭后重新打开编辑器核实策略，不会回退到 Direct。";
+                        : "网络策略保存失败或结果未确认，账号资料 / 凭证请求未发送。请关闭后重新打开编辑器核实策略，不会回退为直连。";
                 EditorNetworkStatus = ErrorMessage;
                 // Keep the successful policy/revision and draft; require a fresh read, never blind retry.
                 EditorNetworkPolicyLoaded = false;

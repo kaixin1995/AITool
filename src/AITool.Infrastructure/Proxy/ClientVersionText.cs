@@ -42,6 +42,47 @@ public static partial class ClientVersionText
     }
 
     /// <summary>
+    /// 把文本中所有「等于当前产品版本」的版本号段替换为 <paramref name="newVersion"/>，其余版本段原样保留。
+    /// 用于产品版本在 UA 中出现多次的客户端（如 WorkBuddy 三段式 WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0），
+    /// 精确匹配当前版本可避免误伤依赖库 / 系统版本段（如 CLI/2.165.0、Windows 10.0.19045）。
+    /// 找不到匹配段时返回原文。
+    /// </summary>
+    public static string ReplaceProductVersions(string text, string currentVersion, string newVersion)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(currentVersion))
+        {
+            return text;
+        }
+
+        var trimmed = text.TrimStart();
+        var matches = VersionRegex().Matches(" " + trimmed);
+        var replaced = false;
+        var builder = new System.Text.StringBuilder(trimmed.Length);
+        var cursor = 0;
+        foreach (var match in matches.Cast<System.Text.RegularExpressions.Match>())
+        {
+            if (!string.Equals(match.Groups["version"].Value, currentVersion, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var start = match.Groups["version"].Index - 1;
+            builder.Append(trimmed, cursor, start - cursor);
+            builder.Append(newVersion);
+            cursor = start + match.Groups["version"].Length;
+            replaced = true;
+        }
+
+        if (!replaced)
+        {
+            return text;
+        }
+
+        builder.Append(trimmed, cursor, trimmed.Length - cursor);
+        return builder.ToString();
+    }
+
+    /// <summary>
     /// 逐段数值比较两个版本号；核心段相等时带 prerelease 后缀的一方更低（1.0.0-beta &lt; 1.0.0）。
     /// 无法解析的段按 0 处理。
     /// </summary>

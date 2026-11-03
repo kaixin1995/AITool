@@ -14,6 +14,7 @@ public static class ClientEmulationConstants
     public const string ZCode = "ZCode";
     public const string Antigravity = "Antigravity";
     public const string Kimi = "Kimi";
+    public const string WorkBuddy = "WorkBuddy";
     public const string Custom = "Custom";
 
     /// <summary>
@@ -43,6 +44,7 @@ public static class ClientEmulationConstants
         if (string.Equals(cleaned, ZCode, StringComparison.OrdinalIgnoreCase)) return ZCode;
         if (string.Equals(cleaned, Antigravity, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "gemini", StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "geminicli", StringComparison.OrdinalIgnoreCase)) return Antigravity;
         if (string.Equals(cleaned, Kimi, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "kimicli", StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "kimicode", StringComparison.OrdinalIgnoreCase)) return Kimi;
+        if (string.Equals(cleaned, WorkBuddy, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "codebuddy", StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "codebuddyide", StringComparison.OrdinalIgnoreCase)) return WorkBuddy;
         if (string.Equals(cleaned, Custom, StringComparison.OrdinalIgnoreCase)) return Custom;
 
         return trimmed;

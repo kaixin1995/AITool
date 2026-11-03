@@ -50,6 +50,6 @@ export function networkSelectionValid(selection: AccountNetworkSelection | undef
 export function networkSummaryLabel(summary?: AccountNetworkSummary): string {
   if (!summary) return '网络策略未加载（不修改）'
   const mode = summary.networkSelection.mode
-  const label = mode === 0 ? '兼容旧行为' : mode === 1 ? '直连' : `代理：${summary.proxyProfileName ?? summary.networkSelection.proxyProfileId ?? '未知方案'}`
+  const label = mode === 0 ? '默认' : mode === 1 ? '直连' : `代理：${summary.proxyProfileName ?? summary.networkSelection.proxyProfileId ?? '未知方案'}`
   return summary.blockReason ? `${label} · 已阻断：${summary.blockReason}` : label
 }

@@ -52,6 +52,34 @@ public sealed class ClientVersionTextTests
         ClientVersionText.ReplaceVersion(text, "1.0.0").Should().Be(text);
     }
 
+    [Fact]
+    public void ReplaceProductVersions_replaces_every_product_version_segment_in_workbuddy_ua()
+    {
+        // WorkBuddy 三段式 UA：产品版本出现两次，CLI 版本段不得误伤。
+        const string ua = "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0";
+        ClientVersionText.ReplaceProductVersions(ua, "5.9.3", "5.9.4")
+            .Should().Be("WorkBuddy/5.9.4 WorkBuddy/5.9.4 CLI/2.165.0");
+    }
+
+    [Fact]
+    public void ReplaceProductVersions_keeps_dependency_and_os_versions_untouched()
+    {
+        const string ua = "Codex Desktop/0.153.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
+        ClientVersionText.ReplaceProductVersions(ua, "0.153.3", "0.160.0")
+            .Should().Be("Codex Desktop/0.160.0 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)");
+    }
+
+    [Fact]
+    public void ReplaceProductVersions_only_touches_segments_equal_to_current_version()
+    {
+        const string ua = "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0";
+        // 以 CLI 版本为当前版本时只替换 CLI 段，两个产品版本段原样保留。
+        ClientVersionText.ReplaceProductVersions(ua, "2.165.0", "2.166.0")
+            .Should().Be("WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.166.0");
+        // 完全不匹配任何段时原文返回。
+        ClientVersionText.ReplaceProductVersions(ua, "9.9.9", "1.0.0").Should().Be(ua);
+    }
+
     [Theory]
     [InlineData("0.153.3", "0.153.0", 1)]
     [InlineData("0.153.0", "0.153.3", -1)]

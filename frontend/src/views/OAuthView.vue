@@ -240,7 +240,7 @@ const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.valu
   raw: acc
 })))
 
-const accountTableColumns = [
+const baseAccountTableColumns = [
   {
     title: '名称',
     key: 'name',
@@ -310,7 +310,7 @@ const accountTableColumns = [
     title: '账户网络',
     key: 'network',
     minWidth: 170,
-    render(row: AccountTableRow) { return networkReady.value ? networkLabel(row.raw) : '—' }
+    render(row: AccountTableRow) { return networkLabel(row.raw) }
   },
   {
     title: 'Token 到期',
@@ -341,6 +341,11 @@ const accountTableColumns = [
     }
   }
 ]
+
+// 网络代理池关闭时（capabilities 未就绪）整体隐藏代理相关列，与卡片视图一致。
+const accountTableColumns = computed(() => networkReady.value
+  ? baseAccountTableColumns
+  : baseAccountTableColumns.filter(column => column.key !== 'network'))
 
 const providerFilterSelectOptions = computed(() => providerFilterOptions.value.map(option => ({
   label: `${option.label}（${option.count}）`,
@@ -2059,7 +2064,7 @@ onUnmounted(() => {
     <!-- 导入凭证弹窗：Codex / Kimi 支持文件+JSON；Google 仅支持粘贴 gcli2api 凭证 JSON -->
     <NModal v-model:show="importModal" :title="`导入 ${providerLabelOf(importProvider)} 凭证`" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
       <template v-if="networkReady">
-        <NAlert type="info" style="margin-bottom: 12px">不选择时保留已有账户策略；新账户使用兼容旧行为。选择后会明确更新导入账户策略。</NAlert>
+        <NAlert type="info" style="margin-bottom: 12px">不选择时保留已有账户策略；新账户使用默认策略。选择后会明确更新导入账户策略。</NAlert>
         <AccountNetworkSelector v-model="importNetworkSelection" :options="networkOptions" :disabled="importLoading" style="margin-bottom: 12px" />
         <NButton v-if="importNetworkSelection" size="small" :disabled="importLoading" @click="importNetworkSelection = undefined">保持现有策略（不提交更改）</NButton>
       </template>

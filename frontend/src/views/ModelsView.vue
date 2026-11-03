@@ -125,7 +125,8 @@ const clientEmulationOptions = computed(() => {
       { label: '⚡ OpenCode CLI 终端', value: 'OpenCode' },
       { label: '⚡ Claude Code 官方命令行', value: 'ClaudeCode' },
       { label: '⚡ ZCode / GLM 客户端', value: 'ZCode' },
-      { label: '⚡ Google Antigravity CLI', value: 'Antigravity' }
+      { label: '⚡ Google Antigravity CLI', value: 'Antigravity' },
+      { label: '⚡ WorkBuddy 官方客户端 (腾讯 CodeBuddy)', value: 'WorkBuddy' }
     )
   }
   return options

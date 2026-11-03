@@ -502,6 +502,45 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 IsEnabled = true,
                 SortOrder = 7,
                 CreatedAt = DateTimeOffset.UtcNow
+            },
+            new HeaderProfile
+            {
+                Id = Guid.Parse("10000000-0000-0000-0000-000000000008"),
+                Key = ClientEmulationConstants.WorkBuddy,
+                Name = "WorkBuddy 官方客户端 (腾讯 CodeBuddy)",
+                Description = "官方客户端 5.9.3 / CLI 2.165.0 真实抓包指纹；X-User-Id / X-Domain / X-Machine-ID / X-Session-ID 为账号级身份头，需在站点自定义头中补充或由设备 OAuth 托管站点自动注入",
+                HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
+                {
+                    ["User-Agent"] = WorkBuddyClientConstants.ChatUserAgent("WorkBuddy"),
+                    ["Accept-Language"] = "zh-CN",
+                    ["X-Requested-With"] = "XMLHttpRequest",
+                    ["X-Agent-Intent"] = "craft",
+                    ["X-Agent-Purpose"] = "conversation",
+                    ["X-Agent-Runtime"] = "local-agent",
+                    ["X-Agent-Type"] = "main",
+                    ["X-CodeBuddy-Request"] = "1",
+                    ["X-Conversation-ID"] = "${guid}",
+                    ["X-Conversation-Message-ID"] = "${guid}",
+                    ["X-Conversation-Request-ID"] = "${guid}",
+                    ["X-Root-Request-ID"] = "${guid}",
+                    ["acp-connection-id"] = "${guid}",
+                    ["X-IDE-Type"] = "WorkBuddy",
+                    ["X-IDE-Name"] = "WorkBuddy",
+                    ["X-IDE-Version"] = WorkBuddyClientConstants.ClientVersion,
+                    ["X-Product"] = "SaaS",
+                    ["X-Request-ID"] = "${guid}",
+                    ["x-stainless-arch"] = "x64",
+                    ["x-stainless-lang"] = "js",
+                    ["x-stainless-os"] = "Windows",
+                    ["x-stainless-package-version"] = WorkBuddyClientConstants.StainlessPackageVersion,
+                    ["x-stainless-retry-count"] = "0",
+                    ["x-stainless-runtime"] = "node",
+                    ["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion
+                }, JsonOptions),
+                IsBuiltIn = true,
+                IsEnabled = true,
+                SortOrder = 8,
+                CreatedAt = DateTimeOffset.UtcNow
             }
         ];
     }

@@ -52,6 +52,11 @@ public sealed partial class ClientReleaseFeedService
         [
             // antigravity.google/changelog 含多个产品板块（2.0/CLI/SDK/IDE），摘要整体交给 AI 按客户端身份识别 CLI 板块。
             new ReleaseSource("changelog", "官方更新页: antigravity.google/changelog", "https://antigravity.google/changelog")
+        ],
+        ["workbuddy"] =
+        [
+            // 官方更新日志（服务端渲染，含「x.y.z 版本发布（日期）」倒序列表；CLI 版本不在其中，保持现值）。
+            new ReleaseSource("changelog", "官方更新页: workbuddy.cn/docs/workbuddy/Changelog", "https://www.workbuddy.cn/docs/workbuddy/Changelog")
         ]
     };
 
