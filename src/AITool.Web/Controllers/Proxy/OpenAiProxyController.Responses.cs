@@ -334,35 +334,59 @@ public sealed partial class OpenAiProxyController
             if (enableStreaming)
             {
                 StreamForwardOutcome streamOutcome;
-                if (isPassthrough)
+                AITool.Application.Proxy.UpstreamReferenceException? referenceFault = null;
+                try
                 {
-                    // OpenAI 上游直接透传
-                    streamOutcome = await ForwardOpenAiStreamPassthroughAsync(forwardRequest, cancellationToken);
+                    if (isPassthrough)
+                    {
+                        // OpenAI 上游直接透传
+                        streamOutcome = await ForwardOpenAiStreamPassthroughAsync(forwardRequest, cancellationToken);
+                    }
+                    else if (string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // OpenAI Chat Completions 上游：逐个 SSE 块转换为 Responses 事件。
+                        var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
+                        streamOutcome = await ForwardOpenAiStreamPassthroughAsync(
+                            forwardRequest,
+                            cancellationToken,
+                            chunk => ConvertOpenAiChatSseBlockToResponses(chunk, responsesState));
+                    }
+                    else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Gemini 上游：Gemini SSE → Anthropic 事件 → Responses 事件（两级桥接）。
+                        streamOutcome = await ForwardGeminiStreamAsResponsesAsync(forwardRequest, modelName, cancellationToken);
+                    }
+                    else
+                    {
+                        // Anthropic 上游：流式 Anthropic → Responses。
+                        streamOutcome = await ForwardAnthropicStreamAsResponsesAsync(forwardRequest, modelName, cancellationToken);
+                    }
                 }
-                else if (string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+                catch (AITool.Application.Proxy.UpstreamReferenceException ex)
                 {
-                    // OpenAI Chat Completions 上游：逐个 SSE 块转换为 Responses 事件。
-                    var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
-                    streamOutcome = await ForwardOpenAiStreamPassthroughAsync(
-                        forwardRequest,
-                        cancellationToken,
-                        chunk => ConvertOpenAiChatSseBlockToResponses(chunk, responsesState));
-                }
-                else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Gemini 上游：Gemini SSE → Anthropic 事件 → Responses 事件（两级桥接）。
-                    streamOutcome = await ForwardGeminiStreamAsResponsesAsync(forwardRequest, modelName, cancellationToken);
-                }
-                else
-                {
-                    // Anthropic 上游：流式 Anthropic → Responses。
-                    streamOutcome = await ForwardAnthropicStreamAsResponsesAsync(forwardRequest, modelName, cancellationToken);
+                    // 引用守卫在流中拒绝输出：合成失败结果，让追踪/用量/熔断走正常收口（不卡「等待」）；
+                    // 终态返回保留 ReferenceError 的显式 JSON 语义（503/400，防 SSE 协商 406）。
+                    referenceFault = ex;
+                    streamOutcome = StreamReferenceFaultOutcome(ex);
                 }
 
-                if (_referenceOutputError is not null) throw _referenceOutputError;
                 var streamResult = streamOutcome.Result;
+                // 防御：守卫错误被更内层吞掉时不以成功口径收口（正常路径已在上方 catch 处理）。
+                if (referenceFault is null && _referenceOutputError is not null && !streamResult.Success)
+                {
+                    referenceFault = _referenceOutputError;
+                    streamResult.ErrorMessage ??= $"upstream reference guard rejected stream output ({_referenceOutputError.Code})";
+                }
                 if (streamResult.IsCanceled)
                 {
+                    // 客户端取消：同样收口追踪，避免调用记录永远停留在「等待」。
+                    SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                    {
+                        Status = "canceled",
+                        StatusCode = streamResult.StatusCode,
+                        IsStreaming = true,
+                        TotalDurationMs = streamResult.TotalDurationMs
+                    });
                     return new EmptyResult();
                 }
 
@@ -438,6 +462,16 @@ public sealed partial class OpenAiProxyController
                 if (!streamOutcome.CanFallback
                     || RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult))
                 {
+                    // 引用守卫拒绝：显式 JSON 错误（503/400）；已开始写流时客户端已收到内容，补终止符安静结束。
+                    if (referenceFault is not null)
+                    {
+                        if (Response.HasStarted)
+                        {
+                            await TryWriteSseDoneAsync();
+                            return new EmptyResult();
+                        }
+                        return ReferenceError(referenceFault);
+                    }
                     // 严格回退命中：客户端尚未收到任何字节（SSE 只在 2xx 才回调），把上游 4xx 原样回给
                     // 客户端——绝不能返回 EmptyResult（流式桥已预置 200，会变成静默空流）。
                     return WriteStreamFallbackError(streamResult);
@@ -723,34 +757,55 @@ public sealed partial class OpenAiProxyController
             };
 
             StreamForwardOutcome streamOutcome;
-            if (isPassthrough)
+            try
             {
-                streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(webSocket, forwardRequest, cancellationToken);
+                if (isPassthrough)
+                {
+                    streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(webSocket, forwardRequest, cancellationToken);
+                }
+                else if (string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+                {
+                    // OpenAI Chat Completions SSE 逐块转换后再发送 Responses WebSocket 事件。
+                    var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
+                    streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(
+                        webSocket,
+                        forwardRequest,
+                        cancellationToken,
+                        payload => ProxyProtocolBridge.ConvertChatStreamChunkToResponses(payload, responsesState));
+                }
+                else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Gemini 上游：Gemini SSE → Anthropic 事件 → Responses WebSocket JSON。
+                    streamOutcome = await ForwardGeminiResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
+                }
+                else
+                {
+                    streamOutcome = await ForwardAnthropicResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
+                }
             }
-            else if (string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            catch (AITool.Application.Proxy.UpstreamReferenceException ex)
             {
-                // OpenAI Chat Completions SSE 逐块转换后再发送 Responses WebSocket 事件。
-                var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
-                streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(
-                    webSocket,
-                    forwardRequest,
-                    cancellationToken,
-                    payload => ProxyProtocolBridge.ConvertChatStreamChunkToResponses(payload, responsesState));
+                // 引用守卫在流中拒绝输出：合成失败结果，让追踪/用量/熔断走正常收口（不卡「等待」）。
+                streamOutcome = StreamReferenceFaultOutcome(ex);
             }
-            else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
-            {
-                // Gemini 上游：Gemini SSE → Anthropic 事件 → Responses WebSocket JSON。
-                streamOutcome = await ForwardGeminiResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
-            }
-            else
-            {
-                streamOutcome = await ForwardAnthropicResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
-            }
-            if (_referenceOutputError is not null) throw _referenceOutputError;
+
             var streamResult = streamOutcome.Result;
-            // 客户端断开导致的取消：不记失败、不计熔断、不尝试下一条路由（与 HTTP 路径的 EmptyResult 早退一致）。
+            // 防御：守卫错误被更内层吞掉时不以成功口径收口（正常路径已在上方 catch 处理）。
+            if (_referenceOutputError is not null && !streamResult.Success)
+            {
+                streamResult.ErrorMessage ??= $"upstream reference guard rejected stream output ({_referenceOutputError.Code})";
+            }
+            // 客户端断开导致的取消：不记失败、不计熔断、不尝试下一条路由（与 HTTP 路径一致），
+            // 但追踪仍要收口，避免调用记录永远停留在「等待」。
             if (streamResult.IsCanceled)
             {
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "canceled",
+                    StatusCode = streamResult.StatusCode,
+                    IsStreaming = true,
+                    TotalDurationMs = streamResult.TotalDurationMs
+                });
                 return false;
             }
 

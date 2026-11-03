@@ -442,6 +442,14 @@ public sealed class AnthropicProxyController : ControllerBase
                 var streamResult = streamOutcome.Result;
                 if (streamResult.IsCanceled)
                 {
+                    // 客户端取消：同样收口追踪，避免调用记录永远停留在「等待」。
+                    SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                    {
+                        Status = "canceled",
+                        StatusCode = streamResult.StatusCode,
+                        IsStreaming = true,
+                        TotalDurationMs = streamResult.TotalDurationMs
+                    });
                     return new EmptyResult();
                 }
 

@@ -152,12 +152,14 @@ function isSuccess(status: string): boolean {
 function statusLabel(status: string): string {
   if (isPending(status)) return '等待'
   if (isSuccess(status)) return '成功'
+  if (status?.toLowerCase() === 'canceled') return '已取消'
   return '失败'
 }
 
 function statusClass(status: string): string {
   if (isPending(status)) return 'pending'
   if (isSuccess(status)) return 'success'
+  if (status?.toLowerCase() === 'canceled') return 'warning'
   return 'danger'
 }
 

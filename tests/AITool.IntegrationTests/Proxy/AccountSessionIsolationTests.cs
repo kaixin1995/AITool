@@ -15,6 +15,7 @@ using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using SqlSugar;
 
@@ -345,6 +346,60 @@ public sealed class AccountSessionIsolationTests : IDisposable
         (await response.Content.ReadAsStringAsync()).Should().NotContain("resp_test123").And.Contain("reference_store_unavailable");
         guard.Commits.Should().Be(1);
         forwarder.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Stream_commit_failure_after_first_chunk_settles_developer_trace_instead_of_staying_pending()
+    {
+        // 回归：引用守卫在流中拒绝输出（客户端已收到首个 chunk）时，追踪与用量必须照常收口，
+        // 而不是异常穿透收口段让调用记录永远停在「等待」（2026-11-03 实例 1.0.1.45 实测症状）。
+        var forwarder = new ResponsesFakeProxyForwardService { StreamingLines =
+        [
+            "data: {\"id\":\"resp_commit_fault\",\"object\":\"response\",\"created\":1,\"model\":\"auto\",\"status\":\"in_progress\",\"output\":[],\"type\":\"response.created\"}",
+            string.Empty,
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\",\"output_index\":0,\"content_index\":0}",
+            string.Empty,
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_commit_fault\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}",
+            string.Empty
+        ] };
+        var guard = new SecondCommitFailingGuard();
+        await using var factory = new ResponsesWebApplicationFactory(forwarder, guard);
+        using var client = factory.CreateClient();
+        // CreateClient 触发 SeedAsync（建表+种子并清库），开关必须在 seed 之后打开并失效运行时设置缓存。
+        await EnableDeveloperTraceAsync(factory);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var stream = await client.PostAsync("/v1/responses",
+            new StringContent("{\"model\":\"auto\",\"input\":[],\"stream\":true}", Encoding.UTF8, "application/json"));
+        // 首 chunk 已写给客户端：它能看到响应头与首块内容，与真实症状一致。
+        (await stream.Content.ReadAsStringAsync()).Should().Contain("resp_commit_fault");
+
+        var store = factory.Services.GetRequiredService<DeveloperInvocationTraceStore>();
+        var entry = store.List().Should().ContainSingle().Subject;
+        entry.Attempts.Should().NotBeEmpty();
+        entry.Attempts.Should().OnlyContain(a => !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase),
+            "守卫拒绝后收口为 fail，绝不许停在等待");
+        entry.Attempts.Last().Status.Should().Be("fail");
+        entry.Attempts.Last().ErrorMessage.Should().Contain("reference_store_unavailable");
+    }
+
+    private static async Task EnableDeveloperTraceAsync(WebApplicationFactory<Program> factory)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var settings = await db.Client.Queryable<SystemRuntimeSettings>().FirstAsync(s => s.Id == 1);
+        if (settings is null)
+        {
+            settings = new SystemRuntimeSettings { Id = 1 };
+            await db.Client.Insertable(settings).ExecuteCommandAsync();
+        }
+        settings.DeveloperFeaturesEnabled = true;
+        settings.DeveloperTraceEnabled = true;
+        await db.Client.Updateable(settings)
+            .UpdateColumns(s => new { s.DeveloperFeaturesEnabled, s.DeveloperTraceEnabled })
+            .ExecuteCommandAsync();
+        // 宿主启动阶段可能已预热运行时设置缓存（TTL 300s），显式失效让本次请求读到新开关。
+        factory.Services.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
     }
 
     [Fact]
@@ -727,6 +782,18 @@ public sealed class AccountSessionIsolationTests : IDisposable
             Commits++;
             throw new UpstreamReferenceException("reference_store_unavailable", "Reference ownership storage is unavailable.");
         }
+    }
+
+    /// <summary>首个 chunk 的提交放行（客户端能看到内容），从第二次提交起拒绝——模拟守卫在流中段拦截。</summary>
+    private sealed class SecondCommitFailingGuard : IUpstreamReferenceGuard
+    {
+        private int _commits;
+        public Task<UpstreamReferenceRestriction?> ResolveRequestAsync(string clientScope, string originalRawJson, CancellationToken ct = default)
+            => Task.FromResult<UpstreamReferenceRestriction?>(null);
+        public Task CommitOutputAsync(UpstreamReferenceContext context, string bodyOrEventJson, bool native, CancellationToken ct = default)
+            => Interlocked.Increment(ref _commits) >= 2
+                ? throw new UpstreamReferenceException("reference_store_unavailable", "Reference ownership storage is unavailable.")
+                : Task.CompletedTask;
     }
 
     public void Dispose()

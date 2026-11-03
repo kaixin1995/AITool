@@ -39,6 +39,23 @@ public sealed partial class OpenAiProxyController : ControllerBase
     }
 
     /// <summary>
+    /// 引用守卫在流式转发中拒绝输出（UpstreamReferenceException）时合成失败结果：
+    /// 客户端可能已收到部分/全部内容，追踪与用量必须照常收口（否则调用记录永远停在「等待」），
+    /// 且绝不允许回退重放可能已暴露的输出。
+    /// </summary>
+    private static StreamForwardOutcome StreamReferenceFaultOutcome(AITool.Application.Proxy.UpstreamReferenceException ex) => new()
+    {
+        Result = new ProxyForwardResult
+        {
+            Success = false,
+            IsStreaming = true,
+            IsStreamInterrupted = true,
+            ErrorMessage = $"upstream reference guard rejected stream output ({ex.Code})"
+        },
+        CanFallback = false
+    };
+
+    /// <summary>
     /// 保存 Anthropic 转 OpenAI 流式转换过程中需要持续累积的状态。
     /// </summary>
     private sealed class ResponsesWebSocketSessionState
@@ -717,10 +734,30 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     return BadRequest(new { error = new { message = "当前接口不支持流式输出（stream=true）", type = "invalid_request_error", code = "streaming_not_supported" } });
                 }
 
-                var streamOutcome = await streamingBridgeFactory(this, forwardRequest, modelName, cancellationToken);
+                StreamForwardOutcome streamOutcome;
+                AITool.Application.Proxy.UpstreamReferenceException? referenceFault = null;
+                try
+                {
+                    streamOutcome = await streamingBridgeFactory(this, forwardRequest, modelName, cancellationToken);
+                }
+                catch (AITool.Application.Proxy.UpstreamReferenceException ex)
+                {
+                    // 引用守卫在流中拒绝输出：合成失败结果，让追踪/用量/熔断走正常收口（不卡「等待」）。
+                    referenceFault = ex;
+                    streamOutcome = StreamReferenceFaultOutcome(ex);
+                }
+
                 var streamResult = streamOutcome.Result;
                 if (streamResult.IsCanceled)
                 {
+                    // 客户端取消：同样收口追踪，避免调用记录永远停留在「等待」。
+                    SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                    {
+                        Status = "canceled",
+                        StatusCode = streamResult.StatusCode,
+                        IsStreaming = true,
+                        TotalDurationMs = streamResult.TotalDurationMs
+                    });
                     return new EmptyResult();
                 }
 
@@ -798,6 +835,16 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 if (!streamOutcome.CanFallback
                     || RouteCandidatePolicyService.ClientErrorBlocksFallback(runtimeSettings.StrictClientErrorFallbackEnabled, streamResult))
                 {
+                    // 引用守卫拒绝：显式 JSON 错误（503/400）；已开始写流时客户端已收到内容，补终止符安静结束。
+                    if (referenceFault is not null)
+                    {
+                        if (Response.HasStarted)
+                        {
+                            await TryWriteSseDoneAsync();
+                            return new EmptyResult();
+                        }
+                        return ReferenceError(referenceFault);
+                    }
                     // 严格回退命中：客户端尚未收到任何字节（SSE 只在 2xx 才回调），把上游 4xx 原样回给
                     // 客户端——绝不能返回 EmptyResult（流式桥已预置 200，会变成静默空流）。
                     return WriteStreamFallbackError(streamResult);
