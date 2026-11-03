@@ -41,6 +41,24 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
     }
 
     [Fact]
+    public async Task Reset_reports_failure_when_rotated_account_token_cannot_be_persisted()
+    {
+        var (accountId, _) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: true);
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TRIGGER block_token_update BEFORE UPDATE OF AccessToken ON CodexAccounts BEGIN SELECT RAISE(ABORT, 'injected account failure'); END;";
+            command.ExecuteNonQuery();
+        }
+        var oauth = new StubOAuthClient(new CodexTokenSet { AccessToken = "new-at", RefreshToken = "rt-new", ExpiresIn = 3600 });
+        var act = () => CreateResetService(oauth).ResetAsync(accountId, CancellationToken.None);
+        (await Assert.ThrowsAsync<InvalidOperationException>(act)).Message.Should().Contain("凭证落盘失败");
+        await using var scope = _services.CreateAsyncScope();
+        var account = await scope.ServiceProvider.GetRequiredService<AppDbContext>().CodexAccounts.InSingleAsync(accountId);
+        account.IsQuotaCooling.Should().BeTrue();
+    }
+    [Fact]
     public async Task Reset_keeps_existing_refresh_token_when_upstream_omits_it()
     {
         var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);

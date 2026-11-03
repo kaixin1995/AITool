@@ -240,6 +240,22 @@ public sealed class SaveRouteRuleEntry
     public string TimeRangesJson { get; set; } = string.Empty;
 }
 
+/// <summary>Pool queue edits include the loaded version of each rule to reject stale writes.</summary>
+public sealed class SavePoolQueueRequest
+{
+    public Guid EntryId { get; set; }
+    public List<SavePoolQueueItem>? Rules { get; set; }
+}
+
+public sealed class SavePoolQueueItem
+{
+    public Guid RuleId { get; set; }
+    public int? ExpectedPriority { get; set; }
+    public int? ExpectedModelPriority { get; set; }
+    public int? ExpectedInstancePriority { get; set; }
+    public bool? ExpectedIsEnabled { get; set; }
+    public bool? IsEnabled { get; set; }
+}
 /// <summary>
 /// 每日时间范围配置项。
 /// </summary>
@@ -491,6 +507,54 @@ public sealed class RouteRulesApiController : ControllerBase
             ? Ok(new { message = "保存成功，调用中的模型会在当前请求结束后生效" }) : result;
     }
 
+    /// <summary>Reorder and enable existing pool candidates without replacing any rules.</summary>
+    [HttpPost("pool-queue")]
+    public async Task<IActionResult> SavePoolQueue([FromBody] SavePoolQueueRequest request, CancellationToken cancellationToken)
+    {
+        if (request.EntryId == Guid.Empty || request.Rules is null || request.Rules.Any(x => x is null || x.IsEnabled is null || x.ExpectedIsEnabled is null || x.ExpectedPriority is null || x.ExpectedModelPriority is null || x.ExpectedInstancePriority is null))
+            return BadRequest(new { message = "候选队列无效" });
+        RouteTargetsMutationSnapshot? snapshot = null;
+        var deferred = false;
+        var result = await ExecuteGraphMutationAsync(async db =>
+        {
+            var entry = await db.ProxyRouteEntries.InSingleAsync(request.EntryId);
+            if (entry?.ManagedByPoolId is null)
+                return Conflict(new { message = "号池入口已变更，请刷新后重试" });
+            var existing = await db.ProxyRouteRules.Where(r => r.ExternalModelName == entry.EntryName).ToListAsync(cancellationToken);
+            var byId = existing.ToDictionary(r => r.Id);
+            if (request.Rules.Count != existing.Count || request.Rules.Select(r => r.RuleId).Distinct().Count() != existing.Count
+                || request.Rules.Any(item => !byId.TryGetValue(item.RuleId, out var old)
+                    || old.Priority != item.ExpectedPriority || old.ModelPriority != item.ExpectedModelPriority
+                    || old.InstancePriority != item.ExpectedInstancePriority || old.IsEnabled != item.ExpectedIsEnabled))
+                return Conflict(new { message = "候选队列已变更，请刷新后重试" });
+
+            snapshot = await _metadataCache.CaptureMutationSnapshotAsync(entry.EntryName, cancellationToken);
+            var modelOrder = new List<string>();
+            var instanceCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var i = 0; i < request.Rules.Count; i++)
+            {
+                var item = request.Rules[i];
+                var rule = byId[item.RuleId];
+                if (!modelOrder.Contains(rule.UpstreamModelName)) modelOrder.Add(rule.UpstreamModelName);
+                rule.Priority = i;
+                rule.ModelPriority = modelOrder.IndexOf(rule.UpstreamModelName);
+                rule.InstancePriority = instanceCounts.GetValueOrDefault(rule.UpstreamModelName);
+                instanceCounts[rule.UpstreamModelName] = rule.InstancePriority + 1;
+                rule.IsEnabled = item.IsEnabled!.Value;
+            }
+            if (existing.Count > 0) await db.Client.Updateable(existing)
+                .UpdateColumns(r => new { r.Priority, r.ModelPriority, r.InstancePriority, r.IsEnabled })
+                .ExecuteCommandAsync(cancellationToken);
+            return Ok(new { message = "候选队列已保存" });
+        }, cancellationToken, () =>
+        {
+            deferred = _concurrencyLimiter.TryDeferRuntimeRouteTargetsRefresh(snapshot!);
+            if (!deferred) _metadataCache.InvalidateRuntimeRouteTargets();
+            return Task.CompletedTask;
+        });
+        return result is OkObjectResult && deferred
+            ? Ok(new { message = "已保存，调用中的模型会在当前请求结束后生效" }) : result;
+    }
     [HttpGet("reference-targets")]
     public async Task<IActionResult> GetReferenceTargets([FromQuery] string? parentEntryName, CancellationToken cancellationToken)
     {

@@ -18,7 +18,7 @@ vi.mock('naive-ui', () => ({
 vi.mock('@/api/routes', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/routes')>(),
   getRouteEntries: vi.fn(), getRouteRules: vi.fn(), getRouteSiteInstances: vi.fn(),
-  getRouteReferenceTargets: vi.fn(), saveRouteRules: vi.fn(), createRouteEntry: vi.fn()
+  getRouteReferenceTargets: vi.fn(), saveRouteRules: vi.fn(), savePoolQueue: vi.fn(), createRouteEntry: vi.fn()
 }))
 
 interface EditorSetup {
@@ -233,5 +233,39 @@ describe('RoutesView availability draft protection', () => {
     await flushAsync()
     expect(api.createRouteEntry).toHaveBeenCalledWith('new-entry')
     expect(editor.availabilityDraft.value).toBeNull()
+  })
+})
+
+describe('pool-managed route queue', () => {
+  it('allows reordering and sends loaded versions without enabling destructive operations', async () => {
+    vi.mocked(api.getRouteEntries).mockResolvedValue([{ entryId: 'pool-entry', managedByPoolId: 'pool', entryName: 'auto', candidateCount: 2 }])
+    vi.mocked(api.savePoolQueue).mockResolvedValue({ message: 'saved' })
+    const editor = await mountEditor()
+    expect(editor.canModifyQueue.value).toBe(true)
+    editor.removeRule(0)
+    editor.addSelectedCandidate()
+    expect(editor.rules.value).toHaveLength(2)
+    editor.handleMoveRule(0, 1)
+    await flushAsync()
+    expect(api.savePoolQueue).toHaveBeenCalledWith('pool-entry', [
+      expect.objectContaining({ ruleId: 'second', expectedIsEnabled: true, isEnabled: true }),
+      expect.objectContaining({ ruleId: 'first', expectedIsEnabled: true, isEnabled: true })
+    ])
+    expect(api.saveRouteRules).not.toHaveBeenCalled()
+  })
+
+  it('allows disabling one candidate and reloads on conflict', async () => {
+    vi.mocked(api.getRouteEntries).mockResolvedValue([{ entryId: 'pool-entry', managedByPoolId: 'pool', entryName: 'auto', candidateCount: 2 }])
+    vi.mocked(api.savePoolQueue).mockRejectedValue(new Error('候选队列已变更，请刷新后重试'))
+    const editor = await mountEditor()
+    editor.toggleRule(editor.rules.value[0])
+    await flushAsync()
+    expect(api.savePoolQueue).toHaveBeenCalledWith('pool-entry', [
+      expect.objectContaining({ ruleId: 'first', expectedIsEnabled: true, isEnabled: false }),
+      expect.objectContaining({ ruleId: 'second', expectedIsEnabled: true, isEnabled: true })
+    ])
+    expect(mocks.message.error).toHaveBeenCalledWith('候选队列已变更，请刷新后重试')
+    expect(api.getRouteRules).toHaveBeenCalledTimes(2)
+    expect(editor.rules.value[0].isEnabled).toBe(true)
   })
 })

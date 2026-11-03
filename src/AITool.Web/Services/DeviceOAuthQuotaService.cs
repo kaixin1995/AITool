@@ -178,7 +178,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
             try { refreshed = await _credentialRefresh.RefreshForAccountAsync(current.Id, current.AccessToken!, ct); }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                if (result.UpstreamUnauthorized && result.AccessTokenUnauthorized)
+                if (result.UpstreamUnauthorized && result.AccessTokenUnauthorized && !IsTransientRefreshFailure(ex))
                     await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
                 return new AccountQuotaSnapshot { Success = false, UpstreamUnauthorized = result.UpstreamUnauthorized, Error = "凭证刷新失败：" + ex.Message };
             }
@@ -193,6 +193,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
                 token = new DeviceOAuthTokenSet { AccessToken = current.AccessToken!, RefreshToken = current.RefreshToken, ExpiresAt = current.TokenExpiresAt };
                 result = await remoteVendor.QueryQuotaAsync(token, current.ExtraJson, ct);
             }
+            else return new AccountQuotaSnapshot { Success = false, Error = "凭证刷新未完成，请稍后重试" };
         }
 
         if (result.UpstreamUnauthorized && result.AccessTokenUnauthorized)
@@ -264,6 +265,10 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
             {
                 await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.Id,
                     true, true, cancellationToken);
+                await client.Updateable<DeviceOAuthAccount>()
+                    .SetColumns(x => new DeviceOAuthAccount { DisabledByFeatureToggle = false })
+                    .Where(x => x.Id == account.Id && x.RequiresReauth && x.DisabledByFeatureToggle)
+                    .ExecuteCommandAsync(cancellationToken);
                 continue;
             }
 
@@ -342,4 +347,8 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         CheckedAt = DateTimeOffset.UtcNow,
         Windows = result.Windows,
     };
+
+    private static bool IsTransientRefreshFailure(Exception ex) =>
+        ex is HttpRequestException http && (http.StatusCode is null || (int)http.StatusCode >= 500 || (int)http.StatusCode == 429)
+        || ex is TimeoutException;
 }

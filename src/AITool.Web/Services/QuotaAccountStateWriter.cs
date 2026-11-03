@@ -68,7 +68,9 @@ internal static class QuotaAccountStateWriter
         try
         {
             // The conditional write acquires SQLite's writer lock before reading the linked site.
-            if (await client.Updateable<T>().SetColumns(update).Where(eligible).ExecuteCommandAsync(ct) == 0)
+            if (await client.Updateable<T>().SetColumns(update).Where(eligible)
+                .Where(a => SqlFunc.Subqueryable<SystemRuntimeSettings>().Where(s => s.Id == 1 && s.OAuthFeaturesEnabled).Any())
+                .ExecuteCommandAsync(ct) == 0)
             {
                 await client.Ado.CommitTranAsync();
                 return false;

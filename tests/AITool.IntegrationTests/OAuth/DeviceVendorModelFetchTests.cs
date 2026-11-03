@@ -68,6 +68,21 @@ public sealed class DeviceVendorModelFetchTests
     }
 
     [Fact]
+    public async Task Kiro_legacy_placeholder_profile_is_resolved_before_models()
+    {
+        var handler = new StubHandler(request => request.Url.AbsolutePath switch
+        {
+            "/List-Available-Profiles" => Json(HttpStatusCode.OK, "{\"profiles\":[{\"arn\":\"arn:aws:codewhisperer:us-east-1:123:profile/real\"}]}"),
+            "/List-Available-Models" => Json(HttpStatusCode.OK, "{\"models\":[{\"modelId\":\"model-a\"}]}"),
+            _ => Json(HttpStatusCode.NotFound, "{}")
+        });
+        var vendor = new KiroOAuthVendor(new HttpClient(handler));
+        var result = await vendor.FetchModelsAsync(Tokens(), Extra(new { profileArn = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX" }), default);
+        result.Select(x => x.Slug).Should().Equal("model-a");
+        handler.Requests.Select(r => r.Url.AbsolutePath).Should().Equal("/List-Available-Profiles", "/List-Available-Models");
+        handler.Requests[1].Url.Query.Should().Contain("profile%2Freal");
+    }
+    [Fact]
     public async Task Kiro_unreadable_401_body_preserves_quota_and_model_authentication_status()
     {
         using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)

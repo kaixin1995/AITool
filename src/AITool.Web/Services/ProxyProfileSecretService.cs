@@ -276,9 +276,22 @@ public sealed class ProxyProfileSecretService
                 // payloads into a row whose existing ones are unreadable. Quarantine: disable
                 // with an explicit error, payloads untouched; credentials are re-entered to
                 // reactivate. The marker makes repeated startups idempotent no-ops.
-                if (!profile.IsEnabled && string.Equals(profile.ConfigurationError, UndecryptableReason, StringComparison.Ordinal))
+                // Even an already-quarantined mixed legacy row can still contain userinfo.
+                // Preserve its original URL in a distinct repair field when available; never
+                // overwrite any unreadable payload or expose it in the public endpoint.
+                var originalUrl = profile.ProxyUrl ?? string.Empty;
+                var sanitizedUrl = string.Empty;
+                if (Uri.TryCreate(originalUrl.Trim(), UriKind.Absolute, out var legacyUri) && !string.IsNullOrEmpty(legacyUri.Host))
+                    TryNormalizeProxyUrl(legacyUri.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped), out sanitizedUrl, out _, out _);
+                var needsSanitizing = !string.Equals(originalUrl, sanitizedUrl, StringComparison.Ordinal);
+                if (!profile.IsEnabled && string.Equals(profile.ConfigurationError, UndecryptableReason, StringComparison.Ordinal) && !needsSanitizing)
                     continue;
-                var oldRevision = profile.Revision;
+                if (needsSanitizing)
+                {
+                    if (string.IsNullOrEmpty(profile.ProtectedLegacyConfiguration))
+                        profile.ProtectedLegacyConfiguration = ForProfile(profile).CreateProtector("legacy-configuration").Protect(originalUrl);
+                    profile.ProxyUrl = sanitizedUrl;
+                }                var oldRevision = profile.Revision;
                 profile.IsEnabled = false;
                 profile.ConfigurationError = UndecryptableReason;
                 profile.UpdatedAt = DateTimeOffset.UtcNow;

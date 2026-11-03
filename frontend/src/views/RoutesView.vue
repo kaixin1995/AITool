@@ -75,6 +75,7 @@ const resolveRuleKey = createRuleKeyResolver()
 let latestLoadToken = 0
 let latestReferenceLoadToken = 0
 let pendingSaveAfterCurrent = false
+let poolBaseline = new Map<string, RouteRuleItem>()
 
 const availabilityOptions = api.routeAvailabilityOptions
 const selectedEntry = computed(
@@ -93,7 +94,7 @@ const selectedSiteInstance = computed(() => filteredInstances.value.find(
 const isPoolManaged = computed(() => Boolean(selectedEntry.value?.managedByPoolId))
 const canEdit = computed(
   () => Boolean(selectedEntryName.value) && loadedRulesEntryName.value === selectedEntryName.value
-    && !isPoolManaged.value && !loading.value && !saving.value && !creatingEntry.value && !deletingEntry.value
+    && !loading.value && !saving.value && !creatingEntry.value && !deletingEntry.value
 )
 const availabilityDirty = computed(() => {
   const draft = availabilityDraft.value
@@ -152,7 +153,7 @@ function isAvailabilityOpen(rule: RouteRuleItem): boolean {
 }
 
 function toggleAvailabilityEditor(rule: RouteRuleItem): void {
-  if (!canEdit.value) return
+  if (!canEdit.value || isPoolManaged.value) return
   if (availabilityDirty.value) {
     message.warning('请先确定或取消当前时间规则修改')
     return
@@ -285,6 +286,7 @@ async function loadSelectedEntry(entryName: string | null): Promise<void> {
     const loadedRules = await api.getRouteRules(entryName)
     if (!isLatestRouteLoad(token, latestLoadToken)) return
 
+    poolBaseline = new Map(loadedRules.map(rule => [rule.ruleId, { ...rule }]))
     rules.value = loadedRules
     loadedRulesEntryName.value = entryName
     // 规则重载后旧的编辑草稿/展开状态失效，一并清理
@@ -365,7 +367,7 @@ function createEntry(): void {
 
 async function deleteCurrentEntry(confirmReferenced = false, expectedEntryName = selectedEntryName.value): Promise<void> {
   const entryName = selectedEntryName.value
-  if (!canEdit.value || !entryName || entryName !== expectedEntryName) return
+  if (!canEdit.value || isPoolManaged.value || !entryName || entryName !== expectedEntryName) return
   // The entry popconfirm explicitly authorizes discarding all unsaved changes.
   cancelAvailability()
 
@@ -402,7 +404,7 @@ function addCandidate(instance: SiteInstanceItem): void {
 }
 
 function addSelectedCandidate(): void {
-  if (!canModifyQueue.value) return
+  if (!canModifyQueue.value || isPoolManaged.value) return
   if (candidateMode.value === 'RouteEntry') {
     const target = referenceTargets.value.find((item) => item.entryId === selectedReferenceId.value)
     if (!target?.canSelect) {
@@ -506,7 +508,7 @@ function toggleRule(rule: RouteRuleItem): void {
 }
 
 function removeRule(index: number): void {
-  if (!canModifyQueue.value) return
+  if (!canModifyQueue.value || isPoolManaged.value) return
   rules.value = rules.value.filter((_, ruleIndex) => ruleIndex !== index)
   availabilityDraft.value = null
   openAvailabilityKey.value = null
@@ -515,16 +517,27 @@ function removeRule(index: number): void {
 
 async function handleSave(): Promise<void> {
   const entryName = selectedEntryName.value
-  if (!entryName || loadedRulesEntryName.value !== entryName || loading.value || availabilityDirty.value || isPoolManaged.value || deletingEntry.value || !dirty.value) return
+  if (!entryName || loadedRulesEntryName.value !== entryName || loading.value || availabilityDirty.value || deletingEntry.value || !dirty.value) return
   if (saving.value) {
     pendingSaveAfterCurrent = true
     return
   }
 
+  const savingPool = isPoolManaged.value
   saving.value = true
   pendingSaveAfterCurrent = false
   try {
-    const response = await api.saveRouteRules(entryName, buildSaveRules(rules.value))
+    const response = savingPool
+      ? await api.savePoolQueue(selectedEntry.value?.entryId ?? '', rules.value.map(rule => {
+          const original = poolBaseline.get(rule.ruleId)
+          if (!original) throw new Error('候选队列已变更，请刷新后重试')
+          return {
+            ruleId: rule.ruleId, expectedPriority: original.priority,
+            expectedModelPriority: original.modelPriority, expectedInstancePriority: original.instancePriority,
+            expectedIsEnabled: original.isEnabled, isEnabled: rule.isEnabled
+          }
+        }))
+      : await api.saveRouteRules(entryName, buildSaveRules(rules.value))
     await Promise.all([
       loadEntries(entryName),
       refreshSiteInstances()
@@ -533,6 +546,15 @@ async function handleSave(): Promise<void> {
       await loadSelectedEntry(entryName)
     }
     message.success(response.message || '路由规则已保存')
+  } catch (error) {
+    if (savingPool) {
+      message.error(error instanceof Error ? error.message : '保存失败，请刷新后重试')
+      pendingSaveAfterCurrent = false
+      await loadEntries(entryName)
+      await loadSelectedEntry(selectedEntryName.value)
+    } else {
+      throw error
+    }
   } finally {
     saving.value = false
     if (pendingSaveAfterCurrent) {
@@ -619,7 +641,7 @@ onMounted(() => {
             @positive-click="() => deleteCurrentEntry()"
           >
             <template #trigger>
-              <NButton size="small" type="error" secondary :disabled="!canEdit || creatingEntry">删除当前主入口</NButton>
+              <NButton size="small" type="error" secondary :disabled="!canEdit || isPoolManaged || creatingEntry">删除当前主入口</NButton>
             </template>
             {{ getDeleteEntryConfirmation(hasUnsavedChanges) }}
           </NPopconfirm>
@@ -628,10 +650,10 @@ onMounted(() => {
         <div v-if="!selectedEntryName" class="route-empty-state">请选择或创建一个主入口</div>
         <template v-else>
           <div v-if="isPoolManaged" class="pool-readonly-notice">
-            <span>此入口由号池管理，候选队列在此只读，请前往号池页面修改。</span>
+            <span>号池生成的候选可在此排序和启停；成员及模型范围在号池管理。配额排序或会话亲和开启时，实际调用顺序可能不同。</span>
             <NButton size="small" secondary @click="openPoolManagement">前往号池管理</NButton>
           </div>
-          <div class="route-add-box">
+          <div v-if="!isPoolManaged" class="route-add-box">
             <label class="route-add-field candidate-mode-field">
               <span class="route-field-label">候选类型</span>
               <NSelect v-model:value="candidateMode" :options="candidateModeOptions" :disabled="!canModifyQueue" />
@@ -664,14 +686,14 @@ onMounted(() => {
             <NButton type="primary" secondary :disabled="!canModifyQueue" @click="addSelectedCandidate">追加到队列末尾</NButton>
             <NButton secondary :loading="refreshingPool" :disabled="saving || loading || deletingEntry" @click="refreshCandidates">刷新候选池</NButton>
           </div>
-          <div v-if="candidateMode === 'RouteEntry'" class="reference-hint">
+          <div v-if="!isPoolManaged && candidateMode === 'RouteEntry'" class="reference-hint">
             {{ referenceTargetsError || '引用入口作为一个候选组，按目标入口当前队列依次尝试；不支持自身引用或嵌套引用。不可选原因显示在选项中。' }}
           </div>
 
           <div class="queue-card">
             <div class="queue-card-header">{{ availabilityDirty ? '时间规则尚未确定：请先点击「确定」保存或「取消」放弃，再修改候选队列。' : '拖拽调整顺序，修改后立即保存生效' }}</div>
             <div class="queue-card-body">
-              <div v-if="!loading && rules.length === 0" class="route-empty-state">当前主入口暂无候选实例，请先添加</div>
+              <div v-if="!loading && rules.length === 0" class="route-empty-state">当前主入口暂无候选实例</div>
               <div v-else class="route-sort-list">
                 <div
                   v-for="(rule, index) in rules"
@@ -724,10 +746,10 @@ onMounted(() => {
                       ▼
                     </NButton>
                   </div>
-                  <NButton size="small" secondary class="availability-trigger" :disabled="!canModifyQueue" @click.stop="toggleAvailabilityEditor(rule)">时间规则</NButton>
+                  <NButton v-if="!isPoolManaged" size="small" secondary class="availability-trigger" :disabled="!canModifyQueue" @click.stop="toggleAvailabilityEditor(rule)">时间规则</NButton>
                   <div class="route-actions">
                     <NButton size="small" secondary :disabled="!canModifyQueue" @click.stop="toggleRule(rule)">{{ rule.isEnabled ? '停用' : '启用' }}</NButton>
-                    <NPopconfirm @positive-click="removeRule(index)">
+                    <NPopconfirm v-if="!isPoolManaged" @positive-click="removeRule(index)">
                       <template #trigger>
                         <NButton size="small" secondary type="error" :disabled="!canModifyQueue">移除</NButton>
                       </template>

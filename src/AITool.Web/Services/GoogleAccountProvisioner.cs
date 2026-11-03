@@ -233,7 +233,7 @@ public sealed class GoogleAccountProvisioner
                 {
                     account.RequiresReauth = false;
                     var settings = await client.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>().InSingleAsync(1);
-                    if (settings is { OAuthFeaturesEnabled: false } && !account.ManuallyDisabled && !account.IsQuotaCooling && !account.DisabledByUpstream)
+                    if (settings is { OAuthFeaturesEnabled: false })
                         account.DisabledByFeatureToggle = true;
                     account.IsEnabled = !account.ManuallyDisabled && !account.DisabledByFeatureToggle && !account.IsQuotaCooling && !account.DisabledByUpstream;
                     site.IsEnabled = account.IsEnabled;

@@ -378,6 +378,8 @@ public sealed class CodexApiController : ControllerBase
                 }
                 catch (OperationCanceledException) when (persistCts?.IsCancellationRequested == true)
                 {
+                    _metadataCache.InvalidateRouteTargets();
+                    _metadataCache.InvalidateCodexAccounts();
                     // 仅落盘超时进入此分支：凭证已更新、刷新已发出，token 是否持久化取决于中断点。
                     return Ok(ToSummary(account, "凭证已更新，但刷新结果落盘超时——请稍后手动刷新一次确认 token 状态"));
                 }
@@ -458,6 +460,8 @@ public sealed class CodexApiController : ControllerBase
         }
         catch (OperationCanceledException) when (persistCts?.IsCancellationRequested == true)
         {
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateCodexAccounts();
             return BadRequest(new { message = "刷新已发出，但结果落盘超时——请稍后重试并确认 token 状态" });
         }
         catch (Exception ex)

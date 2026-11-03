@@ -231,6 +231,10 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
             {
                 await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.Id,
                     true, true, cancellationToken);
+                await client.Updateable<GoogleAccount>()
+                    .SetColumns(x => new GoogleAccount { DisabledByFeatureToggle = false })
+                    .Where(x => x.Id == account.Id && x.RequiresReauth && x.DisabledByFeatureToggle)
+                    .ExecuteCommandAsync(cancellationToken);
                 continue;
             }
 
@@ -347,7 +351,8 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
                     try { refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, account.AccessToken, ct); }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
+                        if (!IsTransientRefreshFailure(ex))
+                            await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
                         return new GoogleQuotaInfo { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，凭证刷新失败：" + ex.Message };
                     }
                     if (!string.IsNullOrWhiteSpace(refreshed))
@@ -357,6 +362,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
                             return await QueryUpstreamAsync(refreshedAccount, ct, allowTokenRefresh: false);
                         return new GoogleQuotaInfo { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，账号凭证已更新，请重试" };
                     }
+                    return new GoogleQuotaInfo { Success = false, Error = "凭证刷新未完成，请稍后重试" };
                 }
 
                 var unauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized;
@@ -456,4 +462,8 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         await SetEnabledAsync(ToQuotaTarget(account), false, "quota-threshold", ct);
         _logger.LogWarning("Google account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
+
+    private static bool IsTransientRefreshFailure(Exception ex) =>
+        ex is HttpRequestException http && (http.StatusCode is null || (int)http.StatusCode >= 500 || (int)http.StatusCode == 429)
+        || ex is TimeoutException;
 }

@@ -140,3 +140,15 @@ export async function toggleRouteRule(ruleId: string): Promise<void> {
 export async function deleteRouteRule(ruleId: string): Promise<void> {
   await httpPost(`/api/admin/route-rules/delete/${ruleId}`)
 }
+
+export interface PoolQueueItem {
+  ruleId: string
+  expectedPriority: number
+  expectedModelPriority: number
+  expectedInstancePriority: number
+  expectedIsEnabled: boolean
+  isEnabled: boolean
+}
+export async function savePoolQueue(entryId: string, rules: PoolQueueItem[]): Promise<SaveRouteRulesResponse> {
+  return httpPost<SaveRouteRulesResponse>('/api/admin/route-rules/pool-queue', { entryId, rules }, { skipErrorNotify: true })
+}

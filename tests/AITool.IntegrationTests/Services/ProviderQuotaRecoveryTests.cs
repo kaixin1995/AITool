@@ -506,7 +506,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         _db.Client.Ado.ExecuteCommand($"UPDATE {Table(key)} SET RequiresReauth=1, DisabledByFeatureToggle=1");
         await EnableAsync(key, path, target);
         (await EnabledAsync(key)).Should().BeFalse();
-        _db.Client.Ado.GetInt($"SELECT DisabledByFeatureToggle FROM {Table(key)}").Should().Be(1);
+        _db.Client.Ado.GetInt($"SELECT DisabledByFeatureToggle FROM {Table(key)}").Should().Be(path == "feature-bulk" ? 0 : 1);
         (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
     }
 
@@ -561,7 +561,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         await enable;
         (await EnabledAsync(key)).Should().BeFalse();
         _db.Client.Ado.GetInt($"SELECT RequiresReauth FROM {Table(key)}").Should().Be(1);
-        _db.Client.Ado.GetInt($"SELECT DisabledByFeatureToggle FROM {Table(key)}").Should().Be(1);
+        _db.Client.Ado.GetInt($"SELECT DisabledByFeatureToggle FROM {Table(key)}").Should().Be(path == "feature-bulk" ? 0 : 1);
         (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
     }
 

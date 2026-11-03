@@ -183,6 +183,10 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
             {
                 await QuotaAccountStateWriter.EnableAsync(_dbContext, ProviderKey, account.Id,
                     true, true, cancellationToken);
+                await client.Updateable<XaiAccount>()
+                    .SetColumns(x => new XaiAccount { DisabledByFeatureToggle = false })
+                    .Where(x => x.Id == account.Id && x.RequiresReauth && x.DisabledByFeatureToggle)
+                    .ExecuteCommandAsync(cancellationToken);
                 continue;
             }
 

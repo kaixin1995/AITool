@@ -374,7 +374,8 @@ public sealed class AccountSessionIsolationTests : IDisposable
         var stream = await client.PostAsync("/v1/responses",
             new StringContent("{\"model\":\"auto\",\"input\":[],\"stream\":true}", Encoding.UTF8, "application/json"));
         // 首 chunk 已写给客户端：它能看到响应头与首块内容，与真实症状一致。
-        (await stream.Content.ReadAsStringAsync()).Should().Contain("resp_commit_fault");
+        var body = await stream.Content.ReadAsStringAsync();
+        body.Should().Contain("resp_commit_fault").And.Contain("event: response.failed").And.Contain("reference_store_unavailable").And.NotContain("data: [DONE]");
 
         var store = factory.Services.GetRequiredService<DeveloperInvocationTraceStore>();
         var entry = store.List().Should().ContainSingle().Subject;

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
+import { ApiError } from '@/api/http'
 import AccountNetworkSelector from '@/components/AccountNetworkSelector.vue'
 import { getAccountNetworkCapabilities, getAccountProxyOptions, getAccountNetworkSummaries, saveAccountNetworkPolicy, batchSaveAccountNetworkPolicies, networkSelectionValid, networkSummaryLabel, type AccountIdentity, type AccountNetworkSelection, type AccountNetworkSummary, type AccountProxyOption } from '@/api/accountNetwork'
 import { syncAllAccountPools } from '@/api/accountPools'
@@ -399,6 +400,8 @@ const activeTab = ref(getOAuthTabFromHash())
 const loading = ref(false)
 const accounts = ref<UnifiedAccount[]>([])
 const networkReady = ref(false)
+const networkLoadState = ref<'loading' | 'ready' | 'disabled' | 'legacy' | 'error'>('loading')
+const legacyNetworkConfirmed = ref(false)
 const networkOptions = ref<AccountProxyOption[]>([])
 const networkSummaries = ref<Record<string, AccountNetworkSummary>>({})
 const networkError = ref('')
@@ -425,16 +428,20 @@ function networkSummary(acc: UnifiedAccount): AccountNetworkSummary | undefined 
 function networkLabel(acc: UnifiedAccount): string { return networkSummaryLabel(networkSummary(acc)) }
 const networkBatchOptions = computed(() => accounts.value.map(acc => ({ label: `${providerLabel(acc)} · ${acc.displayName}`, value: networkKey(acc) })))
 async function loadNetwork(): Promise<void> {
+  networkLoadState.value = 'loading'
+  networkError.value = ''
   try {
     const capability = await getAccountNetworkCapabilities()
     networkReady.value = capability.ready === true
-    if (!networkReady.value) return
+    if (!networkReady.value) { networkLoadState.value = 'disabled'; return }
     const [options, summaries] = await Promise.all([getAccountProxyOptions(), getAccountNetworkSummaries()])
     networkOptions.value = options
     networkSummaries.value = Object.fromEntries(summaries.map(s => [`${s.providerKey}:${s.accountId}`, s]))
-    networkError.value = ''
-  } catch {
-    networkError.value = '网络策略加载失败；不会修改或清除现有策略。'
+    networkLoadState.value = 'ready'
+  } catch (error) {
+    networkReady.value = false
+    networkLoadState.value = error instanceof ApiError && error.status === 404 ? 'legacy' : 'error'
+    networkError.value = networkLoadState.value === 'legacy' ? '服务端不支持网络选择，请确认后使用旧网络路径。' : '网络策略加载失败，请重试。'
   }
 }
 async function handleNetworkBatch(): Promise<void> {
@@ -540,7 +547,7 @@ const canSubmitModelSync = computed(() => (
 // —— 批量应用到同组 ——
 // 同组账号共用一份模型清单（Codex 同套餐、其余同厂商）：组内任一账号拉取一次，
 // 勾选结果可一键应用到组内全部账号，免去逐账号重复操作。
-const applyToGroup = ref(true)
+const applyToGroup = ref(false)
 const modelGroupAccounts = computed<UnifiedAccount[]>(() => {
   const acc = modelAccount.value
   if (!acc) return []
@@ -838,6 +845,7 @@ function formatSeconds(secs: number): string {
 
 function openOAuthModal(provider: string = 'codex'): void {
   oauthProvider.value = provider
+  legacyNetworkConfirmed.value = false
   deviceFlowError.value = ''
   oauthNetworkSelection.value = { mode: 0 }
   oauthUrl.value = ''
@@ -848,6 +856,10 @@ function openOAuthModal(provider: string = 'codex'): void {
 }
 
 async function handleStartOAuth(): Promise<void> {
+  if (networkLoadState.value === 'loading' || networkLoadState.value === 'error' || (networkLoadState.value === 'legacy' && !legacyNetworkConfirmed.value)) {
+    message.warning(networkLoadState.value === 'loading' ? '网络策略正在加载' : networkError.value || '请先确认网络策略')
+    return
+  }
   if (networkReady.value && !networkSelectionValid(oauthNetworkSelection.value)) { message.warning('请选择有效网络出口'); return }
   const networkSelection = networkReady.value ? oauthNetworkSelection.value : undefined
   oauthStartLoading.value = true
@@ -1773,7 +1785,7 @@ onUnmounted(() => {
             <NButton size="small" type="warning" :loading="exportLoading" :disabled="selectedExportAccountIds.length === 0" @click="handleExportCredentials">下载凭证 JSON</NButton>
             <NButton size="small" secondary @click="cancelExportCredentials">取消</NButton>
           </div>
-          <NAlert v-if="networkReady && networkError" type="warning">{{ networkError }}</NAlert>
+          <NAlert v-if="networkError" type="warning">{{ networkError }} <NButton size="tiny" @click="loadNetwork">重试</NButton></NAlert>
           <div class="oauth-stack">
             <NEmpty v-if="featureDisabled" description="OAuth 功能未开启，请在系统设置中开启" />
             <NEmpty v-else-if="accounts.length === 0" description="暂无 OAuth 账号，可使用右上角 OAuth 登录或导入凭证" />
@@ -1997,6 +2009,8 @@ onUnmounted(() => {
         <p class="oauth-form-label">账号显示名称（可选）</p>
         <NInput v-model:value="oauthDisplayName" :placeholder="oauthProvider === 'kimi' ? '留空则默认 Kimi 账号' : oauthProvider === 'xai' ? '留空则默认 Grok 账号' : '留空则用邮箱'" />
       </div>
+      <NAlert v-if="networkError" type="warning">{{ networkError }} <NButton size="tiny" @click="loadNetwork">重试</NButton></NAlert>
+      <NCheckbox v-if="networkLoadState === 'legacy'" v-model:checked="legacyNetworkConfirmed">确认使用旧网络路径</NCheckbox>
       <AccountNetworkSelector v-if="networkReady" v-model="oauthNetworkSelection" :options="networkOptions" :disabled="oauthStartLoading || !!oauthUrl || !!kimiDeviceCode || !!xaiDeviceCode" style="margin-bottom: 16px" />
       <NButton type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">
         {{ (oauthProvider === 'kimi' && kimiUserCode) || (oauthProvider === 'xai' && xaiUserCode) ? '重新获取验证码' : '开始登录' }}
@@ -2253,7 +2267,13 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="modelModal = false">取消</NButton>
-          <NButton v-if="canImportModels" type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
+                    <NPopconfirm v-if="canImportModels && modelGroupMode" @positive-click="handleImportModels">
+            <template #trigger>
+              <NButton type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading">应用到组（{{ modelGroupCount }} 个账号）</NButton>
+            </template>
+            将应用到：{{ modelGroupAccounts.map(a => a.displayName).join('、') }}。未勾选的清单内模型会被禁用；各账号模型权限可能不同。确定继续？
+          </NPopconfirm>
+          <NButton v-else-if="canImportModels" type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
             <template v-if="modelGroupMode">应用到组（{{ modelGroupCount }} 个账号）</template>
             <template v-else>{{ modelAccount?.provider === 'codex' ? '导入选中' : '同步启用' }}（{{ checkedModels.length }}）</template>
           </NButton>

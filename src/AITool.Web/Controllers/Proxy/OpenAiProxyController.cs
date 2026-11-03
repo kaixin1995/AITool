@@ -840,7 +840,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     {
                         if (Response.HasStarted)
                         {
-                            await TryWriteSseDoneAsync();
+                            await TryWriteReferenceFailureAsync(referenceFault, false);
                             return new EmptyResult();
                         }
                         return ReferenceError(referenceFault);

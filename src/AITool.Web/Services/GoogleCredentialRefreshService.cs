@@ -49,6 +49,23 @@ public sealed class GoogleCredentialRefreshService
         }
     }
 
+    /// <summary>Return the exact persisted credential version while holding the refresh lock.</summary>
+    internal async Task<GoogleAccount?> RefreshAccountSnapshotAsync(Guid accountId, string staleAccessToken, CancellationToken ct)
+    {
+        using (await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", accountId, ct))
+        {
+            var account = await _dbContext.GoogleAccounts.InSingleAsync(accountId);
+            if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken)) return null;
+            if (string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal))
+            {
+                var refreshed = await RefreshCoreAsync(account.LinkedSiteId, staleAccessToken, ct, accountId);
+                if (string.IsNullOrWhiteSpace(refreshed)) return null;
+                account = await _dbContext.GoogleAccounts.InSingleAsync(accountId);
+                if (account is null || !string.Equals(account.AccessToken, refreshed, StringComparison.Ordinal)) return null;
+            }
+            return account;
+        }
+    }
     public async Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
     {
         if (linkedSiteId == Guid.Empty) return null;

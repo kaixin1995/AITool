@@ -144,7 +144,7 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
                 GetNumber(token, "expiresIn"),
                 method: "idc",
                 region: session.Region!,
-                profileArn: session.IsBuilderId ? BuilderIdProfileArn : null,
+                profileArn: GetString(token, "profileArn"),
                 clientId: session.AwsClientId,
                 awsClientSecret: session.AwsClientSecret);
         }
@@ -331,6 +331,7 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
     {
         var region = TryGetExtra(extraJson, "region") ?? DefaultRegion;
         var profileArn = TryGetExtra(extraJson, "profileArn");
+        if (string.Equals(profileArn, BuilderIdProfileArn, StringComparison.Ordinal)) profileArn = null;
         try
         {
             var query = new Dictionary<string, string>
@@ -378,6 +379,7 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
     {
         var region = TryGetExtra(extraJson, "region");
         var profileArn = TryGetExtra(extraJson, "profileArn");
+        if (string.Equals(profileArn, BuilderIdProfileArn, StringComparison.Ordinal)) profileArn = null;
         if (string.IsNullOrWhiteSpace(region) && !string.IsNullOrWhiteSpace(profileArn))
         {
             region = profileArn!.Split(':').ElementAtOrDefault(3);

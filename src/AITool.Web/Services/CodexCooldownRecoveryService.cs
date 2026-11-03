@@ -74,51 +74,43 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
             return;
         }
 
-        // 用全局 SQLite 串行化锁包裹"查 due → 更新账号/站点"完整块，
-        // 避免与巡检/日志写等后台服务并发踩 SqlSugarScope 竞态。
-        await dbContext.SerialExecuteAsync(async () =>
+        // Use a private writer-first transaction per account so manual disable and recovery
+        // serialize in SQLite; never restore a site from a stale pre-transaction snapshot.
+        var now = DateTimeOffset.UtcNow;
+        var due = await dbContext.CodexAccounts
+            .Where(a => a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
+            .Select(a => a.Id).ToListAsync(ct);
+        var changed = false;
+        foreach (var id in due)
         {
-            var now = DateTimeOffset.UtcNow;
-            var due = await dbContext.CodexAccounts
-                .Where(a => a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
-                .ToListAsync(ct);
-
-            if (due.Count == 0) return;
-
-            var anyRecovered = false;
-            foreach (var account in due)
+            using var client = dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+            await client.Ado.BeginTranAsync();
+            try
             {
-                account.IsQuotaCooling = false;
-                account.QuotaCoolingUntil = null;
-                // 列限定写回：整行写会把供给/后台刷新刚更新的 token、名称等列回滚成读取时的旧快照。
-                await dbContext.Client.Updateable(account)
-                    .UpdateColumns(a => new { a.IsQuotaCooling, a.QuotaCoolingUntil })
+                var updated = await client.Updateable<AITool.Domain.Codex.CodexAccount>()
+                    .SetColumns(a => new AITool.Domain.Codex.CodexAccount { IsQuotaCooling = false, QuotaCoolingUntil = null })
+                    .Where(a => a.Id == id && a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
+                    .Where(a => SqlSugar.SqlFunc.Subqueryable<AITool.Domain.Operations.SystemRuntimeSettings>()
+                        .Where(s => s.Id == 1 && s.OAuthFeaturesEnabled).Any())
                     .ExecuteCommandAsync(ct);
-
-                // 仅当账号当前仍启用（非手动禁用）才恢复 Site——重读实时值，
-                // 防按扫描快照把冷却期间被用户手动禁用的账号重新拉回路由。
-                var currentEnabled = (await dbContext.CodexAccounts
-                    .Where(a => a.Id == account.Id)
-                    .Select(a => a.IsEnabled)
-                    .ToListAsync(ct)).FirstOrDefault();
-                if (currentEnabled)
+                if (updated != 0)
                 {
-                    var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                    if (site != null && !site.IsEnabled)
-                    {
-                        site.IsEnabled = true;
-                        await dbContext.Client.Updateable(site).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(ct);
-                        anyRecovered = true;
-                    }
+                    var account = await client.Queryable<AITool.Domain.Codex.CodexAccount>().InSingleAsync(id);
+                    if (account is { IsEnabled: true, ManuallyDisabled: false, DisabledByFeatureToggle: false, RequiresReauth: false })
+                        await client.Updateable<AITool.Domain.Sites.Site>()
+                            .SetColumns(s => new AITool.Domain.Sites.Site { IsEnabled = true })
+                            .Where(s => s.Id == account.LinkedSiteId).ExecuteCommandAsync(ct);
+                    changed = true;
                 }
-                _logger.LogInformation("Codex account {Id} cooldown recovered", account.Id);
+                await client.Ado.CommitTranAsync();
             }
-
-            if (anyRecovered)
-            {
-                cache.InvalidateRouteTargets();
-                cache.InvalidateCodexAccounts();
-            }
-        }, ct);
+            catch { await client.Ado.RollbackTranAsync(); throw; }
+        }
+        if (changed)
+        {
+            cache.InvalidateRouteTargets();
+            cache.InvalidateCodexAccounts();
+        }
     }
 }

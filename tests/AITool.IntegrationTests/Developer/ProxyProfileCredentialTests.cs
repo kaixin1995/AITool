@@ -375,6 +375,26 @@ public sealed class ProxyProfileCredentialTests
     }
 
     [Fact]
+    public async Task Migration_lost_ring_also_sanitizes_legacy_url_userinfo()
+    {
+        using var fixture = new Fixture();
+        var profile = new ProxyProfile { Key = "mixed", Name = "Mixed", IsEnabled = true };
+        fixture.Secrets.TryApplyForSave(profile, "http://localhost:7890", "Replace", "original", "encrypted", out _).Should().BeTrue();
+        profile.ProxyUrl = "http://legacy-user:legacy-secret@localhost:7890";
+        await fixture.Db.InsertAsync(profile);
+        var otherRing = new ProxyProfileSecretService(DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(fixture.DirectoryPath, "other-ring"))));
+        await otherRing.MigrateLegacyCredentialsAsync(fixture.Db);
+        var result = await fixture.Db.ProxyProfiles.InSingleAsync(profile.Id);
+        result.IsEnabled.Should().BeFalse();
+        result.ProxyUrl.Should().Be("http://localhost:7890");
+        result.ProtectedUsername.Should().Be(profile.ProtectedUsername);
+        result.ProtectedPassword.Should().Be(profile.ProtectedPassword);
+        result.ProtectedLegacyConfiguration.Should().NotBeNullOrEmpty();
+        Json(await fixture.Controller.Get(profile.Id, default)).GetRawText().Should().NotContain("legacy-secret");
+        await otherRing.MigrateLegacyCredentialsAsync(fixture.Db);
+        (await fixture.Db.ProxyProfiles.InSingleAsync(profile.Id)).ProxyUrl.Should().Be("http://localhost:7890");
+    }
+    [Fact]
     public async Task Migration_LostRing_QuarantinesProtectedProfilesInsteadOfBlockingStartup()
     {
         using var fixture = new Fixture();

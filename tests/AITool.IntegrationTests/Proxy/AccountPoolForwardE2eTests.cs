@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
@@ -71,6 +72,90 @@ public sealed class AccountPoolForwardE2eTests
             "成员 A 失败后同模型无感回退到成员 B——号池账号扇出的核心语义");
     }
 
+    [Fact]
+    public async Task Pool_queue_edit_changes_real_forwarding_and_survives_sync_and_parent_reference()
+    {
+        var fake = new FakeProxyForwardService { ForwardResultFactory = _ => new AITool.Application.Proxy.ProxyForwardResult {
+            StatusCode = 200, ResponseBody = """{"choices":[{"message":{"content":"ok"}}]}""", Success = true
+        }};
+        await using var factory = new ProxyFallbackWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        await SeedPoolAsync(factory);
+        Guid entryId, poolId;
+        List<ProxyRouteRule> rules;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            poolId = (await db.AccountPools.FirstAsync()).Id;
+            await scope.ServiceProvider.GetRequiredService<AccountPoolSyncService>().SyncPoolAsync(poolId, default);
+            entryId = (await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == Model)).Id;
+            rules = (await db.ProxyRouteRules.Where(x => x.ExternalModelName == Model).ToListAsync()).OrderBy(x => x.Priority).ToList();
+        }
+        (await client.PostAsJsonAsync("/api/admin/route-rules/save", new {
+            externalModelName = "pool-parent", supportsRouteReferences = true,
+            rules = new[] { new { targetKind = "RouteEntry", targetRouteEntryId = entryId } }
+        })).StatusCode.Should().Be(HttpStatusCode.OK);
+        // Warm both cached plans before editing.
+        (await client.SendAsync(ChatRequest(Model))).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.SendAsync(ChatRequest("pool-parent"))).StatusCode.Should().Be(HttpStatusCode.OK);
+        fake.Requests.Clear();
+        var response = await client.PostAsJsonAsync("/api/admin/route-rules/pool-queue", new {
+            entryId, rules = rules.AsEnumerable().Reverse().Select(r => new {
+                ruleId = r.Id, expectedPriority = r.Priority, expectedModelPriority = r.ModelPriority,
+                expectedInstancePriority = r.InstancePriority, expectedIsEnabled = r.IsEnabled, isEnabled = r.SiteId != SiteA
+            }).ToArray()
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        await using (var scope = factory.Services.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<AccountPoolSyncService>().SyncPoolAsync(poolId, default);
+        (await client.SendAsync(ChatRequest(Model))).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.SendAsync(ChatRequest("pool-parent"))).StatusCode.Should().Be(HttpStatusCode.OK);
+        fake.Requests.Select(r => r.TargetApiKey).Should().Equal(KeyB, KeyB);
+        await using var verify = factory.Services.CreateAsyncScope();
+        var db2 = verify.ServiceProvider.GetRequiredService<AppDbContext>();
+        var after = (await db2.ProxyRouteRules.Where(x => x.ExternalModelName == Model).ToListAsync()).OrderBy(x => x.Priority).ToList();
+        after.Select(x => x.Id).Should().Equal(rules[1].Id, rules[0].Id);
+        after.Single(x => x.SiteId == SiteA).IsEnabled.Should().BeFalse();
+        (await db2.ProxyRouteEntries.FirstAsync(x => x.EntryName == Model)).Id.Should().Be(entryId);
+    }
+    [Fact]
+    public async Task Pool_reorder_alone_updates_warm_direct_and_reference_plans_without_sync()
+    {
+        var fake = new FakeProxyForwardService { ForwardResultFactory = _ => new AITool.Application.Proxy.ProxyForwardResult {
+            StatusCode = 200, ResponseBody = """{"choices":[{"message":{"content":"ok"}}]}""", Success = true
+        }};
+        await using var factory = new ProxyFallbackWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        await SeedPoolAsync(factory);
+        Guid entryId;
+        List<ProxyRouteRule> rules;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var poolId = (await db.AccountPools.FirstAsync()).Id;
+            await scope.ServiceProvider.GetRequiredService<AccountPoolSyncService>().SyncPoolAsync(poolId, default);
+            entryId = (await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == Model)).Id;
+            rules = (await db.ProxyRouteRules.Where(x => x.ExternalModelName == Model).ToListAsync()).OrderBy(x => x.Priority).ToList();
+        }
+        (await client.PostAsJsonAsync("/api/admin/route-rules/save", new {
+            externalModelName = "pool-parent", supportsRouteReferences = true,
+            rules = new[] { new { targetKind = "RouteEntry", targetRouteEntryId = entryId } }
+        })).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.SendAsync(ChatRequest(Model))).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.SendAsync(ChatRequest("pool-parent"))).StatusCode.Should().Be(HttpStatusCode.OK);
+        fake.Requests.Select(r => r.TargetApiKey).Should().Equal(KeyA, KeyA);
+        fake.Requests.Clear();
+        var response = await client.PostAsJsonAsync("/api/admin/route-rules/pool-queue", new {
+            entryId, rules = rules.AsEnumerable().Reverse().Select(r => new {
+                ruleId = r.Id, expectedPriority = r.Priority, expectedModelPriority = r.ModelPriority,
+                expectedInstancePriority = r.InstancePriority, expectedIsEnabled = r.IsEnabled, isEnabled = true
+            }).ToArray()
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        (await client.SendAsync(ChatRequest(Model))).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.SendAsync(ChatRequest("pool-parent"))).StatusCode.Should().Be(HttpStatusCode.OK);
+        fake.Requests.Select(r => r.TargetApiKey).Should().Equal(KeyB, KeyB);
+    }
     private static HttpRequestMessage ChatRequest(string model) => new(HttpMethod.Post, "/v1/chat/completions")
     {
         Content = new StringContent(

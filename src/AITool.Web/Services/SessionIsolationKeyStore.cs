@@ -60,19 +60,30 @@ public sealed class SessionIsolationKeyStore
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         var (rows, metadata) = await ReadStateAsync(client, ct);
         var (key, reason, legacy) = Unlock(rows, metadata);
-        if (key is null)
+        try
         {
-            LogRotation(reason);
-            key = await RotateAsync(client, ct);
+            if (key is null)
+            {
+                LogRotation(reason);
+                key = await RotateAsync(client, ct);
+            }
+            else if (legacy)
+            {
+                var legacyKey = key;
+                key = null;
+                try { key = await TryUpgradeToRawAsync(client, legacyKey, rows[0].ProtectedKey, metadata[0].ProtectedKeyFingerprint, ct); }
+                finally { CryptographicOperations.ZeroMemory(legacyKey); }
+            }
+            ct.ThrowIfCancellationRequested();
+            var result = key;
+            key = null; // Ownership transfers only after the final cancellation check.
+            return result;
         }
-        else if (legacy)
+        finally
         {
-            await TryUpgradeToRawAsync(client, key, ct);
+            if (key is not null) CryptographicOperations.ZeroMemory(key);
         }
-        ct.ThrowIfCancellationRequested();
-        return key;
     }
-
     private void LogRotation(RepairReason reason)
     {
         if (reason == RepairReason.FreshDeployment)
@@ -83,10 +94,10 @@ public sealed class SessionIsolationKeyStore
         _logger?.LogWarning(
             reason == RepairReason.UndecryptablePersistedKey
                 ? "The persisted session isolation key is unreadable. Rotating automatically: derived session "
-                + "identifiers change and persisted upstream reference ownership is cleared. Legacy v1 rows from a "
+                + "identifiers change and persisted upstream references are invalidated until expiry. Legacy v1 rows from a "
                 + "deployment that lost its Data Protection key ring rotate once, then persist as raw v2 forever."
                 : "The persisted session isolation key metadata is invalid. Rotating automatically: derived session "
-                + "identifiers change and persisted upstream reference ownership is cleared.");
+                + "identifiers change and persisted upstream references are invalidated until expiry.");
     }
 
     /// <summary>
@@ -96,26 +107,30 @@ public sealed class SessionIsolationKeyStore
     /// observes the winner's identical result. Failure never blocks the current read: the
     /// v1 row stays decryptable and the upgrade is retried on the next startup.
     /// </summary>
-    private async Task TryUpgradeToRawAsync(ISqlSugarClient client, byte[] key, CancellationToken ct)
+    internal async Task<byte[]> TryUpgradeToRawAsync(ISqlSugarClient client, byte[] key, string oldCiphertext,
+        string oldFingerprint, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var raw = Convert.ToBase64String(key);
         client.Ado.BeginTran();
         try
         {
-            var upgraded = await client.Ado.ExecuteCommandAsync(
-                "UPDATE SessionIsolationKeys SET Version = 2, ProtectedKey = @raw WHERE Id = 1 AND Version = 1;",
-                new SugarParameter("@raw", raw));
+            var upgraded = await client.Ado.ExecuteCommandAsync("""
+                UPDATE SessionIsolationKeys SET Version = 2, ProtectedKey = @raw
+                WHERE Id = 1 AND Version = 1 AND ProtectedKey = @old
+                  AND EXISTS (SELECT 1 FROM SessionIsolationKeyMetadata WHERE Id = 1 AND Version = 1 AND ProtectedKeyFingerprint = @fingerprint);
+                """, new SugarParameter("@raw", raw), new SugarParameter("@old", oldCiphertext),
+                new SugarParameter("@fingerprint", oldFingerprint));
             if (upgraded == 1)
-                await client.Ado.ExecuteCommandAsync(
-                    "UPDATE SessionIsolationKeyMetadata SET Version = 2, ProtectedKeyFingerprint = @fingerprint WHERE Id = 1 AND Version = 1;",
-                    new SugarParameter("@fingerprint", Fingerprint(raw)));
-            // IAdo raw SQL has no CT overload. Await fully, then observe CT before commit;
-            // never abandon a task that can write after the connection is disposed.
+            {
+                var marker = await client.Ado.ExecuteCommandAsync("""
+                    UPDATE SessionIsolationKeyMetadata SET Version = 2, ProtectedKeyFingerprint = @newFingerprint
+                    WHERE Id = 1 AND Version = 1 AND ProtectedKeyFingerprint = @oldFingerprint;
+                    """, new SugarParameter("@newFingerprint", Fingerprint(raw)), new SugarParameter("@oldFingerprint", oldFingerprint));
+                if (marker != 1) throw new InvalidOperationException("Session key marker changed during upgrade.");
+            }
             ct.ThrowIfCancellationRequested();
             client.Ado.CommitTran();
-            _logger?.LogInformation(
-                "Session isolation key upgraded in place from Data Protection ciphertext (v1) to raw storage (v2); the key material and all derived identifiers are unchanged.");
         }
         catch (OperationCanceledException)
         {
@@ -125,11 +140,16 @@ public sealed class SessionIsolationKeyStore
         catch
         {
             try { client.Ado.RollbackTran(); } catch { }
-            _logger?.LogWarning(
-                "Upgrading the session isolation key from v1 ciphertext to raw v2 storage failed; the v1 row remains readable and the upgrade will be retried on the next startup.");
+            _logger?.LogWarning("Upgrading the legacy session isolation key failed; re-reading the persisted state.");
         }
+        // Another writer may have rotated/replaced the row even when our conditional update
+        // affected zero rows. Never return the pre-upgrade snapshot without revalidating it.
+        var (rows, metadata) = await ReadStateAsync(client, ct);
+        var (current, reason, _) = Unlock(rows, metadata);
+        if (current is not null) return current;
+        LogRotation(reason);
+        return await RotateAsync(client, ct);
     }
-
     private async Task<byte[]> RotateAsync(ISqlSugarClient client, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -170,11 +190,12 @@ public sealed class SessionIsolationKeyStore
             }
             // Replace any absent or damaged state atomically. Key and marker are committed
             // together, so no intermediate state reads as a valid deployment. Derived owner
-            // identities become stale on rotation; stale rows would sticky-conflict until
-            // their TTL, so they are cleared inside the same transaction.
+            // identities become stale on rotation; retain conflict tombstones until
+            // their TTL, so old identifiers cannot be reassigned to another owner.
             await client.Deleteable<SessionIsolationKeyMetadata>().ExecuteCommandAsync(ct);
             await client.Deleteable<SessionIsolationKey>().ExecuteCommandAsync(ct);
-            await client.Deleteable<UpstreamReferenceOwner>().ExecuteCommandAsync(ct);
+            await client.Updateable<UpstreamReferenceOwner>()
+                .SetColumns(x => new UpstreamReferenceOwner { IsConflict = true }).Where(x => !x.IsConflict).ExecuteCommandAsync(ct);
             ct.ThrowIfCancellationRequested();
             await client.Ado.ExecuteCommandAsync("""
                 INSERT INTO SessionIsolationKeyMetadata (Id, Version, ProtectedKeyFingerprint)

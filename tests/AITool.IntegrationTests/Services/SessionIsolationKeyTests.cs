@@ -31,6 +31,38 @@ public sealed class SessionIsolationKeyTests : IDisposable
     }
 
     [Fact]
+    public async Task Key_rotation_retains_reference_tombstones_until_original_expiry()
+    {
+        await Derive(Deriver(_provider));
+        using var client = Client();
+        var expiry = DateTimeOffset.UtcNow.AddHours(12).UtcTicks;
+        var row = new UpstreamReferenceOwner { ClientScope = "client", LookupDigest = new string('a', 64),
+            OwnerProviderKey = "codex", OwnerAccountId = Guid.NewGuid(), UpstreamNamespace = "https://example.test|responses",
+            IsNative = true, ExpiresAtUtcTicks = expiry };
+        await client.Insertable(row).ExecuteCommandAsync();
+        SetCiphertext("corrupt");
+        await Derive(Deriver(_provider));
+        var saved = (await client.Queryable<UpstreamReferenceOwner>().ToListAsync()).Single();
+        saved.IsConflict.Should().BeTrue();
+        saved.ExpiresAtUtcTicks.Should().Be(expiry);
+        saved.OwnerAccountId.Should().Be(row.OwnerAccountId);
+    }
+    [Fact]
+    public async Task Stale_legacy_upgrade_adopts_current_key_without_overwriting_it()
+    {
+        var oldKey = RandomNumberGenerator.GetBytes(32);
+        InsertKey(Protector(_provider).Protect(oldKey));
+        var before = Row();
+        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(before.ProtectedKey)));
+        var winner = RandomNumberGenerator.GetBytes(32);
+        SetRaw(Convert.ToBase64String(winner));
+        using var client = Client();
+        var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(), _provider.GetRequiredService<IDataProtectionProvider>());
+        var actual = await store.TryUpgradeToRawAsync(client, oldKey, before.ProtectedKey, fingerprint, default);
+        actual.Should().Equal(winner);
+        Row().ProtectedKey.Should().Be(Convert.ToBase64String(winner));
+    }
+    [Fact]
     public async Task Initialization_persists_raw_v2_key_directly_in_the_database()
     {
         var deriver = Deriver(_provider);
@@ -456,6 +488,7 @@ public sealed class SessionIsolationKeyTests : IDisposable
             _provider.GetRequiredService<IServiceScopeFactory>(), provider));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             deriver.DeriveAsync("client", "provider", _accountId, "session", "seed", cancellation.Token));
+        provider.Unprotected.Should().NotBeNull().And.OnlyContain(b => b == 0, "取消后必须清理已解密的密钥");
         Rows().Should().ContainSingle().Which.Version.Should().Be(SessionIsolationKey.LegacyCiphertextVersion,
             "取消发生在解码之后、升级写回之前，行保持原样");
         (await Derive(Deriver(_provider))).Should().HaveLength(64);
@@ -466,16 +499,19 @@ public sealed class SessionIsolationKeyTests : IDisposable
     private sealed class CancelOnUnprotectProvider(IDataProtectionProvider inner, CancellationTokenSource cancellation)
         : IDataProtectionProvider
     {
-        public IDataProtector CreateProtector(string purpose) => new CancelOnUnprotect(inner.CreateProtector(purpose), cancellation);
+        public byte[]? Unprotected { get; private set; }
+        public IDataProtector CreateProtector(string purpose) => new CancelOnUnprotect(inner.CreateProtector(purpose), cancellation, bytes => Unprotected = bytes);
     }
 
-    private sealed class CancelOnUnprotect(IDataProtector inner, CancellationTokenSource cancellation) : IDataProtector
+    private sealed class CancelOnUnprotect(IDataProtector inner, CancellationTokenSource cancellation, Action<byte[]> capture) : IDataProtector
     {
-        public IDataProtector CreateProtector(string purpose) => new CancelOnUnprotect(inner.CreateProtector(purpose), cancellation);
+        public byte[]? Unprotected { get; private set; }
+        public IDataProtector CreateProtector(string purpose) => new CancelOnUnprotect(inner.CreateProtector(purpose), cancellation, bytes => Unprotected = bytes);
         public byte[] Protect(byte[] plaintext) => inner.Protect(plaintext);
         public byte[] Unprotect(byte[] protectedData)
         {
             var result = inner.Unprotect(protectedData);
+            capture(result);
             cancellation.Cancel();
             return result;
         }

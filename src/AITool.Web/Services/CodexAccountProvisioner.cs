@@ -109,7 +109,7 @@ public sealed class CodexAccountProvisioner
             {
                 account.RequiresReauth = false;
                 var settings = await client.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>().InSingleAsync(1);
-                if (settings is { OAuthFeaturesEnabled: false } && !account.ManuallyDisabled && !account.IsQuotaCooling)
+                if (settings is { OAuthFeaturesEnabled: false })
                     account.DisabledByFeatureToggle = true;
                 account.IsEnabled = !account.ManuallyDisabled && !account.DisabledByFeatureToggle && !account.IsQuotaCooling;
                 site.IsEnabled = account.IsEnabled;

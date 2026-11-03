@@ -389,8 +389,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                     }
                     else
                     {
-                        _logger.LogWarning("Failed to aggregate upstream SSE into response JSON. Body head: {Head}",
-                            responseBody.Length > 800 ? responseBody[..800] : responseBody);
+                        _logger.LogWarning("Failed to aggregate upstream SSE into response JSON.");
+                        return new ProxyForwardResult { Success = false, StatusCode = 502, ErrorMessage = "Upstream stream was incomplete or invalid.", IsStreaming = false, TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds) };
                     }
                 }
 
@@ -1360,8 +1360,8 @@ public sealed class ProxyForwardService : IProxyForwardService
             // 多 choice（客户端 n>1）按 choice.index 分桶聚合，不能只取 choices[0]。
             var choicesByIndex = new SortedDictionary<int, ChoiceAccumulator>();
             var hasAnyChunk = false;
-            var sawDone = false;
-            var sawAnyFinishReason = false;
+
+
 
             foreach (var rawLine in sseBody.Split('\n'))
             {
@@ -1374,25 +1374,23 @@ public sealed class ProxyForwardService : IProxyForwardService
                 var payload = line["data:".Length..].Trim();
                 if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
-                    sawDone = true;
+
                     break;
                 }
 
-                // SSE 允许 keep-alive 空 data: 行等非 JSON 噪音：逐行容错跳过，
-                // 不能让一条杂行把整个聚合判失败（那会把本可成功的请求变成硬错误）。
+                if (payload.Length == 0) continue;
+                // Only empty data is a keepalive; malformed nonempty data can hide lost content.
                 JsonDocument doc;
                 try
                 {
                     doc = JsonDocument.Parse(payload);
                 }
-                catch (JsonException)
-                {
-                    continue;
-                }
+                catch (JsonException) { return null; }
 
                 using (doc)
                 {
                     var chunk = doc.RootElement;
+                    if (chunk.ValueKind == JsonValueKind.Object && chunk.TryGetProperty("error", out _)) return null;
                     if (chunk.ValueKind != JsonValueKind.Object
                         || !chunk.TryGetProperty("object", out var objectEl)
                         || !string.Equals(objectEl.GetString(), "chat.completion.chunk", StringComparison.Ordinal))
@@ -1437,7 +1435,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                         if (choice.TryGetProperty("finish_reason", out var frEl) && frEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(frEl.GetString()))
                         {
                             acc.FinishReason ??= frEl.GetString();
-                            sawAnyFinishReason = true;
+
                         }
 
                         if (!choice.TryGetProperty("delta", out var deltaEl) || deltaEl.ValueKind != JsonValueKind.Object)
@@ -1506,7 +1504,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
             }
 
-            if (!hasAnyChunk)
+            if (!hasAnyChunk || choicesByIndex.Count == 0 || choicesByIndex.Values.Any(choice => string.IsNullOrWhiteSpace(choice.FinishReason)))
             {
                 return null;
             }
@@ -1523,9 +1521,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                 result["system_fingerprint"] = systemFingerprint;
             }
 
-            // 流正常收尾（见过 finish_reason 或 [DONE]）才允许 stop 兜底；
-            // 半途掐断的流保留 finish_reason=null，不把静默截断洗白成正常完成。
-            var fallbackFinishReason = sawDone || sawAnyFinishReason ? "stop" : null;
+            // Every choice must have an explicit finish reason before a non-streaming success.
+
 
             var choicesArray = new System.Text.Json.Nodes.JsonArray();
             foreach (var (choiceIndex, acc) in choicesByIndex)
@@ -1568,7 +1565,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     ["index"] = choiceIndex,
                     ["message"] = message,
-                    ["finish_reason"] = acc.FinishReason ?? fallbackFinishReason,
+                    ["finish_reason"] = acc.FinishReason,
                 });
             }
             result["choices"] = choicesArray;

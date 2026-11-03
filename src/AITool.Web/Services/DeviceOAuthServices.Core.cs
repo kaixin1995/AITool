@@ -135,7 +135,7 @@ public sealed class DeviceOAuthAccountProvisioner
             {
                 account.RequiresReauth = false;
                 var settings = await client.Queryable<SystemRuntimeSettings>().InSingleAsync(1);
-                if (settings is { OAuthFeaturesEnabled: false } && !account.ManuallyDisabled && !account.IsDeleted)
+                if (settings is { OAuthFeaturesEnabled: false })
                     account.DisabledByFeatureToggle = true;
                 account.IsEnabled = !account.ManuallyDisabled && !account.DisabledByFeatureToggle && !account.IsDeleted;
             }

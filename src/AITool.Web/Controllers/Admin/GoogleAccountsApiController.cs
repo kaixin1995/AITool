@@ -406,12 +406,11 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var credentialAccount = account;
         if (account.TokenExpiresAt is null || account.TokenExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(2))
         {
-            var refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, accessToken, ct);
-            if (!string.IsNullOrWhiteSpace(refreshed))
+            var refreshed = await _credentialRefreshService.RefreshAccountSnapshotAsync(account.Id, accessToken, ct);
+            if (refreshed is not null)
             {
-                accessToken = refreshed;
-                // A newly returned access token must be paired with its persisted credentials.
-                credentialAccount = await GetAccountAsync(id, ct);
+                credentialAccount = refreshed;
+                accessToken = refreshed.AccessToken ?? string.Empty;
             }
         }
 

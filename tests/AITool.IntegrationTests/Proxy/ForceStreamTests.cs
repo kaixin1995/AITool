@@ -80,7 +80,7 @@ public sealed class ForceStreamTests
             
             data: {"id":"c4","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"b","type":"function","function":{"name":"write","arguments":"{\"p\":1}"}}]}}]}
             
-            data: {"id":"c4","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"more\":true}"}}]}}]}
+            data: {"id":"c4","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"more\":true}"}}]},"finish_reason":"tool_calls"}]}
             
             data: [DONE]
             """;
@@ -127,15 +127,13 @@ public sealed class ForceStreamTests
     }
 
     [Fact]
-    public void Aggregate_tolerates_keepalive_and_malformed_data_lines()
+    public void Aggregate_tolerates_keepalive_lines()
     {
         // SSE 规范允许空 data: keep-alive 行；杂行不能把整个聚合判失败（P1 回归）。
         const string sse = """
             data:
 
             : stream starting
-
-            data: not-json-garbage
 
             data: {"id":"c5","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":"stop"}]}
 
@@ -150,6 +148,13 @@ public sealed class ForceStreamTests
     }
 
     [Fact]
+    public void Aggregate_rejects_nonempty_malformed_data_and_error_events()
+    {
+        const string chunk = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"stop\"}]}\n\n";
+        ProxyForwardService.TryAggregateChatCompletionSse(chunk + "data: {broken\n\ndata: [DONE]\n").Should().BeNull();
+        ProxyForwardService.TryAggregateChatCompletionSse(chunk + "data: {\"error\":{\"message\":\"bad\"}}\n\ndata: [DONE]\n").Should().BeNull();
+    }
+    [Fact]
     public void Aggregate_truncated_stream_keeps_null_finish_reason()
     {
         // 流被上游半途掐断（无 finish_reason、无 [DONE]）：不能伪造 stop 把静默截断洗白成正常完成。
@@ -158,12 +163,7 @@ public sealed class ForceStreamTests
 
             """;
 
-        var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
-        result.Should().NotBeNull();
-        var obj = System.Text.Json.JsonDocument.Parse(result!);
-        var choice = obj.RootElement.GetProperty("choices")[0];
-        choice.GetProperty("message").GetProperty("content").GetString().Should().Be("部分回答");
-        choice.GetProperty("finish_reason").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null, "截断流保留 null 而非伪造 stop");
+        ProxyForwardService.TryAggregateChatCompletionSse(sse).Should().BeNull();
     }
 
     [Fact]

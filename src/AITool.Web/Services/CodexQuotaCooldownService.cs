@@ -122,6 +122,7 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             {
                 using var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 var pct = persistCts.Token;
+                var accountPersisted = false;
                 try
                 {
                     account.AccessToken = tokens.AccessToken;
@@ -138,6 +139,8 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                         .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
                         .ExecuteCommandAsync(pct);
 
+                    accountPersisted = true;
+
                     var site = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
                     if (site != null)
                     {
@@ -148,12 +151,17 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                 catch (OperationCanceledException ex) when (persistCts.IsCancellationRequested)
                 {
                     // 仅落盘超时进入此分支（HTTP 阶段已在段 A 处理）。
-                    _logger.LogWarning(ex, "Token persistence timeout during quota reset for account {Id}", codexAccountId);
+                    _metadataCache.InvalidateRouteTargets();
+                    _metadataCache.InvalidateCodexAccounts();
+                    throw new InvalidOperationException("刷新后的凭证落盘超时，凭证可能丢失，请检查账号并重新授权。", ex);
                 }
                 catch (Exception ex)
                 {
                     // 账号五列若已写成功则偏态在自愈侧；site 写失败（如 DB busy）不阻断冷却清理。
-                    _logger.LogWarning(ex, "Token persistence during quota reset partially failed for account {Id}", codexAccountId);
+                    _metadataCache.InvalidateRouteTargets();
+                    _metadataCache.InvalidateCodexAccounts();
+                    if (!accountPersisted) throw new InvalidOperationException("刷新后的凭证落盘失败，请检查账号并重新授权。", ex);
+                    _logger.LogWarning(ex, "Account credential persisted but site update failed for {Id}", codexAccountId);
                 }
             }
         }
