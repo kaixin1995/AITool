@@ -2,6 +2,7 @@ using System.Net;
 using AITool.Application.Networking;
 using AITool.Application.Proxy;
 using AITool.Infrastructure.Proxy;
+using AITool.Infrastructure.Common;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -137,6 +138,71 @@ public sealed class ForwardCredentialSendTests
         var result = streaming ? await service.ForwardStreamingAsync(request, (_, _) => Task.CompletedTask) : await service.ForwardAsync(request);
         result.Success.Should().BeFalse();
         invalidations.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false, 401)]
+    [InlineData(true, 401)]
+    [InlineData(false, 403)]
+    [InlineData(true, 403)]
+    public async Task Stalled_auth_error_body_does_not_block_credential_callbacks(bool streaming, int status)
+    {
+        var refreshed = 0;
+        var invalidated = 0;
+        var disabled = 0;
+        var service = new ProxyForwardService(new HttpClient(new Handler(_ => new HttpResponseMessage((HttpStatusCode)status) { Content = new StalledContent() })),
+            NullLogger<ProxyForwardService>.Instance, networkPolicyResolver: new FakeNetwork(), credentialResolver: new SnapshotCredentials(new object()));
+        var request = new ProxyForwardRequest
+        {
+            SiteId = Guid.NewGuid(), TargetBaseUrl = "https://example.test", TargetApiKey = "sent", RequestBody = "{}", RequestTimeoutSeconds = 30,
+            RefreshTargetApiKeyAsync = (_, _) => { refreshed++; return Task.FromResult<string?>(null); },
+            InvalidateTargetCredentialAsync = (_, _, _) => { invalidated++; return Task.CompletedTask; },
+            DisableTargetCredentialAsync = _ => { disabled++; return Task.CompletedTask; }
+        };
+        var result = await (streaming ? service.ForwardStreamingAsync(request, (_, _) => Task.CompletedTask) : service.ForwardAsync(request)).WaitAsync(TimeSpan.FromSeconds(5));
+        result.StatusCode.Should().Be(status);
+        result.ErrorMessage.Should().Contain(status.ToString());
+        refreshed.Should().Be(status == 401 ? 1 : 0);
+        invalidated.Should().Be(status == 401 ? 1 : 0);
+        disabled.Should().Be(status == 403 ? 1 : 0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stalled_401_body_is_not_read_when_refresh_succeeds(bool streaming)
+    {
+        var calls = 0;
+        var service = new ProxyForwardService(new HttpClient(new Handler(_ => ++calls == 1
+            ? new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StalledContent() }
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"choices\":[]}") })),
+            NullLogger<ProxyForwardService>.Instance, networkPolicyResolver: new FakeNetwork(), credentialResolver: new SnapshotCredentials(new object()));
+        var request = new ProxyForwardRequest
+        {
+            SiteId = Guid.NewGuid(), TargetBaseUrl = "https://example.test", TargetApiKey = "sent", RequestBody = "{}", RequestTimeoutSeconds = 30,
+            RefreshTargetApiKeyAsync = (_, _) => Task.FromResult<string?>("refreshed")
+        };
+        var result = await (streaming ? service.ForwardStreamingAsync(request, (_, _) => Task.CompletedTask) : service.ForwardAsync(request)).WaitAsync(TimeSpan.FromSeconds(5));
+        result.StatusCode.Should().Be(200);
+        calls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Error_body_reader_limits_size_and_preserves_caller_cancellation()
+    {
+        using var content = new StringContent(new string('x', 9000));
+        (await HttpErrorBodyReader.ReadAsync(content, CancellationToken.None)).Length.Should().Be(8192);
+        using var stalled = new StalledContent();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var read = () => HttpErrorBodyReader.ReadAsync(stalled, cancellation.Token);
+        await read.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    private sealed class StalledContent : HttpContent
+    {
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => Task.Delay(Timeout.Infinite);
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context, CancellationToken cancellationToken) => Task.Delay(Timeout.Infinite, cancellationToken);
     }
 
     private sealed class SnapshotCredentials(object snapshot) : IForwardCredentialResolver

@@ -45,10 +45,13 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
         if (!response.IsSuccessStatusCode)
         {
             // Retain the diagnostic body when available, but preserve the actual status
-            // even if the body cannot be read.
-            string? errorBody;
+            // even if the body cannot be read. Error body is best-effort diagnostic info;
+            // only caller cancellation (ct) should abort. Internal requestBudget/HttpClient
+            // timeouts must not swallow the status code (e.g. 403 drives auto-disabling).
+            string? errorBody = null;
             try { errorBody = await response.Content.ReadAsStringAsync(requestBudget.Token); }
-            catch (Exception ex) when (ex is not OperationCanceledException) { errorBody = null; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception) { errorBody = null; }
             throw new HttpRequestException($"fetchAvailableModels returned {(int)response.StatusCode}: {errorBody}", null, response.StatusCode);
         }
         var body = await response.Content.ReadAsStringAsync(requestBudget.Token);

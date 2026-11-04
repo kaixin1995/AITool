@@ -20,6 +20,7 @@ public sealed class DeviceOAuthProvisionNameTests : IDisposable
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-device-oauth-name-{Guid.NewGuid():N}.db");
     private readonly ServiceProvider _serviceProvider;
+    private readonly Stack<IDisposable> _testResources = new();
 
     public DeviceOAuthProvisionNameTests()
     {
@@ -180,6 +181,87 @@ public sealed class DeviceOAuthProvisionNameTests : IDisposable
     }
 
     [Fact]
+    public async Task Refresh_token_edit_with_unchanged_name_keeps_default_name_tracking()
+    {
+        var (provisioner, db) = CreateProvisioner();
+        var vendor = CreateVendor();
+
+        var account = await provisioner.ProvisionAsync(vendor, "默认名A", null, "u-name-track",
+            Tokens("at-1"), null, CancellationToken.None, isUserSuppliedName: false);
+        account.IsDisplayNameCustom.Should().BeFalse();
+
+        // 提交相同名称 + 新 refresh_token：不应冻结为自定义名
+        await provisioner.UpdateAsync(account.Id, "默认名A", "rt-2", CancellationToken.None);
+
+        var row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.IsDisplayNameCustom.Should().BeFalse();
+        row.DisplayName.Should().Be("默认名A");
+        row.RefreshToken.Should().Be("rt-2");
+
+        // 重新登录：上游新昵称应正常覆盖
+        await provisioner.ProvisionAsync(vendor, "上游新昵称", null, "u-name-track",
+            Tokens("at-3"), null, CancellationToken.None, isUserSuppliedName: false);
+
+        row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.DisplayName.Should().Be("上游新昵称");
+        (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("上游新昵称");
+    }
+
+    [Fact]
+    public async Task Token_only_update_without_name_preserves_name_and_flag()
+    {
+        var (provisioner, db) = CreateProvisioner();
+        var vendor = CreateVendor();
+
+        // 1. 默认名账号（flag = false）
+        var accDefault = await provisioner.ProvisionAsync(vendor, "默认名B", null, "u-name-tokenonly-1",
+            Tokens("at-1"), null, CancellationToken.None, isUserSuppliedName: false);
+        await provisioner.UpdateAsync(accDefault.Id, null, "rt-3", CancellationToken.None);
+
+        var rowDef = (await db.DeviceOAuthAccounts.InSingleAsync(accDefault.Id))!;
+        rowDef.DisplayName.Should().Be("默认名B");
+        rowDef.IsDisplayNameCustom.Should().BeFalse();
+        rowDef.RefreshToken.Should().Be("rt-3");
+
+        // 2. legacy / 自定义名账号（flag = true）
+        var accCustom = await provisioner.ProvisionAsync(vendor, "自定义名C", null, "u-name-tokenonly-2",
+            Tokens("at-1"), null, CancellationToken.None, isUserSuppliedName: true);
+        await provisioner.UpdateAsync(accCustom.Id, null, "rt-4", CancellationToken.None);
+
+        var rowCust = (await db.DeviceOAuthAccounts.InSingleAsync(accCustom.Id))!;
+        rowCust.DisplayName.Should().Be("自定义名C");
+        rowCust.IsDisplayNameCustom.Should().BeTrue();
+        rowCust.RefreshToken.Should().Be("rt-4");
+    }
+
+    [Fact]
+    public async Task Explicit_rename_still_marks_custom()
+    {
+        var (provisioner, db) = CreateProvisioner();
+        var vendor = CreateVendor();
+
+        var account = await provisioner.ProvisionAsync(vendor, "初始名", null, "u-name-explicit",
+            Tokens("at-1"), null, CancellationToken.None, isUserSuppliedName: false);
+        account.IsDisplayNameCustom.Should().BeFalse();
+
+        // 明确改名：IsDisplayNameCustom 置 true
+        await provisioner.UpdateAsync(account.Id, "新名", null, CancellationToken.None);
+
+        var row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.DisplayName.Should().Be("新名");
+        row.IsDisplayNameCustom.Should().BeTrue();
+        (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("新名");
+
+        // 重新登录：非自定义命名不得冲掉
+        await provisioner.ProvisionAsync(vendor, "上游昵称2", null, "u-name-explicit",
+            Tokens("at-2"), null, CancellationToken.None, isUserSuppliedName: false);
+
+        row = (await db.DeviceOAuthAccounts.InSingleAsync(account.Id))!;
+        row.DisplayName.Should().Be("新名");
+        (await db.Sites.InSingleAsync(account.LinkedSiteId))!.Name.Should().Be("新名");
+    }
+
+    [Fact]
     public async Task Manual_enable_and_refresh_token_edit_do_not_bypass_rejected_access_token()
     {
         var (provisioner, db) = CreateProvisioner();
@@ -249,6 +331,7 @@ public sealed class DeviceOAuthProvisionNameTests : IDisposable
     private (DeviceOAuthAccountProvisioner Provisioner, AppDbContext Db) CreateProvisioner()
     {
         var scope = _serviceProvider.CreateScope();
+        _testResources.Push(scope);
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         return (new DeviceOAuthAccountProvisioner(
             db,
@@ -257,8 +340,12 @@ public sealed class DeviceOAuthProvisionNameTests : IDisposable
             NullLogger<DeviceOAuthAccountProvisioner>.Instance), db);
     }
 
-    private static MiniMaxOAuthVendor CreateVendor()
-        => new(new HttpClient(), NullLogger<MiniMaxOAuthVendor>.Instance);
+    private MiniMaxOAuthVendor CreateVendor()
+    {
+        var httpClient = new HttpClient();
+        _testResources.Push(httpClient);
+        return new MiniMaxOAuthVendor(httpClient, NullLogger<MiniMaxOAuthVendor>.Instance);
+    }
 
     private static DeviceOAuthTokenSet Tokens(string access) => new()
     {
@@ -269,9 +356,27 @@ public sealed class DeviceOAuthProvisionNameTests : IDisposable
 
     public void Dispose()
     {
-        _serviceProvider.Dispose();
-        try { File.Delete(_databasePath); } catch { }
-        try { File.Delete(_databasePath + "-wal"); } catch { }
-        try { File.Delete(_databasePath + "-shm"); } catch { }
+        var errors = new List<Exception>();
+        try
+        {
+            while (_testResources.TryPop(out var resource))
+            {
+                try { resource.Dispose(); }
+                catch (Exception ex) { errors.Add(ex); }
+            }
+        }
+        finally
+        {
+            try { _serviceProvider.Dispose(); }
+            finally
+            {
+                try { File.Delete(_databasePath); } catch { }
+                try { File.Delete(_databasePath + "-wal"); } catch { }
+                try { File.Delete(_databasePath + "-shm"); } catch { }
+            }
+        }
+
+        if (errors.Count > 0)
+            throw new AggregateException(errors);
     }
 }

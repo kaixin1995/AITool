@@ -43,6 +43,7 @@ public sealed class ClaudeOAuthVendor : IDeviceOAuthVendor
     ];
 
     public bool SupportsModelFetch => true;
+    public DeviceOAuthModelCatalogScope ModelCatalogScope => DeviceOAuthModelCatalogScope.PublicCatalog;
 
     public DeviceOAuthChatSiteConfig? ChatSiteConfig => new(
         "https://api.anthropic.com",

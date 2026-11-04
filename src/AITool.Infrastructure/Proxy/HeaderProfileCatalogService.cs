@@ -331,7 +331,49 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 {
                     existing.HeadersJson = def.HeadersJson;
                 }
+
+                // WorkBuddy 内置预设存量回填：仅补缺失的 X-AITool-Force-Stream 内部标记，保留用户已编辑的其他头及显式 false 开关
+                if (string.Equals(existing.Key, ClientEmulationConstants.WorkBuddy, StringComparison.OrdinalIgnoreCase))
+                {
+                    EnsureBuiltInHeaderPresent(existing, ProxyForwardService.ForceStreamHeader, "true");
+                }
             }
+        }
+    }
+
+    /// <summary>
+    /// 为内置方案的 HeadersJson 补充缺失的头键值对。
+    /// 仅在键不存在时追加；若键已存在（含显式 false 或空值）、HeadersJson 为空、反序列化字典为空或 JSON 非法，均不作改动并返回 false。
+    /// </summary>
+    internal static bool EnsureBuiltInHeaderPresent(HeaderProfile profile, string name, string value)
+    {
+        if (profile == null || string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(profile.HeadersJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(profile.HeadersJson, JsonOptions);
+            if (headers == null || headers.Count == 0)
+            {
+                return false;
+            }
+
+            var comparer = StringComparer.OrdinalIgnoreCase;
+            var dict = new Dictionary<string, string>(headers, comparer);
+            if (dict.ContainsKey(name))
+            {
+                return false;
+            }
+
+            dict[name] = value;
+            profile.HeadersJson = JsonSerializer.Serialize(dict, JsonOptions);
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -508,7 +550,7 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 Id = Guid.Parse("10000000-0000-0000-0000-000000000008"),
                 Key = ClientEmulationConstants.WorkBuddy,
                 Name = "WorkBuddy 官方客户端 (腾讯 CodeBuddy)",
-                Description = "官方客户端 5.9.3 / CLI 2.165.0 真实抓包指纹；X-User-Id / X-Domain / X-Machine-ID / X-Session-ID 为账号级身份头，需在站点自定义头中补充或由设备 OAuth 托管站点自动注入",
+                Description = "官方客户端 5.9.3 / CLI 2.165.0 真实抓包指纹；已内置强制流式；目标兼容非流式时可在站点/模型/映射自定义头设 false 关闭；X-User-Id / X-Domain / X-Machine-ID / X-Session-ID 为账号级身份头，需在站点自定义头中补充或由设备 OAuth 托管站点自动注入",
                 HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
                 {
                     ["User-Agent"] = WorkBuddyClientConstants.ChatUserAgent("WorkBuddy"),
@@ -537,7 +579,9 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                     ["x-stainless-runtime"] = "node",
                     ["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion,
                     // 内部标记（不透传）：转发层据此做渠道校验 11128 的请求体内容适配。
-                    ["X-AITool-Rewrite-Channel"] = "workbuddy"
+                    ["X-AITool-Rewrite-Channel"] = "workbuddy",
+                    // 内部标记（不透传）：WorkBuddy 上游只接受流式（11101），转发层改写请求体并在非流式客户端时聚合 SSE。
+                    ["X-AITool-Force-Stream"] = "true"
                 }, JsonOptions),
                 IsBuiltIn = true,
                 IsEnabled = true,

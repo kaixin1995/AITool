@@ -1,8 +1,10 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Kimi;
 using AITool.Application.Proxy;
 using AITool.Application.Networking;
+using AITool.Domain.Kimi;
 using AITool.Domain.Models;
 using AITool.Domain.OAuth;
 using AITool.Domain.Operations;
@@ -203,6 +205,62 @@ public sealed class ChatApiTests
         current.IsEnabled.Should().BeTrue();
         current.RequiresReauth.Should().BeFalse();
         (await db.Sites.InSingleAsync(site.Id)).IsEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Managed_chat_stream_401_refresh_times_out_and_does_not_retry_upstream()
+    {
+        var fakeOAuth = new FakeTimingOutKimiOAuthClient();
+        var fakeHttp = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("401"));
+        await using var factory = new ChatWebApplicationFactory(
+            new ChatFakeProxyForwardService(),
+            fakeHttp,
+            "OpenAI",
+            directNetwork: true,
+            configureServices: services =>
+            {
+                services.RemoveAll<IKimiOAuthClient>();
+                services.AddSingleton<IKimiOAuthClient>(fakeOAuth);
+                services.RemoveAll<NetworkBoundOAuthClientFactory>();
+            });
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var runtime = await db.SystemRuntimeSettings.InSingleAsync(1);
+        runtime.ProxyRequestTimeoutSeconds = 1;
+        await db.UpdateAsync(runtime);
+
+        var site = await db.Sites.InSingleAsync(ChatWebApplicationFactory.SiteId);
+        site.ManagedSource = "kimi_oauth";
+        site.ApiKey = "test-token";
+        await db.UpdateAsync(site);
+
+        var account = new KimiAccount
+        {
+            LinkedSiteId = site.Id,
+            DisplayName = "kimi-test",
+            AccessToken = "test-token",
+            RefreshToken = "test-refresh-token",
+            DeviceId = "device-1"
+        };
+        await db.InsertAsync(account);
+        scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRouteTargets();
+        scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send-stream",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"mappingId\":\"{ChatWebApplicationFactory.MappingId}\",\"message\":\"hi\"}}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadAsStringAsync();
+
+        body.Should().Contain("Request timed out after 1s");
+        fakeOAuth.CancellationTokenObservedCancelled.Should().BeTrue();
+        fakeHttp.Handler.Requests.Should().ContainSingle();
     }
 
     /// <summary>
@@ -475,6 +533,7 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// </summary>
     private readonly string _siteProtocol;
     private readonly bool _directNetwork;
+    private readonly Action<IServiceCollection>? _configureServices;
 
     /// <summary>
     /// 创建聊天接口测试宿主，并使用默认的 HTTP 客户端工厂。
@@ -487,12 +546,18 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// <summary>
     /// 创建聊天接口测试宿主，并注入模拟转发服务和可选的 HTTP 客户端工厂。
     /// </summary>
-    public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService, IHttpClientFactory? httpClientFactory, string siteProtocol = "Anthropic", bool directNetwork = false)
+    public ChatWebApplicationFactory(
+        ChatFakeProxyForwardService fakeForwardService,
+        IHttpClientFactory? httpClientFactory,
+        string siteProtocol = "Anthropic",
+        bool directNetwork = false,
+        Action<IServiceCollection>? configureServices = null)
     {
         _fakeForwardService = fakeForwardService;
         _httpClientFactory = httpClientFactory;
         _siteProtocol = siteProtocol;
         _directNetwork = directNetwork;
+        _configureServices = configureServices;
     }
 
     /// <summary>
@@ -516,6 +581,7 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
                 services.RemoveAll<IHttpClientFactory>();
                 services.AddSingleton(_httpClientFactory);
             }
+            _configureServices?.Invoke(services);
         });
     }
 
@@ -867,5 +933,36 @@ internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
         }
 
         return clone;
+    }
+}
+
+internal sealed class FakeTimingOutKimiOAuthClient : IKimiOAuthClient
+{
+    public bool CancellationTokenObservedCancelled { get; private set; }
+
+    public Task<KimiDeviceCodeResponse> StartDeviceFlowAsync(string? deviceId, CancellationToken ct) =>
+        throw new NotSupportedException();
+
+    public Task<KimiTokenExchangeResult> ExchangeDeviceCodeAsync(string deviceCode, string? deviceId, CancellationToken ct) =>
+        throw new NotSupportedException();
+
+    public async Task<KimiTokenSet> RefreshTokenAsync(string refreshToken, string? deviceId, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+        }
+        catch (OperationCanceledException)
+        {
+            CancellationTokenObservedCancelled = true;
+            throw;
+        }
+
+        return new KimiTokenSet
+        {
+            AccessToken = "refreshed-token",
+            RefreshToken = "new-refresh-token",
+            ExpiresAt = DateTimeOffset.UtcNow.AddHours(1)
+        };
     }
 }

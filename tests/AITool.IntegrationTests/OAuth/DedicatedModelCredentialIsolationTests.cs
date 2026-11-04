@@ -203,6 +203,23 @@ public sealed class DedicatedModelCredentialIsolationTests : IDisposable
         site.ApiKey.Should().Be("old-access");
     }
 
+    [Fact]
+    public async Task Google_403_with_unreadable_body_still_disables_account_and_site()
+    {
+        await SeedAsync("google");
+        using var client = new HttpClient(new Handler(HttpStatusCode.Forbidden, () => Task.CompletedTask, content: new ThrowingContent(new TaskCanceledException("simulated read timeout"))));
+        var result = await FetchAsync("google", client);
+        result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(403);
+        var account = await _db.Client.Queryable<GoogleAccount>().InSingleAsync(_id);
+        account.IsEnabled.Should().BeFalse();
+        account.DisabledByUpstream.Should().BeTrue();
+        account.RequiresReauth.Should().BeFalse();
+        account.AccessToken.Should().Be("old-access");
+        var site = await _db.Client.Queryable<Site>().InSingleAsync(_siteId);
+        site.IsEnabled.Should().BeFalse();
+        site.ApiKey.Should().Be("old-access");
+    }
+
     [Theory]
     [InlineData("fetchAvailableModels returned 403: forbidden", true)]
     [InlineData("fetchAvailableModels returned 500: 403 forbidden", false)]
@@ -361,14 +378,26 @@ public sealed class DedicatedModelCredentialIsolationTests : IDisposable
             => Task.FromResult(new CodexClientVersionInfo { ClientVersion = "1.0", UserAgent = "test/1.0", Source = "test" });
     }
 
-    private sealed class Handler(HttpStatusCode status, Func<Task> onSend, string body = "proxy: returned 403 forbidden") : HttpMessageHandler
+    private sealed class Handler(HttpStatusCode status, Func<Task> onSend, string body = "proxy: returned 403 forbidden", HttpContent? content = null) : HttpMessageHandler
     {
         public string? SentToken { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             SentToken = request.Headers.Authorization?.Parameter;
             await onSend();
-            return new HttpResponseMessage(status) { Content = new StringContent(body) };
+            return new HttpResponseMessage(status) { Content = content ?? new StringContent(body) };
+        }
+    }
+
+    private sealed class ThrowingContent(Exception exceptionToThrow) : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => Task.FromException(exceptionToThrow);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
         }
     }
 

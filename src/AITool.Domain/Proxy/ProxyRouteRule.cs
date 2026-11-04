@@ -6,6 +6,7 @@ namespace AITool.Domain.Proxy;
 /// 表示一条代理路由规则，用于将对外暴露的模型请求映射到具体站点及其实际模型名称。
 /// </summary>
 [SugarTable("ProxyRouteRules")]
+[SugarIndex("IX_ProxyRouteRules_ManagedByPoolId", nameof(ManagedByPoolId), OrderByType.Asc, false)]
 [SugarIndex("IX_ProxyRouteRules_ExternalModelName_Priority", nameof(ExternalModelName), OrderByType.Asc, nameof(Priority), OrderByType.Asc)]
 [SugarIndex("IX_ProxyRouteRules_ExternalModelName_IsEnabled_Priorities", nameof(ExternalModelName), OrderByType.Asc, nameof(IsEnabled), OrderByType.Asc, nameof(ModelPriority), OrderByType.Asc, nameof(InstancePriority), OrderByType.Asc, nameof(Priority), OrderByType.Asc)]
 public sealed class ProxyRouteRule
@@ -39,6 +40,14 @@ public sealed class ProxyRouteRule
     /// <summary>Diagnostic name snapshot only, not a lookup key.</summary>
     [SugarColumn(Length = 200, IsNullable = true)]
     public string? TargetRouteEntryName { get; set; }
+
+    /// <summary>Pool that generated this rule; null denotes a rule of unknown or manual origin.</summary>
+    [SugarColumn(IsNullable = true)]
+    public Guid? ManagedByPoolId { get; set; }
+
+    /// <summary>Original member site, independent of subsequent edits to the target.</summary>
+    [SugarColumn(IsNullable = true)]
+    public Guid? ManagedPoolMemberSiteId { get; set; }
 
     /// <summary>Direct site identity; RouteEntry rules use Guid.Empty for schema compatibility.</summary>
     public Guid SiteId { get; set; }

@@ -5,6 +5,8 @@ using AITool.Application.Accounts;
 using AITool.Application.Xai;
 using AITool.Domain.Sites;
 using AITool.Domain.Xai;
+using AITool.Domain.Operations;
+using SqlSugar;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Xai;
@@ -123,7 +125,7 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
             (!enabled && string.Equals(reason, "quota-threshold", StringComparison.OrdinalIgnoreCase)))
         {
             await QuotaAccountStateWriter.ChangeAsync(_dbContext, ProviderKey, account.AccountId, enabled,
-                _scheduleStore, _logger, cancellationToken);
+                _scheduleStore, _logger, cancellationToken, account.QuotaRecheckLeaseToken);
             _metadataCache.InvalidateRouteTargets();
             return;
         }
@@ -186,6 +188,7 @@ public sealed class XaiQuotaService : IAccountQuotaProvider
                 await client.Updateable<XaiAccount>()
                     .SetColumns(x => new XaiAccount { DisabledByFeatureToggle = false })
                     .Where(x => x.Id == account.Id && x.RequiresReauth && x.DisabledByFeatureToggle)
+                    .Where(x => SqlFunc.Subqueryable<SystemRuntimeSettings>().Where(s => s.Id == 1 && s.OAuthFeaturesEnabled).Any())
                     .ExecuteCommandAsync(cancellationToken);
                 continue;
             }

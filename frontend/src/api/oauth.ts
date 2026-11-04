@@ -251,7 +251,7 @@ export interface BatchApplyResult {
   failed: number
 }
 
-/** Codex：把勾选的模型批量应用到源账号同套餐全部账号（组内拉一次、应用到全组）。 */
+/** 兼容旧批量接口：仅同步源账号，其他账号因权限无法验证而跳过。 */
 export async function batchApplyOAuthModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
   return httpPost<BatchApplyResult>('/api/admin/oauth/accounts/batch-apply-models', { sourceAccountId, selections })
 }
@@ -349,7 +349,7 @@ export async function importSelectedGoogleModels(
   await httpPost(`/api/admin/google-accounts/accounts/${id}/import-selected-models`, { models: selections })
 }
 
-/** Google（Antigravity）：把勾选的模型批量应用到全部账号。 */
+/** Google（Antigravity）：仅同步源账号，其他账号因权限无法验证而跳过。 */
 export async function batchApplyGoogleModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
   return httpPost<BatchApplyResult>('/api/admin/google-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
 }
@@ -461,7 +461,7 @@ export async function importSelectedKimiModels(
   await httpPost(`/api/admin/kimi-accounts/accounts/${id}/import-selected-models`, { models: selections })
 }
 
-/** Kimi：把勾选的模型批量应用到全部账号。 */
+/** Kimi：仅同步源账号，其他账号因权限无法验证而跳过。 */
 export async function batchApplyKimiModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
   return httpPost<BatchApplyResult>('/api/admin/kimi-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
 }
@@ -608,7 +608,7 @@ export async function importSelectedXaiModels(
   await httpPost(`/api/admin/xai-accounts/accounts/${id}/import-selected-models`, { models: selections })
 }
 
-/** xAI（Grok）：把勾选的模型批量应用到全部账号。 */
+/** xAI（Grok）：仅同步源账号，其他账号因权限无法验证而跳过。 */
 export async function batchApplyXaiModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
   return httpPost<BatchApplyResult>('/api/admin/xai-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
 }

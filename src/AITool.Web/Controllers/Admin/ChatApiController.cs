@@ -1338,7 +1338,8 @@ public sealed class ChatApiController : ControllerBase
                         if (_networkPolicies is not null)
                             await _networkPolicies.ResolveAsync(networkRequest, timeoutCts.Token);
                         refreshAttempted = true;
-                        var refreshed = await networkRequest.RefreshTargetApiKeyAsync(sendKey, cancellationToken);
+                        // 401 刷新必须与后续重试共享原始请求超时预算，不能传仅代表客户端断开的 cancellationToken。
+                        var refreshed = await networkRequest.RefreshTargetApiKeyAsync(sendKey, timeoutCts.Token);
                         if (!string.IsNullOrWhiteSpace(refreshed))
                         {
                             apiKey = refreshed;
@@ -1348,8 +1349,8 @@ public sealed class ChatApiController : ControllerBase
                     }
                     if (networkRequest.InvalidateTargetCredentialAsync is not null)
                     {
-                        try { await networkRequest.InvalidateTargetCredentialAsync(sendKey, credential.CredentialSnapshot, cancellationToken); }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                        try { await networkRequest.InvalidateTargetCredentialAsync(sendKey, credential.CredentialSnapshot, timeoutCts.Token); }
+                        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested) { throw; }
                         catch (Exception) { /* Preserve the upstream response if persistence fails. */ }
                     }
                 }

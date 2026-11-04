@@ -16,6 +16,12 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
     private readonly CachedAccountProvider _accounts = new();
     private readonly RouteCandidatePolicyService _policy;
 
+    private void RecoverAccountQuota(Guid siteId)
+    {
+        var token = _policy.CaptureQuotaRestReleaseToken(siteId);
+        _policy.OnAccountQuotaRecovered(token);
+    }
+
     public QuotaRecoveryRouteRestTests()
     {
         var services = new ServiceCollection();
@@ -43,7 +49,7 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         await Fail(direct, status, body);
         _store.IsBlocked(reference.CircuitKey).Should().BeTrue();
 
-        _policy.OnAccountQuotaRecovered(direct.SiteId);
+        RecoverAccountQuota(direct.SiteId);
 
         _store.GetRest(direct.CircuitKey).Should().BeNull();
         _store.IsBlocked(direct.CircuitKey).Should().BeFalse();
@@ -61,7 +67,7 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         await Fail(sameName, 402, "quota");
         await Fail(anotherModel, 402, "quota");
 
-        _policy.OnAccountQuotaRecovered(recovered.SiteId);
+        RecoverAccountQuota(recovered.SiteId);
 
         _store.IsBlocked(recovered.CircuitKey).Should().BeFalse();
         _store.IsBlocked(anotherModel.CircuitKey).Should().BeFalse();
@@ -81,7 +87,7 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         for (var i = 0; i < 5; i++) await Fail(blocked, 500, "server error");
         var before = _store.GetAllCircuitStates();
 
-        _policy.OnAccountQuotaRecovered(siteId);
+        RecoverAccountQuota(siteId);
 
         var after = _store.GetAllCircuitStates();
         after.Keys.Should().BeEquivalentTo(before.Keys);
@@ -116,7 +122,7 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         _store.GetRest(route.CircuitKey)!.Value.UntilUtc.Should().BeAfter(DateTimeOffset.UtcNow.AddMinutes(29));
         _store.GetAllCircuitStates()[route.CircuitKey].RestReason.Should().Contain("配额");
 
-        _policy.OnAccountQuotaRecovered(route.SiteId);
+        RecoverAccountQuota(route.SiteId);
 
         var rest = _store.GetRest(route.CircuitKey)!.Value;
         rest.Reason.Should().Contain("限流");
@@ -136,7 +142,7 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         var blockedUntil = _store.GetAllCircuitStates()[key].BlockedUntil;
         _store.Rest(key, DateTimeOffset.UtcNow.AddHours(6), "quota", meta, RouteRestKind.Quota, siteId);
 
-        _policy.OnAccountQuotaRecovered(siteId);
+        RecoverAccountQuota(siteId);
 
         _store.GetRest(key).Should().BeNull();
         _store.IsBlocked(key).Should().BeTrue();
@@ -156,7 +162,8 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         _store.Rest(unowned, until, "quota", kind: RouteRestKind.Quota);
         _store.Rest(other, until, "quota", kind: RouteRestKind.Other, siteId: siteId);
 
-        _store.ReleaseQuotaRests(siteId).Should().Be(0);
+        var token = _store.CaptureQuotaRestReleaseToken(siteId);
+        _store.ReleaseQuotaRests(token).Should().Be(0);
 
         _store.IsBlocked(legacy).Should().BeTrue();
         _store.IsBlocked(unowned).Should().BeTrue();
@@ -180,12 +187,13 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         state.RestReason.Should().Be("long quota");
         state.Meta.Should().Be(quotaMeta);
 
-        _store.ReleaseQuotaRests(siteId).Should().Be(1);
+        var token = _store.CaptureQuotaRestReleaseToken(siteId);
+        _store.ReleaseQuotaRests(token).Should().Be(1);
         state = _store.GetAllCircuitStates()[key];
         state.BlockedUntil.Should().Be(until.AddHours(-5));
         state.RestReason.Should().Be("rate");
         state.Meta.Should().Be(rateMeta);
-        _store.ReleaseQuotaRests(siteId).Should().Be(0);
+        _store.ReleaseQuotaRests(token).Should().Be(0);
     }
 
     [Fact]
@@ -196,13 +204,15 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         var start = DateTimeOffset.UtcNow.AddHours(1);
         await Task.WhenAll(Enumerable.Range(0, 100).Select(i => Task.Run(() =>
         {
+            var token = _store.CaptureQuotaRestReleaseToken(siteId);
             _store.Rest(key, start.AddMinutes(i), $"rate-{i}", kind: RouteRestKind.RateLimit, siteId: siteId);
             _store.Rest(key, start.AddDays(1), "quota", kind: RouteRestKind.Quota, siteId: siteId);
-            _store.ReleaseQuotaRests(siteId);
+            _store.ReleaseQuotaRests(token);
             _store.GetAllCircuitStates();
             _store.IsBlocked(key);
         })));
-        _store.ReleaseQuotaRests(siteId);
+        var finalToken = _store.CaptureQuotaRestReleaseToken(siteId);
+        _store.ReleaseQuotaRests(finalToken);
 
         var rest = _store.GetRest(key)!.Value;
         rest.UntilUtc.Should().Be(start.AddMinutes(99));
@@ -220,7 +230,7 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         _accounts.LookupCount.Should().Be(1);
 
         _accounts.Reset = DateTimeOffset.UtcNow.AddHours(1);
-        _policy.OnAccountQuotaRecovered(route.SiteId);
+        RecoverAccountQuota(route.SiteId);
         await Fail(route, 402, "quota");
 
         _store.GetRest(route.CircuitKey)!.Value.UntilUtc.Should().Be(_accounts.Reset);
@@ -241,7 +251,60 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         _store.GetAllCircuitStates().Should().BeEmpty();
     }
 
-    private static CachedProxyRouteTarget Route(Guid siteId) => new() { SiteId = siteId, CircuitKey = Guid.NewGuid() };
+    [Fact]
+    public void Token_release_does_not_remove_quota_rest_written_after_token_capture()
+    {
+        var siteId = Guid.NewGuid();
+        var route = Route(siteId);
+        var token = _store.CaptureQuotaRestReleaseToken(siteId);
+
+        _store.Rest(route.CircuitKey, DateTimeOffset.UtcNow.AddHours(2), "quota", kind: RouteRestKind.Quota, siteId: siteId);
+
+        _store.ReleaseQuotaRests(token).Should().Be(0);
+        _store.IsBlocked(route.CircuitKey).Should().BeTrue();
+        _store.GetRest(route.CircuitKey).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Token_release_removes_old_rest_while_preserving_new_rest_for_same_site()
+    {
+        var siteId = Guid.NewGuid();
+        var oldRoute = Route(siteId);
+        var newRoute = Route(siteId);
+
+        _store.Rest(oldRoute.CircuitKey, DateTimeOffset.UtcNow.AddHours(2), "old quota", kind: RouteRestKind.Quota, siteId: siteId);
+        var token = _store.CaptureQuotaRestReleaseToken(siteId);
+        _store.Rest(newRoute.CircuitKey, DateTimeOffset.UtcNow.AddHours(2), "new quota", kind: RouteRestKind.Quota, siteId: siteId);
+
+        _store.ReleaseQuotaRests(token).Should().Be(1);
+        _store.IsBlocked(oldRoute.CircuitKey).Should().BeFalse();
+        _store.IsBlocked(newRoute.CircuitKey).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Shorter_quota_rest_advances_version_so_token_cannot_release_it()
+    {
+        var siteId = Guid.NewGuid();
+        var route = Route(siteId);
+        var initialUntil = DateTimeOffset.UtcNow.AddHours(6);
+
+        _store.Rest(route.CircuitKey, initialUntil, "long quota", kind: RouteRestKind.Quota, siteId: siteId);
+        var token = _store.CaptureQuotaRestReleaseToken(siteId);
+
+        // 新写入更短期限的配额休息，虽然 deadline 保留 max，但版本推进
+        _store.Rest(route.CircuitKey, initialUntil.AddHours(-2), "short quota", kind: RouteRestKind.Quota, siteId: siteId);
+
+        _store.ReleaseQuotaRests(token).Should().Be(0);
+        _store.IsBlocked(route.CircuitKey).Should().BeTrue();
+        _store.GetRest(route.CircuitKey)!.Value.UntilUtc.Should().Be(initialUntil);
+    }
+
+    private CachedProxyRouteTarget Route(Guid siteId) => new()
+    {
+        SiteId = siteId,
+        CircuitKey = Guid.NewGuid(),
+        AccountIdentity = new(_accounts.ProviderKey, siteId),
+    };
 
     private Task Fail(CachedProxyRouteTarget route, int status, string body, int? retryAfter = null)
         => _policy.RecordRouteFailureAsync(route, status, body, retryAfter, true,

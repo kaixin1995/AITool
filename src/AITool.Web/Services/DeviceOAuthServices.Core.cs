@@ -269,41 +269,48 @@ public sealed class DeviceOAuthAccountProvisioner
         _metadataCache.InvalidateRouteTargets();
     }
 
-    public async Task UpdateAsync(Guid accountId, string displayName, string? refreshToken, CancellationToken ct)
+    public async Task UpdateAsync(Guid accountId, string? displayName, string? refreshToken, CancellationToken ct)
     {
         using var credentialLease = await DeviceOAuthRefreshGate.AcquireAsync(accountId, ct);
         using var client = _dbContext.Client.CopyNew();
         var account = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(accountId)
             ?? throw new KeyNotFoundException("账号不存在");
-        if (string.IsNullOrWhiteSpace(displayName))
-        {
-            throw new ArgumentException("账号展示名不能为空", nameof(displayName));
-        }
+        var requestedName = displayName?.Trim();
+        var isRename = !string.IsNullOrWhiteSpace(requestedName) && !string.Equals(requestedName, account.DisplayName, StringComparison.Ordinal);
+        var hasRefreshToken = !string.IsNullOrWhiteSpace(refreshToken);
+        if (!isRename && !hasRefreshToken) return;
 
-        account.DisplayName = displayName.Trim();
-        // 用户改名即视为自定义名：此后供给的上游昵称刷新不再触碰该名。
-        account.IsDisplayNameCustom = true;
+        if (isRename)
+        {
+            account.DisplayName = requestedName!;
+            // 用户改名即视为自定义名：此后供给的上游昵称刷新不再触碰该名。
+            account.IsDisplayNameCustom = true;
+        }
         account.UpdatedAt = DateTimeOffset.UtcNow;
-        if (!string.IsNullOrWhiteSpace(refreshToken))
+        if (hasRefreshToken)
         {
-            account.RefreshToken = refreshToken.Trim();
+            account.RefreshToken = refreshToken!.Trim();
         }
 
-        if (!string.IsNullOrWhiteSpace(refreshToken))
+        if (isRename && hasRefreshToken)
             await client.Updateable(account)
                 .UpdateColumns(a => new { a.DisplayName, a.IsDisplayNameCustom, a.RefreshToken, a.UpdatedAt })
                 .ExecuteCommandAsync(ct);
-        else
+        else if (isRename)
             await client.Updateable(account)
                 .UpdateColumns(a => new { a.DisplayName, a.IsDisplayNameCustom, a.UpdatedAt })
                 .ExecuteCommandAsync(ct);
+        else
+            await client.Updateable(account)
+                .UpdateColumns(a => new { a.RefreshToken, a.UpdatedAt })
+                .ExecuteCommandAsync(ct);
         // A refresh-token edit cannot clear a forwarding 401, which disabled the account.
-        if (!string.IsNullOrWhiteSpace(refreshToken))
+        if (hasRefreshToken)
             await client.Updateable<DeviceOAuthAccount>()
                 .SetColumns(a => new DeviceOAuthAccount { RequiresReauth = false })
                 .Where(a => a.Id == accountId && a.IsEnabled && a.RefreshToken == account.RefreshToken)
                 .ExecuteCommandAsync(ct);
-        if (account.LinkedSiteId != Guid.Empty)
+        if (isRename && account.LinkedSiteId != Guid.Empty)
         {
             var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
             if (site != null)
@@ -319,14 +326,14 @@ public sealed class DeviceOAuthAccountProvisioner
     public async Task DeleteAsync(Guid accountId, CancellationToken ct)
     {
         using var credentialLease = await DeviceOAuthRefreshGate.AcquireAsync(accountId, ct);
-        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async db =>
         {
             // Cascade and policy/account removal share the graph owner's client and transaction.
-            var client = _dbContext.Client;
+            var client = db.Client;
             var account = await client.Queryable<DeviceOAuthAccount>().InSingleAsync(accountId);
             if (account is null) return false;
             if (account.LinkedSiteId != Guid.Empty)
-                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+                await new SiteCascadeDeleter(db).RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
             await client.Deleteable<AccountNetworkPolicy>()
                 .Where(p => p.ProviderKey == DeviceOAuthQuotaService.ProviderKey && p.AccountId == accountId)
                 .ExecuteCommandAsync(ct);
@@ -353,11 +360,12 @@ public sealed class DeviceOAuthAccountProvisioner
             }
         }
 
-        // WorkBuddy 账号域身份头：存量账号 chatHeaders 未含 X-Domain 时从 extra.domain 兜底（与新扫码登录一致）。
-        if (!effectiveHeaders.ContainsKey("X-Domain")
+        // 仅当厂商声明了域身份头映射（如 WorkBuddy 的 X-Domain）、目标头未显式配置且 extra.domain 为非空字符串时兜底回填。
+        if (!string.IsNullOrWhiteSpace(chat.DomainIdentityHeaderName)
+            && !effectiveHeaders.ContainsKey(chat.DomainIdentityHeaderName)
             && TryGetExtraString(extraJson, "domain") is { } domain && !string.IsNullOrWhiteSpace(domain))
         {
-            effectiveHeaders["X-Domain"] = domain;
+            effectiveHeaders[chat.DomainIdentityHeaderName] = domain;
         }
 
         return System.Text.Json.JsonSerializer.Serialize(
@@ -651,7 +659,7 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
     }
 
     /// <summary>
-    /// 把每个账号关联站点的 ExtraHeadersJson 对齐到厂商 ChatSiteConfig 当前定义 + 账号级 chatHeaders。
+    /// 将厂商 ChatSiteConfig 当前定义和账号级 chatHeaders 合并到站点，保留其他已有头。
     /// 头变更只来自代码升级（进程内配置静态，启动执行一次即可）；只回写有差异的站点，
     /// 非托管（ManagedSource 不符）或用户自建站点不触碰。
     /// </summary>
@@ -677,14 +685,35 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
             {
                 var expected = DeviceOAuthAccountProvisioner.ComputeChatHeadersJson(chat, account.ExtraJson);
                 var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site is null
-                    || site.ManagedSource != DeviceOAuthAccountProvisioner.ManagedSource
-                    || site.ExtraHeadersJson == expected)
-                {
+                if (site is null || site.ManagedSource != DeviceOAuthAccountProvisioner.ManagedSource)
                     continue;
+
+                // HTTP header names are case-insensitive. Keep every unrelated existing value,
+                // but let the current vendor/account values win for managed names.
+                var headers = new Dictionary<string, System.Text.Json.JsonElement>(StringComparer.OrdinalIgnoreCase);
+                if (!string.IsNullOrWhiteSpace(site.ExtraHeadersJson))
+                {
+                    using var existing = System.Text.Json.JsonDocument.Parse(site.ExtraHeadersJson);
+                    foreach (var property in existing.RootElement.EnumerateObject())
+                        headers.Add(property.Name, property.Value.Clone());
                 }
 
-                site.ExtraHeadersJson = expected;
+                var headersChanged = false;
+                using var managed = System.Text.Json.JsonDocument.Parse(expected);
+                foreach (var property in managed.RootElement.EnumerateObject())
+                {
+                    if (!headers.TryGetValue(property.Name, out var current)
+                        || current.ValueKind != System.Text.Json.JsonValueKind.String
+                        || current.GetString() != property.Value.GetString())
+                    {
+                        headers[property.Name] = property.Value.Clone();
+                        headersChanged = true;
+                    }
+                }
+                if (!headersChanged) continue;
+
+                site.ExtraHeadersJson = System.Text.Json.JsonSerializer.Serialize(
+                    headers, AITool.Application.Common.JsonSerializerPresets.Compact);
                 await db.Client.Updateable(site).UpdateColumns(s => new { s.ExtraHeadersJson }).ExecuteCommandAsync(ct);
                 changed = true;
                 _logger.LogInformation(
@@ -708,9 +737,9 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
     /// 厂商 Label 精简历史沿革（默认名 "{Label} 账号" 按登录时的 Label 落库）：
     /// 启动时把精确匹配的旧默认名规整为新名；用户自定义名不含其中、绝不触碰。
     /// </summary>
-    private static readonly (string LegacyLabel, string CurrentLabel)[] LegacyLabelRenames =
+    private static readonly (string VendorKey, string LegacyLabel, string CurrentLabel)[] LegacyLabelRenames =
     [
-        ("WorkBuddy（腾讯 CodeBuddy）", "WorkBuddy"),
+        ("workbuddy-cn", "WorkBuddy（腾讯 CodeBuddy）", "WorkBuddy"),
     ];
 
     /// <summary>把旧 Label 时代落库的默认账号名/站点名精确替换为新默认名（启动执行一次）。</summary>
@@ -729,16 +758,31 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
         foreach (var account in accounts)
         {
             ct.ThrowIfCancellationRequested();
-            foreach (var (legacy, current) in LegacyLabelRenames)
+            foreach (var (vendorKey, legacy, current) in LegacyLabelRenames)
             {
+                if (!string.Equals(account.VendorKey, vendorKey, StringComparison.OrdinalIgnoreCase)) continue;
+
                 var legacyDefault = $"{legacy} 账号";
                 var currentDefault = $"{current} 账号";
                 try
                 {
-                    if (account.DisplayName == legacyDefault)
+                    var renamed = false;
+                    // 读取快照后名称可能已被用户并发修改；条件更新保证只改仍为旧默认名的行。
+                    // IsDisplayNameCustom 用快照值比较，仅用于发现并发改名标记变化：
+                    // 旧库升级回填 DEFAULT 1 的历史账号仍满足 true==true，不能被误跳过。
+                    var wasCustom = account.IsDisplayNameCustom;
+                    var accountRenamed = account.DisplayName == legacyDefault
+                        && await db.Client.Updateable<DeviceOAuthAccount>()
+                            .SetColumns(a => new DeviceOAuthAccount { DisplayName = currentDefault })
+                            .Where(a => a.Id == account.Id
+                                        && !a.IsDeleted
+                                        && a.DisplayName == legacyDefault
+                                        && a.IsDisplayNameCustom == wasCustom)
+                            .ExecuteCommandAsync(ct) > 0;
+                    if (accountRenamed)
                     {
-                        account.DisplayName = currentDefault;
-                        await db.Client.Updateable(account).UpdateColumns(a => new { a.DisplayName }).ExecuteCommandAsync(ct);
+                        renamed = true;
+
                         changed = true;
                     }
 
@@ -747,13 +791,23 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
                         var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
                         if (site is not null && site.ManagedSource == DeviceOAuthAccountProvisioner.ManagedSource && site.Name == legacyDefault)
                         {
-                            site.Name = currentDefault;
-                            await db.Client.Updateable(site).UpdateColumns(s => new { s.Name }).ExecuteCommandAsync(ct);
-                            changed = true;
+                            // 站点改名或取消托管后 WHERE 不再匹配，跳过而不是覆盖用户值。
+                            var siteRenamed = await db.Client.Updateable<Site>()
+                                .SetColumns(s => new Site { Name = currentDefault })
+                                .Where(s => s.Id == site.Id
+                                            && s.Name == legacyDefault
+                                            && s.ManagedSource == DeviceOAuthAccountProvisioner.ManagedSource)
+                                .ExecuteCommandAsync(ct) > 0;
+                            if (siteRenamed)
+                            {
+                                renamed = true;
+
+                                changed = true;
+                            }
                         }
                     }
 
-                    if (changed)
+                    if (renamed)
                     {
                         _logger.LogInformation("Device OAuth account {Id} legacy default name normalized for {Vendor}", account.Id, account.VendorKey);
                     }
@@ -1001,22 +1055,47 @@ public sealed class DeviceOAuthCredentialRefreshService
         var owners = await _dbContext.DeviceOAuthAccounts
             .Where(a => a.LinkedSiteId == linkedSiteId && !a.IsDeleted).ToListAsync(cancellationToken);
         if (owners.Count != 1) return null;
-        return await RefreshCoreAsync(owners[0].Id, linkedSiteId, staleAccessToken, cancellationToken);
+        return await RefreshCoreAsync(owners[0].Id, linkedSiteId, staleAccessToken, cancellationToken, false);
     }
 
     /// <summary>Quota refresh is keyed by local account identity, including accounts without a site.</summary>
     public Task<string?> RefreshForAccountAsync(Guid accountId, string staleAccessToken, CancellationToken cancellationToken)
-        => RefreshCoreAsync(accountId, null, staleAccessToken, cancellationToken);
+        => RefreshCoreAsync(accountId, null, staleAccessToken, cancellationToken, true);
 
-    private async Task<string?> RefreshCoreAsync(Guid accountId, Guid? expectedSiteId, string staleAccessToken, CancellationToken cancellationToken)
+    /// <summary>Returns current credentials under the same gate as proxy and background rotations.</summary>
+    public async Task<DeviceOAuthTokenSet> EnsureFreshAsync(Guid accountId, bool forceRefresh, CancellationToken ct)
+    {
+        var initial = await _dbContext.DeviceOAuthAccounts.InSingleAsync(accountId);
+        if (initial is null || initial.IsDeleted) throw new KeyNotFoundException("OAuth account not found.");
+        var access = await RefreshCoreAsync(accountId, null, initial.AccessToken ?? string.Empty, ct, true,
+            onlyIfDue: !forceRefresh, requireRefreshToken: true, initialRefreshToken: initial.RefreshToken,
+            initialRefreshAt: initial.LastRefreshAt, initialSiteId: initial.LinkedSiteId);
+        if (string.IsNullOrWhiteSpace(access)) throw new InvalidOperationException("OAuth credential refresh did not produce an access token.");
+        var current = await _dbContext.DeviceOAuthAccounts.InSingleAsync(accountId);
+        if (current is null || current.IsDeleted) throw new KeyNotFoundException("OAuth account not found.");
+        if (current.LinkedSiteId != initial.LinkedSiteId || !string.Equals(current.AccessToken, access, StringComparison.Ordinal))
+            throw new InvalidOperationException("OAuth account credential changed while being read.");
+        return new DeviceOAuthTokenSet { AccessToken = current.AccessToken ?? string.Empty, RefreshToken = current.RefreshToken, ExpiresAt = current.TokenExpiresAt };
+    }
+
+    private async Task<string?> RefreshCoreAsync(Guid accountId, Guid? expectedSiteId, string staleAccessToken, CancellationToken cancellationToken, bool reportFailure, bool onlyIfDue = false, bool requireRefreshToken = false, string? initialRefreshToken = null, DateTimeOffset? initialRefreshAt = null, Guid? initialSiteId = null)
     {
         using (await DeviceOAuthRefreshGate.AcquireAsync(accountId, cancellationToken))
         {
             var account = await _dbContext.DeviceOAuthAccounts.InSingleAsync(accountId);
             if (account is null || account.IsDeleted) return null;
+            if (initialSiteId is { } originalSiteId && account.LinkedSiteId != originalSiteId)
+                throw new InvalidOperationException("OAuth account site changed while refreshing.");
             if (expectedSiteId is { } siteId && (account.LinkedSiteId != siteId
                 || (await _dbContext.DeviceOAuthAccounts.Where(a => a.LinkedSiteId == siteId && !a.IsDeleted)
                     .ToListAsync(cancellationToken)).Count != 1)) return null;
+            if (onlyIfDue)
+            {
+                if (account.TokenExpiresAt is null || account.TokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(5)) return account.AccessToken;
+            }
+            else if (requireRefreshToken && (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)
+                || !string.Equals(account.RefreshToken, initialRefreshToken, StringComparison.Ordinal)
+                || account.LastRefreshAt != initialRefreshAt)) return account.AccessToken;
             try
             {
                 await DeviceOAuthSiteCredentialSync.ReconcileAsync(_dbContext, _metadataCache, accountId, cancellationToken);
@@ -1024,10 +1103,15 @@ public sealed class DeviceOAuthCredentialRefreshService
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "Device OAuth site credential repair failed for {AccountId}", accountId);
+                if (reportFailure) throw;
                 return null;
             }
-            if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)) return account.AccessToken;
-            if (string.IsNullOrWhiteSpace(account.RefreshToken)) return null;
+            if (!onlyIfDue && !string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)) return account.AccessToken;
+            if (string.IsNullOrWhiteSpace(account.RefreshToken))
+            {
+                if (requireRefreshToken) throw new DeviceOAuthRefreshRefusedException("OAuth reauthorization required.");
+                return null;
+            }
 
             var vendor = _registry.Find(account.VendorKey);
             if (vendor is null) return null;
@@ -1047,6 +1131,8 @@ public sealed class DeviceOAuthCredentialRefreshService
                     },
                     account.ExtraJson,
                     coreCts.Token);
+                if (string.IsNullOrWhiteSpace(tokens.AccessToken))
+                    throw new InvalidOperationException("OAuth refresh returned an empty access token.");
                 account.AccessToken = tokens.AccessToken;
                 if (!string.IsNullOrWhiteSpace(tokens.RefreshToken)) account.RefreshToken = tokens.RefreshToken;
                 account.TokenExpiresAt = tokens.ExpiresAt;
@@ -1059,6 +1145,8 @@ public sealed class DeviceOAuthCredentialRefreshService
             }
             catch (DeviceOAuthRefreshRefusedException)
             {
+                // Quota invalidation uses a credential-version guard; do not write a stale snapshot here.
+                if (reportFailure) throw;
                 account.RequiresReauth = true;
                 await _dbContext.Client.Updateable(account).UpdateColumns(a => new { a.RequiresReauth }).ExecuteCommandAsync(CancellationToken.None);
                 return null;
@@ -1068,9 +1156,11 @@ public sealed class DeviceOAuthCredentialRefreshService
                 // A revoked network is not an authentication failure and must not be hidden.
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                _logger.LogWarning(ex, "Device OAuth credential refresh failed for account {AccountId}", accountId);
+                // Vendor errors can contain response bodies; never log credentials or tokens.
+                _logger.LogWarning("Device OAuth credential refresh failed for account {AccountId}", accountId);
+                if (reportFailure) throw;
                 return null;
             }
         }

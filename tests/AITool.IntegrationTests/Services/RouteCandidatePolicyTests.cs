@@ -22,6 +22,9 @@ public sealed class RouteCandidatePolicyTests : IDisposable
     private readonly RouteCircuitStateStore _circuitStore = new();
     private readonly SessionAffinityService _sessionAffinity = new();
 
+    private readonly FakeAccountQuotaProvider _accountProvider = new("fake-account");
+    private readonly FakeAccountQuotaProvider _secondAccountProvider = new("fake-second-account");
+
     public RouteCandidatePolicyTests()
     {
         var services = new ServiceCollection();
@@ -30,8 +33,9 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddSingleton<FakeSiteQuotaProvider>();
         services.AddSingleton<ISiteQuotaProvider>(sp => sp.GetRequiredService<FakeSiteQuotaProvider>());
-        services.AddSingleton<FakeAccountQuotaProvider>();
-        services.AddSingleton<IAccountQuotaProvider>(sp => sp.GetRequiredService<FakeAccountQuotaProvider>());
+        services.AddSingleton<FakeAccountQuotaProvider>(_accountProvider);
+        services.AddSingleton<IAccountQuotaProvider>(_accountProvider);
+        services.AddSingleton<IAccountQuotaProvider>(_secondAccountProvider);
         _serviceProvider = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_serviceProvider.GetRequiredService<SqlSugar.ISqlSugarClient>());
     }
@@ -318,8 +322,8 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         var routes = new List<CachedProxyRouteTarget>
         {
             // 静态顺序：晚重置在前。回退生效后应被重排为早重置优先。
-            new() { CircuitKey = lateKey, SiteId = lateSite },
-            new() { CircuitKey = soonKey, SiteId = soonSite },
+            new() { CircuitKey = lateKey, SiteId = lateSite, AccountIdentity = new(accountProvider.ProviderKey, lateSite) },
+            new() { CircuitKey = soonKey, SiteId = soonSite, AccountIdentity = new(accountProvider.ProviderKey, soonSite) },
         };
 
         var ordered = await policy.PreorderCandidatesAsync(routes, quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
@@ -338,7 +342,12 @@ public sealed class RouteCandidatePolicyTests : IDisposable
 
         var policy = new RouteCandidatePolicyService(
             _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
-        var route = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), SiteId = siteId };
+        var route = new CachedProxyRouteTarget
+        {
+            CircuitKey = Guid.NewGuid(),
+            SiteId = siteId,
+            AccountIdentity = new(accountProvider.ProviderKey, siteId),
+        };
 
         await policy.RecordRouteFailureAsync(route, 402, """{"error":{"message":"额度不足"}}""",
             retryAfterSeconds: null, tieredCooldownEnabled: true,
@@ -374,7 +383,13 @@ public sealed class RouteCandidatePolicyTests : IDisposable
 
         var policy = new RouteCandidatePolicyService(
             _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
-        var route = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), SiteId = mixedSite, SiteKeyId = siteKeyId };
+        var route = new CachedProxyRouteTarget
+        {
+            CircuitKey = Guid.NewGuid(),
+            SiteId = mixedSite,
+            SiteKeyId = siteKeyId,
+            AccountIdentity = new(accountProvider.ProviderKey, mixedSite),
+        };
 
         await policy.RecordRouteFailureAsync(route, 402, "insufficient quota",
             retryAfterSeconds: null, tieredCooldownEnabled: true,
@@ -384,11 +399,12 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         rest!.Value.UntilUtc.Should().BeBefore(DateTimeOffset.UtcNow.AddHours(5), "Key 配额数据（+3h）优先，账号回退（+96h）不参与");
     }
 
-    [Fact]
-    public async Task Mixed_candidates_use_key_data_and_account_fallback_independently()
+    [Theory]
+    [InlineData(1, 48, true)]
+    [InlineData(48, 1, false)]
+    public async Task Mixed_candidates_use_key_data_and_account_fallback_independently(int keyResetHours, int oauthResetHours, bool keyExpectedFirst)
     {
-        // 混合路由组（普通站点带 Key + OAuth 隐藏站点）：两套数据源各归各位、互不串扰，
-        // 排序统一按「最早重置优先」。这是 P0 回退在真实多源候选组里的行为锁定。
+        // 双向锁定 Key 数据与 OAuth 账号回退按最早重置排序。
         var accountProvider = _serviceProvider.GetRequiredService<FakeAccountQuotaProvider>();
         var siteProvider = _serviceProvider.GetRequiredService<FakeSiteQuotaProvider>();
         var oauthSite = Guid.NewGuid();
@@ -401,27 +417,39 @@ public sealed class RouteCandidatePolicyTests : IDisposable
             db.SiteKeys.Add(new Domain.Sites.SiteKey
             {
                 Id = keyId, SiteId = keySite, KeyValue = "k", Priority = 0, IsEnabled = true,
-                LastQuotaRawJson = siteProvider.BuildRawJson(resetInHours: 1)
+                LastQuotaRawJson = siteProvider.BuildRawJson(resetInHours: keyResetHours)
             });
             await db.SaveChangesAsync();
         }
-        accountProvider.Seed(oauthSite, resetInHours: 48); // OAuth 账号重置更晚
+        accountProvider.Seed(oauthSite, resetInHours: oauthResetHours);
 
         var policy = new RouteCandidatePolicyService(
             _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
 
-        var oauthKey = Guid.NewGuid();
-        var routes = new List<CachedProxyRouteTarget>
+        var keyCircuitKey = Guid.NewGuid();
+        var oauthCircuitKey = Guid.NewGuid();
+        var keyRoute = new CachedProxyRouteTarget { CircuitKey = keyCircuitKey, SiteId = keySite, SiteKeyId = keyId };
+        var oauthRoute = new CachedProxyRouteTarget
         {
-            new() { CircuitKey = Guid.NewGuid(), SiteId = oauthSite },        // OAuth（账号表回退）
-            new() { CircuitKey = Guid.NewGuid(), SiteId = keySite, SiteKeyId = keyId }, // 普通（Key 数据）
+            CircuitKey = oauthCircuitKey,
+            SiteId = oauthSite,
+            AccountIdentity = new(accountProvider.ProviderKey, oauthSite),
         };
+        var routes = keyExpectedFirst
+            ? new List<CachedProxyRouteTarget> { oauthRoute, keyRoute }
+            : new List<CachedProxyRouteTarget> { keyRoute, oauthRoute };
 
         var ordered = await policy.PreorderCandidatesAsync(routes, quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
 
-        ordered[0].SiteKeyId.Should().Be(keyId, "Key 站点用自己的重置数据（+1h）");
-        ordered[1].SiteKeyId.Should().BeNull();
-        ordered[1].SiteId.Should().Be(oauthSite, "OAuth 站点用账号表回退数据（+48h）殿后");
+        ordered.Should().HaveCount(2);
+        var keyIndex = keyExpectedFirst ? 0 : 1;
+        var oauthIndex = keyExpectedFirst ? 1 : 0;
+        ordered[keyIndex].CircuitKey.Should().Be(keyCircuitKey);
+        ordered[keyIndex].SiteKeyId.Should().Be(keyId);
+        ordered[keyIndex].SiteId.Should().Be(keySite);
+        ordered[oauthIndex].CircuitKey.Should().Be(oauthCircuitKey);
+        ordered[oauthIndex].SiteKeyId.Should().BeNull();
+        ordered[oauthIndex].SiteId.Should().Be(oauthSite);
     }
 
     [Fact]
@@ -478,10 +506,26 @@ public sealed class RouteCandidatePolicyTests : IDisposable
     {
         var provider = _serviceProvider.GetRequiredService<FakeAccountQuotaProvider>();
         var poolGroup = Guid.NewGuid();
-        var a = new CachedProxyRouteTarget { SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 0 };
-        var soon = new CachedProxyRouteTarget { SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = poolGroup, FallbackGroupOrder = 1 };
-        var pinned = new CachedProxyRouteTarget { SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = poolGroup, FallbackGroupOrder = 1 };
-        var e = new CachedProxyRouteTarget { SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 2 };
+        var a = new CachedProxyRouteTarget
+        {
+            SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 0,
+            AccountIdentity = new(provider.ProviderKey, Guid.NewGuid()),
+        };
+        var soon = new CachedProxyRouteTarget
+        {
+            SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = poolGroup, FallbackGroupOrder = 1,
+            AccountIdentity = new(provider.ProviderKey, Guid.NewGuid()),
+        };
+        var pinned = new CachedProxyRouteTarget
+        {
+            SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = poolGroup, FallbackGroupOrder = 1,
+            AccountIdentity = new(provider.ProviderKey, Guid.NewGuid()),
+        };
+        var e = new CachedProxyRouteTarget
+        {
+            SiteId = Guid.NewGuid(), CircuitKey = Guid.NewGuid(), FallbackGroupId = Guid.NewGuid(), FallbackGroupOrder = 2,
+            AccountIdentity = new(provider.ProviderKey, Guid.NewGuid()),
+        };
         provider.Seed(a.SiteId, 96);
         provider.Seed(soon.SiteId, 2);
         provider.Seed(pinned.SiteId, 48);
@@ -493,6 +537,131 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         var ordered = await policy.PreorderCandidatesAsync([a, soon, pinned, e], true, "h:quota-affinity", CancellationToken.None);
 
         ordered.Should().Equal(a, pinned, soon, e);
+    }
+
+    [Fact]
+    public async Task Ordinary_sites_without_account_identity_skip_account_provider_lookups()
+    {
+        // 普通站点（有 SiteKey 但 LastQuotaRawJson 为空、无 AccountIdentity）
+        // 在批量排序和 402 冷却中两个 fake provider 的 LookupCount 均为 0
+        var siteId = Guid.NewGuid();
+        var siteKeyId = Guid.NewGuid();
+        await using (var scope = _serviceProvider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Sites.Add(new Domain.Sites.Site { Id = siteId, Name = "ordinary", BaseUrl = "https://o.com", IsEnabled = true });
+            db.SiteKeys.Add(new Domain.Sites.SiteKey
+            {
+                Id = siteKeyId, SiteId = siteId, KeyValue = "k", Priority = 0, IsEnabled = true,
+                LastQuotaRawJson = null,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+
+        var route1 = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), SiteId = siteId, SiteKeyId = siteKeyId };
+        var route2 = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), SiteId = siteId, SiteKeyId = siteKeyId };
+
+        // 批量排序
+        await policy.PreorderCandidatesAsync([route1, route2], quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
+
+        _accountProvider.LookupCount.Should().Be(0, "普通站点无 AccountIdentity，批量排序不得查询账号表");
+        _secondAccountProvider.LookupCount.Should().Be(0);
+
+        // 402 冷却
+        var freshRoute = new CachedProxyRouteTarget { CircuitKey = Guid.NewGuid(), SiteId = Guid.NewGuid(), SiteKeyId = Guid.NewGuid() };
+        await using (var scope = _serviceProvider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Sites.Add(new Domain.Sites.Site { Id = freshRoute.SiteId, Name = "fresh", BaseUrl = "https://f.com", IsEnabled = true });
+            db.SiteKeys.Add(new Domain.Sites.SiteKey
+            {
+                Id = freshRoute.SiteKeyId!.Value, SiteId = freshRoute.SiteId, KeyValue = "k", Priority = 0, IsEnabled = true,
+                LastQuotaRawJson = null,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await policy.RecordRouteFailureAsync(freshRoute, 402, "insufficient quota",
+            retryAfterSeconds: null, tieredCooldownEnabled: true,
+            meta: new CircuitRouteMeta("f", "m"), CancellationToken.None);
+
+        _accountProvider.LookupCount.Should().Be(0, "普通站点无 AccountIdentity，402 冷却不得查询账号表");
+        _secondAccountProvider.LookupCount.Should().Be(0);
+
+        var rest = _circuitStore.GetRest(freshRoute.CircuitKey);
+        rest.Should().NotBeNull();
+        rest!.Value.UntilUtc.Should().BeAfter(DateTimeOffset.UtcNow.AddMinutes(29));
+        rest.Value.UntilUtc.Should().BeBefore(DateTimeOffset.UtcNow.AddMinutes(31));
+    }
+
+    [Fact]
+    public async Task Multiple_oauth_sites_query_owning_provider_once_with_deduplicated_sites()
+    {
+        // 两个 OAuth 站点批量时 owning provider 只调用 1 次且 LastSiteIds 包含两站点、另一 provider 为 0
+        var site1 = Guid.NewGuid();
+        var site2 = Guid.NewGuid();
+        _accountProvider.Seed(site1, 5);
+        _accountProvider.Seed(site2, 10);
+
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+
+        var r1 = new CachedProxyRouteTarget
+        {
+            CircuitKey = Guid.NewGuid(), SiteId = site1,
+            AccountIdentity = new(_accountProvider.ProviderKey, site1),
+        };
+        var r2 = new CachedProxyRouteTarget
+        {
+            CircuitKey = Guid.NewGuid(), SiteId = site2,
+            AccountIdentity = new(_accountProvider.ProviderKey, site2),
+        };
+
+        var initialCount = _accountProvider.LookupCount;
+        var initialSecond = _secondAccountProvider.LookupCount;
+
+        await policy.PreorderCandidatesAsync([r1, r2], quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
+
+        (_accountProvider.LookupCount - initialCount).Should().Be(1, "同一 provider 批量只查一次");
+        _accountProvider.LastSiteIds.Should().BeEquivalentTo(new[] { site1, site2 });
+        (_secondAccountProvider.LookupCount - initialSecond).Should().Be(0, "非 owning provider 不得被查询");
+    }
+
+    [Fact]
+    public async Task Cached_reset_miss_filters_out_cached_sites_from_subsequent_batch()
+    {
+        // 先让 A 进入 60 秒缓存后再批量 [A, B]，断言只查询 B，验证“实际缓存未命中”
+        var siteA = Guid.NewGuid();
+        var siteB = Guid.NewGuid();
+        _accountProvider.Seed(siteA, 5);
+        _accountProvider.Seed(siteB, 10);
+
+        var policy = new RouteCandidatePolicyService(
+            _serviceProvider, _circuitStore, _sessionAffinity, NullLogger<RouteCandidatePolicyService>.Instance);
+
+        var routeA = new CachedProxyRouteTarget
+        {
+            CircuitKey = Guid.NewGuid(), SiteId = siteA,
+            AccountIdentity = new(_accountProvider.ProviderKey, siteA),
+        };
+        var routeB = new CachedProxyRouteTarget
+        {
+            CircuitKey = Guid.NewGuid(), SiteId = siteB,
+            AccountIdentity = new(_accountProvider.ProviderKey, siteB),
+        };
+
+        // 查询 A，进入 60 秒缓存
+        await policy.PreorderCandidatesAsync([routeA, routeA], quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
+        var countAfterA = _accountProvider.LookupCount;
+
+        // 再次批量 [A, B]，应只查询 B
+        await policy.PreorderCandidatesAsync([routeA, routeB], quotaOrderingEnabled: true, conversationKey: null, CancellationToken.None);
+
+        (_accountProvider.LookupCount - countAfterA).Should().Be(1);
+        _accountProvider.LastSiteIds.Should().BeEquivalentTo(new[] { siteB }, "A 已在缓存中，批次回退只应反查未命中的 B");
     }
 
     public void Dispose()
@@ -542,7 +711,14 @@ public sealed class RouteCandidatePolicyTests : IDisposable
     /// </summary>
     private sealed class FakeAccountQuotaProvider : IAccountQuotaProvider
     {
-        public string ProviderKey => "fake-account";
+        public FakeAccountQuotaProvider(string providerKey = "fake-account")
+        {
+            ProviderKey = providerKey;
+        }
+
+        public string ProviderKey { get; }
+        public int LookupCount { get; private set; }
+        public IReadOnlyList<Guid>? LastSiteIds { get; private set; }
         private readonly Dictionary<Guid, int> _resetHoursBySite = [];
 
         public void Seed(Guid linkedSiteId, int resetInHours) => _resetHoursBySite[linkedSiteId] = resetInHours;
@@ -562,7 +738,10 @@ public sealed class RouteCandidatePolicyTests : IDisposable
         public Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
             IReadOnlyList<Guid> siteIds,
             CancellationToken cancellationToken)
-            => Task.FromResult<IReadOnlyList<AccountQuotaTarget>>(
+        {
+            LookupCount++;
+            LastSiteIds = siteIds.ToList();
+            return Task.FromResult<IReadOnlyList<AccountQuotaTarget>>(
                 _resetHoursBySite.Where(pair => siteIds.Contains(pair.Key))
                     .Select(pair => new AccountQuotaTarget
                     {
@@ -573,6 +752,7 @@ public sealed class RouteCandidatePolicyTests : IDisposable
                         IsEnabled = true,
                         LastQuotaRawJson = BuildRawJson(pair.Value),
                     }).ToList());
+        }
 
         public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
         {

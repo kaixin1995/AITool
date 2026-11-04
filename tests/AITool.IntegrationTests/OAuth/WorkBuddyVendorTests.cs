@@ -286,4 +286,15 @@ public sealed class WorkBuddyVendorTests
         parsed!.PlanType.Should().Contain("40");
     }
 
+    [Theory]
+    [InlineData(false, "workbuddy-cn")]
+    [InlineData(true, "workbuddy-global")]
+    public void ChatSiteConfig_configures_domain_identity_header_as_x_domain(bool global, string expectedVendorKey)
+    {
+        var vendor = new WorkBuddyOAuthVendor(new HttpClient(), global: global);
+        vendor.VendorKey.Should().Be(expectedVendorKey);
+        vendor.ChatSiteConfig.Should().NotBeNull();
+        vendor.ChatSiteConfig!.DomainIdentityHeaderName.Should().Be("X-Domain",
+            "WorkBuddy 国内版与国际版均必须声明 DomainIdentityHeaderName 为 X-Domain，防止漏设导致存量账号无法兜底");
+    }
 }

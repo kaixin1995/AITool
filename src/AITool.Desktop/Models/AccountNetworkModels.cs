@@ -35,7 +35,7 @@ public sealed class AccountNetworkEditor : ObservableObject
     public IReadOnlyList<AccountNetworkModeOption> ModeOptions { get; } =
     [
         new(null, "未指定（保留服务端策略）"),
-        new(0, "默认（跟随站点配置）"),
+        new(0, "默认（跟随站点 / 系统代理）"),
         new(1, "直连"),
         new(2, "代理方案")
     ];

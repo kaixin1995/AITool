@@ -49,6 +49,29 @@ public sealed class SessionIsolationKeyStore
         CryptographicOperations.ZeroMemory(key);
     }
 
+    internal static string ComputeGeneration(byte[] key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        return Convert.ToHexString(SHA256.HashData(key));
+    }
+
+    internal async Task<string?> TryReadCurrentGenerationAsync(ISqlSugarClient client, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(client);
+        var (rows, metadata) = await ReadStateAsync(client, ct);
+        var (key, _, _) = Unlock(rows, metadata);
+        if (key is null) return null;
+        try
+        {
+            return ComputeGeneration(key);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
+    }
+
     // The caller owns and must zero the returned temporary key. Request consumers use the
     // deriver, not raw deployment secrets. No plaintext cache masks DB damage: every read
     // revalidates, so damage self-heals on the next derive after it appears.
@@ -112,9 +135,11 @@ public sealed class SessionIsolationKeyStore
     {
         ct.ThrowIfCancellationRequested();
         var raw = Convert.ToBase64String(key);
-        client.Ado.BeginTran();
+        var transactionStarted = false;
         try
         {
+            client.Ado.BeginTran();
+            transactionStarted = true;
             var upgraded = await client.Ado.ExecuteCommandAsync("""
                 UPDATE SessionIsolationKeys SET Version = 2, ProtectedKey = @raw
                 WHERE Id = 1 AND Version = 1 AND ProtectedKey = @old
@@ -131,15 +156,22 @@ public sealed class SessionIsolationKeyStore
             }
             ct.ThrowIfCancellationRequested();
             client.Ado.CommitTran();
+            transactionStarted = false;
         }
         catch (OperationCanceledException)
         {
-            try { client.Ado.RollbackTran(); } catch { }
+            if (transactionStarted)
+            {
+                try { client.Ado.RollbackTran(); } catch { }
+            }
             throw;
         }
         catch
         {
-            try { client.Ado.RollbackTran(); } catch { }
+            if (transactionStarted)
+            {
+                try { client.Ado.RollbackTran(); } catch { }
+            }
             _logger?.LogWarning("Upgrading the legacy session isolation key failed; re-reading the persisted state.");
         }
         // Another writer may have rotated/replaced the row even when our conditional update

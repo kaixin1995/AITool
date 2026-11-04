@@ -13,7 +13,7 @@ namespace AITool.Domain.Proxy;
 /// </para>
 /// <para>
 /// 池名只是管理标签（不占用路由命名空间，创建后不可改——改不了的实质是
-/// 管理标识稳定性）。同厂商同套餐的模型清单一致（用户实证）。</para>
+/// 管理标识稳定性）。套餐仅作筛选，同套餐账号的模型权限也可能不同，实际可用模型以各成员站点映射为准。</para>
 /// </summary>
 [SugarTable("AccountPools")]
 [SugarIndex("UX_AccountPools_Name", nameof(Name), OrderByType.Asc, true)]
@@ -38,12 +38,12 @@ public sealed class AccountPool
     [SugarColumn(Length = 100, IsNullable = false)]
     public string VendorKey { get; set; } = string.Empty;
 
-    /// <summary>套餐过滤（当前仅 codex 有意义：team/plus/…）。null = 该厂商全部账号。</summary>
+    /// <summary>可选套餐筛选（当前仅 codex 有意义：team/plus/…）；null = 该厂商全部套餐，可混合。实际模型权限以各成员站点映射为准。</summary>
     [SugarColumn(Length = 100, IsNullable = true)]
     public string? PlanType { get; set; }
 
     /// <summary>
-    /// 自动纳入：同步时把厂商（+套餐）匹配的全部账号补进成员行；false = 仅手工成员。
+    /// 自动纳入：同步时把同厂商且符合可选套餐筛选的全部账号补进成员行；false = 仅手工成员。
     /// 排除靠成员行的 <see cref="AccountPoolMember.Excluded"/>（自动池排除后不会再被补回）。
     /// </summary>
     [SugarColumn(IsNullable = false)]

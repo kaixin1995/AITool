@@ -154,7 +154,15 @@ public sealed class CodexApiController : ControllerBase
             PlanType = claims?.PlanType,
             TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600),
         };
-        var account = await _provisioner.ProvisionFromTokensAsync(input, ct, session.Network, session.UpdateNetworkPolicy);
+        CodexAccount account;
+        try
+        {
+            account = await _provisioner.ProvisionFromTokensAsync(input, ct, session.Network, session.UpdateNetworkPolicy);
+        }
+        catch (CodexWorkspaceRequiredException ex)
+        {
+            return BadRequest(new { code = "codex_workspace_required", message = ex.Message });
+        }
         return Ok(ToSummary(account));
         }
         catch (NetworkPolicyException ex)
@@ -192,6 +200,7 @@ public sealed class CodexApiController : ControllerBase
         }
 
         var summaries = new List<object>();
+        var failures = parseResults.Where(r => !r.Success).Select(r => new { r.FileName, r.Error }).ToList();
         foreach (var r in parseResults.Where(r => r.Success))
         {
             var input = new CodexProvisionInput
@@ -207,11 +216,17 @@ public sealed class CodexApiController : ControllerBase
                 PlanType = r.PlanType,
                 TokenExpiresAt = r.TokenExpiresAt,
             };
-            var account = await _provisioner.ProvisionFromTokensAsync(input, ct, importOperation, selection is not null);
-            summaries.Add(ToSummary(account));
+            try
+            {
+                var account = await _provisioner.ProvisionFromTokensAsync(input, ct, importOperation, selection is not null);
+                summaries.Add(ToSummary(account));
+            }
+            catch (CodexWorkspaceRequiredException ex)
+            {
+                failures.Add(new { r.FileName, Error = (string?)ex.Message });
+            }
         }
 
-        var failures = parseResults.Where(r => !r.Success).Select(r => new { r.FileName, r.Error }).ToList();
         if (failures.Count > 0)
         {
             return StatusCode(207, new { successes = summaries, failures });
@@ -251,8 +266,16 @@ public sealed class CodexApiController : ControllerBase
     {
         try
         {
-            await _cooldownService.ResetAsync(id, ct);
-            return Ok(new { message = "已重置" });
+            var result = await _cooldownService.ResetAsync(id, ct);
+            if (!result.Completed)
+                return Ok(new
+                {
+                    message = $"重置未完成：{result.UnconfirmedStep}未确认，账号可能仍在冷却或站点仍处于禁用，请重试；持续失败请检查数据库可用性。",
+                    completed = false,
+                    coolingCleared = result.CoolingCleared,
+                    unconfirmedStep = result.UnconfirmedStep
+                });
+            return Ok(new { message = "已重置", completed = true });
         }
         catch (NetworkPolicyException ex)
         {
@@ -491,7 +514,8 @@ public sealed class CodexApiController : ControllerBase
         try
         {
             using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "models");
-            var remoteModels = (await (network?.CodexModels ?? _modelFetcher).FetchAsync(account.AccessToken, account.AccountId ?? string.Empty, ct)).ToList();
+            var remoteModels = (await ModelCredentialRecovery.FetchAsync(_dbContext, HttpContext.RequestServices, credentialSnapshot,
+                token => (network?.CodexModels ?? _modelFetcher).FetchAsync(token, account.AccountId ?? string.Empty, ct), ct)).ToList();
             var existingMappings = await _dbContext.SiteModelMappings
                 .Where(m => m.SiteId == account.LinkedSiteId)
                 .ToListAsync(ct);
@@ -538,7 +562,6 @@ public sealed class CodexApiController : ControllerBase
         }
         catch (ModelAccessTokenUnauthorizedException ex)
         {
-            await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(credentialSnapshot.AccessToken!, credentialSnapshot, ct);
             return Ok(new { success = false, message = ex.Message });
         }
         catch (Exception ex)
@@ -577,8 +600,7 @@ public sealed class CodexApiController : ControllerBase
     }
 
     /// <summary>
-    /// 批量应用模型选择到同套餐全部账号：同 plan 的上游模型清单一致（用户实证），
-    /// 组内任一账号拉取一次、勾选结果应用到整组——不必逐账号真实拉取。
+    /// 仅对源账号应用选择；其他账号权限无法从套餐推断，跳过并报告风险。
     /// </summary>
     [HttpPost("accounts/batch-apply-models")]
     public async Task<IActionResult> BatchApplyModels([FromBody] BatchApplyCodexModelsRequest request, CancellationToken ct)

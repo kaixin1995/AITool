@@ -421,8 +421,11 @@ public sealed class GoogleOAuthClient : IGoogleOAuthClient
         var body = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException(
-                $"Google token endpoint returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+            var message = $"Google token endpoint returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}";
+            if (parameters.TryGetValue("grant_type", out var grantType) && grantType == "refresh_token"
+                && AITool.Application.OAuth.OAuthRefreshRefusedException.IsCredentialRejection(response.StatusCode, body))
+                throw new AITool.Application.OAuth.OAuthRefreshRefusedException(message);
+            throw new InvalidOperationException(message);
         }
 
         using var doc = JsonDocument.Parse(body);

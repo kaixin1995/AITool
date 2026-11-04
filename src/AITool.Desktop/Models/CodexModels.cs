@@ -269,6 +269,8 @@ internal static class CodexDateText
 
 // —— Google 账号（Antigravity）OAuth 支撑模型 ——
 
+public sealed record CodexResetQuotaResponse(bool Completed, string? Message, string? UnconfirmedStep, bool? CoolingCleared);
+
 public sealed class GoogleOAuthResult
 {
     public string Url { get; set; } = string.Empty;

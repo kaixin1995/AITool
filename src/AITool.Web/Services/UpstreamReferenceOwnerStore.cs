@@ -15,16 +15,19 @@ public sealed class UpstreamReferenceOwnerStore : IUpstreamReferenceOwnerStore
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _ttl;
+    private readonly SessionIsolationKeyStore? _keyStore;
     private long _nextCleanupAtUtcTicks;
     public const int MaxReferences = 256;
 
-    public UpstreamReferenceOwnerStore(IServiceScopeFactory scopeFactory, TimeProvider timeProvider, TimeSpan? ttl = null)
+    public UpstreamReferenceOwnerStore(IServiceScopeFactory scopeFactory, TimeProvider timeProvider, TimeSpan? ttl = null,
+        SessionIsolationKeyStore? keyStore = null)
     {
         _scopeFactory = scopeFactory;
         _timeProvider = timeProvider;
         _ttl = ttl ?? TimeSpan.FromHours(24);
         if (_ttl <= TimeSpan.Zero || _ttl > TimeSpan.FromDays(30))
             throw new ArgumentOutOfRangeException(nameof(ttl));
+        _keyStore = keyStore;
     }
 
     public async Task<UpstreamReferenceRestriction?> ResolveAsync(string clientScope,
@@ -94,6 +97,16 @@ public sealed class UpstreamReferenceOwnerStore : IUpstreamReferenceOwnerStore
                 // Raw Ado has no CT overload: await fully, then observe cancellation before commit.
                 await client.Ado.ExecuteCommandAsync("UPDATE UpstreamReferenceOwners SET IsConflict=IsConflict WHERE 1=0;");
                 ct.ThrowIfCancellationRequested();
+
+                if (context.OwnerKeyGeneration is not null)
+                {
+                    if (_keyStore is null)
+                        throw Unavailable();
+                    var currentGen = await _keyStore.TryReadCurrentGenerationAsync(client, ct);
+                    if (currentGen is null || !string.Equals(currentGen, context.OwnerKeyGeneration, StringComparison.Ordinal))
+                        throw Error("reference_conflict", "The upstream reference has conflicting ownership.");
+                }
+
                 var now = _timeProvider.GetUtcNow().UtcTicks;
                 if (ClaimCleanup(now))
                 {

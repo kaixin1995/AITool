@@ -168,9 +168,15 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             EditNetwork.SetOptions(options);
             BatchNetwork.SetOptions(options);
             NetworkReady = true;
+            // 语义锚定：
+            // - Legacy/默认：NetworkTransport.cs:131 的 UseProxy=true（跟随站点/系统代理，未配置可用代理时可能直连）。
+            // - ProxyProfile：AccountNetworkPolicyStore.cs:207-242 与 NetworkTransport.cs:98-113 唯一实现 fail-closed（失效即阻断，不回退直连）。
+            // - 直连：NetworkTransport.cs:131 的 UseProxy=false。
+            // 文案口径对照基准：frontend/src/components/AccountNetworkSelector.vue:29、docs/account-network-isolation.md:13。
+            // 注意：若未来引入显式 Block 模式需同步修订此处，当前禁止暗示存在独立阻断选项。
             NetworkStatus = options.Count == 0
                 ? "暂无代理方案；可显式选择默认或直连。未指定时保留服务端策略。"
-                : "未指定时保留服务端策略；默认不是直连。仅显示方案名称 / ID，不显示代理地址或密钥。";
+                : "未指定时保留服务端策略。默认：跟随站点配置，未配置出口代理时走系统代理（系统未配置代理即为直连）；直连：不走任何代理；代理方案：失效时阻断请求，不回退直连。仅显示方案名称 / ID，不显示代理地址或密钥。";
         }
         catch (ApiException exception) when (exception.StatusCode == 404)
         {
@@ -1340,12 +1346,21 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         if (account is null || account.IsGoogle) return;
         try
         {
-            await _apiService.SendAsync<object>(
+            var result = await _apiService.SendAsync<CodexResetQuotaResponse?>(
                 HttpMethod.Post,
                 $"/api/admin/oauth/accounts/{account.Id}/reset-quota",
                 null);
-            Message = $"账号“{account.DisplayName}”的额度状态已重置";
             await LoadAsync();
+            if (result is { Completed: false })
+            {
+                Message = string.Empty;
+                ErrorMessage = result.Message ?? "重置未完成，请重试。";
+            }
+            else
+            {
+                ErrorMessage = string.Empty;
+                Message = result?.Message ?? $"账号“{account.DisplayName}”的额度状态已重置";
+            }
         }
         catch (Exception exception)
         {

@@ -349,14 +349,14 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token.AccessToken.Trim());
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            string text;
-            try { text = await response.Content.ReadAsStringAsync(cancellationToken); }
-            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { text = string.Empty; }
+            using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
                 return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized, AccessTokenUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized };
             }
+            var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -461,10 +461,12 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
         request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + accessToken.Trim());
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
         if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
-        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException(
@@ -473,7 +475,8 @@ public sealed class KiroOAuthVendor : IDeviceOAuthVendor
 
         try
         {
-            return JsonDocument.Parse(text).RootElement.Clone();
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.Clone();
         }
         catch (JsonException ex)
         {

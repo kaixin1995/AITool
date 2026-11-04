@@ -28,7 +28,7 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
     private const string UserAgent = "ZCode/" + AppVersion;
     private const string AppVersion = "3.16.3";
     private const string ZaiIndividualCodingPlanId = "account:zai-individual-coding-plan";
-    private const string ZaiStartPlanId = "account:zai-start-plan";
+
 
     private readonly HttpClient _httpClient;
 
@@ -50,12 +50,9 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
     ];
 
     /// <summary>
-    /// 拉取该账号<b>真实套餐</b>在 ZCode 远端 provider 配置里的动态模型目录：
-    /// ① configs 端点给出 https 配置 URL → 下载 provider 配置；② 订阅端点判定该铸造 key 的套餐
-    /// （读不出即明确失败，不猜测）；③ 只取该套餐 providerId（account:zai-individual-coding-plan /
-    /// account:zai-start-plan）的 builtinModelIds + builtinProviderModelRules（剔除 enabled=false）；
-    /// ④ 追加账号当前有余额的 gift/体验模型（-Trial 别名，对齐参考插件）。任何一步失败都抛出可读异常，
-    /// 绝不回退到静态 DefaultModels 冒充远端目录。
+    /// 拉取铸造 API key 的 Coding Plan 在远端 provider 配置中的模型目录。
+    /// Start Plan 和 gift 余额属于 ZCode 账号路径，其凭证及计费路径与聊天使用的 API key 不同，
+    /// 不将其模型或本地构造的体验别名导入到 API key 站点。无有效订阅时明确失败。
     /// </summary>
     public bool SupportsModelFetch => true;
 
@@ -67,16 +64,15 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
         // ① 远端 provider 配置（失败即失败：配置拉不到就不给目录，不用静态清单顶替）。
         var config = await FetchProviderConfigAsync(cancellationToken);
 
-        // ② 套餐判定：订阅端点可读且有 VALID 订阅 → 自己的 Coding Plan；
-        //    可读但无订阅 → 只能按 Start Plan（gift）路径；读不出 → 明确报无法辨识。
-        var ownCodingPlan = await HasOwnCodingPlanAsync(token, cancellationToken);
-        var planId = ownCodingPlan ? ZaiIndividualCodingPlanId : ZaiStartPlanId;
+        // ② 聊天通过铸造的 API key 转发。ZCode 登录 token 的 Start Plan/gift
+        //    余额不能证明该 key 能调用或使用同一计费路径，因此不导入其目录。
+        if (!await HasOwnCodingPlanAsync(token, cancellationToken))
+        {
+            throw new InvalidOperationException("ZCode 铸造的 API key 没有有效的 GLM Coding Plan 订阅；Start Plan/体验余额不能用于此 API key 聊天路径");
+        }
 
-        // ③ 该套餐在远端配置里的模型 ID（只取该 providerId，不把其他套餐的 GLM 模型混给账号）。
-        var planModelIds = PlanModelIds(config, planId);
-
-        // ④ 账号当前有余额的 gift/体验模型（参考行为：余额读不到只是没有 gift，不影响套餐目录）。
-        var giftModels = await FetchLiveGiftModelsAsync(ReadStringExtra(extraJson, "zaiToken"), cancellationToken);
+        // ③ 只使用该 API key 套餐在远端配置中的原始模型 ID。
+        var planModelIds = PlanModelIds(config, ZaiIndividualCodingPlanId);
 
         var result = new List<DeviceOAuthRemoteModel>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -93,23 +89,9 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
             Add(id);
         }
 
-        foreach (var raw in giftModels)
-        {
-            if (!ownCodingPlan)
-            {
-                // 纯 Start Plan 账号：gift 的模型按余额里的名字直接可用（Start 配置常缺最新模型）。
-                Add(raw);
-            }
-
-            // gift 以 -Trial 体验别名追加（对齐参考 giftID：目录拼写 + "-Trial"）。
-            Add(TrialId(raw));
-        }
-
         if (result.Count == 0)
         {
-            throw new InvalidOperationException(ownCodingPlan
-                ? $"ZCode 远端配置中没有套餐 {planId} 的可用模型，拒绝回退到静态清单"
-                : "该账号既没有 GLM Coding Plan 订阅，也没有可用的 Start Plan 余额，无法给出动态模型目录");
+            throw new InvalidOperationException($"ZCode 远端配置中没有套餐 {ZaiIndividualCodingPlanId} 的可用模型，拒绝回退到静态清单");
         }
 
         return result;
@@ -152,7 +134,8 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
 
         try
         {
-            return JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct)).RootElement.Clone();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return document.RootElement.Clone();
         }
         catch (JsonException ex)
         {
@@ -180,31 +163,6 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// 账号当前<b>有余额</b>的 gift/体验模型（参考 startPlan()：active 且未过期的 plan 下、
-    /// 未花完的 balance 桶声明的模型）。余额读不到（任何失败）返回空——gift 是增量，不该卡死目录。
-    /// </summary>
-    private async Task<IReadOnlyList<string>> FetchLiveGiftModelsAsync(string? zaiToken, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(zaiToken))
-        {
-            return [];
-        }
-
-        try
-        {
-            var data = await CallAsync(HttpMethod.Get,
-                $"{ZCodeRoot}/api/v1/zcode-plan/billing/balance?app_version={AppVersion}",
-                auth: "Bearer " + zaiToken.Trim(), device: NewDevice(), ct: ct);
-            return ParseLiveGiftModels(data);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _ = ex;
-            return [];
-        }
     }
 
     /// <summary>billing/balance → active plan 下未花完桶的模型名（对齐参考 startPlan 的 live models）。</summary>
@@ -333,14 +291,6 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
         }
 
         return models;
-    }
-
-    /// <summary>gift 模型的体验别名（对齐参考 giftID：目录内按目录拼写，外加 "-Trial" 后缀）。
-    /// 注意 DefaultModels 元素为值元组，未命中时 default.Slug 为 null，必须判空后再拼别名。</summary>
-    private string TrialId(string model)
-    {
-        var match = DefaultModels.FirstOrDefault(entry => string.Equals(entry.Slug, model, StringComparison.OrdinalIgnoreCase));
-        return !string.IsNullOrEmpty(match.Slug) ? match.Slug + "-Trial" : model + "-Trial";
     }
 
     /// <summary>
@@ -689,14 +639,14 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
                 request.Headers.TryAddWithoutValidation("Bigmodel-Project", project!);
             }
 
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-            string text;
-            try { text = await response.Content.ReadAsStringAsync(ct); }
-            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !ct.IsCancellationRequested) { text = string.Empty; }
+            using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
                 return new DeviceOAuthQuotaResult { Success = false, Error = "铸造的 API key 被拒绝，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized };
             }
+            var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -869,10 +819,12 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
             request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
         }
 
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
         if (modelAccessToken && response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
-        var text = await response.Content.ReadAsStringAsync(ct);
+        var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
         JsonElement envelope;
         try
         {

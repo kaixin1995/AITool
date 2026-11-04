@@ -113,7 +113,8 @@ public sealed class QoderOAuthVendor : IDeviceOAuthVendor
         JsonElement root;
         try
         {
-            root = JsonDocument.Parse(text).RootElement.Clone();
+            using var document = JsonDocument.Parse(text);
+            root = document.RootElement.Clone();
         }
         catch (JsonException ex)
         {
@@ -487,14 +488,14 @@ public sealed class QoderOAuthVendor : IDeviceOAuthVendor
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + deviceToken.Trim());
             request.Headers.TryAddWithoutValidation("Cosy-ClientType", "10");
             request.Headers.TryAddWithoutValidation("User-Agent", "Qoder");
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            string text;
-            try { text = await response.Content.ReadAsStringAsync(cancellationToken); }
-            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { text = string.Empty; }
+            using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
                 return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized, AccessTokenUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized && deviceToken == token.AccessToken };
             }
+            var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
 
             if (!response.IsSuccessStatusCode)
             {

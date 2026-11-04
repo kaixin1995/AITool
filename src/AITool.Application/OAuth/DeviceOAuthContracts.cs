@@ -2,6 +2,13 @@ using AITool.Application.Accounts;
 
 namespace AITool.Application.OAuth;
 
+/// <summary>模型目录的权限范围。</summary>
+public enum DeviceOAuthModelCatalogScope
+{
+    AccountScoped = 0,
+    PublicCatalog = 1,
+}
+
 /// <summary>
 /// 通用轮询式 OAuth 厂商扩展点：每家厂商提供登录会话、token 刷新、额度查询与聊天站点配置。
 /// 新增厂商只需实现本接口并注册（Infrastructure 实现端点细节，Web 层全链路复用）。
@@ -43,8 +50,11 @@ public interface IDeviceOAuthVendor
     /// <summary>该厂商是否支持拉取模型目录（默认不支持；支持的厂商覆写 FetchModelsAsync）。</summary>
     bool SupportsModelFetch => false;
 
+    /// <summary>厂商模型目录的权限范围。</summary>
+    DeviceOAuthModelCatalogScope ModelCatalogScope => DeviceOAuthModelCatalogScope.AccountScoped;
+
     /// <summary>
-    /// 拉取该账号可用的上游模型目录（供选择导入到关联站点）。
+    /// 返回厂商模型目录；无账号级接口时可返回公共目录，必须用 <see cref="ModelCatalogScope"/> 标注，调用方不得将公共目录当作账号权益校验。
     /// 仅 <see cref="SupportsModelFetch"/>=true 的厂商需要实现；默认返回空列表。
     /// </summary>
     Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
@@ -138,7 +148,14 @@ public sealed record DeviceOAuthChatSiteConfig(
     bool SupportsOpenAi,
     bool SupportsAnthropic,
     bool SupportsResponses,
-    IReadOnlyDictionary<string, string> ExtraHeaders);
+    IReadOnlyDictionary<string, string> ExtraHeaders)
+{
+    /// <summary>
+    /// 允许将 ExtraJson.domain 回填为聊天站点身份头（如 WorkBuddy 的 "X-Domain"）。
+    /// null 表示不映射（默认）。
+    /// </summary>
+    public string? DomainIdentityHeaderName { get; init; }
+}
 
 /// <summary>上游模型目录条目（Slug=上游模型 ID，DisplayName=展示名，缺失时回退 ID）。</summary>
 public sealed record DeviceOAuthRemoteModel(string Slug, string DisplayName);

@@ -7,40 +7,19 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Web.Controllers.Admin;
 
-/// <summary>
-/// 模型健康监控 API：监控列表（含 48 段时间线）、添加/移除监控。
-/// <para>
-/// 迁移自 <c>Pages/Admin/ModelHealth/Index.cshtml.cs</c>。
-/// 时间线算法（48 段分桶）与原 PageModel 完全一致，按 RequestedAt 时间范围分桶，
-/// 每段状态为「全成功=success，否则=fail」。
-/// </para>
-/// <para>
-/// 数据源是 <see cref="ProxyUsageLog"/>，按 RequestModel / AttemptedModel / TargetSiteId 三路匹配。
-/// 加载时会顺手清理「指向已删除模型」的孤儿监控配置。
-/// </para>
-/// </summary>
+/// <summary>模型健康监控 API：监控列表（含 48 段时间线）、添加/移除监控。</summary>
 [ApiController]
 [Route("api/admin/model-health")]
 public sealed class ModelHealthApiController : ControllerBase
 {
-    /// <summary>
-    /// 数据库上下文。
-    /// </summary>
     private readonly AppDbContext _dbContext;
 
-    /// <summary>
-    /// 初始化模型健康监控 API 控制器。
-    /// </summary>
     public ModelHealthApiController(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
-    /// <summary>
-    /// 获取健康监控面板数据（监控模型列表 + 每个模型各站点的健康详情 + 48 段时间线）。
-    /// </summary>
-    /// <param name="range">时间范围：1d / 7d（默认）/ 30d。</param>
-    /// <param name="cancellationToken">取消令牌。</param>
+    /// <summary>获取健康监控面板数据。</summary>
     [HttpGet]
     public async Task<IActionResult> GetDashboard([FromQuery] string? range, CancellationToken cancellationToken)
     {
@@ -48,9 +27,7 @@ public sealed class ModelHealthApiController : ControllerBase
         return Ok(ApiResponse.Ok(result));
     }
 
-    /// <summary>
-    /// 添加模型到健康监控。
-    /// </summary>
+    /// <summary>添加模型到健康监控。</summary>
     [HttpPost("{modelId:guid}/monitor")]
     public async Task<IActionResult> AddMonitor(Guid modelId, CancellationToken cancellationToken)
     {
@@ -70,9 +47,7 @@ public sealed class ModelHealthApiController : ControllerBase
         return Ok(ApiResponse.Ok("监控已添加"));
     }
 
-    /// <summary>
-    /// 从健康监控移除模型。
-    /// </summary>
+    /// <summary>从健康监控移除模型。</summary>
     [HttpDelete("{modelId:guid}/monitor")]
     public async Task<IActionResult> RemoveMonitor(Guid modelId, CancellationToken cancellationToken)
     {
@@ -90,12 +65,8 @@ public sealed class ModelHealthApiController : ControllerBase
         return Ok(ApiResponse.Ok("监控已移除"));
     }
 
-    /// <summary>
-    /// 加载监控面板完整数据。逻辑迁移自 ModelHealth/Index.cshtml.cs 的 LoadDataAsync。
-    /// </summary>
     private async Task<object> LoadDashboardAsync(string? range, CancellationToken cancellationToken)
     {
-        // 1. 加载监控 + 清理孤儿监控（指向已删除模型）。
         var monitors = await _dbContext.ModelHealthMonitors.ToListAsync(cancellationToken);
         var monitoredModelIds = monitors.Select(m => m.ModelLibraryItemId).Distinct().ToList();
         var models = await _dbContext.ModelLibraryItems
@@ -119,14 +90,12 @@ public sealed class ModelHealthApiController : ControllerBase
             .OrderBy(m => m.displayName)
             .ToList();
 
-        // 2. 可选模型（排除已监控的）。
         var availableModels = await _dbContext.ModelLibraryItems
             .Where(m => !monitoredModelIds.Contains(m.Id))
             .OrderBy(m => m.ModelName)
             .Select(m => new { id = m.Id, modelName = m.ModelName, displayName = m.ModelName })
             .ToListAsync(cancellationToken);
 
-        // 3. 无监控模型时直接返回空 healthData。
         var healthData = new Dictionary<Guid, List<object>>();
         if (monitoredModelIds.Count == 0)
         {
@@ -139,7 +108,7 @@ public sealed class ModelHealthApiController : ControllerBase
             };
         }
 
-        // 4. 健康看板展示历史调用，不按当前启用状态排除映射、站点或路由。
+        // 健康看板展示历史调用，不按当前启用状态排除映射、站点或路由。
         var mappings = await _dbContext.SiteModelMappings
             .Where(m => monitoredModelIds.Contains(m.ModelLibraryItemId))
             .ToListAsync(cancellationToken);
@@ -169,7 +138,6 @@ public sealed class ModelHealthApiController : ControllerBase
                 || matchedUpstreamNames.Contains(x.AttemptedModel))
             .ToListAsync(cancellationToken);
 
-        // 5. 按模型分组聚合。
         var modelSummaries = new List<object>();
         foreach (var modelId in monitoredModelIds)
         {
@@ -193,33 +161,65 @@ public sealed class ModelHealthApiController : ControllerBase
                 .Distinct(StringComparer.Ordinal)
                 .ToHashSet(StringComparer.Ordinal);
             var modelLogs = allLogs
-                .Where(l => matchedRequestModels.Contains(l.RequestModel) || matchedAttemptedModels.Contains(l.AttemptedModel))
+                .Where(l => matchedRequestModels.Contains(l.RequestModel) ||
+                    (matchedAttemptedModels.Contains(l.AttemptedModel) &&
+                     (l.TargetSiteId == Guid.Empty || modelMappings.Any(m => m.SiteId == l.TargetSiteId))))
                 .ToList();
 
-            // A site can have several mappings for one library model. Attribute each call
-            // to one mapping, preferring its remote name over a route alias. Historical logs
-            // with no remaining matching rule fall back deterministically to the first mapping.
-            var orderedMappings = modelMappings.OrderBy(m => m.RemoteModelName, StringComparer.Ordinal).ThenBy(m => m.Id).ToList();
-            var firstMappingBySite = orderedMappings.GroupBy(m => m.SiteId).ToDictionary(g => g.Key, g => g.First().Id);
-            var mappingByAttempt = new Dictionary<(Guid SiteId, string Name), Guid>();
-            foreach (var mapping in orderedMappings)
-                mappingByAttempt.TryAdd((mapping.SiteId, mapping.RemoteModelName), mapping.Id);
-            foreach (var mapping in orderedMappings)
-            foreach (var rule in relatedRouteRules.Where(r => r.SiteId == mapping.SiteId &&
-                string.Equals(r.SiteModelName, mapping.RemoteModelName, StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(r.UpstreamModelName)))
-                mappingByAttempt.TryAdd((mapping.SiteId, rule.UpstreamModelName), mapping.Id);
+            // Historical logs have no mapping ID. A name is evidence only if it identifies
+            // exactly one mapping, including aliases that collide with remote names.
+            var candidatesByAttempt = new Dictionary<(Guid SiteId, string Name), HashSet<Guid>>();
+            void AddCandidate(Guid siteId, string name, Guid mappingId)
+            {
+                if (string.IsNullOrWhiteSpace(name)) return;
+                var key = (siteId, name);
+                if (!candidatesByAttempt.TryGetValue(key, out var candidates))
+                    candidatesByAttempt[key] = candidates = [];
+                candidates.Add(mappingId);
+            }
+            foreach (var mapping in modelMappings)
+            {
+                AddCandidate(mapping.SiteId, mapping.RemoteModelName, mapping.Id);
+                foreach (var rule in relatedRouteRules.Where(r => r.SiteId == mapping.SiteId &&
+                    string.Equals(r.SiteModelName, mapping.RemoteModelName, StringComparison.Ordinal)))
+                    AddCandidate(mapping.SiteId, rule.UpstreamModelName, mapping.Id);
+            }
+
+            Guid? ResolveMapping(ProxyUsageLog log)
+            {
+                if (log.TargetSiteId != Guid.Empty)
+                {
+                    return candidatesByAttempt.TryGetValue((log.TargetSiteId, log.AttemptedModel ?? string.Empty), out var candidates) && candidates.Count == 1
+                        ? candidates.Single() : null;
+                }
+
+                // Legacy logs without a site can match remote names or upstream aliases, but only
+                // when it is unique across all sites for this model.
+                var matches = candidatesByAttempt.Where(x => string.Equals(x.Key.Name, log.AttemptedModel, StringComparison.Ordinal)).SelectMany(x => x.Value).Distinct().Take(2).ToList();
+                return matches.Count == 1 ? matches[0] : null;
+            }
+
+            var logsByMapping = new Dictionary<Guid, List<ProxyUsageLog>>();
+            var unassignedLogs = new List<ProxyUsageLog>();
+            foreach (var log in modelLogs)
+            {
+                var owner = ResolveMapping(log);
+                if (owner is null)
+                {
+                    unassignedLogs.Add(log);
+                    continue;
+                }
+                if (!logsByMapping.TryGetValue(owner.Value, out var logs))
+                    logsByMapping[owner.Value] = logs = [];
+                logs.Add(log);
+            }
 
             var healthList = modelMappings.Select(map =>
             {
                 sites.TryGetValue(map.SiteId, out var site);
-                var siteLogs = modelLogs
-                    .Where(l => (l.TargetSiteId == map.SiteId &&
-                            (mappingByAttempt.TryGetValue((map.SiteId, l.AttemptedModel ?? string.Empty), out var owner)
-                                ? owner == map.Id : firstMappingBySite[map.SiteId] == map.Id))
-                        || (l.TargetSiteId == Guid.Empty && string.Equals(l.AttemptedModel, map.RemoteModelName, StringComparison.Ordinal)))
-                    .OrderByDescending(l => l.RequestedAt)
-                    .ToList();
-
+                var siteLogs = logsByMapping.TryGetValue(map.Id, out var logs)
+                    ? logs.OrderByDescending(l => l.RequestedAt).ToList()
+                    : new List<ProxyUsageLog>();
                 var latestLog = siteLogs.FirstOrDefault();
                 var successCount = siteLogs.Count(l => l.Status == "success");
                 var totalLogs = siteLogs.Count;
@@ -231,13 +231,6 @@ public sealed class ModelHealthApiController : ControllerBase
                     LastStatus = latestLog?.Status ?? map.LastStatus,
                     LastCheckedAt = latestLog?.RequestedAt,
                     LastDurationMs = latestLog?.TotalDurationMs,
-                    RecentLogs = siteLogs.Select(l => new HealthLogEntry
-                    {
-                        Status = l.Status,
-                        DurationMs = l.TotalDurationMs,
-                        CheckedAt = l.RequestedAt,
-                        ErrorMessage = l.ErrorMessage
-                    }).ToList(),
                     TimelineSegments = BuildTimelineSegments(siteLogs),
                     SuccessRate = totalLogs > 0 ? (double)successCount / totalLogs : 0,
                     SuccessCount = successCount,
@@ -261,18 +254,6 @@ public sealed class ModelHealthApiController : ControllerBase
                 timelineSegments = h.TimelineSegments
             }).ToList();
 
-            // 模型级汇总（二次聚合）—— 直接属性访问，零反射。
-            var modelLevelLogs = healthList
-                .SelectMany(h => h.RecentLogs)
-                .Select(x => new ProxyUsageLog
-                {
-                    Status = x.Status,
-                    TotalDurationMs = x.DurationMs,
-                    RequestedAt = x.CheckedAt,
-                    ErrorMessage = x.ErrorMessage ?? string.Empty
-                })
-                .ToList();
-
             var siteCount = healthList.Count;
             var healthySiteCount = healthList.Count(x => string.Equals(x.LastStatus, "success", StringComparison.OrdinalIgnoreCase));
             var unhealthySiteCount = healthList.Count(x => string.Equals(x.LastStatus, "fail", StringComparison.OrdinalIgnoreCase));
@@ -285,8 +266,9 @@ public sealed class ModelHealthApiController : ControllerBase
             var averageDurationMs = durations.Count > 0
                 ? (int)Math.Round(durations.Average(), MidpointRounding.AwayFromZero)
                 : (int?)null;
-            var successTotal = healthList.Sum(x => x.SuccessCount);
-            var failureTotal = healthList.Sum(x => x.FailureCount);
+            var unassignedSuccessCount = unassignedLogs.Count(l => l.Status == "success");
+            var successTotal = healthList.Sum(x => x.SuccessCount) + unassignedSuccessCount;
+            var failureTotal = healthList.Sum(x => x.FailureCount) + unassignedLogs.Count - unassignedSuccessCount;
             var totalRequestCount = successTotal + failureTotal;
 
             modelSummaries.Add(new
@@ -302,7 +284,14 @@ public sealed class ModelHealthApiController : ControllerBase
                 failureCount = failureTotal,
                 totalRequestCount,
                 averageSuccessRate = totalRequestCount > 0 ? (double)successTotal / totalRequestCount : 0,
-                timelineSegments = BuildTimelineSegments(modelLevelLogs)
+                unassigned = new
+                {
+                    successCount = unassignedSuccessCount,
+                    failureCount = unassignedLogs.Count - unassignedSuccessCount,
+                    totalRequestCount = unassignedLogs.Count,
+                    timelineSegments = BuildTimelineSegments(unassignedLogs)
+                },
+                timelineSegments = BuildTimelineSegments(modelLogs)
             });
         }
 
@@ -315,9 +304,6 @@ public sealed class ModelHealthApiController : ControllerBase
         };
     }
 
-    /// <summary>
-    /// 计算最近数据的时间下限。
-    /// </summary>
     private static DateTimeOffset ResolveRecentCutoff(string? range)
     {
         return (range ?? "7d").Trim().ToLowerInvariant() switch
@@ -328,23 +314,14 @@ public sealed class ModelHealthApiController : ControllerBase
         };
     }
 
-    /// <summary>
-    /// 构建健康时间线片段（48 段分桶）。逻辑与原 PageModel 完全一致。
-    /// </summary>
     private static List<object> BuildTimelineSegments(List<ProxyUsageLog> siteLogs)
     {
         const int segmentCount = 48;
-
-        if (siteLogs.Count == 0)
-        {
-            return [];
-        }
+        if (siteLogs.Count == 0) return [];
 
         var orderedLogs = siteLogs.OrderBy(l => l.RequestedAt).ToList();
         var startAt = orderedLogs.First().RequestedAt;
         var endAt = orderedLogs.Last().RequestedAt;
-
-        // 退化情况：所有日志同一时刻（或乱序导致 start>=end），合并成单段。
         if (startAt >= endAt)
         {
             var singleSuccess = orderedLogs.Count(log => string.Equals(log.Status, "success", StringComparison.OrdinalIgnoreCase));
@@ -365,7 +342,6 @@ public sealed class ModelHealthApiController : ControllerBase
         var totalTicks = endAt.UtcTicks - startAt.UtcTicks;
         var bucketSize = Math.Max(totalTicks / segmentCount, 1L);
         var buckets = new List<object>(segmentCount);
-
         for (var i = 0; i < segmentCount; i++)
         {
             var bucketStartTicks = startAt.UtcTicks + (bucketSize * i);
@@ -381,12 +357,7 @@ public sealed class ModelHealthApiController : ControllerBase
                         : ticks >= bucketStartTicks && ticks < bucketEndTicks;
                 })
                 .ToList();
-
-            if (bucketLogs.Count == 0)
-            {
-                continue;
-            }
-
+            if (bucketLogs.Count == 0) continue;
             var successCount = bucketLogs.Count(log => string.Equals(log.Status, "success", StringComparison.OrdinalIgnoreCase));
             buckets.Add(new
             {
@@ -398,14 +369,10 @@ public sealed class ModelHealthApiController : ControllerBase
                 endAt = bucketLogs.Last().RequestedAt
             });
         }
-
         return buckets;
     }
 }
 
-/// <summary>
-/// 健康面板单个站点+模型的健康项（强类型，避免反射）。
-/// </summary>
 internal sealed class HealthSiteItem
 {
     public string SiteName { get; set; } = string.Empty;
@@ -413,20 +380,8 @@ internal sealed class HealthSiteItem
     public string LastStatus { get; set; } = string.Empty;
     public DateTimeOffset? LastCheckedAt { get; set; }
     public int? LastDurationMs { get; set; }
-    public List<HealthLogEntry> RecentLogs { get; set; } = [];
     public List<object> TimelineSegments { get; set; } = [];
     public double SuccessRate { get; set; }
     public int SuccessCount { get; set; }
     public int FailureCount { get; set; }
-}
-
-/// <summary>
-/// 健康面板单条日志项。
-/// </summary>
-internal sealed class HealthLogEntry
-{
-    public string Status { get; set; } = string.Empty;
-    public int DurationMs { get; set; }
-    public DateTimeOffset CheckedAt { get; set; }
-    public string? ErrorMessage { get; set; }
 }

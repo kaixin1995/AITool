@@ -18,6 +18,8 @@ public sealed class AccountQuotaTarget
     public DateTimeOffset? TokenExpiresAt { get; init; }
     public DateTimeOffset? LastQuotaCheckedAt { get; init; }
     public string? LastQuotaRawJson { get; init; }
+    /// <summary>Recovery claim carried to the transactional state writer; null for ordinary inspections.</summary>
+    public Guid? QuotaRecheckLeaseToken { get; set; }
 }
 
 /// <summary>
@@ -58,6 +60,10 @@ public interface IAccountQuotaProvider
     string ProviderKey { get; }
 
     Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken);
+
+    /// <summary>读取单个账号的最新状态；未实现的提供程序保留枚举回退。</summary>
+    async Task<AccountQuotaTarget?> GetAccountAsync(Guid accountId, CancellationToken cancellationToken)
+        => (await GetAccountsAsync(cancellationToken)).FirstOrDefault(account => account.AccountId == accountId);
 
     /// <summary>
     /// 按隐藏 Site 反查账号（路由层配额贯通）：站点没有 SiteKey 配额数据时，

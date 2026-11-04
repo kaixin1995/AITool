@@ -201,7 +201,7 @@ public sealed class GoogleCredentialRefreshService
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             _logger.LogWarning(exception, "Unable to refresh Google token for linked site {SiteId}", linkedSiteId);
-            return null;
+            throw;
         }
     }
 }

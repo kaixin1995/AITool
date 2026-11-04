@@ -322,9 +322,9 @@ public sealed class GoogleAccountProvisioner
     public async Task DeprovisionAsync(Guid accountId, CancellationToken ct)
     {
         using var credentialLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("google", accountId, ct);
-        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async db =>
         {
-            var client = _dbContext.Client;
+            var client = db.Client;
             var account = await client.Queryable<GoogleAccount>().InSingleAsync(accountId);
             if (account is null) throw new InvalidOperationException("Google account not found");
             if (_networkPolicies is not null)
@@ -333,7 +333,7 @@ public sealed class GoogleAccountProvisioner
                 await _networkPolicies.DeleteInTransactionAsync(client, new AccountIdentity("google", account.Id), cancellationToken: ct);
             }
             if (account.LinkedSiteId != Guid.Empty)
-                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+                await new SiteCascadeDeleter(db).RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
             await client.Deleteable<GoogleAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
             return true;
         }, ct, _metadataCache);

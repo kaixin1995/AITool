@@ -1,6 +1,8 @@
 using AITool.Application.Accounts;
 using AITool.Application.OAuth;
 using AITool.Domain.OAuth;
+using AITool.Domain.Operations;
+using SqlSugar;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
@@ -57,6 +59,13 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
             .OrderBy(a => a.LastQuotaCheckedAt)
             .ToListAsync(cancellationToken);
         return accounts.Select(ToTarget).ToList();
+    }
+
+    public async Task<AccountQuotaTarget?> GetAccountAsync(Guid accountId, CancellationToken cancellationToken)
+    {
+        var account = await _dbContext.DeviceOAuthAccounts
+            .Where(a => a.Id == accountId && !a.IsDeleted && !a.DisabledByFeatureToggle).FirstAsync(cancellationToken);
+        return account is null ? null : ToTarget(account);
     }
 
     public async Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
@@ -178,9 +187,9 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
             try { refreshed = await _credentialRefresh.RefreshForAccountAsync(current.Id, current.AccessToken!, ct); }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                if (result.UpstreamUnauthorized && result.AccessTokenUnauthorized && !IsTransientRefreshFailure(ex))
+                if (result.UpstreamUnauthorized && result.CredentialInvalid && ex is DeviceOAuthRefreshRefusedException)
                     await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
-                return new AccountQuotaSnapshot { Success = false, UpstreamUnauthorized = result.UpstreamUnauthorized, Error = "凭证刷新失败：" + ex.Message };
+                return new AccountQuotaSnapshot { Success = false, UpstreamUnauthorized = result.UpstreamUnauthorized, Error = "凭证刷新失败，请检查后重试：" + ex.Message };
             }
             if (!string.IsNullOrWhiteSpace(refreshed))
             {
@@ -193,7 +202,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
                 token = new DeviceOAuthTokenSet { AccessToken = current.AccessToken!, RefreshToken = current.RefreshToken, ExpiresAt = current.TokenExpiresAt };
                 result = await remoteVendor.QueryQuotaAsync(token, current.ExtraJson, ct);
             }
-            else return new AccountQuotaSnapshot { Success = false, Error = "凭证刷新未完成，请稍后重试" };
+            else return new AccountQuotaSnapshot { Success = false, UpstreamUnauthorized = result.UpstreamUnauthorized, Error = "凭证刷新未完成，请稍后重试" };
         }
 
         if (result.UpstreamUnauthorized && result.AccessTokenUnauthorized)
@@ -207,7 +216,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
             (!enabled && string.Equals(reason, "quota-threshold", StringComparison.OrdinalIgnoreCase)))
         {
             await QuotaAccountStateWriter.ChangeAsync(_dbContext, ProviderKey, account.AccountId, enabled,
-                _scheduleStore, _logger, cancellationToken);
+                _scheduleStore, _logger, cancellationToken, account.QuotaRecheckLeaseToken);
             _metadataCache.InvalidateRouteTargets();
             return;
         }
@@ -268,6 +277,7 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
                 await client.Updateable<DeviceOAuthAccount>()
                     .SetColumns(x => new DeviceOAuthAccount { DisabledByFeatureToggle = false })
                     .Where(x => x.Id == account.Id && x.RequiresReauth && x.DisabledByFeatureToggle)
+                    .Where(x => SqlFunc.Subqueryable<SystemRuntimeSettings>().Where(s => s.Id == 1 && s.OAuthFeaturesEnabled).Any())
                     .ExecuteCommandAsync(cancellationToken);
                 continue;
             }
@@ -348,7 +358,4 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
         Windows = result.Windows,
     };
 
-    private static bool IsTransientRefreshFailure(Exception ex) =>
-        ex is HttpRequestException http && (http.StatusCode is null || (int)http.StatusCode >= 500 || (int)http.StatusCode == 429)
-        || ex is TimeoutException;
 }

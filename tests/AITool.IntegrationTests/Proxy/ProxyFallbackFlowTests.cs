@@ -689,10 +689,14 @@ public sealed class ProxyFallbackFlowTests
         fakeForwardService.Requests.Should().ContainSingle();
         fakeForwardService.Requests[0].TargetModelName.Should().Be("gpt-5.5-a");
 
+        // 取消不回退（只打一个候选），但用量必须入账（2026-11-04 契约变更）：
+        // 上游可能已消耗资源，canceled 行照常落库，绝不静默丢行。
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var logs = await db.ProxyUsageLogs.ToListAsync();
-        logs.Should().BeEmpty();
+        logs.Should().ContainSingle();
+        logs.Single().Status.Should().Be("canceled");
+        logs.Single().AttemptedModel.Should().Be("gpt-5.5");
     }
 
     /// <summary>

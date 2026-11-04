@@ -124,12 +124,7 @@ public sealed partial class OpenAiProxyController
 
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -285,12 +280,7 @@ public sealed partial class OpenAiProxyController
 
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome

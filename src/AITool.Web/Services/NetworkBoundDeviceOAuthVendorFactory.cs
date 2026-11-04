@@ -97,6 +97,7 @@ public sealed class NetworkBoundDeviceOAuthVendorFactory(
         public string VendorKey => inner.VendorKey;
         public string Label => inner.Label;
         public bool SupportsModelFetch => inner.SupportsModelFetch;
+        public DeviceOAuthModelCatalogScope ModelCatalogScope => inner.ModelCatalogScope;
         public DeviceOAuthChatSiteConfig? ChatSiteConfig => inner.ChatSiteConfig;
         public IReadOnlyList<(string Slug, string DisplayName)> DefaultModels => inner.DefaultModels;
         public TimeSpan RefreshLead => inner.RefreshLead;

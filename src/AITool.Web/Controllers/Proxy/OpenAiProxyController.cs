@@ -36,6 +36,11 @@ public sealed partial class OpenAiProxyController : ControllerBase
         /// 保存本轮流式响应在 response.completed 中返回的 output 数组，供 Responses WebSocket 会话续传时合并上下文。
         /// </summary>
         public string CompletedOutputJson { get; init; } = "[]";
+        /// <summary>
+        /// 上游是否已送达流完成事件（response.completed / [DONE] / finish 终止事件）。
+        /// 客户端在其后断开时，上游已按完整输出计费，主循环据此把 canceled 翻转为成功入账。
+        /// </summary>
+        public bool UpstreamCompleted { get; init; }
     }
 
     /// <summary>
@@ -43,17 +48,21 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// 客户端可能已收到部分/全部内容，追踪与用量必须照常收口（否则调用记录永远停在「等待」），
     /// 且绝不允许回退重放可能已暴露的输出。
     /// </summary>
-    private static StreamForwardOutcome StreamReferenceFaultOutcome(AITool.Application.Proxy.UpstreamReferenceException ex) => new()
+    private static StreamForwardOutcome StreamReferenceFaultOutcome(AITool.Application.Proxy.UpstreamReferenceException ex)
     {
-        Result = new ProxyForwardResult
+        var result = ex.PartialResult ?? new ProxyForwardResult();
+        result.Success = false;
+        result.IsStreaming = true;
+        result.IsStreamInterrupted = true;
+        result.IsCanceled = false;
+        result.ErrorMessage = $"upstream reference guard rejected stream output ({ex.Code})";
+
+        return new StreamForwardOutcome
         {
-            Success = false,
-            IsStreaming = true,
-            IsStreamInterrupted = true,
-            ErrorMessage = $"upstream reference guard rejected stream output ({ex.Code})"
-        },
-        CanFallback = false
-    };
+            Result = result,
+            CanFallback = false
+        };
+    }
 
     /// <summary>
     /// 保存 Anthropic 转 OpenAI 流式转换过程中需要持续累积的状态。
@@ -748,8 +757,47 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 }
 
                 var streamResult = streamOutcome.Result;
+                // 客户端在上游完整完成（[DONE]/终止事件已收到）后才断开：上游已按完整输出计费，
+                // 按成功入账而非 canceled——否则真实消耗全部逃逸用量统计。
+                if (streamResult.IsCanceled && streamOutcome.UpstreamCompleted)
+                {
+                    streamResult.IsCanceled = false;
+                    streamResult.Success = true;
+                    streamResult.IsStreamInterrupted = false;
+                    streamResult.ErrorMessage = null;
+                }
                 if (streamResult.IsCanceled)
                 {
+                    // 客户端中途取消：上游已消耗的部分 token 照常入账（status=canceled），绝不静默丢行。
+                    SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, streamResult, requestId, traceId);
+                    await SafeLogUsageAsync(new UsageLogEntry
+                    {
+                        RequestId = requestId,
+                        AccessKeyId = accessKey.Id,
+                        ProtocolType = "OpenAI",
+                        ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
+                        RequestModel = modelName,
+                        AttemptedModel = route.UpstreamModelName,
+                        TargetSiteId = route.SiteId,
+                        Status = "canceled",
+                        Source = requestSource,
+                        RetryCount = attemptIndex - 1,
+                        RateLimitRetries = streamResult.RateLimitRetryCount,
+                        AttemptIndex = attemptIndex,
+                        IsFinalResult = true,
+                        FallbackTriggered = false,
+                        ErrorMessage = streamResult.ErrorMessage ?? string.Empty,
+                        HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
+                        InputTokens = streamResult.InputTokens,
+                        CachedTokens = streamResult.CachedTokens,
+                        OutputTokens = streamResult.OutputTokens,
+                        IsStreaming = true,
+                        IsStreamInterrupted = streamResult.IsStreamInterrupted,
+                        FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                        StreamDurationMs = streamResult.StreamDurationMs,
+                        TotalDurationMs = streamResult.TotalDurationMs,
+                        ReasoningEffort = reasoningEffort
+                    }, CancellationToken.None);
                     // 客户端取消：同样收口追踪，避免调用记录永远停留在「等待」。
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {
@@ -840,7 +888,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     {
                         if (Response.HasStarted)
                         {
-                            await TryWriteReferenceFailureAsync(referenceFault, false);
+                            await TryWriteReferenceFailureAsync(referenceFault, false, cancellationToken);
                             return new EmptyResult();
                         }
                         return ReferenceError(referenceFault);
@@ -854,9 +902,46 @@ public sealed partial class OpenAiProxyController : ControllerBase
             }
 
             // 上游请求仍按单路由超时控制；但若客户端主动取消，则直接结束，不再继续回退后续候选。
+            // 上游可能已消耗部分资源：照常入账 canceled 行，绝不静默丢行。
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
             if (result.IsCanceled)
             {
+                SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
+                await SafeLogUsageAsync(new UsageLogEntry
+                {
+                    RequestId = requestId,
+                    AccessKeyId = accessKey.Id,
+                    ProtocolType = "OpenAI",
+                    ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
+                    RequestModel = modelName,
+                    AttemptedModel = route.UpstreamModelName,
+                    TargetSiteId = route.SiteId,
+                    Status = "canceled",
+                    Source = requestSource,
+                    RetryCount = attemptIndex - 1,
+                    RateLimitRetries = result.RateLimitRetryCount,
+                    AttemptIndex = attemptIndex,
+                    IsFinalResult = true,
+                    FallbackTriggered = false,
+                    ErrorMessage = result.ErrorMessage ?? string.Empty,
+                    HttpStatusCode = result.StatusCode > 0 ? result.StatusCode : null,
+                    InputTokens = result.InputTokens,
+                    CachedTokens = result.CachedTokens,
+                    OutputTokens = result.OutputTokens,
+                    IsStreaming = false,
+                    IsStreamInterrupted = result.IsStreamInterrupted,
+                    FirstTokenLatencyMs = result.FirstTokenLatencyMs,
+                    StreamDurationMs = result.StreamDurationMs,
+                    TotalDurationMs = result.TotalDurationMs,
+                    ReasoningEffort = reasoningEffort
+                }, CancellationToken.None);
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "canceled",
+                    StatusCode = result.StatusCode,
+                    IsStreaming = false,
+                    TotalDurationMs = result.TotalDurationMs
+                });
                 return new EmptyResult();
             }
 

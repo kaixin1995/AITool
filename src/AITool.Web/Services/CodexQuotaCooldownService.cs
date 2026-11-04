@@ -13,8 +13,40 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
 {
+    internal async Task<CodexQuotaResetResult> TryReadLocalResetStateAsync(Guid codexAccountId, string step)
+    {
+        var coolingCleared = false;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var client = _dbContext.Client.CopyNew();
+            var account = (await client.Queryable<CodexAccount>()
+                .Where(a => a.Id == codexAccountId)
+                .ToListAsync(cts.Token)).FirstOrDefault();
+            if (account == null) return CodexQuotaResetResult.Unconfirmed(false, step);
+
+            coolingCleared = !account.IsQuotaCooling;
+            if (!coolingCleared) return CodexQuotaResetResult.Unconfirmed(false, "清除冷却标记");
+            if (!account.IsEnabled) return CodexQuotaResetResult.Success();
+
+            var site = (await client.Queryable<Domain.Sites.Site>()
+                .Where(s => s.Id == account.LinkedSiteId)
+                .ToListAsync(cts.Token)).FirstOrDefault();
+            return site?.IsEnabled == true
+                ? CodexQuotaResetResult.Success()
+                : CodexQuotaResetResult.Unconfirmed(true, "恢复站点路由");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not confirm quota reset state for account {Id}", codexAccountId);
+            return CodexQuotaResetResult.Unconfirmed(coolingCleared, coolingCleared ? "恢复站点路由" : step);
+        }
+    }
+
     /// <summary>无明确恢复时间时的默认冷却时长。</summary>
     private static readonly TimeSpan DefaultCooldown = TimeSpan.FromMinutes(30);
+
+    internal TimeSpan LocalPersistTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
@@ -78,7 +110,7 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
     }
 
     /// <inheritdoc />
-    public async Task ResetAsync(Guid codexAccountId, CancellationToken ct)
+    public async Task<CodexQuotaResetResult> ResetAsync(Guid codexAccountId, CancellationToken ct)
     {
         // 查询用 CopyNew 独立连接
         using var queryClient = _dbContext.Client.CopyNew();
@@ -116,36 +148,66 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             }
 
             // 段 B：落盘（独立 30s 超时令牌，与调用方取消隔离）。
-            // 空响应/空白响应不回写：避免用无效值覆盖有效凭证导致账号永久无法刷新
-            //（与 CodexTokenRefreshService/CodexCredentialRefreshService 的 IsNullOrWhiteSpace 防护一致）。
-            if (tokens is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
+            // 空白 access_token 只拒绝依赖 AT 的列，已轮换的 refresh_token/id_token 仍独立落盘。
+            var hasAccessToken = !string.IsNullOrWhiteSpace(tokens?.AccessToken);
+            var hasRefreshToken = !string.IsNullOrWhiteSpace(tokens?.RefreshToken);
+            var hasIdToken = !string.IsNullOrWhiteSpace(tokens?.IdToken);
+            if (tokens is not null && (hasAccessToken || hasRefreshToken || hasIdToken))
             {
                 using var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 var pct = persistCts.Token;
                 var accountPersisted = false;
                 try
                 {
-                    account.AccessToken = tokens.AccessToken;
-                    // 上游可能不回传新 refresh_token（此时保留旧值，清空将导致永久无法刷新）。
-                    if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
+                    if (hasAccessToken)
                     {
-                        account.RefreshToken = tokens.RefreshToken;
+                        account.AccessToken = tokens.AccessToken;
+                        account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
+                        account.LastRefreshAt = DateTimeOffset.UtcNow;
                     }
-                    if (!string.IsNullOrWhiteSpace(tokens.IdToken)) account.IdToken = tokens.IdToken;
-                    account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
-                    account.LastRefreshAt = DateTimeOffset.UtcNow;
+                    // 上游可能不回传新 refresh_token，此时保留旧值。
+                    if (hasRefreshToken) account.RefreshToken = tokens.RefreshToken;
+                    if (hasIdToken) account.IdToken = tokens.IdToken;
 
-                    await queryClient.Updateable(account)
-                        .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                        .ExecuteCommandAsync(pct);
+                    if (hasAccessToken)
+                    {
+                        await queryClient.Updateable(account)
+                            .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
+                            .ExecuteCommandAsync(pct);
+                    }
+                    else if (hasRefreshToken && hasIdToken)
+                    {
+                        await queryClient.Updateable(account)
+                            .UpdateColumns(a => new { a.RefreshToken, a.IdToken })
+                            .ExecuteCommandAsync(pct);
+                    }
+                    else if (hasRefreshToken)
+                    {
+                        await queryClient.Updateable(account)
+                            .UpdateColumns(a => a.RefreshToken)
+                            .ExecuteCommandAsync(pct);
+                    }
+                    else
+                    {
+                        await queryClient.Updateable(account)
+                            .UpdateColumns(a => a.IdToken)
+                            .ExecuteCommandAsync(pct);
+                    }
 
                     accountPersisted = true;
 
-                    var site = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
-                    if (site != null)
+                    if (hasAccessToken)
                     {
-                        site.ApiKey = tokens.AccessToken;
-                        await queryClient.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
+                        var site = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
+                        if (site != null)
+                        {
+                            site.ApiKey = tokens.AccessToken;
+                            await queryClient.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Quota reset persisted partial credentials without an access token for account {Id}", codexAccountId);
                     }
                 }
                 catch (OperationCanceledException ex) when (persistCts.IsCancellationRequested)
@@ -166,11 +228,15 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             }
         }
 
-        using (var persistCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+        var result = CodexQuotaResetResult.Success();
+        string? step = "清除冷却标记";
+        using (var persistCts2 = new CancellationTokenSource(LocalPersistTimeout))
         {
             try
             {
+                if (LocalPersistTimeout == TimeSpan.Zero) persistCts2.Cancel();
                 var pct2 = persistCts2.Token;
+                pct2.ThrowIfCancellationRequested();
 
                 // 2. 清冷却（列限定写回）。不越权改 IsEnabled——重置额度只负责冷却，
                 //    手动禁用/阈值自动禁用/总开关禁用不因重置被拉回（与冷却恢复路径语义一致）。
@@ -180,6 +246,7 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                     .UpdateColumns(a => new { a.IsQuotaCooling, a.QuotaCoolingUntil })
                     .ExecuteCommandAsync(pct2);
 
+                step = "恢复站点路由";
                 // 3. 恢复 Site：写前重读实时启用状态，被禁用的账号不拉回路由。
                 var currentEnabled = (await queryClient.Queryable<Domain.Codex.CodexAccount>()
                     .Where(a => a.Id == codexAccountId)
@@ -197,14 +264,19 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             }
             catch (OperationCanceledException ex) when (persistCts2.IsCancellationRequested)
             {
-                // 关键段范式：落盘超时降级为受控日志（已完成步骤已落库），不让控制器 500。
-                _logger.LogWarning(ex, "Quota reset persistence timeout for account {Id}", codexAccountId);
+                // 不重抛超时；重新读库确认已经落盘的步骤。
+                _logger.LogWarning(ex, "Quota reset persistence timeout for account {Id} at step {Step}", codexAccountId, step);
+                result = await TryReadLocalResetStateAsync(codexAccountId, step ?? "恢复站点路由");
             }
         }
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateCodexAccounts();
-        _logger.LogInformation("Codex account {Id} quota reset", codexAccountId);
+        if (result.Completed)
+            _logger.LogInformation("Codex account {Id} quota reset", codexAccountId);
+        else
+            _logger.LogWarning("Codex account {Id} quota reset incomplete at step {Step}", codexAccountId, result.UnconfirmedStep);
+        return result;
     }
 
     /// <summary>

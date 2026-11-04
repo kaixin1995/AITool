@@ -74,6 +74,7 @@ public sealed class ModelHealthDashboardTests
             site.GetProperty("timelineSegments").EnumerateArray().Sum(x => x.GetProperty("count").GetInt32()).Should().Be(2);
             model.GetProperty("siteCount").GetInt32().Should().Be(1);
             model.GetProperty("totalRequestCount").GetInt32().Should().Be(2);
+            model.GetProperty("unassigned").GetProperty("totalRequestCount").GetInt32().Should().Be(0);
             model.GetProperty("timelineSegments").EnumerateArray().Sum(x => x.GetProperty("count").GetInt32()).Should().Be(2);
         }
         finally
@@ -84,7 +85,7 @@ public sealed class ModelHealthDashboardTests
     }
 
     [Fact]
-    public async Task Dashboard_does_not_count_one_site_call_for_each_mapping()
+    public async Task Dashboard_reports_ambiguous_and_removed_aliases_separately()
     {
         var path = Path.Combine(Path.GetTempPath(), $"aitool-model-health-{Guid.NewGuid():N}.db");
         using var client = new SqlSugarClient(new ConnectionConfig
@@ -97,34 +98,61 @@ public sealed class ModelHealthDashboardTests
             using var db = new AppDbContext(client, new SemaphoreSlim(1, 1));
             var model = new ModelLibraryItem { ModelName = "shared" };
             var site = new Site { Name = "site", BaseUrl = "https://example.invalid", ApiKey = "test", IsEnabled = false };
+            var otherSite = new Site { Name = "other", BaseUrl = "https://example.invalid", ApiKey = "test" };
             db.ModelLibraryItems.Add(model);
             db.ModelHealthMonitors.Add(new ModelHealthMonitor { ModelLibraryItemId = model.Id });
-            db.Sites.Add(site);
+            db.Sites.AddRange(site, otherSite);
             db.SiteModelMappings.AddRange(
                 new SiteModelMapping { SiteId = site.Id, ModelLibraryItemId = model.Id, RemoteModelName = "alpha" },
-                new SiteModelMapping { SiteId = site.Id, ModelLibraryItemId = model.Id, RemoteModelName = "beta" });
+                new SiteModelMapping { SiteId = site.Id, ModelLibraryItemId = model.Id, RemoteModelName = "beta" },
+                new SiteModelMapping { SiteId = otherSite.Id, ModelLibraryItemId = model.Id, RemoteModelName = "beta" },
+                new SiteModelMapping { SiteId = otherSite.Id, ModelLibraryItemId = model.Id, RemoteModelName = "gamma" });
             db.ProxyRouteRules.AddRange(
                 new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "alias", SiteId = site.Id, SiteModelName = "alpha" },
-                new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "alias", SiteId = site.Id, SiteModelName = "beta" });
+                new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "alias", SiteId = site.Id, SiteModelName = "beta" },
+                new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "unique-alias", SiteId = site.Id, SiteModelName = "beta" },
+                new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "alpha", SiteId = site.Id, SiteModelName = "beta" },
+                new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "cross-site", SiteId = site.Id, SiteModelName = "alpha" },
+                new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "cross-site", SiteId = otherSite.Id, SiteModelName = "beta" },
+                new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "gamma", SiteId = site.Id, SiteModelName = "alpha" },
+                new ProxyRouteRule { ExternalModelName = "shared", UpstreamModelName = "unique-alias", SiteId = site.Id, SiteModelName = "beta" });
+            var now = DateTimeOffset.UtcNow;
             db.ProxyUsageLogs.AddRange(
-                Log("shared", "alpha", site.Id, "success", DateTimeOffset.UtcNow.AddMinutes(-3), 100),
-                Log("shared", "beta", site.Id, "fail", DateTimeOffset.UtcNow.AddMinutes(-2), 200),
-                Log("shared", "alias", site.Id, "success", DateTimeOffset.UtcNow.AddMinutes(-1), 150),
-                Log("shared", "removed-alias", site.Id, "fail", DateTimeOffset.UtcNow, 250));
+                Log("shared", "alpha", site.Id, "success", now.AddMinutes(-6), 100),
+                Log("shared", "beta", site.Id, "fail", now.AddMinutes(-5), 200),
+                Log("shared", "alias", site.Id, "success", now.AddMinutes(-4), 150),
+                Log("shared", "removed-alias", site.Id, "fail", now.AddMinutes(-3), 250),
+                Log("shared", "unique-alias", site.Id, "success", now.AddMinutes(-2), 120),
+                Log("shared", "beta", Guid.Empty, "fail", now.AddMinutes(-1), 130),
+                Log("shared", "alpha", Guid.Empty, "success", now, 110),
+                Log("shared", "unique-alias", Guid.Empty, "success", now, 115),
+                Log("shared", "cross-site", Guid.Empty, "fail", now, 125),
+                Log("shared", "gamma", Guid.Empty, "fail", now, 135));
 
             var result = await new ModelHealthApiController(db).GetDashboard("1d", CancellationToken.None);
             var ok = result.Should().BeOfType<OkObjectResult>().Subject;
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
             var data = json.RootElement.GetProperty("data");
             var sites = data.GetProperty("healthData").GetProperty(model.Id.ToString()).EnumerateArray().ToArray();
-            sites.Should().HaveCount(2);
+            sites.Should().HaveCount(4);
             var alpha = sites.Single(x => x.GetProperty("remoteModelName").GetString() == "alpha");
-            var beta = sites.Single(x => x.GetProperty("remoteModelName").GetString() == "beta");
-            alpha.GetProperty("successCount").GetInt32().Should().Be(2);
-            alpha.GetProperty("failureCount").GetInt32().Should().Be(1);
-            beta.GetProperty("successCount").GetInt32().Should().Be(0);
+            var beta = sites.Single(x => x.GetProperty("remoteModelName").GetString() == "beta" && x.GetProperty("siteName").GetString() == "site");
+            var otherBeta = sites.Single(x => x.GetProperty("remoteModelName").GetString() == "beta" && x.GetProperty("siteName").GetString() == "other");
+            alpha.GetProperty("successCount").GetInt32().Should().Be(0);
+            alpha.GetProperty("failureCount").GetInt32().Should().Be(0);
+            beta.GetProperty("successCount").GetInt32().Should().Be(2);
             beta.GetProperty("failureCount").GetInt32().Should().Be(1);
-            data.GetProperty("monitoredModels")[0].GetProperty("totalRequestCount").GetInt32().Should().Be(4);
+            otherBeta.GetProperty("totalRequestCount").GetInt32().Should().Be(0);
+            sites.Single(x => x.GetProperty("remoteModelName").GetString() == "gamma")
+                .GetProperty("totalRequestCount").GetInt32().Should().Be(0);
+            var summary = data.GetProperty("monitoredModels")[0];
+            var unassigned = summary.GetProperty("unassigned");
+            unassigned.GetProperty("successCount").GetInt32().Should().Be(3);
+            unassigned.GetProperty("failureCount").GetInt32().Should().Be(4);
+            unassigned.GetProperty("totalRequestCount").GetInt32().Should().Be(7);
+            unassigned.GetProperty("timelineSegments").EnumerateArray().Sum(x => x.GetProperty("count").GetInt32()).Should().Be(7);
+            summary.GetProperty("totalRequestCount").GetInt32().Should().Be(10);
+            summary.GetProperty("timelineSegments").EnumerateArray().Sum(x => x.GetProperty("count").GetInt32()).Should().Be(10);
         }
         finally
         {

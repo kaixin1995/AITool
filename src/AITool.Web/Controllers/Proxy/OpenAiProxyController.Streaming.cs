@@ -376,12 +376,7 @@ public sealed partial class OpenAiProxyController
         // 流中断但已开始写入时，向客户端补发终止信号避免挂起
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -659,18 +654,15 @@ public sealed partial class OpenAiProxyController
         // 流中断但已开始写入时，向客户端补发终止信号避免挂起
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting && _referenceOutputError is null
+            CanFallback = !startedWriting && _referenceOutputError is null,
+            // 客户端在完成事件后才断开（Codex/DSH 等 CLI 的常态）：上游已按完整输出计费。
+            UpstreamCompleted = receivedDoneEvent
         };
     }
 
@@ -865,14 +857,7 @@ public sealed partial class OpenAiProxyController
 
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch
-            {
-            }
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -1179,12 +1164,7 @@ public sealed partial class OpenAiProxyController
         // 流中断但已开始写入时，向客户端补发终止信号避免挂起
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome

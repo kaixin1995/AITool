@@ -187,6 +187,10 @@ public static partial class ClientEmulationEngine
                 headers["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion;
                 // 内部标记（不透传）：转发层据此做 WorkBuddy 渠道校验 11128 的请求体内容适配。
                 headers[ProxyForwardService.RewriteChannelHeader] = "workbuddy";
+                // 内部标记（不透传）：WorkBuddy 上游只接受流式请求（code 11101「Non-stream chat request is currently not supported」）。
+                // 转发层据此把非流式请求体改写为 stream:true+include_usage，收到 SSE 后聚合回完整 JSON，客户端无感；
+                // 站点/模型/映射自定义头（ExtraHeaders）可通过显式设为 "false" 关闭该处理。
+                headers[ProxyForwardService.ForceStreamHeader] = "true";
                 break;
 
             case ClientEmulationConstants.None:

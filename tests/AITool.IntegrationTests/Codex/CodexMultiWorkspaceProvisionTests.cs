@@ -1,5 +1,7 @@
 using AITool.Application.Codex;
+using AITool.Application.Networking;
 using AITool.Domain.Codex;
+using AITool.Domain.Operations;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
@@ -23,6 +25,7 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-codex-multi-workspace-{Guid.NewGuid():N}.db");
     private readonly ServiceProvider _services;
+    private readonly List<IServiceScope> _provisionerScopes = [];
 
     public CodexMultiWorkspaceProvisionTests()
     {
@@ -121,8 +124,8 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
         var refreshed = await provisioner.ProvisionFromTokensAsync(Input(accountId: null, email: "old@example.com", plan: null, token: "at-old-2"), CancellationToken.None);
         refreshed.Id.Should().Be(legacy.Id);
 
-        // ② 带 accountId 的登录（同 workspace 重新授权）→ 认领该唯一无身份存量，原位补写身份。
-        var claimed = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-old", email: "old@example.com", plan: "plus", token: "at-old-3"), CancellationToken.None);
+        // 相同刷新凭证证明是同一授权，可安全补写 workspace ID。
+        var claimed = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-old", email: "old@example.com", plan: "plus", token: "at-old-2"), CancellationToken.None);
         claimed.Id.Should().Be(legacy.Id);
 
         // ③ 再以另一 workspace（acc-new）登录同邮箱 → 已无无身份行可认领，新建独立账号，
@@ -137,24 +140,34 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
             accounts.Count.Should().Be(2);
             var legacyRow = accounts.Single(a => a.Id == legacy.Id);
             legacyRow.AccountId.Should().Be("acc-old");
-            legacyRow.AccessToken.Should().Be("at-old-3");
+            legacyRow.AccessToken.Should().Be("at-old-2");
             accounts.Single(a => a.Id == withId.Id).AccessToken.Should().Be("at-new");
         }
     }
 
     [Fact]
-    public async Task Login_with_account_id_claims_the_single_legacy_row_of_same_email()
+    public async Task Login_with_account_id_requires_credential_proof_to_claim_legacy_row()
     {
         var provisioner = CreateProvisioner();
 
         // 存量：老版本登录落库的无 accountId 行（refresh_token 即将被重新授权轮换掉）。
         var legacy = await provisioner.ProvisionFromTokensAsync(Input(accountId: null, email: "dev@example.com", plan: null, token: "at-old"), CancellationToken.None);
 
-        // 同一 workspace 重新授权（这次解析出了 accountId）：应认领存量行原位更新，
-        // 而不是另建第二条、让存量行变成刷新必败的孤儿死凭证。
-        var claimed = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-plus", email: "dev@example.com", plan: "plus", token: "at-new"), CancellationToken.None);
+        // 相同邮箱但不同凭证无法确认 workspace，不能认领，也不能新建可能重复刷新凭证的行。
+        var action = () => provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-plus", email: "dev@example.com", plan: "plus", token: "at-new"), CancellationToken.None);
+        var error = await action.Should().ThrowAsync<CodexWorkspaceRequiredException>();
+        error.Which.Message.Should().Contain("人工");
 
-        claimed.Id.Should().Be(legacy.Id, "同邮箱唯一无身份存量应被带身份登录认领");
+        await using var verifyScope = _services.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await verifyDb.CodexAccounts.ToListAsync()).Should().ContainSingle();
+        var unchanged = await verifyDb.CodexAccounts.InSingleAsync(legacy.Id);
+        unchanged!.AccountId.Should().BeNull();
+        unchanged.AccessToken.Should().Be("at-old");
+        (await verifyDb.Sites.InSingleAsync(legacy.LinkedSiteId))!.ApiKey.Should().Be("at-old");
+
+        var claimed = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-plus", email: "dev@example.com", plan: "plus", token: "at-old"), CancellationToken.None);
+        claimed.Id.Should().Be(legacy.Id, "相同刷新凭证可证明归属");
         claimed.LinkedSiteId.Should().Be(legacy.LinkedSiteId);
 
         await using (var scope = _services.CreateAsyncScope())
@@ -163,7 +176,7 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
             (await db.CodexAccounts.ToListAsync()).Count.Should().Be(1);
             var row = await db.CodexAccounts.InSingleAsync(legacy.Id);
             row!.AccountId.Should().Be("acc-plus", "认领后补写身份");
-            row.AccessToken.Should().Be("at-new");
+            row.AccessToken.Should().Be("at-old");
             // 认领治愈彻底：旧默认名（裸邮箱）升级为「邮箱 (plan)」，站点名与账号名同步。
             var claimedSite = await db.Sites.InSingleAsync(legacy.LinkedSiteId);
             claimedSite!.Name.Should().Be("dev@example.com (plus)");
@@ -200,6 +213,91 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
         renamed.Id.Should().Be(account.Id);
     }
 
+    [Theory]
+    [InlineData("Codex 账号 (公司主力)")]
+    [InlineData("dev@example.com (公司主力)")]
+    public async Task Unmarked_legacy_custom_suffix_is_preserved(string name)
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = new Site { Name = name, BaseUrl = "https://example.com", ApiKey = "at-old", ManagedSource = "Codex" };
+        await db.Client.Insertable(site).ExecuteCommandAsync();
+        var account = new CodexAccount
+        {
+            DisplayName = name, Email = "dev@example.com", PlanType = "plus", AccountId = null,
+            IsDisplayNameCustom = false, LinkedSiteId = site.Id, AccessToken = "at-old", RefreshToken = "rt-at-new",
+        };
+        await db.Client.Insertable(account).ExecuteCommandAsync();
+
+        var result = await CreateProvisioner().ProvisionFromTokensAsync(
+            Input("acc-l", "dev@example.com", "plus", "at-new"), CancellationToken.None);
+
+        result.Id.Should().Be(account.Id);
+        var saved = await db.CodexAccounts.InSingleAsync(account.Id);
+        saved.DisplayName.Should().Be(name);
+        saved.AccountId.Should().Be("acc-l");
+        saved.AccessToken.Should().Be("at-new");
+        (await db.Sites.InSingleAsync(site.Id)).Name.Should().Be(name);
+    }
+
+    [Theory]
+    [InlineData("Codex 账号 (plus)")]
+    [InlineData("OAuth 账号 (plus)")]
+    public async Task Legacy_fallback_with_previous_plan_upgrades_when_email_arrives(string name)
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = new Site { Name = name, BaseUrl = "https://example.com", ApiKey = "at-old", ManagedSource = "Codex" };
+        await db.Client.Insertable(site).ExecuteCommandAsync();
+        var account = new CodexAccount
+        {
+            DisplayName = name, Email = null, PlanType = "plus", AccountId = null,
+            IsDisplayNameCustom = false, LinkedSiteId = site.Id, AccessToken = "at-old", RefreshToken = "rt-at-new",
+        };
+        await db.Client.Insertable(account).ExecuteCommandAsync();
+
+        // 已确认账号的网络操作上下文是无邮箱旧行取得新邮箱时的安全原位更新入口。
+        var operation = new NetworkOperationContext(new AccountIdentity("codex", account.Id), "test",
+            new AccountNetworkSelection(NetworkMode.Direct));
+        var result = await CreateProvisioner().ProvisionFromTokensAsync(
+            Input("acc-l", "dev@example.com", "pro", "at-new"), CancellationToken.None, operation);
+
+        result.Id.Should().Be(account.Id);
+        var saved = await db.CodexAccounts.InSingleAsync(account.Id);
+        saved.DisplayName.Should().Be("dev@example.com (pro)");
+        saved.IsDisplayNameCustom.Should().BeFalse();
+        (await db.Sites.InSingleAsync(site.Id)).Name.Should().Be("dev@example.com (pro)");
+    }
+
+    [Theory]
+    [InlineData("dev@example.com (plus)", "plus", false, "dev@example.com (pro)")]
+    [InlineData("dev@example.com", "plus", false, "dev@example.com (pro)")]
+    [InlineData("OAuth 账号", "plus", false, "dev@example.com (pro)")]
+    [InlineData("dev@example.com (plus)", null, false, "dev@example.com (plus)")]
+    [InlineData("dev@example.com (plus)", "plus", true, "dev@example.com (plus)")]
+    public async Task Legacy_name_whitelist_requires_old_plan_and_respects_custom_flag(
+        string name, string? oldPlan, bool isCustom, string expected)
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = new Site { Name = name, BaseUrl = "https://example.com", ApiKey = "old", ManagedSource = "Codex" };
+        await db.Client.Insertable(site).ExecuteCommandAsync();
+        var account = new CodexAccount
+        {
+            DisplayName = name, Email = "dev@example.com", AccountId = "acc-l", PlanType = oldPlan,
+            IsDisplayNameCustom = isCustom, LinkedSiteId = site.Id, AccessToken = "old", RefreshToken = "old-rt",
+        };
+        await db.Client.Insertable(account).ExecuteCommandAsync();
+
+        var result = await CreateProvisioner().ProvisionFromTokensAsync(
+            Input("acc-l", "dev@example.com", "pro", "new"), CancellationToken.None);
+        result.Id.Should().Be(account.Id);
+        var saved = await db.CodexAccounts.InSingleAsync(account.Id);
+        saved.DisplayName.Should().Be(expected);
+        saved.IsDisplayNameCustom.Should().Be(isCustom);
+        (await db.Sites.InSingleAsync(site.Id)).Name.Should().Be(expected);
+    }
+
     [Fact]
     public async Task Ambiguous_legacy_rows_are_not_claimed()
     {
@@ -210,15 +308,17 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
         await SeedLegacyRowAsync("dev@example.com", "at-b");
         await SeedLegacyRowAsync("other@example.com", "at-c");
 
-        // 同邮箱无身份行不唯一 → 不认领（避免随机合并），新建独立账号。
-        var fresh = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-x", email: "dev@example.com", plan: "team", token: "at-new"), CancellationToken.None);
+        // 无凭证可确认归属时拒绝，保留所有旧行并提示人工处理。
+        var action = () => provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-x", email: "dev@example.com", plan: "team", token: "at-new"), CancellationToken.None);
+        var error = await action.Should().ThrowAsync<CodexWorkspaceRequiredException>();
+        error.Which.Message.Should().Contain("人工");
 
         await using (var scope = _services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var rows = await db.CodexAccounts.ToListAsync();
-            rows.Count.Should().Be(4, "两条历史重复 + 另一邮箱存量 + 新建");
-            rows.Count(a => a.AccountId == "acc-x").Should().Be(1);
+            rows.Count.Should().Be(3, "无法确认归属时不新建账号");
+            rows.Count(a => a.AccountId == "acc-x").Should().Be(0);
             rows.Where(a => string.IsNullOrEmpty(a.AccountId)).Should().HaveCount(3, "存量行原样保留，不被随机合并");
         }
     }
@@ -321,6 +421,108 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
     }
 
     [Fact]
+    public async Task Missing_email_requires_a_unique_user_id_in_the_same_workspace_to_update()
+    {
+        static string Token(string userId)
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["https://api.openai.com/auth"] = new Dictionary<string, string> { ["chatgpt_user_id"] = userId },
+            });
+            return "header." + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(json))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_') + ".signature";
+        }
+
+        static CodexProvisionInput WithoutEmail(string workspace, string accessToken, string? userId) => new()
+        {
+            AccountId = workspace,
+            AccessToken = accessToken,
+            RefreshToken = "refresh-" + accessToken,
+            IdToken = userId == null ? "invalid-token" : Token(userId),
+        };
+
+        var provisioner = CreateProvisioner();
+        var a = await provisioner.ProvisionFromTokensAsync(WithoutEmail("ws", "a1", "user-a"), CancellationToken.None);
+        var b = await provisioner.ProvisionFromTokensAsync(WithoutEmail("ws", "b1", "user-b"), CancellationToken.None);
+        var otherWorkspace = await provisioner.ProvisionFromTokensAsync(WithoutEmail("other", "other1", "user-a"), CancellationToken.None);
+        var unknown1 = await provisioner.ProvisionFromTokensAsync(WithoutEmail("ws", "unknown1", null), CancellationToken.None);
+        var unknown2 = await provisioner.ProvisionFromTokensAsync(WithoutEmail("ws", "unknown2", null), CancellationToken.None);
+        var updated = await provisioner.ProvisionFromTokensAsync(WithoutEmail("ws", "a2", "user-a"), CancellationToken.None);
+
+        a.Id.Should().NotBe(b.Id);
+        otherWorkspace.Id.Should().NotBe(a.Id);
+        unknown1.Id.Should().NotBe(unknown2.Id);
+        updated.Id.Should().Be(a.Id);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var accounts = await db.CodexAccounts.ToListAsync();
+        accounts.Should().HaveCount(5);
+        accounts.Single(x => x.Id == a.Id).AccessToken.Should().Be("a2");
+        accounts.Single(x => x.Id == b.Id).AccessToken.Should().Be("b1");
+        accounts.Single(x => x.Id == otherWorkspace.Id).AccessToken.Should().Be("other1");
+        accounts.Single(x => x.Id == unknown1.Id).RefreshToken.Should().Be("refresh-unknown1");
+        accounts.Single(x => x.Id == unknown2.Id).RefreshToken.Should().Be("refresh-unknown2");
+        (await db.Sites.InSingleAsync(b.LinkedSiteId))!.ApiKey.Should().Be("b1");
+    }
+
+    [Theory]
+    [InlineData("Dev@Example.COM")]
+    [InlineData("  dev@example.com  ")]
+    public async Task Email_case_variation_keeps_single_credential(string email)
+    {
+        var provisioner = CreateProvisioner();
+        var first = await provisioner.ProvisionFromTokensAsync(Input("acc-case", "dev@example.com", "plus", "at-1"), CancellationToken.None);
+        var second = await provisioner.ProvisionFromTokensAsync(Input("acc-case", email, "plus", "at-2"), CancellationToken.None);
+
+        second.Id.Should().Be(first.Id);
+        second.LinkedSiteId.Should().Be(first.LinkedSiteId);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var accounts = await db.CodexAccounts.ToListAsync();
+        accounts.Should().ContainSingle();
+        accounts[0].AccessToken.Should().Be("at-2");
+        accounts[0].Email.Should().Be(email, "归一化仅用于比较，不改变落库邮箱");
+        (await db.Sites.Where(s => s.ManagedSource == "Codex").ToListAsync()).Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("acc-legacy")]
+    public async Task Email_case_variation_claims_legacy_row(string? accountId)
+    {
+        await SeedLegacyRowAsync("Legacy@Example.com", "at-legacy");
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var legacy = (await db.CodexAccounts.ToListAsync()).Single();
+        var provisioner = CreateProvisioner();
+
+        // 带 workspace 的认领须使用相同 refresh token 证明归属。
+        var claimed = await provisioner.ProvisionFromTokensAsync(
+            Input(accountId, "legacy@example.com", "plus", "at-legacy"), CancellationToken.None);
+
+        claimed.Id.Should().Be(legacy.Id);
+        (await db.CodexAccounts.ToListAsync()).Should().ContainSingle();
+        (await db.Sites.Where(s => s.ManagedSource == "Codex").ToListAsync()).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Missing_workspace_rejection_is_case_insensitive()
+    {
+        var provisioner = CreateProvisioner();
+        var first = await provisioner.ProvisionFromTokensAsync(Input("acc-mix", "mix@example.com", "team", "at-1"), CancellationToken.None);
+        var action = () => provisioner.ProvisionFromTokensAsync(Input(null, "MIX@example.com", null, "at-2"), CancellationToken.None);
+
+        await action.Should().ThrowAsync<CodexWorkspaceRequiredException>();
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var accounts = await db.CodexAccounts.ToListAsync();
+        accounts.Should().ContainSingle();
+        accounts[0].Id.Should().Be(first.Id);
+        accounts[0].AccessToken.Should().Be("at-1");
+        (await db.Sites.Where(s => s.ManagedSource == "Codex").ToListAsync()).Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task Email_change_creates_separate_credential_like_cpa()
     {
         // 上游改邮箱后重登：same account_id + 不同 email 与「同 workspace 另一成员登录」不可区分，
@@ -351,69 +553,88 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
     }
 
     [Fact]
-    public async Task Mixed_identity_sequence_leaves_transient_row_unclaimed()
+    public async Task Missing_workspace_is_rejected_when_same_email_has_identified_accounts()
     {
-        // 键漂移时序：带 id 供给先落库 → 同 email 无 id 供给后到——无法判断属于哪个 workspace，
-        // 新建暂态行是正确语义（不认领已带身份的行）；再次带 id 登录命中自身更新，
-        // 暂态行留存（可手动删除），不会与带身份行合并。
         var provisioner = CreateProvisioner();
-
-        var withId = await provisioner.ProvisionFromTokensAsync(
-            Input(accountId: "acc-mix", email: "mix@example.com", plan: "team", token: "at-id"), CancellationToken.None);
+        var first = await provisioner.ProvisionFromTokensAsync(
+            Input("acc-mix", "mix@example.com", "team", "at-id"), CancellationToken.None);
         await provisioner.ProvisionFromTokensAsync(
-            Input(accountId: null, email: "mix@example.com", plan: null, token: "at-legacy"), CancellationToken.None);
+            Input("acc-other", "mix@example.com", "plus", "at-other"), CancellationToken.None);
+        // 即使历史上已有无 ID 行，也不能继续写入可能属于已识别 workspace 的凭证。
+        await SeedLegacyRowAsync("mix@example.com", "at-legacy");
 
-        await using (var scope = _services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            (await db.CodexAccounts.ToListAsync()).Count.Should().Be(2, "无 id 供给无法归并到已带身份的行，暂态新建");
-        }
+        var action = () => provisioner.ProvisionFromTokensAsync(
+            Input(null, "mix@example.com", null, "at-new"), CancellationToken.None);
+        await action.Should().ThrowAsync<CodexWorkspaceRequiredException>();
 
-        await provisioner.ProvisionFromTokensAsync(
-            Input(accountId: "acc-mix", email: "mix@example.com", plan: "team", token: "at-id-2"), CancellationToken.None);
-
-        await using (var scope = _services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            (await db.CodexAccounts.ToListAsync()).Count.Should().Be(2, "认领只发生在同 workspace 的 accountId 命中或唯一无 id 存量——acc-mix 已存在，命中自身更新，暂态行留给用户手动清理或后续无 id 流失配");
-            var claimed = await db.CodexAccounts.InSingleAsync(withId.Id);
-            claimed!.AccessToken.Should().Be("at-id-2");
-        }
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rows = await db.CodexAccounts.ToListAsync();
+        rows.Should().HaveCount(3);
+        rows.Single(a => a.Id == first.Id).AccessToken.Should().Be("at-id");
+        rows.Single(a => a.AccountId == "acc-other").AccessToken.Should().Be("at-other");
+        rows.Single(a => a.AccountId == null).AccessToken.Should().Be("at-legacy");
+        (await db.Sites.Where(s => s.ManagedSource == "Codex").ToListAsync()).Should().HaveCount(3);
     }
 
     [Fact]
-    public async Task Batch_apply_models_targets_same_plan_group_only_and_isolates_member_failures()
+    public async Task Concurrent_mixed_identity_provisions_do_not_create_duplicate_credentials()
     {
-        // 批量模型应用（拉一次应用到全组）：同 plan 账号各自建立映射，异 plan 不受影响；
-        // 组内成员站点缺失只记该账号失败，不中断整组。
+        var provisioner = CreateProvisioner();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task<CodexAccount?> Provision(string? id)
+        {
+            await ready.Task;
+            try
+            {
+                return await provisioner.ProvisionFromTokensAsync(
+                    Input(id, "race-mixed@example.com", "team", "same-token"), CancellationToken.None);
+            }
+            catch (CodexWorkspaceRequiredException) when (id == null)
+            {
+                return null;
+            }
+        }
+
+        var tasks = Enumerable.Range(0, 8).Select(i => Task.Run(() => Provision(i % 2 == 0 ? "acc-race" : null))).ToArray();
+        ready.SetResult();
+        var results = await Task.WhenAll(tasks);
+        results.Where(a => a != null).Select(a => a!.Id).Distinct().Should().HaveCount(1);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rows = await db.CodexAccounts.ToListAsync();
+        rows.Should().ContainSingle();
+        rows[0].AccountId.Should().Be("acc-race");
+        rows[0].RefreshToken.Should().Be("rt-same-token");
+        (await db.Sites.Where(s => s.ManagedSource == "Codex").ToListAsync()).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Batch_apply_models_skips_unverified_same_plan_accounts()
+    {
+        // 同套餐不同 workspace 的权限不一定相同，不能同步其他账号。
         var provisioner = CreateProvisioner();
         var teamA = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-b1", email: "a@example.com", plan: "team", token: "at-1"), CancellationToken.None);
         var teamB = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-b2", email: "b@example.com", plan: "team", token: "at-2"), CancellationToken.None);
         var plus = await provisioner.ProvisionFromTokensAsync(Input(accountId: "acc-b3", email: "c@example.com", plan: "plus", token: "at-3"), CancellationToken.None);
-
-        // 破坏 B 的关联站点（模拟存量脏数据）：该成员应失败，A 照常成功。
-        await using (var scope = _services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var siteB = await db.Sites.InSingleAsync(teamB.LinkedSiteId);
-            await db.Client.Deleteable<Domain.Sites.Site>().Where(s => s.Id == siteB!.Id).ExecuteCommandAsync();
-        }
 
         var results = await provisioner.BatchUpsertRemoteModelsAsync(
             teamA.Id,
             [("gpt-5", "gpt-5"), ("gpt-5-codex", "gpt-5-codex")],
             CancellationToken.None);
 
-        results.Should().HaveCount(2, "只作用于同 plan（team）账号，plus 不在组内");
+        results.Should().HaveCount(2, "原分组内的未验证账号应报告跳过");
         results.Single(r => r.AccountId == teamA.Id).Ok.Should().BeTrue();
-        results.Single(r => r.AccountId == teamB.Id).Ok.Should().BeFalse("站点缺失的成员记失败");
-        results.Single(r => r.AccountId == teamB.Id).Error.Should().Contain("站点");
+        results.Single(r => r.AccountId == teamB.Id).Ok.Should().BeFalse();
+        results.Single(r => r.AccountId == teamB.Id).Error.Should().Contain("权限").And.Contain("跳过");
 
         await using (var scope = _services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var mappingsA = await db.SiteModelMappings.Where(m => m.SiteId == teamA.LinkedSiteId).ToListAsync();
             mappingsA.Select(m => m.RemoteModelName).Should().Contain(["gpt-5", "gpt-5-codex"], "勾选的模型映射到组内健康成员");
+            var mappingsB = await db.SiteModelMappings.Where(m => m.SiteId == teamB.LinkedSiteId).ToListAsync();
+            mappingsB.Select(m => m.RemoteModelName).Should().NotContain("gpt-5-codex", "同套餐不能证明模型权限一致");
             var mappingsPlus = await db.SiteModelMappings.Where(m => m.SiteId == plus.LinkedSiteId).ToListAsync();
             mappingsPlus.Select(m => m.RemoteModelName).Should().NotContain("gpt-5-codex", "plus 账号不被批量波及（模型清单按 plan 分组）");
         }
@@ -445,6 +666,7 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
     private CodexAccountProvisioner CreateProvisioner()
     {
         var scope = _services.CreateScope();
+        _provisionerScopes.Add(scope);
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         return new CodexAccountProvisioner(
             db,
@@ -469,8 +691,17 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
 
     public void Dispose()
     {
-        _services.Dispose();
-        TryDelete(_databasePath);
+        try
+        {
+            for (var i = _provisionerScopes.Count - 1; i >= 0; i--)
+                _provisionerScopes[i].Dispose();
+            _provisionerScopes.Clear();
+        }
+        finally
+        {
+            try { _services.Dispose(); }
+            finally { TryDelete(_databasePath); }
+        }
     }
 
     private static void TryDelete(string path)

@@ -215,7 +215,7 @@
 | POST | `/import-credential` | 导入 CPA 格式凭证 JSON |
 | GET | `/accounts` | 账号列表（含额度窗口） |
 | POST | `/accounts/{id}/refresh-quota` | 主动刷新额度 |
-| POST | `/accounts/{id}/reset-quota` | 重置额度快照 |
+| POST | `/accounts/{id}/reset-quota` | 重置额度快照；返回 `completed`，未完成时附 `unconfirmedStep` 和 `coolingCleared`。`completed=false` 表示本地落盘超时后未能确认完成，需重试 |
 | POST | `/accounts/{id}/toggle` | 启停 |
 | PUT | `/accounts/{id}` | 编辑（改名/换 refresh_token） |
 | DELETE | `/accounts/{id}` | 删除（级联清理隐藏站点） |
@@ -230,6 +230,10 @@
 | POST | `/accounts/export-credentials` | 导出账号凭证（codex_credential_*.json） |
 
 > Codex 体系详见 [codex.md](codex.md)。
+
+### 通用设备 OAuth 厂商目录
+
+`GET /api/admin/device-oauth/vendors` 返回厂商能力，其中 `modelCatalogScope` 为 `account`（账号范围）或 `public`（公共目录）。公共目录不证明账号具有模型使用权限；Claude 使用 models.dev 公共目录。旧版后端可能不返回该字段。
 
 ## 18.1 xAI 账号 `api/admin/xai-accounts`（XaiAccountsApiController，类级 OAuth 功能开关）
 
@@ -252,22 +256,21 @@ SuperGrok 设备码登录与账号管理（详见 [xai-accounts.md](xai-accounts
 
 ## 18.2 号池 `api/admin/account-pools`（类级 OAuth 功能开关，关闭时 404）
 
-生成式路由总包：把多个同厂商（Codex 需同套餐）账号打包——每个成员模型生成一个托管路由入口
-（ExternalModelName=模型名、对外名透出上游名），对外照常按模型名调用，池做账号扇出
-（每个模型只扇出到持有它的成员）。池名只是管理标签，不占用路由命名空间。
+生成式路由总包：把多个同厂商账号打包。Codex 套餐为可选候选筛选条件，建池时不传、null 或空值表示全部套餐，允许混合；指定套餐时只纳入匹配账号。同套餐的模型权限也可能不同。
+每个成员模型生成一个托管路由入口（ExternalModelName=模型名、对外名透出上游名），对外照常按模型名调用；包括混合套餐在内，池根据各成员站点的启用映射逐模型扇出，只扇出到持有该模型映射的成员。池名只是管理标签，不占用路由命名空间。
 转发热路径零改动——池规则就是普通规则，池内静态顺序=InstancePriority 基线，运行时叠加
 配额感知排序 / 分级冷却 / 熔断 / 会话亲和（P0 起对 OAuth 账号贯通巡检数据）。
-被手工路由/其它池占用的模型名同步时跳过（结果 skippedModels 列出）；直接编辑托管入口的
-规则会在下次池同步时被覆盖；删除池仅解除该池全部入口托管（规则保留）。
+被手工路由/其它池占用的模型名同步时跳过（结果 skippedModels 列出）；托管入口的
+有效候选设置会在同步时保留，不再符合条件的池规则会被移除。删除池会清除成员行和明确标记属于该池的规则；托管入口没有剩余规则时一并删除，仍有其他规则时解除托管并保留入口及剩余规则。未标记归属的旧规则会保守保留，需人工检查清理。引用已删除入口的其他路由会保留失效引用，不会自动连接到同名新入口。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `` | 池列表（含成员摘要/托管状态） |
-| GET | `/candidates?vendorKey=&planType=` | 厂商（+套餐）账号候选 |
-| POST | `` | 建池（名称即路由入口名，创建后不可改；autoInclude=自动纳入，手动池传 memberAccountIds） |
+| GET | `/candidates?vendorKey=&planType=` | 同厂商账号候选；Codex 可选传入套餐筛选，不传则返回全部套餐 |
+| POST | `` | 建池（名称为管理标签，池之间唯一，创建后不可改；路由入口按托管模型名生成；autoInclude=自动纳入，手动池传 memberAccountIds） |
 | PUT | `/{id}/members` | 整体替换成员行（勾选/排序/排除；自动池用排除位控制参与） |
 | POST | `/{id}/sync` · `/sync-all` | 同步单池/全部池（重生成规则，事务保护，幂等） |
-| DELETE | `/{id}` | 删池（清成员行 + 解除路由托管，规则保留） |
+| DELETE | `/{id}` | 删池及成员行和该池规则；无剩余规则的托管入口一并删除，否则解除托管并保留 |
 
 ## 19. Hangfire 仪表盘
 

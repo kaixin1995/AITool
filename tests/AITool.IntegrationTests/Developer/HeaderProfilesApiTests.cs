@@ -36,7 +36,9 @@ public sealed class HeaderProfilesApiTests
         profiles.Should().Contain(p => p.Key == "CodexVsCode" && p.IsBuiltIn);
         profiles.Should().Contain(p => p.Key == "ZCode" && p.IsBuiltIn);
         profiles.Should().Contain(p => p.Key == "Antigravity" && p.IsBuiltIn);
-        profiles.Should().Contain(p => p.Key == "WorkBuddy" && p.IsBuiltIn);
+        var workBuddy = profiles.FirstOrDefault(p => p.Key == "WorkBuddy" && p.IsBuiltIn);
+        workBuddy.Should().NotBeNull();
+        workBuddy!.HeadersJson.Should().Contain("X-AITool-Force-Stream");
     }
 
     [Fact]
@@ -141,6 +143,7 @@ public sealed class HeaderProfilesApiTests
         public Guid Id { get; set; }
         public string Key { get; set; } = string.Empty;
         public string Name { get; set; } = string.Empty;
+        public string? HeadersJson { get; set; }
         public bool IsBuiltIn { get; set; }
         public bool IsEnabled { get; set; }
     }

@@ -89,11 +89,13 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     [HttpPost("clear-all")]
     public Task<IActionResult> ClearAll(CancellationToken cancellationToken)
-        => ExecuteGraphMutationAsync(() => ClearAllCore(cancellationToken), cancellationToken);
+        => ExecuteGraphMutationAsync(controller => controller.ClearAllCore(cancellationToken), cancellationToken);
 
-    private async Task<IActionResult> ExecuteGraphMutationAsync(Func<Task<IActionResult>> mutation, CancellationToken ct)
+    private async Task<IActionResult> ExecuteGraphMutationAsync(Func<ModelsApiController, Task<IActionResult>> mutation, CancellationToken ct)
     {
-        var result = await _cascadeDeleter.ExecuteGraphMutationAsync(mutation, ct, _metadataCache);
+        var result = await _cascadeDeleter.ExecuteGraphMutationAsync(db => mutation(
+            new ModelsApiController(db, _metadataCache, _concurrencyLimiter, _vendorCatalogService,
+                _pricingService, new SiteCascadeDeleter(db), _aiAssistant, _priceSourceService)), ct, _metadataCache);
         _metadataCache.InvalidateModelMetadata();
         _metadataCache.InvalidateRouteTargets();
         return result;
@@ -126,7 +128,7 @@ public sealed class ModelsApiController : ControllerBase
         Guid mappingId,
         [FromBody] UpdateMappingRequest request,
         CancellationToken cancellationToken)
-        => ExecuteGraphMutationAsync(() => UpdateMappingCore(mappingId, request, cancellationToken), cancellationToken);
+        => ExecuteGraphMutationAsync(controller => controller.UpdateMappingCore(mappingId, request, cancellationToken), cancellationToken);
 
     private async Task<IActionResult> UpdateMappingCore(Guid mappingId, UpdateMappingRequest request, CancellationToken cancellationToken)
     {
@@ -480,7 +482,7 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     [HttpDelete("{id:guid}")]
     public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
-        => ExecuteGraphMutationAsync(() => DeleteCore(id, cancellationToken), cancellationToken);
+        => ExecuteGraphMutationAsync(controller => controller.DeleteCore(id, cancellationToken), cancellationToken);
 
     private async Task<IActionResult> DeleteCore(Guid id, CancellationToken cancellationToken)
     {
@@ -881,7 +883,7 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     [HttpPost("{id:guid}/mappings")]
     public Task<IActionResult> AddMapping(Guid id, [FromBody] AddMappingRequest request, CancellationToken cancellationToken)
-        => ExecuteGraphMutationAsync(() => AddMappingCore(id, request, cancellationToken), cancellationToken);
+        => ExecuteGraphMutationAsync(controller => controller.AddMappingCore(id, request, cancellationToken), cancellationToken);
 
     private async Task<IActionResult> AddMappingCore(Guid id, AddMappingRequest request, CancellationToken cancellationToken)
     {
@@ -954,7 +956,7 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     [HttpDelete("{id:guid}/mappings/{mappingId:guid}")]
     public Task<IActionResult> DeleteMapping(Guid id, Guid mappingId, CancellationToken cancellationToken)
-        => ExecuteGraphMutationAsync(() => DeleteMappingCore(id, mappingId, cancellationToken), cancellationToken);
+        => ExecuteGraphMutationAsync(controller => controller.DeleteMappingCore(id, mappingId, cancellationToken), cancellationToken);
 
     private async Task<IActionResult> DeleteMappingCore(Guid id, Guid mappingId, CancellationToken cancellationToken)
     {

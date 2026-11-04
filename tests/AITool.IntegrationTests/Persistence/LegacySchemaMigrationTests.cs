@@ -1,4 +1,11 @@
+using AITool.Application.Codex;
+using AITool.Application.OAuth;
+using AITool.Domain.OAuth;
+using AITool.Infrastructure.Codex;
+using AITool.Domain.Sites;
+using AITool.Infrastructure.OAuth;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -128,7 +135,7 @@ public sealed class LegacySchemaMigrationTests : IDisposable
     /// <summary>
     /// CodexAccounts 加列升级专项（IsDisplayNameCustom 非空 bool 列）：
     /// SQLite 对有数据表加 NOT NULL 列必须带默认值，否则 ALTER 失败导致应用启动崩溃；
-    /// 旧行标记默认 false（由形态启发兜底识别默认名）。
+    /// 旧名称来源无法识别，旧行保守标记为自定义并在重登时保留。
     /// </summary>
     [Fact]
     public async Task Codex_accounts_table_upgrades_with_display_name_custom_flag()
@@ -177,8 +184,36 @@ public sealed class LegacySchemaMigrationTests : IDisposable
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var account = await db.CodexAccounts.InSingleAsync(Guid.Parse("33333333-3333-3333-3333-333333333333"));
             account.Should().NotBeNull("旧 Codex 账号必须原样保留");
-            account!.IsDisplayNameCustom.Should().BeFalse("升级后旧行标记默认 false（形态启发兜底）");
+            account!.IsDisplayNameCustom.Should().BeTrue("旧名称的来源无法识别，必须保守保护");
             account.DisplayName.Should().Be("旧Codex账号");
+            await db.InsertAsync(new Site { Id = account.LinkedSiteId, Name = account.DisplayName, BaseUrl = "https://example.com", ApiKey = "at" });
+
+            using var cacheServices = new ServiceCollection().AddMemoryCache().AddLogging().AddScoped<ProxyRequestMetadataCache>().BuildServiceProvider();
+            using var cacheScope = cacheServices.CreateScope();
+            var provisioner = new CodexAccountProvisioner(db, cacheScope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>(),
+                new CodexModelCatalog(new HttpClient(), NullLogger<CodexModelCatalog>.Instance),
+                new SiteCascadeDeleter(db), NullLogger<CodexAccountProvisioner>.Instance);
+            var relogin = await provisioner.ProvisionFromTokensAsync(new CodexProvisionInput
+            {
+                DisplayName = null, Email = "dev@example.com", PlanType = "plus", AccessToken = "new-at", RefreshToken = "new-rt",
+            }, CancellationToken.None);
+            relogin.Id.Should().Be(account.Id);
+            var saved = await db.CodexAccounts.InSingleAsync(account.Id);
+            saved.DisplayName.Should().Be("旧Codex账号");
+            saved.IsDisplayNameCustom.Should().BeTrue();
+            saved.AccessToken.Should().Be("new-at");
+            var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+            site.Name.Should().Be("旧Codex账号");
+            site.ApiKey.Should().Be("new-at");
+
+            // 重复启动不能把已有 false 标记的新版账号当作旧账号覆盖。
+            var fresh = await provisioner.ProvisionFromTokensAsync(new CodexProvisionInput
+            {
+                Email = "fresh@example.com", PlanType = "plus", AccessToken = "fresh-at", RefreshToken = "fresh-rt",
+            }, CancellationToken.None);
+            fresh.IsDisplayNameCustom.Should().BeFalse();
+            SqlSugarSetup.InitializeDatabase(db.Client);
+            (await db.CodexAccounts.InSingleAsync(fresh.Id)).IsDisplayNameCustom.Should().BeFalse();
         }
 
         provider.Dispose();
@@ -187,7 +222,7 @@ public sealed class LegacySchemaMigrationTests : IDisposable
     /// <summary>
     /// DeviceOAuthAccounts 加列升级专项（IsDisplayNameCustom 非空 bool 列）：
     /// SQLite 对有数据表加 NOT NULL 列必须带默认值，否则 ALTER 失败导致应用启动崩溃；
-    /// 旧行标记默认 false（保持修复前「上游昵称刷新」语义，用户改名后即置 true）。
+    /// 无法识别历史用户命名，旧行保守标记为自定义，重登时保留名称。
     /// </summary>
     [Fact]
     public async Task Device_oauth_accounts_table_upgrades_with_display_name_custom_flag()
@@ -220,8 +255,8 @@ public sealed class LegacySchemaMigrationTests : IDisposable
                     CreatedAt TEXT NOT NULL,
                     UpdatedAt TEXT NOT NULL
                 );
-                INSERT INTO DeviceOAuthAccounts (Id, VendorKey, DisplayName, AccessToken, RefreshToken, LinkedSiteId, CreatedAt, UpdatedAt)
-                    VALUES ('55555555-5555-5555-5555-555555555555', 'zcode', '旧设备账号', 'at', 'rt', '66666666-6666-6666-6666-666666666666', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00');
+                INSERT INTO DeviceOAuthAccounts (Id, VendorKey, DisplayName, ExternalUserId, AccessToken, RefreshToken, LinkedSiteId, CreatedAt, UpdatedAt)
+                    VALUES ('55555555-5555-5555-5555-555555555555', 'zcode', '旧设备账号', 'legacy-user', 'at', 'rt', '66666666-6666-6666-6666-666666666666', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00');
                 """;
             command.ExecuteNonQuery();
         }
@@ -236,8 +271,34 @@ public sealed class LegacySchemaMigrationTests : IDisposable
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var account = await db.DeviceOAuthAccounts.InSingleAsync(Guid.Parse("55555555-5555-5555-5555-555555555555"));
             account.Should().NotBeNull("旧设备 OAuth 账号必须原样保留");
-            account!.IsDisplayNameCustom.Should().BeFalse("升级后旧行标记默认 false（保持上游昵称刷新语义）");
+            account!.IsDisplayNameCustom.Should().BeTrue("旧名称的来源无法识别，必须保守保护");
             account.DisplayName.Should().Be("旧设备账号");
+            await db.InsertAsync(new Site { Id = account.LinkedSiteId, Name = account.DisplayName, BaseUrl = "https://example.com", ApiKey = "at" });
+
+            var cacheServices = new ServiceCollection().AddMemoryCache().AddLogging().AddScoped<ProxyRequestMetadataCache>().BuildServiceProvider();
+            using var cacheScope = cacheServices.CreateScope();
+            var provisioner = new DeviceOAuthAccountProvisioner(db, cacheScope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>(),
+                new SiteCascadeDeleter(db), NullLogger<DeviceOAuthAccountProvisioner>.Instance);
+            var vendor = new ZCodeOAuthVendor(new HttpClient());
+            var tokens = new DeviceOAuthTokenSet { AccessToken = "new-at", RefreshToken = "new-rt" };
+            var relogin = await provisioner.ProvisionAsync(vendor, "上游新名称", null, "legacy-user", tokens, null, CancellationToken.None);
+            relogin.Id.Should().Be(account.Id);
+            var saved = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
+            saved.DisplayName.Should().Be("旧设备账号");
+            saved.IsDisplayNameCustom.Should().BeTrue();
+            saved.AccessToken.Should().Be("new-at");
+            var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+            site.Name.Should().Be("旧设备账号");
+            site.ApiKey.Should().Be("new-at");
+
+            // 重复启动不能把已有 false 标记的新版账号当作旧账号覆盖。
+            var fresh = await provisioner.ProvisionAsync(vendor, "默认名", null, "new-user", tokens, null, CancellationToken.None);
+            fresh.IsDisplayNameCustom.Should().BeFalse();
+            SqlSugarSetup.InitializeDatabase(db.Client);
+            (await db.DeviceOAuthAccounts.InSingleAsync(fresh.Id)).IsDisplayNameCustom.Should().BeFalse();
+            await provisioner.ProvisionAsync(vendor, "更新的默认名", null, "new-user", tokens, null, CancellationToken.None);
+            (await db.DeviceOAuthAccounts.InSingleAsync(fresh.Id)).DisplayName.Should().Be("更新的默认名");
+            cacheServices.Dispose();
         }
 
         provider.Dispose();

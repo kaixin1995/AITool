@@ -33,9 +33,8 @@ public sealed class CodexAccount
     public string DisplayName { get; set; } = string.Empty;
 
     /// <summary>
-    /// 显示名是否为用户自定义：供给器只在非自定义时才允许默认名升级重命名，
-    /// 与形态启发（裸邮箱/「邮箱 (plan)」）双保险——防止用户恰好取了默认名形态的自定义名被重登覆盖。
-    /// 存量行默认 false（无标记），由形态启发兜底识别。
+    /// 显示名是否受自定义保护：供给器仅在未标记且精确匹配历史默认名时允许升级重命名。
+    /// 尚未加列的旧库因名称来源不明，迁移时保守标记为 true；已有标记的库保留原值。
     /// </summary>
     [SugarColumn(IsNullable = false)]
     public bool IsDisplayNameCustom { get; set; }

@@ -288,20 +288,8 @@ public sealed class FirstTierModelFetchTests
         else request.Headers.Should().NotContainKey("Authorization");
     }
 
-    [Theory]
-    [InlineData(401)]
-    [InlineData(407)]
-    public async Task ZCode_gift_token_rejection_does_not_reject_account_access_token(int status)
-    {
-        var handler = ZCodeHandler(subscription: ValidSubscription(), balance: () => Json("{}", (HttpStatusCode)status));
-        using var http = new HttpClient(handler);
-        var models = await new ZCodeOAuthVendor(http).FetchModelsAsync(Token, "{\"zaiToken\":\"zai-jwt\"}", CancellationToken.None);
-        models.Should().NotBeEmpty();
-        handler.Requests.Last().Headers["Authorization"].Should().Be("Bearer zai-jwt");
-    }
-
     [Fact]
-    public async Task ZCode_fetches_remote_config_filters_models_by_the_accounts_own_plan_and_appends_live_gift_trials()
+    public async Task ZCode_fetches_only_models_from_the_api_key_plan_not_gift_aliases()
     {
         var handler = ZCodeHandler(subscription: ValidSubscription(), balance: () => Json(GiftBalanceJson()));
         var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
@@ -310,18 +298,16 @@ public sealed class FirstTierModelFetchTests
         var models = await vendor.FetchModelsAsync(Token, extra, CancellationToken.None);
 
         // 只取该账号自己套餐（zai-individual）的 ID：start-plan / bigmodel 的模型不混入；
-        // GLM-5.3-Flash 被 enabled=false 剔除；GLM-5-Turbo 由 builtinProviderModelRules 追加；
-        // 有余额的 gift（GLM-5.2/GLM-9.9）以 -Trial 别名追加；花完的桶（GLM-5-Turbo）不追加。
+        // GLM-5.3-Flash 被 enabled=false 剔除；GLM-5-Turbo 由 builtinProviderModelRules 追加。
+        // gift 使用不同的凭证和计费路径，不导入其原名或构造的 -Trial 别名。
         models.Should().BeEquivalentTo(
         [
             new DeviceOAuthRemoteModel("GLM-5.3", "GLM-5.3"),
             new DeviceOAuthRemoteModel("GLM-5-Turbo", "GLM-5-Turbo"),
-            new DeviceOAuthRemoteModel("GLM-5.2-Trial", "GLM-5.2-Trial"),
-            new DeviceOAuthRemoteModel("GLM-9.9-Trial", "GLM-9.9-Trial"),
         ], options => options.WithStrictOrdering());
 
         var configs = handler.Requests.Single(r => r.Uri.AbsoluteUri.StartsWith("https://zcode.z.ai/api/v1/client/configs"));
-        configs.Uri.Query.Should().MatchRegex(@"^.*app_version=3\.16\.3&platform=(win32|darwin|linux)-(x64|arm64)$");
+        configs.Uri.Query.Should().MatchRegex(@"^\?app_version=3\.16\.3&platform=(win32|darwin|linux)-(x64|arm64)$");
         configs.Headers["X-Device-Mid"].Should().NotBeNullOrEmpty();
         configs.Headers["User-Agent"].Should().Contain("ZCode/");
 
@@ -331,34 +317,35 @@ public sealed class FirstTierModelFetchTests
         var subscriptionRequest = handler.Requests.Single(r => r.Uri.AbsoluteUri == "https://api.z.ai/api/biz/subscription/list");
         subscriptionRequest.Headers["Authorization"].Should().Be("stub-access", "订阅端点以裸铸造 key 鉴权");
 
-        var balanceRequest = handler.Requests.Single(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"));
-        balanceRequest.Headers["Authorization"].Should().Be("Bearer zai-jwt", "gift 余额以登录时的 zai token 鉴权");
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"),
+            "gift 余额使用不同凭证，不能证明 API key 聊天路径可用");
+        vendor.ChatSiteConfig!.BaseUrl.Should().Be("https://api.z.ai/api/anthropic");
+        vendor.ChatSiteConfig.ExtraHeaders["X-AITool-Auth-Mode"].Should().Be("bearer");
     }
 
     [Fact]
-    public async Task ZCode_uses_start_plan_catalog_and_plain_gift_names_without_own_subscription()
+    public async Task ZCode_rejects_start_plan_even_when_gift_balance_exists()
     {
         var handler = ZCodeHandler(balance: () => Json(GiftBalanceJson()));
         var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
 
-        var models = await vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
 
-        // 无 VALID 订阅 → 走 Start Plan 目录（account:zai-start-plan 的 GLM-5.2），
-        // gift 的模型按余额原名单独给出，再补 -Trial 别名（逐个 gift 依次给：原名 + 别名）。
-        models.Select(m => m.Slug).Should().BeEquivalentTo(
-            ["GLM-5.2", "GLM-5.2-Trial", "GLM-9.9", "GLM-9.9-Trial"], options => options.WithStrictOrdering());
+        ex.Message.Should().Contain("Start Plan");
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"));
     }
 
     [Fact]
-    public async Task ZCode_still_returns_plan_catalog_when_gift_balance_is_unreadable()
+    public async Task ZCode_returns_plan_catalog_without_zai_token()
     {
-        var handler = ZCodeHandler(subscription: ValidSubscription(), balance: () => Json("{}", HttpStatusCode.InternalServerError));
+        var handler = ZCodeHandler(subscription: ValidSubscription());
         var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
 
-        var models = await vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None);
+        var models = await vendor.FetchModelsAsync(Token, null, CancellationToken.None);
 
-        // gift 读不到只是没有体验模型（参考行为），套餐目录照常返回。
         models.Select(m => m.Slug).Should().BeEquivalentTo(["GLM-5.3", "GLM-5-Turbo"]);
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"));
     }
 
     [Fact]
@@ -400,10 +387,10 @@ public sealed class FirstTierModelFetchTests
     [Fact]
     public async Task ZCode_fails_when_the_plan_has_no_models_and_no_gift()
     {
-        var handler = ZCodeHandler(providerConfig: () => Json("""{"revision":1,"config":{}}"""));
+        var handler = ZCodeHandler(providerConfig: () => Json("""{"revision":1,"config":{}}"""), subscription: ValidSubscription());
         var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
 
-        // Start Plan 目录为空且无 gift 余额 → 明确失败，不回退静态清单。
+        // API key 的套餐目录为空 → 明确失败，不回退静态清单或 gift。
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
     }

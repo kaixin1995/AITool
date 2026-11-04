@@ -31,6 +31,8 @@ public sealed class AccountSessionIsolationContext
 
 public sealed record AccountSessionIsolationResult(string PreparedRequestBody, Dictionary<string, string> ForwardHeaders);
 
+public sealed record DerivedReferenceOwnerIdentity(AccountIdentity Owner, string? KeyGeneration);
+
 /// <summary>Account/client-scoped session fields. Identity/device headers are deliberately not rewritten.</summary>
 public sealed class AccountSessionIsolationService(SessionIsolationDeriver deriver, IServiceScopeFactory? scopeFactory = null)
 {
@@ -84,11 +86,11 @@ public sealed class AccountSessionIsolationService(SessionIsolationDeriver deriv
 
     /// <summary>Ordinary API credentials are mutable in place, unlike managed account identities.
     /// Bind reference ownership to the current secret without persisting or exposing its fingerprint.</summary>
-    public async Task<AccountIdentity> DeriveReferenceOwnerAsync(AccountIdentity? managedAccount, Guid siteId,
+    public async Task<DerivedReferenceOwnerIdentity> DeriveReferenceOwnerAsync(AccountIdentity? managedAccount, Guid siteId,
         Guid? siteKeyId, string currentCredential, CancellationToken cancellationToken = default,
         IReadOnlyDictionary<string, string>? credentialHeaders = null)
     {
-        if (managedAccount is not null) return managedAccount;
+        if (managedAccount is not null) return new DerivedReferenceOwnerIdentity(managedAccount, null);
         var keyIdentity = siteKeyId?.ToString("D") ?? "legacy-site-key";
         static string Field(string value) => value.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" + value;
         var seed = new StringBuilder(Field(keyIdentity)).Append(Field(currentCredential));
@@ -106,10 +108,11 @@ public sealed class AccountSessionIsolationService(SessionIsolationDeriver deriv
                 throw new AITool.Application.Proxy.UpstreamReferenceException("invalid_reference_context", "Dynamic configured headers cannot establish stable reference ownership.");
             seed.Append(Field(name.ToLowerInvariant())).Append(Field(value));
         }
-        var digest = await deriver.DeriveAsync("upstream-reference-owner-v1", "site", siteId,
+        var derivation = await deriver.DeriveWithGenerationAsync("upstream-reference-owner-v1", "site", siteId,
             "credential-instance", seed.ToString(), cancellationToken);
         // Parse the canonical hexadecimal representation, independent of native Guid byte order.
-        return new AccountIdentity("site", Guid.ParseExact(digest[..32], "N"));
+        var owner = new AccountIdentity("site", Guid.ParseExact(derivation.Value[..32], "N"));
+        return new DerivedReferenceOwnerIdentity(owner, derivation.KeyGeneration);
     }
 
     // Affinity is a routing hint only, scoped to the authenticated caller, never an ownership proof.

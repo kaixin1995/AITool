@@ -13,12 +13,15 @@ public sealed record UpstreamReferenceRestriction(AccountIdentity Owner, string 
 /// Trusted forwarding context, not client JSON. Owner is the actual provider local row, or
 /// AccountIdentity("site", credential-key Guid when available, otherwise site Guid).
 /// ClientScope is an authenticated stable client-key identity, never a bearer secret.
+/// OwnerKeyGeneration is a one-way generation digest of the HMAC derivation key used for site owner derivation,
+/// not a credential; null for managed accounts or compatibility paths.
 /// </summary>
 public sealed record UpstreamReferenceContext(
     string ClientScope,
     AccountIdentity Owner,
     string UpstreamNamespace,
-    UpstreamReferenceRestriction? Restriction = null);
+    UpstreamReferenceRestriction? Restriction = null,
+    string? OwnerKeyGeneration = null);
 
 public interface IUpstreamReferenceOwnerStore
 {
@@ -45,10 +48,21 @@ public interface IUpstreamReferenceGuard
         CancellationToken ct = default);
 }
 
-/// <summary>Safe fixed messages only; never attach raw JSON, reference values, or DB inner exceptions.</summary>
+/// <summary>
+/// Safe fixed messages only; never attach raw JSON, reference values, or DB inner exceptions.
+/// PartialResult carries aggregate stats only (status code, token usage, duration, retry count);
+/// it must NEVER contain ResponseBody, raw upstream JSON, or reference values.
+/// </summary>
 public sealed class UpstreamReferenceException(string code, string message) : InvalidOperationException(message)
 {
     public string Code { get; } = code;
+
+    public ProxyForwardResult? PartialResult { get; private set; }
+
+    public void AttachPartialResult(ProxyForwardResult partialResult)
+    {
+        PartialResult = partialResult;
+    }
 }
 
 public static class UpstreamReferenceNamespace

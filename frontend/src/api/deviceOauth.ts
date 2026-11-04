@@ -1,4 +1,4 @@
-import { httpGet, httpPost, httpPut, httpDelete } from './http'
+import { getAuthSessionKey, httpGet, httpPost, httpPut, httpDelete } from './http'
 import type { AccountNetworkSelection } from './accountNetwork'
 
 export interface DeviceOAuthVendor {
@@ -6,6 +6,11 @@ export interface DeviceOAuthVendor {
   label: string
   chatSupported: boolean
   modelFetchSupported: boolean
+  modelCatalogScope?: 'account' | 'public'
+}
+
+export function usesPublicModelCatalog(provider: string, vendors: DeviceOAuthVendor[]): boolean {
+  return vendors.some(v => v.vendorKey === provider && v.modelCatalogScope === 'public')
 }
 
 const builtInModelProviders = new Set(['codex', 'antigravity', 'kimi', 'xai'])
@@ -62,8 +67,34 @@ export interface DeviceOAuthStartResult {
   instructions: string
 }
 
-export async function fetchDeviceOAuthVendors(): Promise<DeviceOAuthVendor[]> {
-  return httpGet<DeviceOAuthVendor[]>('/api/admin/device-oauth/vendors')
+let vendorsSessionKey: string | null = null
+let vendorsInFlight: Promise<DeviceOAuthVendor[]> | null = null
+let emptyVendorsCachedUntil = 0
+const emptyVendorsCacheMs = 60_000
+
+export function fetchDeviceOAuthVendors(): Promise<DeviceOAuthVendor[]> {
+  const sessionKey = getAuthSessionKey()
+  if (sessionKey !== vendorsSessionKey) {
+    vendorsSessionKey = sessionKey
+    vendorsInFlight = null
+    emptyVendorsCachedUntil = 0
+  }
+  if (vendorsInFlight) return vendorsInFlight
+  // 空清单也是成功结果，短暂缓存以避免账号轮询持续补拉；限时缓存允许后端配置变更后恢复。
+  if (Date.now() < emptyVendorsCachedUntil) return Promise.resolve([])
+
+  const request = httpGet<DeviceOAuthVendor[]>('/api/admin/device-oauth/vendors')
+    .then(vendors => {
+      if (vendorsSessionKey === sessionKey && getAuthSessionKey() === sessionKey) {
+        emptyVendorsCachedUntil = vendors.length === 0 ? Date.now() + emptyVendorsCacheMs : 0
+      }
+      return vendors
+    })
+    .finally(() => {
+      if (vendorsInFlight === request) vendorsInFlight = null
+    })
+  vendorsInFlight = request
+  return request
 }
 
 export async function fetchDeviceOAuthAccounts(): Promise<DeviceOAuthAccount[]> {
@@ -86,7 +117,7 @@ export async function toggleDeviceOAuthAccount(id: string, enabled: boolean): Pr
   await httpPost(`/api/admin/device-oauth/accounts/${id}/toggle`, { enabled })
 }
 
-export async function updateDeviceOAuthAccount(id: string, displayName: string, refreshToken?: string): Promise<void> {
+export async function updateDeviceOAuthAccount(id: string, displayName?: string, refreshToken?: string): Promise<void> {
   await httpPut(`/api/admin/device-oauth/accounts/${id}`, { displayName, refreshToken })
 }
 
@@ -124,7 +155,7 @@ export interface DeviceBatchApplyResult {
   failed: number
 }
 
-/** 设备 OAuth：把勾选的模型批量应用到源账号同厂商全部账号（组内拉一次、应用到全组）。 */
+/** 设备 OAuth：仅同步源账号，其他账号因权限无法验证而跳过。 */
 export async function batchApplyDeviceModels(
   sourceAccountId: string,
   selections: Array<{ remoteModelName: string; displayName: string; selected: boolean }>

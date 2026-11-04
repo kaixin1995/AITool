@@ -100,6 +100,7 @@ public sealed class DeviceOAuthNetworkTests : IDisposable
         {
             bound.Vendor.VendorKey.Should().Be(vendorKey);
             bound.Vendor.Label.Should().Be(metadata.Label);
+            bound.Vendor.ModelCatalogScope.Should().Be(metadata.ModelCatalogScope);
             bound.Vendor.ChatSiteConfig.Should().BeEquivalentTo(metadata.ChatSiteConfig);
             bound.Vendor.DefaultModels.Should().BeEquivalentTo(metadata.DefaultModels);
             VendorClient(bound.Vendor).Timeout.Should().Be(TimeSpan.FromSeconds(20));

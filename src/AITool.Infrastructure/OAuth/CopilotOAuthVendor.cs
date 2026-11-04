@@ -188,10 +188,12 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
         request.Headers.TryAddWithoutValidation("User-Agent", "GitHubCopilotChat/0.68.0");
         request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2026-01-09");
 
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
         if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
-        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
         if (!response.IsSuccessStatusCode)
         {
             // 401/403 是会话令牌被明确拒绝（需刷新/重登），其余状态码按上游暂时失败报告。
@@ -317,14 +319,14 @@ public sealed class CopilotOAuthVendor : IDeviceOAuthVendor
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + githubToken.Trim());
             request.Headers.TryAddWithoutValidation("User-Agent", "GitHubCopilotChat/0.68.0");
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            string text;
-            try { text = await response.Content.ReadAsStringAsync(cancellationToken); }
-            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { text = string.Empty; }
+            using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
             if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
             {
                 return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized, AccessTokenUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized && githubToken == token.AccessToken };
             }
+            var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
 
             if (!response.IsSuccessStatusCode)
             {

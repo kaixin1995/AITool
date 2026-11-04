@@ -344,11 +344,11 @@ public sealed class KimiAccountsApiController : ControllerBase
         try
         {
             using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "models");
-            models = await (network?.KimiModels ?? _modelFetcher).FetchAsync(snapshot.AccessToken ?? string.Empty, account.DeviceId, ct);
+            models = await ModelCredentialRecovery.FetchAsync(_dbContext, HttpContext.RequestServices, snapshot,
+                token => (network?.KimiModels ?? _modelFetcher).FetchAsync(token, account.DeviceId, ct), ct);
         }
         catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
         {
-            await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(snapshot.AccessToken ?? string.Empty, snapshot, ct);
             return StatusCode(StatusCodes.Status401Unauthorized, new { message = ex.Message });
         }
         var existingMappings = await _dbContext.SiteModelMappings
@@ -400,8 +400,7 @@ public sealed class KimiAccountsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 批量应用模型选择到全部 Kimi 账号：同厂商模型清单一致，任一账号拉取一次、
-    /// 勾选结果应用到整组（与单账号导入同语义）。逐账号顺序应用，单账号失败不中断整组。
+    /// 仅对源账号应用选择；其他账号权限无法从源账号清单推断，跳过并报告风险。
     /// </summary>
     [HttpPost("accounts/batch-apply-models")]
     public async Task<IActionResult> BatchApplyModels([FromBody] KimiBatchApplyModelsRequest? req, CancellationToken ct)
@@ -426,6 +425,11 @@ public sealed class KimiAccountsApiController : ControllerBase
         var results = new List<KimiBatchApplyResult>(members.Count);
         foreach (var member in members)
         {
+            if (member.Id != source.Id)
+            {
+                results.Add(new KimiBatchApplyResult(member.Id, member.DisplayName, false, "无法验证该账号的模型权限，已跳过；请逐账号拉取并同步模型"));
+                continue;
+            }
             try
             {
                 await _provisioner.SyncRemoteModelsAsync(member.LinkedSiteId, selections, ct);

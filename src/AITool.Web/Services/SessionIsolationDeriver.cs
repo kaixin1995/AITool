@@ -6,6 +6,8 @@ using AITool.Domain.Operations;
 
 namespace AITool.Web.Services;
 
+public sealed record SessionIsolationDerivation(string Value, string KeyGeneration);
+
 /// <summary>
 /// Versioned HMAC session identifiers, scoped by client and provider/account identity.
 /// No token, route, circuit, workspace, or request state participates in derivation.
@@ -27,7 +29,7 @@ public sealed class SessionIsolationDeriver(SessionIsolationKeyStore keyStore)
     public async Task<string> DeriveAsync(string clientScope, string providerKey, Guid accountId,
         string fieldDomain, string seed, CancellationToken ct = default)
     {
-        var digest = await DeriveDigestAsync(clientScope, providerKey, accountId, fieldDomain, seed, ct);
+        var (digest, _) = await DeriveCoreAsync(clientScope, providerKey, accountId, fieldDomain, seed, ct);
         try
         {
             return Convert.ToHexString(digest).ToLowerInvariant();
@@ -42,7 +44,7 @@ public sealed class SessionIsolationDeriver(SessionIsolationKeyStore keyStore)
     public async Task<string> DerivePositiveInt63Async(string clientScope, string providerKey, Guid accountId,
         string fieldDomain, string seed, CancellationToken ct = default)
     {
-        var digest = await DeriveDigestAsync(clientScope, providerKey, accountId, fieldDomain, seed, ct);
+        var (digest, _) = await DeriveCoreAsync(clientScope, providerKey, accountId, fieldDomain, seed, ct);
         try
         {
             return FormatPositiveInt63(digest);
@@ -53,7 +55,21 @@ public sealed class SessionIsolationDeriver(SessionIsolationKeyStore keyStore)
         }
     }
 
-    private async Task<byte[]> DeriveDigestAsync(string clientScope, string providerKey, Guid accountId,
+    public async Task<SessionIsolationDerivation> DeriveWithGenerationAsync(string clientScope, string providerKey,
+        Guid accountId, string fieldDomain, string seed, CancellationToken ct = default)
+    {
+        var (digest, generation) = await DeriveCoreAsync(clientScope, providerKey, accountId, fieldDomain, seed, ct);
+        try
+        {
+            return new SessionIsolationDerivation(Convert.ToHexString(digest).ToLowerInvariant(), generation);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(digest);
+        }
+    }
+
+    private async Task<(byte[] Digest, string KeyGeneration)> DeriveCoreAsync(string clientScope, string providerKey, Guid accountId,
         string fieldDomain, string seed, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -82,7 +98,9 @@ public sealed class SessionIsolationDeriver(SessionIsolationKeyStore keyStore)
         var key = await keyStore.ReadKeyAsync(ct);
         try
         {
-            return ComputeDigest(key, fields, ct);
+            var generation = SessionIsolationKeyStore.ComputeGeneration(key);
+            var digest = ComputeDigest(key, fields, ct);
+            return (digest, generation);
         }
         finally
         {

@@ -382,8 +382,94 @@ public sealed class AccountSessionIsolationTests : IDisposable
         entry.Attempts.Should().NotBeEmpty();
         entry.Attempts.Should().OnlyContain(a => !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase),
             "守卫拒绝后收口为 fail，绝不许停在等待");
-        entry.Attempts.Last().Status.Should().Be("fail");
-        entry.Attempts.Last().ErrorMessage.Should().Contain("reference_store_unavailable");
+        var lastAttempt = entry.Attempts.Last();
+        lastAttempt.Status.Should().Be("fail");
+        lastAttempt.ErrorMessage.Should().Contain("reference_store_unavailable");
+        lastAttempt.StatusCode.Should().Be(200);
+        lastAttempt.InputTokens.Should().Be(10);
+        lastAttempt.CachedTokens.Should().Be(2);
+        lastAttempt.OutputTokens.Should().Be(5);
+
+        // 验证用量行收口
+        var usageRows = await AssertUsageRowsAsync(factory);
+        var usage = usageRows.Should().ContainSingle().Subject;
+        usage.Status.Should().Be("fail");
+        usage.HttpStatusCode.Should().Be(200);
+        usage.InputTokens.Should().Be(10);
+        usage.CachedTokens.Should().Be(2);
+        usage.OutputTokens.Should().Be(5);
+        usage.IsStreamInterrupted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Websocket_stream_guard_failure_returns_503_error_frame_and_settles_usage_and_trace()
+    {
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            StreamingLines =
+            [
+                "data: {\"id\":\"resp_ws_fault\",\"object\":\"response\",\"created\":1,\"model\":\"auto\",\"status\":\"in_progress\",\"output\":[],\"type\":\"response.created\"}",
+                string.Empty,
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\",\"output_index\":0,\"content_index\":0}",
+                string.Empty,
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_fault\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}",
+                string.Empty
+            ]
+        };
+        var guard = new SecondCommitFailingGuard();
+        await using var factory = new ResponsesWebApplicationFactory(forwarder, guard);
+        using var client = factory.CreateClient();
+        await EnableDeveloperTraceAsync(factory);
+
+        var wsClient = factory.Server.CreateWebSocketClient();
+        wsClient.ConfigureRequest = request => request.Headers["Authorization"] = "Bearer responses-test-key";
+        using var socket = await wsClient.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        async Task Send(string body) => await socket.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(body)), WebSocketMessageType.Text, true, timeout.Token);
+        async Task<string> Receive()
+        {
+            var buffer = new byte[16384];
+            var builder = new StringBuilder();
+            WebSocketReceiveResult frame;
+            do
+            {
+                frame = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), timeout.Token);
+                builder.Append(Encoding.UTF8.GetString(buffer, 0, frame.Count));
+            }
+            while (!frame.EndOfMessage);
+            return builder.ToString();
+        }
+
+        await Send("{\"type\":\"response.create\",\"model\":\"auto\",\"input\":[]}");
+        // 首帧正常收到
+        var firstFrame = await Receive();
+        firstFrame.Should().Contain("resp_ws_fault");
+
+        // 随后守卫在第二个输出事件抛出 reference_store_unavailable
+        var errorFrame = await Receive();
+        errorFrame.Should().Contain("\"type\":\"error\"");
+        errorFrame.Should().Contain("\"status\":503", "守卫错误必须返回 503 而不是被转发层 200 污染");
+        errorFrame.Should().Contain("reference_store_unavailable");
+
+        // 断言 trace 尝试收口：状态码为上游 200，用量按实际保留
+        var store = factory.Services.GetRequiredService<DeveloperInvocationTraceStore>();
+        var entry = store.List().Should().ContainSingle().Subject;
+        var lastAttempt = entry.Attempts.Last();
+        lastAttempt.Status.Should().Be("fail");
+        lastAttempt.StatusCode.Should().Be(200);
+        lastAttempt.InputTokens.Should().Be(10);
+        lastAttempt.CachedTokens.Should().Be(2);
+        lastAttempt.OutputTokens.Should().Be(5);
+
+        // 断言用量行收口
+        var usageRows = await AssertUsageRowsAsync(factory);
+        var usage = usageRows.Should().ContainSingle().Subject;
+        usage.Status.Should().Be("fail");
+        usage.HttpStatusCode.Should().Be(200);
+        usage.InputTokens.Should().Be(10);
+        usage.CachedTokens.Should().Be(2);
+        usage.OutputTokens.Should().Be(5);
+        usage.IsStreamInterrupted.Should().BeTrue();
     }
 
     private static async Task EnableDeveloperTraceAsync(WebApplicationFactory<Program> factory)
@@ -403,6 +489,63 @@ public sealed class AccountSessionIsolationTests : IDisposable
             .ExecuteCommandAsync();
         // 宿主启动阶段可能已预热运行时设置缓存（TTL 300s），显式失效让本次请求读到新开关。
         factory.Services.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+    }
+
+    [Fact]
+    public async Task Client_canceled_stream_still_logs_usage_row_instead_of_vanishing()
+    {
+        // 回归（2026-11-04 实例实测）：客户端（DeepSeek Harness 等 CLI 在收到完成事件后断开）
+        // 触发 IsCanceled 时旧代码直接 return，用量行整行缺失——上游已计费的 token 全部逃逸统计。
+        // 场景 A：流完成事件已收到（receivedDoneEvent）→ 翻转为 success 入账。
+        var completedForwarder = new ResponsesFakeProxyForwardService
+        {
+            CancelAfterStreamingCallbacks = true,
+            StreamingLines =
+            [
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cancel_done\",\"output\":[]}}", "",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_cancel_done\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}", "",
+                "data: [DONE]", ""
+            ]
+        };
+        await using var completedFactory = new ResponsesWebApplicationFactory(completedForwarder);
+        using var completedClient = completedFactory.CreateClient();
+        completedClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var completed = await completedClient.PostAsync("/v1/responses",
+            new StringContent("{\"model\":\"auto\",\"input\":[],\"stream\":true}", Encoding.UTF8, "application/json"));
+        completed.StatusCode.Should().Be(HttpStatusCode.OK);
+        var completedRows = await AssertUsageRowsAsync(completedFactory);
+        completedRows.Should().ContainSingle();
+        completedRows.Single().Status.Should().Be("success", "完成事件已收到，客户端其后断开按成功入账");
+        completedRows.Single().TotalTokens.Should().BeGreaterThan(0);
+
+        // 场景 B：流中途取消（无完成事件）→ canceled 行入账，token 不丢。
+        var midForwarder = new ResponsesFakeProxyForwardService
+        {
+            CancelAfterStreamingCallbacks = true,
+            StreamingLines =
+            [
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cancel_mid\",\"output\":[]}}", ""
+            ]
+        };
+        await using var midFactory = new ResponsesWebApplicationFactory(midForwarder);
+        using var midClient = midFactory.CreateClient();
+        midClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        await midClient.PostAsync("/v1/responses",
+            new StringContent("{\"model\":\"auto\",\"input\":[],\"stream\":true}", Encoding.UTF8, "application/json"));
+        var midRows = await AssertUsageRowsAsync(midFactory);
+        midRows.Should().ContainSingle();
+        midRows.Single().Status.Should().Be("canceled", "中途取消也必须留下用量行，部分消耗不许静默消失");
+        // 中途断开时上游尚未来得及发 usage 事件（OpenAI 只在完成事件携带），tokens=0 是流协议盲区；
+        // 修复目标是不丢行：请求次数/时长/取消状态必须可见。
+    }
+
+    private static async Task<List<ProxyUsageLog>> AssertUsageRowsAsync(WebApplicationFactory<Program> factory)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rows = await db.Client.Queryable<ProxyUsageLog>().ToListAsync();
+        rows.Should().NotBeEmpty("canceled 请求也必须写入用量行");
+        return rows;
     }
 
     [Fact]
@@ -604,13 +747,14 @@ public sealed class AccountSessionIsolationTests : IDisposable
         var site = Guid.NewGuid();
         var key = Guid.NewGuid();
         var first = await _service.DeriveReferenceOwnerAsync(null, site, key, "credential-a");
+        first.KeyGeneration.Should().NotBeNullOrWhiteSpace();
         var restarted = new AccountSessionIsolationService(new SessionIsolationDeriver(new SessionIsolationKeyStore(
             _provider.GetRequiredService<IServiceScopeFactory>(), _provider.GetRequiredService<IDataProtectionProvider>())));
         (await restarted.DeriveReferenceOwnerAsync(null, site, key, "credential-a")).Should().Be(first);
-        (await restarted.DeriveReferenceOwnerAsync(null, site, key, "credential-b")).Should().NotBe(first);
-        (await restarted.DeriveReferenceOwnerAsync(null, site, null, "credential-a")).Should().NotBe(first);
-        (await restarted.DeriveReferenceOwnerAsync(_account, site, key, "token-a")).Should().Be(_account);
-        (await restarted.DeriveReferenceOwnerAsync(_account, site, key, "token-b")).Should().Be(_account);
+        (await restarted.DeriveReferenceOwnerAsync(null, site, key, "credential-b")).Owner.Should().NotBe(first.Owner);
+        (await restarted.DeriveReferenceOwnerAsync(null, site, null, "credential-a")).Owner.Should().NotBe(first.Owner);
+        (await restarted.DeriveReferenceOwnerAsync(_account, site, key, "token-a")).Should().Be(new DerivedReferenceOwnerIdentity(_account, null));
+        (await restarted.DeriveReferenceOwnerAsync(_account, site, key, "token-b")).Should().Be(new DerivedReferenceOwnerIdentity(_account, null));
         var custom = await _service.DeriveReferenceOwnerAsync(null, site, key, "credential-a", credentialHeaders:
             new Dictionary<string, string> { ["X-Auth-Token"] = "secret-a", ["User-Agent"] = "agent" });
         (await restarted.DeriveReferenceOwnerAsync(null, site, key, "credential-a", credentialHeaders:
@@ -643,7 +787,7 @@ public sealed class AccountSessionIsolationTests : IDisposable
         (await Assert.ThrowsAsync<UpstreamReferenceException>(unknownDynamic)).Code.Should().Be("invalid_reference_context");
         var custom = await _service.DeriveReferenceOwnerAsync(null, site, null, "credential", credentialHeaders:
             new Dictionary<string, string> { [name] = "custom-token" });
-        custom.Should().NotBe(baseline);
+        custom.Owner.Should().NotBe(baseline.Owner);
     }
 
     [Theory]
@@ -749,6 +893,65 @@ public sealed class AccountSessionIsolationTests : IDisposable
         var act = () => _service.DeriveReferenceOwnerAsync(null, siteId, null, "base-key", credentialHeaders:
             new Dictionary<string, string> { ["Authorization"] = "Bearer ${guid}" });
         (await Assert.ThrowsAsync<UpstreamReferenceException>(act)).Code.Should().Be("invalid_reference_context");
+    }
+
+    [Fact]
+    public async Task Key_rotation_rejects_in_flight_derived_owner_commit_and_rederivation_recovers()
+    {
+        var site = Guid.NewGuid();
+        var keyStore = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(), _provider.GetRequiredService<IDataProtectionProvider>());
+        var deriver = new SessionIsolationDeriver(keyStore);
+        var service = new AccountSessionIsolationService(deriver, _provider.GetRequiredService<IServiceScopeFactory>());
+        var ownerStore = new UpstreamReferenceOwnerStore(_provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System, keyStore: keyStore);
+        var guard = new UpstreamReferenceGuard(ownerStore);
+
+        // 用 K1 派生 owner+generation
+        var derivedK1 = await service.DeriveReferenceOwnerAsync(null, site, null, "credential-secret");
+        derivedK1.KeyGeneration.Should().NotBeNull();
+        var contextK1 = new UpstreamReferenceContext("client-test", derivedK1.Owner,
+            UpstreamReferenceNamespace.Create("https://openai.example.com", "responses"), OwnerKeyGeneration: derivedK1.KeyGeneration);
+
+        // 破坏/轮换 key：修改密文触发 keyStore 轮换
+        using (var client = _provider.GetRequiredService<ISqlSugarClient>().CopyNew())
+        {
+            client.Updateable<SessionIsolationKey>().SetColumns(row => row.ProtectedKey == "corrupt").Where(row => row.Id == 1).ExecuteCommand();
+        }
+        // 调用 ReadKeyAsync 自愈轮换为 K2
+        var k2 = await keyStore.ReadKeyAsync(default);
+        System.Security.Cryptography.CryptographicOperations.ZeroMemory(k2);
+
+        // 用 K1 的 context 调 UpstreamReferenceGuard.CommitOutputAsync 必须得到 reference_conflict 且 UpstreamReferenceOwners 为 0 行
+        var commitWithOldKey = () => guard.CommitOutputAsync(contextK1, """{"id":"resp-in-flight"}""", true);
+        var ex = await Assert.ThrowsAsync<UpstreamReferenceException>(commitWithOldKey);
+        ex.Code.Should().Be("reference_conflict");
+
+        using (var client = _provider.GetRequiredService<ISqlSugarClient>().CopyNew())
+        {
+            var count = await client.Queryable<UpstreamReferenceOwner>().CountAsync();
+            count.Should().Be(0);
+        }
+
+        // 用 K2 重新派生同一站点凭据后 owner 改变且提交/解析成功
+        var derivedK2 = await service.DeriveReferenceOwnerAsync(null, site, null, "credential-secret");
+        derivedK2.Owner.Should().NotBe(derivedK1.Owner);
+        derivedK2.KeyGeneration.Should().NotBe(derivedK1.KeyGeneration);
+        var contextK2 = new UpstreamReferenceContext("client-test", derivedK2.Owner,
+            UpstreamReferenceNamespace.Create("https://openai.example.com", "responses"), OwnerKeyGeneration: derivedK2.KeyGeneration);
+
+        await guard.CommitOutputAsync(contextK2, """{"id":"resp-in-flight"}""", true);
+        var resolved = await guard.ResolveRequestAsync("client-test", """{"previous_response_id":"resp-in-flight"}""");
+        resolved.Should().NotBeNull();
+        resolved!.Owner.Should().Be(derivedK2.Owner);
+
+        // managed account 的 generation 为 null 且不受密钥轮换影响
+        var managedDerived = await service.DeriveReferenceOwnerAsync(_account, site, null, "token");
+        managedDerived.KeyGeneration.Should().BeNull();
+        managedDerived.Owner.Should().Be(_account);
+        var managedContext = new UpstreamReferenceContext("client-test", managedDerived.Owner,
+            UpstreamReferenceNamespace.Create("https://openai.example.com", "responses"), OwnerKeyGeneration: managedDerived.KeyGeneration);
+        await guard.CommitOutputAsync(managedContext, """{"id":"resp-managed"}""", true);
+        var resolvedManaged = await guard.ResolveRequestAsync("client-test", """{"previous_response_id":"resp-managed"}""");
+        resolvedManaged!.Owner.Should().Be(_account);
     }
 
     private sealed class GatedCommitGuard : IUpstreamReferenceGuard

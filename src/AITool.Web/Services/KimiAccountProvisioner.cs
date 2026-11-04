@@ -269,9 +269,9 @@ public sealed class KimiAccountProvisioner
     /// </summary>
     public async Task DeleteAsync(Guid accountId, CancellationToken ct)
     {
-        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async db =>
         {
-            var client = _dbContext.Client;
+            var client = db.Client;
             var account = await client.Queryable<KimiAccount>().InSingleAsync(accountId);
             if (account is null) return false;
             if (_networkPolicies is not null)
@@ -280,7 +280,7 @@ public sealed class KimiAccountProvisioner
                 await _networkPolicies.DeleteInTransactionAsync(client, new AccountIdentity("kimi", account.Id), cancellationToken: ct);
             }
             if (account.LinkedSiteId != Guid.Empty)
-                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+                await new SiteCascadeDeleter(db).RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
             await client.Deleteable<KimiAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
             return true;
         }, ct, _metadataCache);

@@ -9,7 +9,7 @@ namespace AITool.Infrastructure.Xai;
 /// xAI (Grok) OAuth 客户端实现。
 /// <para>
 /// RFC 8628 设备码授权 + OIDC Discovery（端点经 https + auth.x.ai:443 校验后缓存），
-/// Token 刷新在上游返回 invalid_grant/invalid_token/401/403 时抛
+/// Token 刷新在上游明确拒绝刷新凭证时抛
 /// <see cref="XaiRefreshTokenInvalidException"/>（账号转 RequiresReauth）。
 /// </para>
 /// </summary>
@@ -145,15 +145,11 @@ public sealed class XaiOAuthClient : IXaiOAuthClient
         request.Headers.TryAddWithoutValidation("User-Agent", XaiConstants.OAuthUserAgent);
 
         var (isSuccess, status, body) = await SendAsync(request, ct);
-        var bodyLooksInvalid = !LooksLikeJsonObject(body);
-
-        // 对齐 cc-switch：401/403（以及 400 且响应体非法）一律判定 refresh_token 失效，
-        // 即使上游返回空/HTML/畸形错误体也让账号转入重新登录，避免卡在刷新失败循环。
-        if (status == HttpStatusCode.Unauthorized || status == HttpStatusCode.Forbidden
-            || (status == HttpStatusCode.BadRequest && bodyLooksInvalid))
-        {
+        // Only an explicit OAuth credential rejection proves the refresh token invalid.
+        if (AITool.Application.OAuth.OAuthRefreshRefusedException.IsCredentialRejection(status, body))
             throw new XaiRefreshTokenInvalidException();
-        }
+        if (!isSuccess)
+            throw new InvalidOperationException($"xAI 刷新 Token 失败 ({(int)status})：{DescribeError(body)}");
 
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;

@@ -186,6 +186,46 @@ public sealed class ClientEmulationEngineTests
         Assert.False(headers.ContainsKey("X-Machine-ID"));
         // 内部标记（不透传）：转发层据此做渠道校验 11128 的请求体内容适配。
         Assert.Equal("workbuddy", headers[ProxyForwardService.RewriteChannelHeader]);
+        // 内部标记（不透传）：WorkBuddy 上游只接受流式（11101），预设默认自动注入 Force-Stream。
+        Assert.Equal("true", headers[ProxyForwardService.ForceStreamHeader]);
+    }
+
+    [Fact]
+    public void ResolveHeaders_WorkBuddy_ForceStream_can_be_disabled_via_extra_headers()
+    {
+        var extraHeaders = new Dictionary<string, string>
+        {
+            [ProxyForwardService.ForceStreamHeader] = "false"
+        };
+
+        var headers = ClientEmulationEngine.ResolveHeaders(
+            ClientEmulationConstants.WorkBuddy,
+            extraHeaders,
+            "deepseek-v4.1",
+            null,
+            false);
+
+        Assert.Equal("false", headers[ProxyForwardService.ForceStreamHeader]);
+    }
+
+    [Fact]
+    public void ResolveHeaders_non_WorkBuddy_presets_do_not_force_stream()
+    {
+        var openCode = ClientEmulationEngine.ResolveHeaders(
+            ClientEmulationConstants.OpenCode,
+            null,
+            "deepseek-v4.1",
+            null,
+            false);
+        Assert.False(openCode.ContainsKey(ProxyForwardService.ForceStreamHeader));
+
+        var none = ClientEmulationEngine.ResolveHeaders(
+            ClientEmulationConstants.None,
+            null,
+            "deepseek-v4.1",
+            null,
+            false);
+        Assert.False(none.ContainsKey(ProxyForwardService.ForceStreamHeader));
     }
 
     [Fact]

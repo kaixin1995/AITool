@@ -69,6 +69,17 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
     }
 
     [Fact]
+    public async Task Many_accounts_use_constant_full_listings_and_refresh_each_target()
+    {
+        for (var i = 0; i < 20; i++) _provider.Add(enabled: true);
+        _provider.UsePointReads = true;
+        await Tick();
+        _provider.Queries.Should().HaveCount(20);
+        _provider.ListCalls.Should().Be(2, "only the initial and final provider snapshots are needed");
+        _provider.PointCalls.Should().BeGreaterThanOrEqualTo(40);
+    }
+
+    [Fact]
     public async Task Restart_keeps_persisted_due_date_and_global_due_does_not_query_recovery_early()
     {
         var disabled = _provider.Add(enabled: false);
@@ -159,6 +170,33 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
     }
 
     [Fact]
+    public async Task Concurrent_quota_exhaustion_during_healthy_query_is_preserved()
+    {
+        var disabled = _provider.Add(enabled: false);
+        var circuits = new RouteCircuitStateStore();
+        var route = Guid.NewGuid();
+        var policy = new RouteCandidatePolicyService(_services, circuits, new SessionAffinityService(), NullLogger<RouteCandidatePolicyService>.Instance);
+        using var inspection = new AccountQuotaInspectionService(_services,
+            NullLogger<AccountQuotaInspectionService>.Instance, new Environment(),
+            _services.GetRequiredService<SiteUsageTracker>(), _store, _clock, policy);
+
+        _provider.UsedPercent = 20;
+        // 模拟健康额度查询执行期间（在 QueryAsync 回调内），并发请求遭遇 402 并写入新的 Quota 休息
+        _provider.QueryCallback = _ =>
+        {
+            circuits.Rest(route, DateTimeOffset.UtcNow.AddDays(1), "quota during query", kind: RouteRestKind.Quota, siteId: disabled.Id);
+        };
+
+        var result = await inspection.RunManualAsync(forceRefresh: true, CancellationToken.None);
+
+        result.Accounts.Should().ContainSingle().Which.Action.Should().Be("enable");
+        disabled.Enabled.Should().BeTrue();
+        // 巡检虽然把账号启用了，但健康查询期间新写入的配额休息版本高于查询前捕获的令牌版本，必须保留
+        circuits.IsBlocked(route).Should().BeTrue();
+        circuits.GetRest(route).Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task Later_fresh_healthy_query_releases_quota_rest_after_enable_confirmation_failure()
     {
         var disabled = _provider.Add(enabled: false);
@@ -243,7 +281,7 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
     {
         var concurrentlyDisabled = Guid.NewGuid();
         _provider.SnapshotCallback = () => _store.EnsureScheduledAsync(_provider.ProviderKey,
-            concurrentlyDisabled, _clock.GetUtcNow(), CancellationToken.None);
+            concurrentlyDisabled, CancellationToken.None);
         await Tick();
         Rows().Should().ContainSingle().Which.AccountId.Should().Be(concurrentlyDisabled);
         _provider.SnapshotCallback = null;
@@ -275,6 +313,30 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
         var row = Schedule(enabled);
         row.ProviderKey.Should().Be(_provider.ProviderKey, "target deliberately reports a wrong provider key");
         row.NextCheckAtUtcTicks.Should().Be((_clock.GetUtcNow() + TimeSpan.FromMinutes(50)).UtcTicks);
+    }
+
+    [Fact]
+    public async Task New_disable_event_during_inspection_waits_full_interval_even_with_stale_checked_at()
+    {
+        var enabled = _provider.Add(enabled: true);
+        _provider.QueryCallback = account =>
+        {
+            account.Enabled = false;
+            account.CheckedAt = _clock.GetUtcNow().AddDays(-2);
+        };
+        await Tick();
+        var row = Schedule(enabled);
+        row.NextCheckAtUtcTicks.Should().Be((_clock.GetUtcNow() + TimeSpan.FromMinutes(50)).UtcTicks);
+    }
+
+    [Fact]
+    public async Task Historical_overdue_account_backfilled_by_reconcile_uses_catch_up_delay()
+    {
+        var disabled = _provider.Add(enabled: false);
+        disabled.CheckedAt = _clock.GetUtcNow().AddDays(-2);
+        await Tick();
+        var row = Schedule(disabled);
+        row.NextCheckAtUtcTicks.Should().Be((_clock.GetUtcNow() + TimeSpan.FromSeconds(30)).UtcTicks);
     }
 
     [Fact]
@@ -338,6 +400,46 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
         NextScheduled().Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task Reenabling_switches_reschedules_immediately_and_does_not_repeat_at_same_timestamp(bool featureDisabled, bool inspectionDisabled)
+    {
+        var enabled = _provider.Add(enabled: true);
+        await Tick();
+        _provider.Queries.Should().ContainSingle().Which.Id.Should().Be(enabled.Id);
+        var expectedFirstNext = _clock.GetUtcNow().AddSeconds(7200);
+        NextScheduled().Should().Be(expectedFirstNext);
+
+        _clock.Advance(TimeSpan.FromMinutes(10));
+
+        var db = _services.GetRequiredService<ISqlSugarClient>();
+        var metadataCache = _services.GetRequiredService<ProxyRequestMetadataCache>();
+
+        db.Updateable<SystemRuntimeSettings>()
+            .SetColumns(settings => new SystemRuntimeSettings { OAuthFeaturesEnabled = featureDisabled, OAuthInspectionEnabled = inspectionDisabled })
+            .Where(settings => settings.Id == 1).ExecuteCommand();
+        metadataCache.InvalidateRuntimeSettings();
+
+        await Tick();
+        _provider.Queries.Should().ContainSingle("no new queries while switches are disabled");
+        NextScheduled().Should().BeNull();
+
+        db.Updateable<SystemRuntimeSettings>()
+            .SetColumns(settings => new SystemRuntimeSettings { OAuthFeaturesEnabled = true, OAuthInspectionEnabled = true })
+            .Where(settings => settings.Id == 1).ExecuteCommand();
+        metadataCache.InvalidateRuntimeSettings();
+
+        await Tick();
+        _provider.Queries.Should().HaveCount(2, "reenabling immediately triggers a regular inspection round");
+        var expectedSecondNext = _clock.GetUtcNow().AddSeconds(7200);
+        NextScheduled().Should().Be(expectedSecondNext);
+
+        await Tick();
+        _provider.Queries.Should().HaveCount(2, "inspection must not repeat at the same timestamp");
+        NextScheduled().Should().Be(expectedSecondNext);
+    }
+
     [Fact]
     public async Task Due_work_is_sorted_by_due_date_then_id_and_not_duplicated_on_global_sweep()
     {
@@ -379,6 +481,26 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _inspection.TickAsync(cts.Token));
         Schedule(disabled).LeaseToken.Should().BeNull();
         Schedule(disabled).NextCheckAtUtcTicks.Should().Be((_clock.GetUtcNow() + TimeSpan.FromMinutes(50)).UtcTicks);
+    }
+
+    [Fact]
+    public async Task Cancelled_recovery_stops_waiting_for_provider_that_ignores_cancellation()
+    {
+        var disabled = _provider.Add(enabled: false);
+        await Tick();
+        _clock.Advance(TimeSpan.FromMinutes(50));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reply = new TaskCompletionSource<AccountQuotaSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _provider.QueryOverride = () => { entered.SetResult(); return reply.Task; };
+        using var cts = new CancellationTokenSource();
+        var running = _inspection.TickAsync(cts.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(TimeSpan.FromSeconds(5)));
+        Schedule(disabled).LeaseToken.Should().BeNull();
+        reply.SetResult(new AccountQuotaSnapshot { Success = true, Windows = [new AccountQuotaWindow { UsedPercent = 1 }] });
+        await Task.Delay(50);
+        disabled.Enabled.Should().BeFalse("a late successful result must not trigger recovery");
     }
 
     private Task Tick() => _inspection.TickAsync(CancellationToken.None);
@@ -438,12 +560,15 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
         public List<Account> Accounts { get; } = [];
         public List<(Guid Id, bool Force)> Queries { get; } = [];
         public int ListCalls { get; private set; }
+        public int PointCalls { get; private set; }
+        public bool UsePointReads { get; set; }
         public bool ListFails { get; set; }
         public bool QueryFails { get; set; }
         public double UsedPercent { get; set; } = 92;
         public double CachedUsedPercent { get; set; } = 92;
         public bool EmptyWindows { get; set; }
         public Action<Account>? QueryCallback { get; set; }
+        public Func<Task<AccountQuotaSnapshot>>? QueryOverride { get; set; }
         public Func<Task>? ListCallback { get; set; }
         public Func<Task>? SnapshotCallback { get; set; }
         public Account Add(bool enabled)
@@ -468,6 +593,21 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
             if (SnapshotCallback is not null) await SnapshotCallback();
             return snapshot;
         }
+        public async Task<AccountQuotaTarget?> GetAccountAsync(Guid accountId, CancellationToken cancellationToken)
+        {
+            PointCalls++;
+            if (!UsePointReads)
+                return (await GetAccountsAsync(cancellationToken)).FirstOrDefault(a => a.AccountId == accountId);
+            var account = Accounts.FirstOrDefault(a => a.Id == accountId);
+            return account is null ? null : new AccountQuotaTarget
+            {
+                ProviderKey = ProviderKey, AccountId = account.Id, LinkedSiteId = account.Id,
+                DisplayName = account.Id.ToString(), IsEnabled = account.Enabled,
+                ManuallyDisabled = account.Manual, DisabledByFeatureToggle = account.Feature,
+                DisabledByUpstream = account.Upstream, IsQuotaCooling = account.Cooling,
+                LastQuotaCheckedAt = account.CheckedAt, TokenExpiresAt = account.TokenExpiresAt
+            };
+        }
         public AccountQuotaSnapshot? ParseCachedQuota(string rawJson) => new()
         {
             Success = true, CheckedAt = clock.GetUtcNow(),
@@ -476,6 +616,7 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
         public Task<AccountQuotaSnapshot> QueryAsync(AccountQuotaTarget target, bool forceRefresh, CancellationToken cancellationToken)
         {
             Queries.Add((target.AccountId, forceRefresh));
+            if (QueryOverride is not null) return QueryOverride();
             var account = Accounts.Single(account => account.Id == target.AccountId);
             QueryCallback?.Invoke(account);
             cancellationToken.ThrowIfCancellationRequested();

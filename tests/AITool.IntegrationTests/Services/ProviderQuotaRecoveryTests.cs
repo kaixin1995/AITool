@@ -30,6 +30,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
     private readonly HttpClient _http;
     private readonly FakeVendor _vendor = new();
     private readonly ProxyRequestMetadataCache _metadata;
+    private bool _realRefresh;
 
     public ProviderQuotaRecoveryTests()
     {
@@ -48,6 +49,43 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
     }
 
     public static IEnumerable<object[]> Providers() => new[] { "codex", "google", "kimi", "xai", "device-oauth" }.Select(p => new object[] { p });
+    [Theory, MemberData(nameof(Providers))]
+    public async Task Recovery_requires_current_unexpired_lease_for_account_and_site(string key)
+    {
+        var target = await SeedAsync(key);
+        var token = Guid.NewGuid();
+        target.QuotaRecheckLeaseToken = token;
+        var row = new QuotaRecheckSchedule
+        {
+            ProviderKey = key, AccountId = target.AccountId, Generation = token.ToString("D"),
+            LeaseToken = token.ToString("D"), LeaseExpiresAtUtcTicks = DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks
+        };
+        await _db.Client.Insertable(row).ExecuteCommandAsync();
+        var provider = Create(key);
+        await provider.SetEnabledAsync(target, true, "quota-recovered", default);
+        (await EnabledAsync(key)).Should().BeFalse("an expired claim cannot write even before reassignment");
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
+
+        row.LeaseToken = Guid.NewGuid().ToString("D");
+        row.Generation = row.LeaseToken;
+        row.LeaseExpiresAtUtcTicks = DateTimeOffset.UtcNow.AddMinutes(10).UtcTicks;
+        await _db.Client.Updateable(row).ExecuteCommandAsync();
+        await provider.SetEnabledAsync(target, true, "quota-recovered", default);
+        (await EnabledAsync(key)).Should().BeFalse("a new owner fences out the old claim");
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
+
+        target.QuotaRecheckLeaseToken = Guid.Parse(row.LeaseToken);
+        row.Generation = Guid.NewGuid().ToString("D");
+        await _db.Client.Updateable(row).ExecuteCommandAsync();
+        await provider.SetEnabledAsync(target, true, "quota-recovered", default);
+        (await EnabledAsync(key)).Should().BeFalse("a newer disable event invalidates the old observation");
+        row.Generation = row.LeaseToken;
+        await _db.Client.Updateable(row).ExecuteCommandAsync();
+        await provider.SetEnabledAsync(target, true, "quota-recovered", default);
+        (await EnabledAsync(key)).Should().BeTrue();
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeTrue();
+    }
+
     public static IEnumerable<object[]> RecoveryBlockers()
     {
         foreach (var row in Providers())
@@ -81,6 +119,28 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         }
         (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
         _schedule.Calls.Should().BeEmpty();
+    }
+
+    [Theory, MemberData(nameof(Providers))]
+    public async Task Feature_restore_clears_reauth_marker_only_while_global_feature_is_enabled(string key)
+    {
+        var target = await SeedAsync(key);
+        _db.Client.Ado.ExecuteCommand($"UPDATE {Table(key)} SET RequiresReauth=1, DisabledByFeatureToggle=1");
+        await _db.Client.Updateable<SystemRuntimeSettings>()
+            .SetColumns(s => new SystemRuntimeSettings { OAuthFeaturesEnabled = false }).Where(s => s.Id == 1).ExecuteCommandAsync();
+
+        var provider = Create(key);
+        await provider.ApplyFeatureToggleAsync(true, default);
+        _db.Client.Ado.GetInt($"SELECT DisabledByFeatureToggle FROM {Table(key)}").Should().Be(1);
+        (await EnabledAsync(key)).Should().BeFalse();
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
+
+        await _db.Client.Updateable<SystemRuntimeSettings>()
+            .SetColumns(s => new SystemRuntimeSettings { OAuthFeaturesEnabled = true }).Where(s => s.Id == 1).ExecuteCommandAsync();
+        await provider.ApplyFeatureToggleAsync(true, default);
+        _db.Client.Ado.GetInt($"SELECT DisabledByFeatureToggle FROM {Table(key)}").Should().Be(0);
+        (await EnabledAsync(key)).Should().BeFalse("reauthentication is still required");
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
     }
 
     [Theory, MemberData(nameof(Providers))]
@@ -124,8 +184,9 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         (await EnabledAsync(key)).Should().BeFalse();
         (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
         _schedule.Calls.Should().HaveCount(2);
-        _schedule.Calls.Should().OnlyContain(c => c.Key == key && c.Id == target.AccountId && c.Last == target.LastQuotaCheckedAt);
+        _schedule.Calls.Should().OnlyContain(c => c.Key == key && c.Id == target.AccountId);
         _schedule.Scheduled.Should().HaveCount(1, "store EnsureScheduled is idempotent");
+        _schedule.Scheduled.Should().Contain((key, target.AccountId));
     }
 
     [Theory, MemberData(nameof(RecoveryBlockers))]
@@ -173,7 +234,8 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         (await Create(key).QueryAsync(target, true, default)).Success.Should().BeTrue();
         (await EnabledAsync(key)).Should().BeFalse();
         (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
-        _schedule.Calls.Should().ContainSingle(c => c.Key == key && c.Id == target.AccountId && c.Last > target.LastQuotaCheckedAt);
+        _schedule.Calls.Should().ContainSingle(c => c.Key == key && c.Id == target.AccountId);
+        _schedule.Scheduled.Should().Contain((key, target.AccountId));
     }
 
     [Theory]
@@ -298,6 +360,22 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
     [InlineData("codex")]
     [InlineData("google")]
     [InlineData("kimi")]
+    public async Task Quota_stalled_401_body_preserves_invalidation(string key)
+    {
+        var target = await SeedAsync(key, enabled: true);
+        _network.Key = key;
+        _network.Status = HttpStatusCode.Unauthorized;
+        _network.StalledBody = true;
+        var result = await Create(key).QueryAsync(target, true, default).WaitAsync(TimeSpan.FromSeconds(5));
+        result.UpstreamUnauthorized.Should().BeTrue();
+        (await EnabledAsync(key)).Should().BeFalse();
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("codex")]
+    [InlineData("google")]
+    [InlineData("kimi")]
     [InlineData("xai")]
     public async Task Quota_unreadable_401_body_preserves_invalidation(string key)
     {
@@ -338,7 +416,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
     [InlineData("google")]
     [InlineData("kimi")]
     [InlineData("device-oauth")]
-    public async Task Quota_401_disables_matching_credential_when_refresh_fails(string key)
+    public async Task Quota_401_preserves_matching_credential_when_refresh_fails(string key)
     {
         var target = await SeedAsync(key, enabled: true);
         _db.Client.Ado.ExecuteCommand($"UPDATE {Table(key)} SET RefreshToken='refresh'");
@@ -347,9 +425,60 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         _vendor.Result = new DeviceOAuthQuotaResult { CredentialInvalid = true, UpstreamUnauthorized = true, AccessTokenUnauthorized = true };
         var result = await Create(key).QueryAsync(target, true, default);
         result.UpstreamUnauthorized.Should().BeTrue();
-        _db.Client.Ado.GetInt($"SELECT RequiresReauth FROM {Table(key)}").Should().Be(1);
-        (await EnabledAsync(key)).Should().BeFalse();
-        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
+        _db.Client.Ado.GetInt($"SELECT RequiresReauth FROM {Table(key)}").Should().Be(0);
+        (await EnabledAsync(key)).Should().BeTrue();
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeTrue();
+    }
+
+    public static IEnumerable<object[]> RefreshFailures() =>
+        from key in new[] { "codex", "google", "kimi", "device-oauth" }
+        from failure in new[] { "refused", "server", "parse", "database" }
+        select new object[] { key, failure };
+
+    [Theory, MemberData(nameof(RefreshFailures))]
+    public async Task Quota_refresh_only_invalidates_explicit_refusal(string key, string failure)
+    {
+        var target = await SeedAsync(key, enabled: true);
+        _db.Client.Ado.ExecuteCommand($"UPDATE {Table(key)} SET RefreshToken='refresh'");
+        if (key == "device-oauth")
+            _db.Client.Ado.ExecuteCommand("UPDATE Sites SET ManagedSource=@source", new { source = DeviceOAuthAccountProvisioner.ManagedSource });
+        _realRefresh = true;
+        _network.Key = key;
+        _network.Status = HttpStatusCode.Unauthorized;
+        _network.RefreshStatus = failure == "refused" ? HttpStatusCode.BadRequest : failure == "server" ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK;
+        _network.RefreshBody = failure == "refused" ? "{\"error\":\"invalid_grant\"}" : failure == "parse" ? "not-json" : "{\"access_token\":\"new-token\",\"refresh_token\":\"new-refresh\"}";
+        _vendor.Result = new DeviceOAuthQuotaResult { CredentialInvalid = true, UpstreamUnauthorized = true, AccessTokenUnauthorized = true };
+        _vendor.RefreshError = failure switch
+        {
+            "refused" => new DeviceOAuthRefreshRefusedException("invalid_grant"),
+            "server" => new InvalidOperationException("HTTP 503"),
+            "parse" => new System.Text.Json.JsonException("bad JSON"),
+            _ => null,
+        };
+        if (failure == "database")
+            _db.Client.Ado.ExecuteCommand($"CREATE TRIGGER fail_rotation BEFORE UPDATE OF AccessToken ON {Table(key)} BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
+
+        var result = await Create(key).QueryAsync(target, true, default);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().NotBeNullOrWhiteSpace();
+        var refused = failure == "refused";
+        _db.Client.Ado.GetInt($"SELECT RequiresReauth FROM {Table(key)}").Should().Be(refused ? 1 : 0);
+        (await EnabledAsync(key)).Should().Be(!refused);
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().Be(!refused);
+        _db.Client.Ado.GetString($"SELECT AccessToken FROM {Table(key)}").Should().Be("token");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error\":\"invalid_grant\"}", true)]
+    [InlineData(HttpStatusCode.Unauthorized, "{\"error\":{\"code\":\"refresh_token_reused\"}}", true)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "{\"error\":\"invalid_grant\"}", false)]
+    [InlineData(HttpStatusCode.TooManyRequests, "{\"error\":\"invalid_grant\"}", false)]
+    [InlineData(HttpStatusCode.BadRequest, "{\"error\":\"invalid_client\"}", false)]
+    [InlineData(HttpStatusCode.BadRequest, "not-json invalid_grant", false)]
+    public void Refresh_rejection_requires_explicit_credential_error(HttpStatusCode status, string body, bool refused)
+    {
+        OAuthRefreshRefusedException.IsCredentialRejection(status, body).Should().Be(refused);
     }
 
     [Theory]
@@ -423,6 +552,22 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         _db.Client.Ado.GetInt("SELECT RequiresReauth FROM DeviceOAuthAccounts").Should().Be(0);
         (await EnabledAsync("device-oauth")).Should().BeTrue();
         (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Device_quota_derived_credential_401_with_refused_refresh_invalidates_snapshot()
+    {
+        var target = await SeedAsync("device-oauth", enabled: true);
+        _db.Client.Ado.ExecuteCommand("UPDATE DeviceOAuthAccounts SET RefreshToken='refresh'");
+        _db.Client.Ado.ExecuteCommand("UPDATE Sites SET ManagedSource=@source", new { source = DeviceOAuthAccountProvisioner.ManagedSource });
+        _realRefresh = true;
+        _vendor.Result = new DeviceOAuthQuotaResult { CredentialInvalid = true, UpstreamUnauthorized = true };
+        _vendor.RefreshError = new DeviceOAuthRefreshRefusedException("invalid_grant");
+        var result = await Create("device-oauth").QueryAsync(target, true, default);
+        result.UpstreamUnauthorized.Should().BeTrue();
+        _db.Client.Ado.GetInt("SELECT RequiresReauth FROM DeviceOAuthAccounts").Should().Be(1);
+        (await EnabledAsync("device-oauth")).Should().BeFalse();
+        (await _db.Sites.InSingleAsync(target.LinkedSiteId)).IsEnabled.Should().BeFalse();
     }
 
     [Fact]
@@ -588,11 +733,11 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         var cache = _services.GetRequiredService<IMemoryCache>();
         return key switch
         {
-            "codex" => new CodexQuotaService(_http, _db, _metadata, cache, null!, new FakeVersion(), NullLogger<CodexQuotaService>.Instance, _schedule),
-            "google" => new GoogleAccountQuotaService(_http, _db, _metadata, cache, null!, NullLogger<GoogleAccountQuotaService>.Instance, _schedule),
-            "kimi" => new KimiQuotaService(_http, _db, _metadata, cache, null!, NullLogger<KimiQuotaService>.Instance, _schedule),
+            "codex" => new CodexQuotaService(_http, _db, _metadata, cache, _realRefresh ? new CodexCredentialRefreshService(_db, new AITool.Infrastructure.Codex.CodexOAuthClient(_http), _metadata, NullLogger<CodexCredentialRefreshService>.Instance) : null!, new FakeVersion(), NullLogger<CodexQuotaService>.Instance, _schedule),
+            "google" => new GoogleAccountQuotaService(_http, _db, _metadata, cache, _realRefresh ? new GoogleCredentialRefreshService(_db, new AITool.Infrastructure.Google.GoogleOAuthClient(_http), _metadata, NullLogger<GoogleCredentialRefreshService>.Instance) : null!, NullLogger<GoogleAccountQuotaService>.Instance, _schedule),
+            "kimi" => new KimiQuotaService(_http, _db, _metadata, cache, _realRefresh ? new KimiCredentialRefreshService(_db, new AITool.Infrastructure.Kimi.KimiOAuthClient(_http, NullLogger<AITool.Infrastructure.Kimi.KimiOAuthClient>.Instance), _metadata, NullLogger<KimiCredentialRefreshService>.Instance) : null!, NullLogger<KimiQuotaService>.Instance, _schedule),
             "xai" => new XaiQuotaService(_http, _db, _metadata, cache, null!, NullLogger<XaiQuotaService>.Instance, _schedule),
-            "device-oauth" => new DeviceOAuthQuotaService(_db, new DeviceOAuthVendorRegistry([_vendor]), _metadata, cache, null!, NullLogger<DeviceOAuthQuotaService>.Instance, _schedule),
+            "device-oauth" => new DeviceOAuthQuotaService(_db, new DeviceOAuthVendorRegistry([_vendor]), _metadata, cache, _realRefresh ? new DeviceOAuthCredentialRefreshService(_db, new DeviceOAuthVendorRegistry([_vendor]), _metadata, NullLogger<DeviceOAuthCredentialRefreshService>.Instance) : null!, NullLogger<DeviceOAuthQuotaService>.Instance, _schedule),
             _ => throw new ArgumentOutOfRangeException(nameof(key)),
         };
     }
@@ -627,16 +772,16 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
 
     private sealed class ScheduleSpy : IQuotaRecheckScheduleStore
     {
-        public List<(string Key, Guid Id, DateTimeOffset? Last)> Calls { get; } = [];
+        public List<(string Key, Guid Id)> Calls { get; } = [];
         public HashSet<(string Key, Guid Id)> Scheduled { get; } = [];
         public Action<CancellationToken>? BeforeEnsure { get; set; }
         public Task? EnsureResult { get; set; }
-        public Task EnsureScheduledAsync(string providerKey, Guid accountId, DateTimeOffset? lastQuotaCheckedAt, CancellationToken cancellationToken)
+        public Task EnsureScheduledAsync(string providerKey, Guid accountId, CancellationToken cancellationToken)
         {
             BeforeEnsure?.Invoke(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (EnsureResult is not null) return EnsureResult;
-            Calls.Add((providerKey, accountId, lastQuotaCheckedAt)); Scheduled.Add((providerKey, accountId)); return Task.CompletedTask;
+            Calls.Add((providerKey, accountId)); Scheduled.Add((providerKey, accountId)); return Task.CompletedTask;
         }
         public Task<IReadOnlyList<QuotaRecheckScheduleInfo>> ReconcileAsync(string providerKey, IReadOnlyList<AccountQuotaTarget> eligibleAccounts, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<QuotaRecheckLease?> TryAcquireAsync(string providerKey, Guid accountId, CancellationToken cancellationToken, bool force = false) => throw new NotSupportedException();
@@ -655,15 +800,29 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
 
+    private sealed class StalledContent : HttpContent
+    {
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => Task.Delay(Timeout.Infinite);
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context, CancellationToken cancellationToken) => Task.Delay(Timeout.Infinite, cancellationToken);
+    }
+
     private sealed class FakeNetwork : HttpMessageHandler
     {
         public string Key { get; set; } = "";
         public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
         public bool BrokenBody { get; set; }
+        public bool StalledBody { get; set; }
         public Action? BeforeReply { get; set; }
+        public HttpStatusCode RefreshStatus { get; set; } = HttpStatusCode.OK;
+        public string RefreshBody { get; set; } = "{}";
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.Contains("token", StringComparison.OrdinalIgnoreCase))
+                return Task.FromResult(new HttpResponseMessage(RefreshStatus) { Content = new StringContent(RefreshBody) });
             BeforeReply?.Invoke();
+            if (StalledBody)
+                return Task.FromResult(new HttpResponseMessage(Status) { Content = new StalledContent() });
             if (BrokenBody)
                 return Task.FromResult(new HttpResponseMessage(Status) { Content = new BrokenContent() });
             HttpContent content = Key switch
@@ -685,6 +844,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         public DeviceOAuthChatSiteConfig? ChatSiteConfig => null;
         public IReadOnlyList<(string Slug, string DisplayName)> DefaultModels => [];
         public DeviceOAuthQuotaResult? Result { get; set; }
+        public Exception? RefreshError { get; set; }
         public Action? BeforeReply { get; set; }
         public Task<DeviceOAuthQuotaResult> QueryQuotaAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
         {
@@ -694,6 +854,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         public DeviceOAuthQuotaResult? ParseCachedQuota(string rawJson) => null;
         public Task<DeviceOAuthStartResult> StartSignInAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<DeviceOAuthPollResult> PollSignInAsync(string sessionJson, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<DeviceOAuthTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken) =>
+            RefreshError is null ? Task.FromResult(new DeviceOAuthTokenSet { AccessToken = "new-token", RefreshToken = "new-refresh" }) : Task.FromException<DeviceOAuthTokenSet>(RefreshError);
     }
 }

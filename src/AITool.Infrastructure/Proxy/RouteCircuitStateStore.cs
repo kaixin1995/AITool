@@ -8,6 +8,7 @@ public sealed class RouteCircuitStateStore
     private readonly object _syncRoot = new();
     private long _blockDurationTicks;
     private int _failThreshold;
+    private long _restVersion;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> _failCounts = [];
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTimeOffset> _blockedRoutes = [];
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CircuitRouteMeta> _routeMeta = [];
@@ -16,7 +17,7 @@ public sealed class RouteCircuitStateStore
     // 所有读写均由 _syncRoot 保护，与恢复、过期清理、手动重置保持原子性。
     private readonly Dictionary<Guid, Dictionary<RestOwner, RestEntry>> _restedRoutes = [];
     private readonly record struct RestOwner(RouteRestKind Kind, Guid? SiteId);
-    private sealed record RestEntry(DateTimeOffset UntilUtc, string Reason, CircuitRouteMeta? Meta);
+    private sealed record RestEntry(DateTimeOffset UntilUtc, string Reason, CircuitRouteMeta? Meta, long Version);
 
     public RouteCircuitStateStore(TimeSpan? blockDuration = null, int failThreshold = 5)
     {
@@ -57,6 +58,7 @@ public sealed class RouteCircuitStateStore
     /// <summary>
     /// 分级冷却，不走失败计数，同时清空失败计数。同类/同归属休息保留最晚期限，
     /// 查询时与其他休息及普通熔断取最大值；kind/siteId 缺省兼容旧调用，但不参与配额恢复。
+    /// 每次实际写入或更新休息时单调推进版本，确保健康查询期间新到的配额休息不会被旧查询结果解除。
     /// </summary>
     public void Rest(Guid routeId, DateTimeOffset untilUtc, string reason, CircuitRouteMeta? meta = null,
         RouteRestKind kind = RouteRestKind.Other, Guid? siteId = null)
@@ -64,6 +66,8 @@ public sealed class RouteCircuitStateStore
         lock (_syncRoot)
         {
             if (untilUtc <= DateTimeOffset.UtcNow) return;
+
+            var version = ++_restVersion;
 
             if (!_restedRoutes.TryGetValue(routeId, out var rests))
             {
@@ -77,7 +81,12 @@ public sealed class RouteCircuitStateStore
             {
                 rests[owner] = new RestEntry(untilUtc,
                     string.IsNullOrWhiteSpace(reason) ? previous?.Reason ?? string.Empty : reason,
-                    meta ?? previous?.Meta);
+                    meta ?? previous?.Meta,
+                    version);
+            }
+            else
+            {
+                rests[owner] = previous with { Version = version };
             }
 
             _failCounts.TryRemove(routeId, out _);
@@ -85,20 +94,36 @@ public sealed class RouteCircuitStateStore
     }
 
     /// <summary>
-    /// 仅在新鲜配额查询确认恢复后调用：按物理站点 ID 解除配额休息。
-    /// 不触碰限流/其他休息、普通熔断、失败计数；无类型或无归属的旧休息保持不变。
+    /// 捕获用于解除配额休息的版本令牌。必须在健康查询发起前捕获，
+    /// 确保查询期间新写入或刷新的配额休息拥有更高版本而得以保留。
+    /// </summary>
+    public QuotaRestReleaseToken CaptureQuotaRestReleaseToken(Guid siteId)
+    {
+        lock (_syncRoot)
+        {
+            return new(siteId, _restVersion);
+        }
+    }
+
+    /// <summary>
+    /// 仅在新鲜配额查询确认恢复后调用：按令牌只释放捕获前已存在的配额休息。
+    /// 不触碰限流/其他休息、普通熔断、失败计数；捕获后写入或刷新的配额休息保持不变。
     /// 返回移除的配额休息数。
     /// </summary>
-    public int ReleaseQuotaRests(Guid siteId)
+    public int ReleaseQuotaRests(QuotaRestReleaseToken token)
     {
         lock (_syncRoot)
         {
             var removed = 0;
-            var owner = new RestOwner(RouteRestKind.Quota, siteId);
+            var owner = new RestOwner(RouteRestKind.Quota, token.SiteId);
             foreach (var pair in _restedRoutes.ToArray())
             {
-                if (pair.Value.Remove(owner)) removed++;
-                if (pair.Value.Count == 0) _restedRoutes.Remove(pair.Key);
+                if (pair.Value.TryGetValue(owner, out var entry) && entry.Version <= token.Version)
+                {
+                    pair.Value.Remove(owner);
+                    removed++;
+                    if (pair.Value.Count == 0) _restedRoutes.Remove(pair.Key);
+                }
             }
 
             return removed;
@@ -254,6 +279,9 @@ public enum RouteRestKind
     Quota,
     RateLimit
 }
+
+/// <summary>配额休息解除令牌，记录目标站点及捕获时的全局休息版本栅栏。</summary>
+public readonly record struct QuotaRestReleaseToken(Guid SiteId, long Version);
 
 /// <summary>单条路由的熔断状态信息。</summary>
 public sealed record CircuitRouteInfo(

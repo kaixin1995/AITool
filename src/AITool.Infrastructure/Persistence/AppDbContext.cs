@@ -269,6 +269,39 @@ public static class SqlSugarSetup
         }
 
         // CodeFirst 建表（表已存在时只增不删，自动补齐缺失列）。
+        // 旧设备账号无法区分默认名与用户改名；加列时原子地以 1 回填，保护存量名称。
+        // 已有该列的库不再改写，以保留新账号的非自定义标记。
+        var needsDeviceNameFlag = db.Ado.GetInt("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'DeviceOAuthAccounts' COLLATE NOCASE AND NOT EXISTS (SELECT 1 FROM pragma_table_info('DeviceOAuthAccounts') WHERE name = 'IsDisplayNameCustom' COLLATE NOCASE);") > 0;
+        if (needsDeviceNameFlag)
+        {
+            try
+            {
+                db.Ado.ExecuteCommand("ALTER TABLE DeviceOAuthAccounts ADD COLUMN IsDisplayNameCustom INTEGER NOT NULL DEFAULT 1;");
+            }
+            catch
+            {
+                // 另一个进程可能已加列；其他失败必须阻止启动，不能让 CodeFirst 用默认 false 加列。
+                if (db.Ado.GetInt("SELECT COUNT(*) FROM pragma_table_info('DeviceOAuthAccounts') WHERE name = 'IsDisplayNameCustom' COLLATE NOCASE;") == 0)
+                    throw;
+            }
+        }
+
+        // 未加标记的旧 Codex 名称来源不明，保守回填为自定义；已有标记的库不改写。
+        var needsCodexNameFlag = db.Ado.GetInt("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'CodexAccounts' COLLATE NOCASE AND NOT EXISTS (SELECT 1 FROM pragma_table_info('CodexAccounts') WHERE name = 'IsDisplayNameCustom' COLLATE NOCASE);") > 0;
+        if (needsCodexNameFlag)
+        {
+            try
+            {
+                db.Ado.ExecuteCommand("ALTER TABLE CodexAccounts ADD COLUMN IsDisplayNameCustom INTEGER NOT NULL DEFAULT 1;");
+            }
+            catch
+            {
+                // 并发启动可能已加列；列仍缺失时必须阻止 CodeFirst 以 false 建列。
+                if (db.Ado.GetInt("SELECT COUNT(*) FROM pragma_table_info('CodexAccounts') WHERE name = 'IsDisplayNameCustom' COLLATE NOCASE;") == 0)
+                    throw;
+            }
+        }
+
         db.CodeFirst.InitTables(
             typeof(Site),
             typeof(SiteKey),
@@ -298,6 +331,10 @@ public static class SqlSugarSetup
             typeof(SessionIsolationKeyMetadata),
             typeof(ProxyProfile),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
+
+        // CodeFirst does not reliably add new indexes to existing SQLite tables.
+        db.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS IX_ProxyRouteEntries_ManagedByPoolId ON ProxyRouteEntries (ManagedByPoolId);");
+        db.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS IX_ProxyRouteRules_ManagedByPoolId ON ProxyRouteRules (ManagedByPoolId);");
 
         // SQLite CodeFirst may add boolean columns as NULL on populated legacy tables.
         foreach (var table in new[] { "CodexAccounts", "GoogleAccounts", "KimiAccounts" })

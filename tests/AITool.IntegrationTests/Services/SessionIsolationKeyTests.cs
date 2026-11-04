@@ -31,6 +31,46 @@ public sealed class SessionIsolationKeyTests : IDisposable
     }
 
     [Fact]
+    public async Task Key_generation_remains_stable_across_v1_to_v2_upgrade_changes_on_rotation_and_is_null_on_corruption()
+    {
+        var legacyKey = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            InsertKey(Protector(_provider).Protect(legacyKey));
+            var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(), _provider.GetRequiredService<IDataProtectionProvider>());
+            using var client = Client();
+
+            // v1 状态下代次
+            var genBefore = await store.TryReadCurrentGenerationAsync(client, default);
+            genBefore.Should().Be(SessionIsolationKeyStore.ComputeGeneration(legacyKey));
+
+            // 原地升级到 v2
+            await Derive(Deriver(_provider));
+            Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
+
+            // 升级后代次不变（因为密钥材料不变）
+            var genAfterUpgrade = await store.TryReadCurrentGenerationAsync(client, default);
+            genAfterUpgrade.Should().Be(genBefore);
+
+            // 损坏状态返回 null 且不触发轮换
+            SetCiphertext("corrupt-bytes");
+            var genCorrupt = await store.TryReadCurrentGenerationAsync(client, default);
+            genCorrupt.Should().BeNull();
+            Row().ProtectedKey.Should().Be("corrupt-bytes");
+
+            // 真实轮换后代次变化
+            await store.ReadKeyAsync(default);
+            var genAfterRotation = await store.TryReadCurrentGenerationAsync(client, default);
+            genAfterRotation.Should().NotBeNull();
+            genAfterRotation.Should().NotBe(genBefore);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacyKey);
+        }
+    }
+
+    [Fact]
     public async Task Key_rotation_retains_reference_tombstones_until_original_expiry()
     {
         await Derive(Deriver(_provider));
@@ -296,11 +336,30 @@ public sealed class SessionIsolationKeyTests : IDisposable
     [InlineData(33)]
     public async Task Raw_v2_key_of_wrong_length_rotates_instead_of_failing(int length)
     {
-        SetRaw(Convert.ToBase64String(RandomNumberGenerator.GetBytes(length)));
+        // InlineData(0) 命中 Store:264 的空值守卫（InvalidPersistedState）；
+        // 31/33 命中 Store:281 的长度守卫（UndecryptablePersistedKey）。两条都须轮换。
+        var valid = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        InsertRaw(valid);
+        var healthy = await Derive(Deriver(_provider));
+        Row().ProtectedKey.Should().Be(valid);
+        Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
+        Rows().Should().ContainSingle();
+
+        var wrong = Convert.ToBase64String(RandomNumberGenerator.GetBytes(length));
+        SetRaw(wrong);
+        Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
+        Row().ProtectedKey.Should().Be(wrong);
+        Marker().ProtectedKeyFingerprint.Should().Be(Fingerprint(wrong));
+
         var healed = await Derive(Deriver(_provider));
         healed.Should().HaveLength(64);
+        healed.Should().NotBe(healthy);
+        Row().ProtectedKey.Should().NotBe(wrong);
         Convert.FromBase64String(Row().ProtectedKey).Should().HaveCount(32);
+        Row().Version.Should().Be(SessionIsolationKey.CurrentVersion);
         Rows().Should().ContainSingle();
+        Marker().ProtectedKeyFingerprint.Should().Be(Fingerprint(Row().ProtectedKey));
+        (await Derive(Deriver(CreateProvider()))).Should().Be(healed);
     }
 
     [Fact]
@@ -496,6 +555,161 @@ public sealed class SessionIsolationKeyTests : IDisposable
         Rows().Should().ContainSingle();
     }
 
+    [Fact]
+    public async Task BeginTran_failure_during_legacy_upgrade_does_not_block_read_and_can_be_retried()
+    {
+        var legacyKey = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            InsertKey(Protector(_provider).Protect(legacyKey));
+            var before = Row();
+            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(before.ProtectedKey)));
+
+            using var client = Client();
+            var realConn = (Microsoft.Data.Sqlite.SqliteConnection)client.Ado.Connection;
+            var faultingConn = new FaultingBeginTranDbConnection(realConn, new InvalidOperationException("simulated BeginTran failure"));
+            client.Ado.Connection = faultingConn;
+
+            var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(),
+                _provider.GetRequiredService<IDataProtectionProvider>());
+
+            var actual = await store.TryUpgradeToRawAsync(client, legacyKey, before.ProtectedKey, fingerprint, default);
+            actual.Should().Equal(legacyKey);
+            faultingConn.BeginTranCalls.Should().Be(1);
+
+            // Row must still be legacy v1 because upgrade transaction failed to start
+            var currentRow = Row();
+            currentRow.Version.Should().Be(SessionIsolationKey.LegacyCiphertextVersion);
+            currentRow.ProtectedKey.Should().Be(before.ProtectedKey);
+
+            // Restore connection: upgrade should succeed on subsequent try
+            client.Ado.Connection = realConn;
+            var upgraded = await store.TryUpgradeToRawAsync(client, legacyKey, currentRow.ProtectedKey, fingerprint, default);
+            upgraded.Should().Equal(legacyKey);
+            var afterRow = Row();
+            afterRow.Version.Should().Be(SessionIsolationKey.CurrentVersion);
+            afterRow.ProtectedKey.Should().Be(Convert.ToBase64String(legacyKey));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacyKey);
+        }
+    }
+
+    [Fact]
+    public async Task BeginTran_canceled_during_legacy_upgrade_propagates_and_does_not_rollback_unstarted_tran()
+    {
+        var legacyKey = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            InsertKey(Protector(_provider).Protect(legacyKey));
+            var before = Row();
+            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(before.ProtectedKey)));
+
+            using var client = Client();
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            var realConn = (Microsoft.Data.Sqlite.SqliteConnection)client.Ado.Connection;
+            var faultingConn = new FaultingBeginTranDbConnection(realConn, new OperationCanceledException(cts.Token));
+            client.Ado.Connection = faultingConn;
+
+            var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(),
+                _provider.GetRequiredService<IDataProtectionProvider>());
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                store.TryUpgradeToRawAsync(client, legacyKey, before.ProtectedKey, fingerprint, default));
+
+            faultingConn.BeginTranCalls.Should().Be(1);
+
+            var currentRow = Row();
+            currentRow.Version.Should().Be(SessionIsolationKey.LegacyCiphertextVersion);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacyKey);
+        }
+    }
+
+    private sealed class FaultingBeginTranDbConnection : Microsoft.Data.Sqlite.SqliteConnection
+    {
+        private readonly Microsoft.Data.Sqlite.SqliteConnection _inner;
+        private readonly Exception _faultToThrow;
+
+        public int BeginTranCalls { get; private set; }
+
+        public FaultingBeginTranDbConnection(Microsoft.Data.Sqlite.SqliteConnection inner, Exception faultToThrow)
+            : base(GetInitialConnectionString(inner))
+        {
+            _inner = inner;
+            _faultToThrow = faultToThrow;
+            var internalField = typeof(Microsoft.Data.Sqlite.SqliteConnection).GetField("_innerConnection",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            internalField?.SetValue(this, internalField.GetValue(inner));
+        }
+
+        private static string GetInitialConnectionString(Microsoft.Data.Sqlite.SqliteConnection inner)
+        {
+            ArgumentNullException.ThrowIfNull(inner);
+            return inner.ConnectionString;
+        }
+
+        [System.Diagnostics.CodeAnalysis.AllowNull]
+        public override string ConnectionString
+        {
+            get => _inner is not null ? _inner.ConnectionString : base.ConnectionString;
+            set
+            {
+                if (_inner is not null)
+                {
+                    _inner.ConnectionString = value!;
+                }
+                base.ConnectionString = value;
+            }
+        }
+
+        public override string Database => _inner is not null ? _inner.Database : base.Database;
+        public override string DataSource => _inner is not null ? _inner.DataSource : base.DataSource;
+        public override string ServerVersion => _inner is not null ? _inner.ServerVersion : base.ServerVersion;
+        public override System.Data.ConnectionState State => _inner is not null ? _inner.State : base.State;
+
+        public override void ChangeDatabase(string databaseName) => _inner.ChangeDatabase(databaseName);
+        public override void Close() => _inner.Close();
+        public override void Open()
+        {
+            _inner.Open();
+            var internalField = typeof(Microsoft.Data.Sqlite.SqliteConnection).GetField("_innerConnection",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            internalField?.SetValue(this, internalField.GetValue(_inner));
+        }
+
+        public override Microsoft.Data.Sqlite.SqliteTransaction BeginTransaction()
+        {
+            BeginTranCalls++;
+            throw _faultToThrow;
+        }
+
+        public override Microsoft.Data.Sqlite.SqliteTransaction BeginTransaction(System.Data.IsolationLevel isolationLevel)
+        {
+            BeginTranCalls++;
+            throw _faultToThrow;
+        }
+
+        protected override System.Data.Common.DbTransaction BeginDbTransaction(System.Data.IsolationLevel isolationLevel)
+        {
+            BeginTranCalls++;
+            throw _faultToThrow;
+        }
+
+        public new Microsoft.Data.Sqlite.SqliteCommand CreateCommand() => _inner.CreateCommand();
+
+        protected override System.Data.Common.DbCommand CreateDbCommand() => _inner.CreateCommand();
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+        }
+    }
+
     private sealed class CancelOnUnprotectProvider(IDataProtectionProvider inner, CancellationTokenSource cancellation)
         : IDataProtectionProvider
     {
@@ -553,18 +767,36 @@ public sealed class SessionIsolationKeyTests : IDisposable
         return client.Queryable<SessionIsolationKey>().ToList();
     }
     private SessionIsolationKey Row() => Rows().Single();
-    /// <summary>Seeds a legacy v1 row (Data Protection ciphertext) with a matching marker.</summary>
-    private void InsertKey(byte[] protectedBytes)
+    private List<SessionIsolationKeyMetadata> Markers()
     {
         using var client = Client();
-        var ciphertext = Convert.ToBase64String(protectedBytes);
-        client.Insertable(new SessionIsolationKey { Version = SessionIsolationKey.LegacyCiphertextVersion, ProtectedKey = ciphertext }).ExecuteCommand();
+        return client.Queryable<SessionIsolationKeyMetadata>().ToList();
+    }
+    private SessionIsolationKeyMetadata Marker() => Markers().Single();
+    private static string Fingerprint(string ciphertext)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ciphertext)));
+
+    private void InsertPair(int version, string storedValue)
+    {
+        using var client = Client();
+        client.Insertable(new SessionIsolationKey
+        {
+            Id = SessionIsolationKey.SingletonId,
+            Version = version,
+            ProtectedKey = storedValue
+        }).ExecuteCommand();
         client.Insertable(new SessionIsolationKeyMetadata
         {
-            Version = SessionIsolationKey.LegacyCiphertextVersion,
-            ProtectedKeyFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ciphertext)))
+            Id = SessionIsolationKey.SingletonId,
+            Version = version,
+            ProtectedKeyFingerprint = Fingerprint(storedValue)
         }).ExecuteCommand();
     }
+    /// <summary>Seeds a legacy v1 row (Data Protection ciphertext) with a matching marker.</summary>
+    private void InsertKey(byte[] protectedBytes) =>
+        InsertPair(SessionIsolationKey.LegacyCiphertextVersion, Convert.ToBase64String(protectedBytes));
+    private void InsertRaw(string raw) =>
+        InsertPair(SessionIsolationKey.CurrentVersion, raw);
     /// <summary>Rewrites the existing row as a legacy v1 pair (marker fingerprint resynced).</summary>
     private void SetLegacy(string ciphertext)
     {

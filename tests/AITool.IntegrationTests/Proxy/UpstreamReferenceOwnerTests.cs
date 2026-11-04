@@ -437,6 +437,31 @@ public sealed class UpstreamReferenceOwnerTests : IDisposable
     }
 
     [Fact]
+    public async Task Commit_with_generation_fails_closed_when_key_store_not_injected()
+    {
+        var storeWithoutKeyStore = new UpstreamReferenceOwnerStore(_services.GetRequiredService<IServiceScopeFactory>(), _clock, keyStore: null);
+        var guard = new UpstreamReferenceGuard(storeWithoutKeyStore);
+        var contextWithGen = _context with { OwnerKeyGeneration = "some-generation" };
+
+        var ex = await Assert.ThrowsAsync<UpstreamReferenceException>(() => guard.CommitOutputAsync(contextWithGen, """{"id":"fail-closed"}""", true));
+        ex.Code.Should().Be("reference_store_unavailable");
+        _client.Queryable<UpstreamReferenceOwner>().Count().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Commit_with_null_generation_preserves_existing_behavior()
+    {
+        var storeWithoutKeyStore = new UpstreamReferenceOwnerStore(_services.GetRequiredService<IServiceScopeFactory>(), _clock, keyStore: null);
+        var guard = new UpstreamReferenceGuard(storeWithoutKeyStore);
+        var contextNullGen = _context with { OwnerKeyGeneration = null };
+
+        await guard.CommitOutputAsync(contextNullGen, """{"id":"null-gen"}""", true);
+        var resolved = await guard.ResolveRequestAsync("client-a", """{"previous_response_id":"null-gen"}""");
+        resolved.Should().NotBeNull();
+        resolved!.Owner.Should().Be(_context.Owner);
+    }
+
+    [Fact]
     public async Task Cancellation_blocks_writes_and_resolution()
     {
         using var source = new CancellationTokenSource();

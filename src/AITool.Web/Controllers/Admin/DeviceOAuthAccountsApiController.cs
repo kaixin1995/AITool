@@ -51,6 +51,7 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             label = v.Label,
             chatSupported = v.ChatSiteConfig is not null,
             modelFetchSupported = v.SupportsModelFetch,
+            modelCatalogScope = v.ModelCatalogScope == DeviceOAuthModelCatalogScope.PublicCatalog ? "public" : "account",
         })));
     }
 
@@ -247,7 +248,7 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
     [HttpPut("accounts/{id:guid}")]
     public async Task<IActionResult> UpdateAccount(Guid id, [FromBody] UpdateAccountRequest request, CancellationToken ct)
     {
-        await _provisioner.UpdateAsync(id, request.DisplayName ?? string.Empty, request.RefreshToken, ct);
+        await _provisioner.UpdateAsync(id, request.DisplayName, request.RefreshToken, ct);
         return Ok(ApiResponse.Ok("已更新"));
     }
 
@@ -281,23 +282,64 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             return BadRequest(ApiResponse.Fail("该厂商不支持拉取模型", "not_supported"));
         }
 
-        var token = new Application.OAuth.DeviceOAuthTokenSet
-        {
-            AccessToken = account.AccessToken ?? string.Empty,
-            RefreshToken = account.RefreshToken,
-            ExpiresAt = account.TokenExpiresAt,
-        };
-        var snapshot = new ForwardOAuthCredentialSnapshot("device-oauth", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
+        var initialSnapshot = new ForwardOAuthCredentialSnapshot("device-oauth", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
         IReadOnlyList<Application.OAuth.DeviceOAuthRemoteModel> models;
         try
         {
+            var refresh = HttpContext.RequestServices.GetRequiredService<DeviceOAuthCredentialRefreshService>();
+            DeviceOAuthTokenSet token;
+            try
+            {
+                token = await refresh.EnsureFreshAsync(id, false, ct);
+            }
+            catch (DeviceOAuthRefreshRefusedException)
+            {
+                HttpContext.RequestServices.GetRequiredService<ILogger<DeviceOAuthAccountsApiController>>()
+                    .LogWarning("Device OAuth refresh rejected for account {AccountId}", id);
+                await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>()
+                    .InvalidateAsync(initialSnapshot.AccessToken ?? string.Empty, initialSnapshot, ct);
+                return Conflict(ApiResponse.Fail("账号需要重新授权", "oauth_reauthorization_required"));
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound(ApiResponse.Fail("账号不存在", "account_not_found"));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && ex is not NetworkPolicyException)
+            {
+                // Refresh errors may include an upstream response body containing secrets.
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, ApiResponse.Fail("账号令牌刷新暂时失败，请稍后重试", "oauth_refresh_unavailable"));
+            }
+            account = await _dbContext.DeviceOAuthAccounts.InSingleAsync(id);
+            if (account is null || account.IsDeleted) return NotFound(ApiResponse.Fail("账号不存在", "account_not_found"));
+            if (account.LinkedSiteId != initialSnapshot.SiteId
+                || !string.Equals(account.AccessToken, token.AccessToken, StringComparison.Ordinal)
+                || !string.Equals(account.RefreshToken, token.RefreshToken, StringComparison.Ordinal))
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, ApiResponse.Fail("账号凭据已变更，请重试", "oauth_refresh_unavailable"));
+            var snapshot = new ForwardOAuthCredentialSnapshot("device-oauth", account.Id, account.LinkedSiteId, token.AccessToken, token.RefreshToken, account.LastRefreshAt);
             using var boundVendor = _networkVendors?.ForAccount(account, "device-oauth-models");
-            models = await (boundVendor?.Vendor ?? vendor).FetchModelsAsync(token, account.ExtraJson, ct);
+            models = await ModelCredentialRecovery.FetchAsync(_dbContext, HttpContext.RequestServices, snapshot,
+                async accessToken =>
+                {
+                    var current = await _dbContext.DeviceOAuthAccounts.InSingleAsync(account.Id);
+                    var credentials = new Application.OAuth.DeviceOAuthTokenSet
+                    {
+                        AccessToken = accessToken,
+                        RefreshToken = accessToken != token.AccessToken && current?.AccessToken == accessToken ? current.RefreshToken : token.RefreshToken,
+                        ExpiresAt = accessToken != token.AccessToken && current?.AccessToken == accessToken ? current.TokenExpiresAt : token.ExpiresAt,
+                    };
+                    var extraJson = accessToken != token.AccessToken && current?.AccessToken == accessToken ? current.ExtraJson : account.ExtraJson;
+                    return await (boundVendor?.Vendor ?? vendor).FetchModelsAsync(credentials, extraJson, ct);
+                }, ct);
         }
-        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
+        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException)
         {
-            await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(token.AccessToken, snapshot, ct);
-            return StatusCode(StatusCodes.Status401Unauthorized, ApiResponse.Fail(ex.Message, "upstream_unauthorized"));
+            HttpContext.RequestServices.GetRequiredService<ILogger<DeviceOAuthAccountsApiController>>()
+                .LogWarning("Device OAuth model credentials rejected for account {AccountId}", id);
+            return Conflict(ApiResponse.Fail("账号凭据被上游拒绝，请重新授权", "oauth_reauthorization_required"));
+        }
+        catch (DeviceOAuthModelRefreshUnavailableException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, ApiResponse.Fail("账号令牌刷新暂时失败，请稍后重试", "oauth_refresh_unavailable"));
         }
         catch (NotSupportedException)
         {
@@ -380,9 +422,7 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 批量应用模型选择到同厂商全部账号：同厂商模型清单一致，组内任一账号拉取一次、
-    /// 勾选结果应用到整组（选中建立/启用，未选中禁用——与单账号导入同语义）。
-    /// 逐账号顺序应用，单账号失败不中断整组，返回逐账号结果。
+    /// 仅对源账号应用选择；其他账号权限无法从源账号清单推断，跳过并报告风险。
     /// </summary>
     [HttpPost("accounts/batch-apply-models")]
     public async Task<IActionResult> BatchApplyModels([FromBody] BatchApplyDeviceModelsRequest? request, CancellationToken ct)
@@ -406,7 +446,7 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
             return BadRequest(ApiResponse.Fail("未收到模型清单", "empty_models"));
         }
 
-        // 同厂商分组（设备厂商账号无套餐维度；隐藏站点无 Key，模型清单由厂商目录决定）。
+        // 保留原有分组以逐项报告跳过的账号，同厂商不代表权限相同。
         var groupMembers = await _dbContext.DeviceOAuthAccounts
             .Where(a => !a.IsDeleted && a.VendorKey == source.VendorKey)
             .ToListAsync(ct);
@@ -414,6 +454,11 @@ public sealed class DeviceOAuthAccountsApiController : ControllerBase
         var results = new List<DeviceBatchApplyResult>(groupMembers.Count);
         foreach (var member in groupMembers)
         {
+            if (member.Id != source.Id)
+            {
+                results.Add(new DeviceBatchApplyResult(member.Id, member.DisplayName, false, 0, "无法验证该账号的模型权限，已跳过；请逐账号拉取并同步模型"));
+                continue;
+            }
             try
             {
                 var changed = await _provisioner.SyncSelectedModelsAsync(member.Id, selections, ct);

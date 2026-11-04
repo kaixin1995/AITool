@@ -1,4 +1,4 @@
-import { httpGet, httpPost, httpPut } from './http'
+import { ApiError, httpGet, httpPost, httpPut } from './http'
 
 // Wire values match AccountNetworkSelection / NetworkMode in the backend.
 export type NetworkMode = 0 | 1 | 2
@@ -20,11 +20,34 @@ const base = '/api/admin/oauth/network-policies'
 export function getAccountNetworkCapabilities(): Promise<{ ready: boolean }> {
   return httpGet(`${base}/capabilities`, { skipErrorNotify: true })
 }
+
+// Only a capabilities 404 indicates an old server. Preserve downstream 404 details
+// without presenting them as an ApiError that the legacy detection would accept.
+export class NetworkPolicyDataNotFoundError extends Error {
+  readonly status: number
+  readonly errorCode: string
+  readonly cause: ApiError
+  constructor(cause: ApiError) {
+    super(cause.message)
+    this.name = 'NetworkPolicyDataNotFoundError'
+    this.status = cause.status
+    this.errorCode = cause.errorCode
+    this.cause = cause
+  }
+}
+async function loadNetworkPolicyData<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) throw new NetworkPolicyDataNotFoundError(error)
+    throw error
+  }
+}
 export function getAccountProxyOptions(): Promise<AccountProxyOption[]> {
-  return httpGet(`${base}/proxy-options`, { skipErrorNotify: true })
+  return loadNetworkPolicyData(httpGet(`${base}/proxy-options`, { skipErrorNotify: true }))
 }
 export function getAccountNetworkSummaries(accounts?: AccountIdentity[]): Promise<AccountNetworkSummary[]> {
-  return accounts ? httpPost(`${base}/summary`, { accounts }, { skipErrorNotify: true }) : httpGet(base, { skipErrorNotify: true })
+  return loadNetworkPolicyData(accounts ? httpPost(`${base}/summary`, { accounts }, { skipErrorNotify: true }) : httpGet(base, { skipErrorNotify: true }))
 }
 export function saveAccountNetworkPolicy(account: AccountIdentity, networkSelection: AccountNetworkSelection, expectedRevision?: string | null): Promise<AccountNetworkSummary> {
   return httpPut(base, { ...account, networkSelection, ...(expectedRevision != null ? { expectedRevision } : {}) })

@@ -29,6 +29,8 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
         services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddScoped<ProxyRequestMetadataCache>();
         services.AddScoped<ForwardOAuthInvalidationService>();
+        services.AddSingleton(new DeviceOAuthVendorRegistry([]));
+        services.AddScoped<DeviceOAuthCredentialRefreshService>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
     }
@@ -91,6 +93,38 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Batch_model_sync_skips_other_accounts_without_changing_their_mappings()
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var vendor = new TestVendor("batch-test", chatSupported: true);
+        var provisioner = CreateProvisioner(db);
+        var source = await provisioner.ProvisionAsync(vendor, "source", null, "source-user",
+            new DeviceOAuthTokenSet { AccessToken = "source" }, null, CancellationToken.None);
+        var other = await provisioner.ProvisionAsync(vendor, "other", null, "other-user",
+            new DeviceOAuthTokenSet { AccessToken = "other" }, null, CancellationToken.None);
+        await provisioner.SyncSelectedModelsAsync(other.Id, [("remote-a", "remote-a", true)], CancellationToken.None);
+
+        var result = (OkObjectResult)await CreateController(db, provisioner, vendor).BatchApplyModels(
+            new DeviceOAuthAccountsApiController.BatchApplyDeviceModelsRequest
+            {
+                SourceAccountId = source.Id,
+                Models = [new() { RemoteModelName = "remote-a", Selected = false }, new() { RemoteModelName = "remote-b", Selected = true }]
+            }, CancellationToken.None);
+        var json = System.Text.Json.JsonSerializer.SerializeToDocument(result.Value,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        var data = json.RootElement.GetProperty("data");
+        data.GetProperty("succeeded").GetInt32().Should().Be(1);
+        data.GetProperty("failed").GetInt32().Should().Be(1);
+        data.GetProperty("results").EnumerateArray().Single(r => r.GetProperty("accountId").GetGuid() == other.Id)
+            .GetProperty("error").GetString().Should().Contain("权限").And.Contain("跳过");
+        var otherMappings = await db.SiteModelMappings.Where(m => m.SiteId == other.LinkedSiteId).ToListAsync();
+        otherMappings.Should().ContainSingle(m => m.RemoteModelName == "remote-a" && m.IsEnabled);
+        var sourceMappings = await db.SiteModelMappings.Where(m => m.SiteId == source.LinkedSiteId).ToListAsync();
+        sourceMappings.Should().ContainSingle(m => m.RemoteModelName == "remote-b" && m.IsEnabled);
+    }
+
+    [Fact]
     public async Task Model_api_allows_view_only_fetch_but_rejects_import_and_missing_accounts()
     {
         await using var scope = _services.CreateAsyncScope();
@@ -100,10 +134,17 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
         var account = await provisioner.ProvisionAsync(vendor, "test", null, "api-user",
             new DeviceOAuthTokenSet { AccessToken = "at" }, null, CancellationToken.None);
         var controller = CreateController(db, provisioner, vendor);
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider } };
         var vendors = (OkObjectResult)controller.GetVendors();
         var vendorsJson = System.Text.Json.JsonSerializer.SerializeToDocument(vendors.Value,
             new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
         vendorsJson.RootElement.GetProperty("data")[0].GetProperty("modelFetchSupported").GetBoolean().Should().BeTrue();
+        vendorsJson.RootElement.GetProperty("data")[0].GetProperty("modelCatalogScope").GetString().Should().Be("account");
+        var publicController = CreateController(db, provisioner, new TestVendor("public", chatSupported: true, DeviceOAuthModelCatalogScope.PublicCatalog));
+        var publicResult = (OkObjectResult)publicController.GetVendors();
+        using var publicJson = System.Text.Json.JsonSerializer.SerializeToDocument(publicResult.Value,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        publicJson.RootElement.GetProperty("data")[0].GetProperty("modelCatalogScope").GetString().Should().Be("public");
 
         (await controller.FetchModels(account.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         var import = await controller.ImportModels(account.Id,
@@ -156,7 +197,7 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
         var vendor = new CopilotOAuthVendor(http);
         var provisioner = CreateProvisioner(db);
         var account = await provisioner.ProvisionAsync(vendor, "target", null, "target-user",
-            new DeviceOAuthTokenSet { AccessToken = "old-access", RefreshToken = "old-refresh" }, null, CancellationToken.None);
+            new DeviceOAuthTokenSet { AccessToken = "old-access" }, null, CancellationToken.None);
         var other = await provisioner.ProvisionAsync(vendor, "other", null, "other-user",
             new DeviceOAuthTokenSet { AccessToken = "other-access", RefreshToken = "other-refresh" }, null, CancellationToken.None);
         var controller = CreateController(db, provisioner, vendor);
@@ -165,8 +206,16 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
             HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider }
         };
 
-        var fetch = controller.FetchModels(account.Id, CancellationToken.None);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var fetchTask = controller.FetchModels(account.Id, CancellationToken.None);
+        var completed = await Task.WhenAny(fetchTask, entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
+        if (completed == fetchTask)
+        {
+            await fetchTask;
+            Assert.Fail("Fetch completed before entered signal was observed.");
+        }
+
+        Exception? primaryException = null;
+        IActionResult? fetchResult = null;
         try
         {
             if (rotate)
@@ -179,28 +228,53 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
                 current.LastRefreshAt = DateTimeOffset.UtcNow;
                 await rotationDb.UpdateAsync(current);
             }
-        }
-        finally { release.TrySetResult(true); }
 
-        if (status == 401)
+            release.TrySetResult(true);
+
+            if (status == 401)
+            {
+                fetchResult = await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+                var result = fetchResult.Should().BeOfType<ConflictObjectResult>().Subject;
+                result.StatusCode.Should().Be(409);
+                System.Text.Json.JsonSerializer.Serialize(result.Value).Should().Contain("oauth_reauthorization_required");
+            }
+            else
+            {
+                await Assert.ThrowsAnyAsync<InvalidOperationException>(() => fetchTask.WaitAsync(TimeSpan.FromSeconds(10)));
+            }
+
+            var stored = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
+            var shouldDisable = status == 401 && !rotate;
+            stored!.IsEnabled.Should().Be(!shouldDisable);
+            stored.RequiresReauth.Should().Be(shouldDisable);
+            stored.AccessToken.Should().Be(rotate ? "new-access" : "old-access");
+            (await db.Sites.InSingleAsync(account.LinkedSiteId))!.IsEnabled.Should().Be(!shouldDisable);
+            var untouched = await db.DeviceOAuthAccounts.InSingleAsync(other.Id);
+            untouched!.IsEnabled.Should().BeTrue();
+            untouched.RequiresReauth.Should().BeFalse();
+            (await db.Sites.InSingleAsync(other.LinkedSiteId))!.IsEnabled.Should().BeTrue();
+        }
+        catch (Exception ex)
         {
-            var result = (await fetch).Should().BeOfType<ObjectResult>().Subject;
-            result.StatusCode.Should().Be(401);
-            System.Text.Json.JsonSerializer.Serialize(result.Value).Should().Contain("upstream_unauthorized");
+            primaryException = ex;
+            throw;
         }
-        else
-            await Assert.ThrowsAnyAsync<InvalidOperationException>(() => fetch);
-
-        var stored = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
-        var shouldDisable = status == 401 && !rotate;
-        stored!.IsEnabled.Should().Be(!shouldDisable);
-        stored.RequiresReauth.Should().Be(shouldDisable);
-        stored.AccessToken.Should().Be(rotate ? "new-access" : "old-access");
-        (await db.Sites.InSingleAsync(account.LinkedSiteId))!.IsEnabled.Should().Be(!shouldDisable);
-        var untouched = await db.DeviceOAuthAccounts.InSingleAsync(other.Id);
-        untouched!.IsEnabled.Should().BeTrue();
-        untouched.RequiresReauth.Should().BeFalse();
-        (await db.Sites.InSingleAsync(other.LinkedSiteId))!.IsEnabled.Should().BeTrue();
+        finally
+        {
+            release.TrySetResult(true);
+            try
+            {
+                await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch when (primaryException is not null)
+            {
+                // Primary exception takes precedence.
+            }
+            catch (InvalidOperationException) when (status != 401)
+            {
+                // Expected exception already observed in try block.
+            }
+        }
     }
 
     private sealed class BlockingModelHandler(int status, TaskCompletionSource<bool> entered, TaskCompletionSource<bool> release) : HttpMessageHandler
@@ -241,7 +315,7 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
         public IServiceScope CreateScope() => services.CreateScope();
     }
 
-    private sealed class TestVendor(string vendorKey, bool chatSupported) : IDeviceOAuthVendor
+    private sealed class TestVendor(string vendorKey, bool chatSupported, DeviceOAuthModelCatalogScope modelCatalogScope = DeviceOAuthModelCatalogScope.AccountScoped) : IDeviceOAuthVendor
     {
         public string VendorKey => vendorKey;
         public string Label => vendorKey;
@@ -250,6 +324,7 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
             : null;
         public IReadOnlyList<(string Slug, string DisplayName)> DefaultModels => [];
         public bool SupportsModelFetch => true;
+        public DeviceOAuthModelCatalogScope ModelCatalogScope => modelCatalogScope;
         public Task<IReadOnlyList<DeviceOAuthRemoteModel>> FetchModelsAsync(DeviceOAuthTokenSet token, string? extraJson, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<DeviceOAuthRemoteModel>>([new("remote-a", "Remote A")]);
         public Task<DeviceOAuthStartResult> StartSignInAsync(CancellationToken cancellationToken)

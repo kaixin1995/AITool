@@ -5,8 +5,11 @@ namespace AITool.Web.Services;
 /// <summary>额度自动禁用账号的持久化恢复复查日程；不保存账号凭证。</summary>
 public interface IQuotaRecheckScheduleStore
 {
-    /// <summary>仅额度自动禁用事件调用；已存在的日程不被重复禁用推迟。</summary>
-    Task EnsureScheduledAsync(string providerKey, Guid accountId, DateTimeOffset? lastQuotaCheckedAt, CancellationToken cancellationToken);
+    /// <summary>Clock used to evaluate lease expiry by the transactional state writer.</summary>
+    DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
+
+    /// <summary>仅额度自动禁用事件调用；从事件时刻起随机等待，已存在的日程不被重复禁用推迟。</summary>
+    Task EnsureScheduledAsync(string providerKey, Guid accountId, CancellationToken cancellationToken);
 
     /// <summary>在提供程序枚举之前捕获日程版本；枚举失败时丢弃观察结果，不能用于清理。</summary>
     Task<QuotaRecheckObservation> BeginReconciliationAsync(string providerKey, CancellationToken cancellationToken)

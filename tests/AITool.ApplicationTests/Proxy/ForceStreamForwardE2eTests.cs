@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using AITool.Application.Proxy;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -84,6 +85,40 @@ public sealed class ForceStreamForwardE2eTests
     }
 
     [Fact]
+    public async Task Aggregation_preserves_fragmented_refusal_and_legacy_function_call_per_choice()
+    {
+        const string sse = """
+            data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","refusal":"I cannot "}},{"index":1,"delta":{"function_call":{"name":"get_","arguments":"{\"city\":"}}}]}
+
+            data: {"object":"chat.completion.chunk","choices":[{"index":1,"delta":{"function_call":{"name":"weather","arguments":"\"Paris\"}"}}},{"index":0,"delta":{"refusal":"help with that."}}]}
+
+            data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"refusal":null},"finish_reason":"stop"},{"index":1,"delta":{},"finish_reason":"function_call"}]}
+
+            data: [DONE]
+            """;
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(sse, Encoding.UTF8, "text/event-stream")
+        });
+
+        var result = await service.ForwardAsync(ChatRequest(streamInBody: false));
+
+        result.Success.Should().BeTrue();
+        using var json = System.Text.Json.JsonDocument.Parse(result.ResponseBody!);
+        var choices = json.RootElement.GetProperty("choices");
+        var refusal = choices[0].GetProperty("message");
+        refusal.GetProperty("content").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
+        refusal.GetProperty("refusal").GetString().Should().Be("I cannot help with that.");
+        refusal.TryGetProperty("function_call", out _).Should().BeFalse();
+        var functionMessage = choices[1].GetProperty("message");
+        functionMessage.TryGetProperty("refusal", out _).Should().BeFalse();
+        var function = functionMessage.GetProperty("function_call");
+        function.GetProperty("name").GetString().Should().Be("get_weather");
+        function.GetProperty("arguments").GetString().Should().Be("{\"city\":\"Paris\"}");
+        choices[1].GetProperty("finish_reason").GetString().Should().Be("function_call");
+    }
+
+    [Fact]
     public async Task Body_already_stream_true_is_not_double_modified()
     {
         string? upstreamBody = null;
@@ -125,6 +160,77 @@ public sealed class ForceStreamForwardE2eTests
         var result = await service.ForwardAsync(request);
 
         upstreamBody.Should().Contain("\"stream\":false", "无标记头时绝不改写请求体");
+        result.Success.Should().BeTrue();
+        result.ResponseBody.Should().Contain("ok");
+    }
+
+    [Fact]
+    public async Task WorkBuddy_preset_drives_force_stream_for_non_stream_client()
+    {
+        HttpRequestMessage? upstreamSeen = null;
+        string? upstreamBody = null;
+        var service = CreateService(req =>
+        {
+            upstreamSeen = req;
+            upstreamBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(ChatSse, Encoding.UTF8, "text/event-stream")
+            };
+        });
+
+        var request = ChatRequest(streamInBody: false);
+        // 通过预设生成请求头，而不是手工塞入标记
+        request.ForwardHeaders = ClientEmulationEngine.ResolveHeaders(ClientEmulationConstants.WorkBuddy, null, "deepseek-v4.1");
+
+        // 预设应自带内部标记
+        request.ForwardHeaders.Should().ContainKey(ProxyForwardService.ForceStreamHeader);
+        request.ForwardHeaders[ProxyForwardService.ForceStreamHeader].Should().Be("true");
+
+        var result = await service.ForwardAsync(request);
+
+        // 转发层验证：上游 body 改写为 stream:true+include_usage，标记头剥离，SSE 聚合回完整 chat.completion
+        upstreamBody.Should().Contain("\"stream\":true");
+        upstreamBody.Should().NotContain("\"stream\":false");
+        upstreamBody.Should().Contain("\"include_usage\":true");
+        upstreamSeen!.Headers.Contains(ProxyForwardService.ForceStreamHeader).Should().BeFalse();
+
+        result.Success.Should().BeTrue();
+        result.IsStreaming.Should().BeFalse();
+        var json = System.Text.Json.JsonDocument.Parse(result.ResponseBody!);
+        json.RootElement.GetProperty("object").GetString().Should().Be("chat.completion");
+        json.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("你好");
+        json.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt64().Should().Be(3);
+        result.InputTokens.Should().Be(3);
+        result.OutputTokens.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task WorkBuddy_preset_force_stream_can_be_opted_out()
+    {
+        HttpRequestMessage? upstreamSeen = null;
+        string? upstreamBody = null;
+        var service = CreateService(req =>
+        {
+            upstreamSeen = req;
+            upstreamBody = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"id\":\"x\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}", Encoding.UTF8, "application/json")
+            };
+        });
+
+        var request = ChatRequest(streamInBody: false);
+        var extraHeaders = new Dictionary<string, string>
+        {
+            [ProxyForwardService.ForceStreamHeader] = "false"
+        };
+        request.ForwardHeaders = ClientEmulationEngine.ResolveHeaders(ClientEmulationConstants.WorkBuddy, extraHeaders, "deepseek-v4.1");
+
+        var result = await service.ForwardAsync(request);
+
+        upstreamBody.Should().Contain("\"stream\":false", "extraHeaders 设 false 时上游 body 原样保留 stream:false");
+        upstreamSeen!.Headers.Contains(ProxyForwardService.ForceStreamHeader).Should().BeFalse();
         result.Success.Should().BeTrue();
         result.ResponseBody.Should().Contain("ok");
     }

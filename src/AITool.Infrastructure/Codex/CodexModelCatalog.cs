@@ -41,32 +41,45 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
         ["gpt-image-1.5", "gpt-image-2"];
 
     /// <summary>不可变分层快照；刷新时整体替换引用（volatile 读），读侧无锁。</summary>
-    private sealed record CatalogSnapshot(
+    internal sealed record CatalogSnapshot(
         IReadOnlyList<string> Free, IReadOnlyList<string> Team,
         IReadOnlyList<string> Plus, IReadOnlyList<string> Pro);
 
     private static readonly CatalogSnapshot InitialSnapshot = new(Free, Team, Plus, Pro);
 
-    // 目录状态必须为 static：本类经 AddHttpClient 注册为瞬态（typed client），
-    // 刷新结果要进程级留存就不能放在实例字段上（与旧版 static 分层设计一致）。
-    // 快照为不可变对象，刷新时整体替换引用（volatile 写），读侧取局部引用无锁。
-    private static volatile CatalogSnapshot _snapshot = InitialSnapshot;
-    private static volatile ConcurrentDictionary<string, IReadOnlyList<string>> _planCache = new();
+    /// <summary>
+    /// 目录状态容器。生产环境由 <see cref="SharedState"/> 进程级单例承载；
+    /// 测试环境可注入独立实例实现状态隔离。
+    /// 快照为不可变对象，刷新时整体替换引用（volatile 写），读侧取局部引用无锁。
+    /// </summary>
+    internal sealed class CatalogState
+    {
+        internal volatile CatalogSnapshot _snapshot = InitialSnapshot;
+        internal volatile ConcurrentDictionary<string, IReadOnlyList<string>> _planCache = new();
+    }
 
+    private static readonly CatalogState SharedState = new();
+    private readonly CatalogState _state;
     private readonly HttpClient _httpClient;
     private readonly ILogger<CodexModelCatalog> _logger;
 
     public CodexModelCatalog(HttpClient httpClient, ILogger<CodexModelCatalog> logger)
+        : this(httpClient, logger, SharedState)
+    {
+    }
+
+    internal CodexModelCatalog(HttpClient httpClient, ILogger<CodexModelCatalog> logger, CatalogState state)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _state = state ?? throw new ArgumentNullException(nameof(state));
     }
 
     /// <inheritdoc />
     public IReadOnlyList<string> GetModelsForPlan(string? planType)
     {
         var key = (planType ?? string.Empty).ToLowerInvariant();
-        var cache = _planCache;
+        var cache = _state._planCache;
         return cache.GetOrAdd(key, ComputeModels);
     }
 
@@ -80,7 +93,7 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
                 var parsed = await FetchAndParseAsync(url, cancellationToken);
                 if (parsed is null) continue;
 
-                var snapshot = _snapshot;
+                var snapshot = _state._snapshot;
                 var changed = !TiersEqual(parsed.Free, snapshot.Free)
                     || !TiersEqual(parsed.Team, snapshot.Team)
                     || !TiersEqual(parsed.Plus, snapshot.Plus)
@@ -88,9 +101,9 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
 
                 if (changed)
                 {
-                    _snapshot = parsed;
+                    _state._snapshot = parsed;
                     // 换新字典使旧的按 plan 缓存整体失效；读侧每次调用取当前引用，无锁竞争。
-                    _planCache = new ConcurrentDictionary<string, IReadOnlyList<string>>();
+                    _state._planCache = new ConcurrentDictionary<string, IReadOnlyList<string>>();
                     _logger.LogInformation(
                         "Codex model catalog refreshed from {Url}: free={Free}, team={Team}, plus={Plus}, pro={Pro}",
                         url, string.Join(",", parsed.Free), string.Join(",", parsed.Team),
@@ -198,7 +211,7 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
     private IReadOnlyList<string> ComputeModels(string key)
     {
         // 分层选择规则照搬 CPA sdk/cliproxy/service.go
-        var snapshot = _snapshot;
+        var snapshot = _state._snapshot;
         var tier = key switch
         {
             "pro" => snapshot.Pro,

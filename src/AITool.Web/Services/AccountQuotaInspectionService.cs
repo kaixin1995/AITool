@@ -160,6 +160,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
             if (!runtime.OAuthFeaturesEnabled || !runtime.OAuthInspectionEnabled)
             {
                 Volatile.Write(ref _nextScheduledAtUtcTicks, 0);
+                Volatile.Write(ref _nextGlobalAtUtcTicks, 0);
                 return;
             }
 
@@ -269,12 +270,9 @@ public sealed class AccountQuotaInspectionService : BackgroundService
             var recoveryWork = _scheduleStore is not null && IsRecoveryEligible(account);
             if (_scheduleStore is not null)
             {
-                // Re-read all planned work: an earlier callback may have disabled a regular target.
-                var current = await ListAccountsAsync(provider, cancellationToken);
-                if (current is null) continue;
-                await ReconcileAsync(provider, current, cancellationToken);
-                var freshAccount = current.Accounts.FirstOrDefault(candidate => candidate.AccountId == account.AccountId);
-                if (freshAccount is null || IsRecoveryEligible(freshAccount) != recoveryWork) continue;
+                // An earlier callback may have changed another planned target.
+                var (success, freshAccount) = await GetAccountAsync(provider, account.AccountId, cancellationToken);
+                if (!success || freshAccount is null || IsRecoveryEligible(freshAccount) != recoveryWork) continue;
                 account = freshAccount;
             }
             if (recoveryWork)
@@ -282,6 +280,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                 lease = await _scheduleStore!.TryAcquireAsync(provider.ProviderKey, account.AccountId, cancellationToken,
                     force: !autoTriggered && forceRefresh);
                 if (lease is null) continue;
+                account.QuotaRecheckLeaseToken = lease.Token;
                 AddLog("schedule", $"账号 {account.DisplayName} 开始{(!autoTriggered && forceRefresh ? "手动强制" : "到期")}额度恢复复查（绕过缓存）");
             }
 
@@ -315,23 +314,32 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                 if (_scheduleStore is not null)
                 {
                     // Cancellation must not strand a lease or create an immediate retry loop.
-                    ProviderListing? fresh;
+                    var success = false;
+                    AccountQuotaTarget? current = null;
                     using (var listingTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
                     {
-                        try { fresh = await ListAccountsAsync(provider, listingTimeout.Token); }
-                        catch (OperationCanceledException) when (listingTimeout.IsCancellationRequested) { fresh = null; }
+                        try { (success, current) = await GetAccountAsync(provider, account.AccountId, listingTimeout.Token); }
+                        catch (OperationCanceledException) when (listingTimeout.IsCancellationRequested) { }
                     }
-                    var current = fresh?.Accounts.FirstOrDefault(candidate => candidate.AccountId == account.AccountId);
                     using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(15));
                     if (lease is not null)
                         await _scheduleStore.CompleteAsync(lease,
-                            keepScheduled: fresh is null || (current is not null && IsRecoveryEligible(current)), cleanup.Token);
-                    if (current is not null && IsRecoveryEligible(current))
-                        await _scheduleStore.EnsureScheduledAsync(provider.ProviderKey, current.AccountId, current.LastQuotaCheckedAt, cleanup.Token);
-                    if (fresh is not null) await ReconcileAsync(provider, fresh, cleanup.Token);
-                    if (lease is not null && _recheckTimes.TryGetValue((provider.ProviderKey, account.AccountId), out var next))
-                        AddLog("schedule", $"账号 {account.DisplayName} 额度恢复复查完成，下次复查 {next:O}（完成后随机间隔）");
+                            keepScheduled: !success || (current is not null && IsRecoveryEligible(current)), cleanup.Token);
+                    else if (current is not null && IsRecoveryEligible(current))
+                        await _scheduleStore.EnsureScheduledAsync(provider.ProviderKey, current.AccountId, cleanup.Token);
+                    if (lease is not null)
+                        AddLog("schedule", $"账号 {account.DisplayName} 额度恢复复查完成（完成后随机间隔）");
                 }
+            }
+        }
+
+        // Refresh schedules once per affected provider, rather than after every account.
+        if (_scheduleStore is not null)
+        {
+            foreach (var provider in work.Select(item => item.Provider).Distinct())
+            {
+                var fresh = await ListAccountsAsync(provider, cancellationToken);
+                if (fresh is not null) await ReconcileAsync(provider, fresh, cancellationToken);
             }
         }
 
@@ -367,6 +375,19 @@ public sealed class AccountQuotaInspectionService : BackgroundService
             AddLog("provider", $"提供程序 {provider.ProviderKey} 获取账号失败：{ex.Message}");
             _logger.LogError(ex, "Account quota provider {ProviderKey} failed to list accounts", provider.ProviderKey);
             return null;
+        }
+    }
+
+    private async Task<(bool Success, AccountQuotaTarget? Account)> GetAccountAsync(
+        IAccountQuotaProvider provider, Guid accountId, CancellationToken cancellationToken)
+    {
+        try { return (true, await provider.GetAccountAsync(accountId, cancellationToken)); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            AddLog("provider", $"提供程序 {provider.ProviderKey} 获取账号失败：{ex.Message}");
+            _logger.LogError(ex, "Account quota provider {ProviderKey} failed to read account {AccountId}", provider.ProviderKey, accountId);
+            return (false, null);
         }
     }
 
@@ -410,6 +431,16 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                 LimitWindowSeconds = window.LimitWindowSeconds
             }).ToList()
         };
+    }
+
+    private static async Task<AccountQuotaSnapshot> QueryWithBoundedWaitAsync(
+        IAccountQuotaProvider provider, AccountQuotaTarget account, CancellationToken cancellationToken)
+    {
+        var query = provider.QueryAsync(account, forceRefresh: true, cancellationToken);
+        // A provider may ignore cancellation and fault after the caller stops waiting.
+        _ = query.ContinueWith(static task => { _ = task.Exception; }, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return await query.WaitAsync(cancellationToken);
     }
 
     private async Task<AccountInspectionAccountResult> InspectAccountAsync(
@@ -463,9 +494,15 @@ public sealed class AccountQuotaInspectionService : BackgroundService
             }
         }
 
+        // 必须在 QueryAsync 之前捕获令牌，查询期间新到的 402 写入的休息将拥有更高版本，从而避免被本轮旧快照解除。
+        QuotaRestReleaseToken? quotaRestToken = _routePolicy is not null && !usedCache
+            ? _routePolicy.CaptureQuotaRestReleaseToken(account.LinkedSiteId)
+            : null;
+
         var snapshot = usedCache && cachedSnapshot is not null
             ? cachedSnapshot
-            : await provider.QueryAsync(account, forceRefresh: true, cancellationToken);
+            : await QueryWithBoundedWaitAsync(provider, account, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         result.Windows = snapshot.Windows;
         result.CheckedAt = snapshot.CheckedAt;
@@ -501,7 +538,8 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                 // 禁用是高影响动作：若判定基于缓存读数，先绕过缓存强制一次新鲜读数复核，
                 // 新鲜读数失败则本轮跳过自动禁用（宁可靠代理侧冷却兜底，不基于过期数据禁用）。
                 AddLog("quota", $"账号 {account.DisplayName} 缓存读数达阈值，强制新鲜读数复核");
-                var fresh = await provider.QueryAsync(account, forceRefresh: true, cancellationToken);
+                var fresh = await QueryWithBoundedWaitAsync(provider, account, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!fresh.Success)
                 {
                     result.Reason = AppendReason(result.Reason, "新鲜读数失败，本轮跳过自动禁用");
@@ -537,8 +575,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         {
             await provider.SetEnabledAsync(account, true, "quota-recovered", cancellationToken);
             // Provider guards can reject recovery when a concurrent manual/feature disable wins.
-            var refreshed = await ListAccountsAsync(provider, cancellationToken);
-            var confirmed = refreshed?.Accounts.FirstOrDefault(current => current.AccountId == account.AccountId);
+            var (_, confirmed) = await GetAccountAsync(provider, account.AccountId, cancellationToken);
             if (confirmed?.IsEnabled == true)
             {
                 result.Action = "enable";
@@ -552,14 +589,14 @@ public sealed class AccountQuotaInspectionService : BackgroundService
 
         // Retrying this idempotent signal on later fresh healthy checks also covers a successful
         // enable whose immediate confirmation failed. Cached/empty/protected snapshots cannot release rests.
-        if (_routePolicy is not null && !usedCache && snapshot.Success && snapshot.Windows.Count > 0
+        if (_routePolicy is not null && quotaRestToken.HasValue && !usedCache && snapshot.Success && snapshot.Windows.Count > 0
             && usedPercent.HasValue && usedPercent.Value < reenableThreshold)
         {
-            var confirmation = await ListAccountsAsync(provider, cancellationToken);
-            var confirmed = confirmation?.Accounts.FirstOrDefault(current => current.AccountId == account.AccountId);
-            if (confirmed?.IsEnabled == true && !confirmed.ManuallyDisabled && !confirmed.DisabledByFeatureToggle
+            var (_, confirmed) = await GetAccountAsync(provider, account.AccountId, cancellationToken);
+            if (confirmed?.IsEnabled == true && confirmed.LinkedSiteId == quotaRestToken.Value.SiteId
+                && !confirmed.ManuallyDisabled && !confirmed.DisabledByFeatureToggle
                 && !confirmed.DisabledByUpstream && !confirmed.IsQuotaCooling)
-                _routePolicy.OnAccountQuotaRecovered(confirmed.LinkedSiteId);
+                _routePolicy.OnAccountQuotaRecovered(quotaRestToken.Value);
         }
 
         return result;

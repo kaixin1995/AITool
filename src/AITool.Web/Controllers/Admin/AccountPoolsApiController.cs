@@ -3,6 +3,7 @@ using AITool.Infrastructure.Persistence;
 using AITool.Web.Contracts;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
+using SqlSugar;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -44,10 +45,19 @@ public sealed class AccountPoolsApiController : ControllerBase
                 .OrderBy(m => m.Priority)
                 .ToListAsync(ct);
         // 池认领的托管入口计数（每个成员模型一个入口）。
-        var managedCounts = (await _dbContext.ProxyRouteEntries.ToListAsync(ct))
-            .Where(e => e.ManagedByPoolId != null && poolIds.Contains(e.ManagedByPoolId!.Value))
-            .GroupBy(e => e.ManagedByPoolId!.Value)
-            .ToDictionary(g => g.Key, g => g.Count());
+        var managedCounts = new Dictionary<Guid, int>();
+        if (poolIds.Count > 0)
+        {
+            foreach (var batch in poolIds.Chunk(500))
+            {
+                var counts = await _dbContext.ProxyRouteEntries
+                    .Where(e => e.ManagedByPoolId != null && batch.Contains(e.ManagedByPoolId!.Value))
+                    .GroupBy(e => e.ManagedByPoolId!.Value)
+                    .Select(e => new { PoolId = e.ManagedByPoolId!.Value, Count = SqlFunc.AggregateCount(e.Id) })
+                    .ToListAsync(ct);
+                foreach (var count in counts) managedCounts[count.PoolId] = count.Count;
+            }
+        }
 
         var candidates = await ResolveCandidateNamesAsync(members, ct);
 
@@ -75,6 +85,11 @@ public sealed class AccountPoolsApiController : ControllerBase
                 }),
         }).ToList()));
     }
+
+    /// <summary>后台号池同步的未解决错误；后台会持续重试。</summary>
+    [HttpGet("sync-status")]
+    public IActionResult GetSyncStatus([FromServices] AccountPoolReconciliationService reconciliation)
+        => Ok(ApiResponse.Ok(reconciliation.GetStatus()));
 
     /// <summary>成员候选：指定厂商（+套餐）下的全部账号（建池/编辑成员勾选用）。</summary>
     [HttpGet("candidates")]

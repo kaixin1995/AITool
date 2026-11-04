@@ -400,32 +400,38 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var account = await GetAccountAsync(id, ct);
         if (account == null) return NotFound(new { message = "账号不存在" });
 
-        // token 过期或临期先刷新（拉取对 token 有效性敏感）；经凭证刷新服务持久化并同步隐藏 Site，
-        // 避免下次代理请求再吃一次 401。
         var accessToken = account.AccessToken ?? string.Empty;
         var credentialAccount = account;
         if (account.TokenExpiresAt is null || account.TokenExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(2))
         {
-            var refreshed = await _credentialRefreshService.RefreshAccountSnapshotAsync(account.Id, accessToken, ct);
-            if (refreshed is not null)
+            try
             {
-                credentialAccount = refreshed;
-                accessToken = refreshed.AccessToken ?? string.Empty;
+                var refreshed = await _credentialRefreshService.RefreshAccountSnapshotAsync(account.Id, accessToken, ct);
+                if (refreshed is not null)
+                {
+                    credentialAccount = refreshed;
+                    accessToken = refreshed.AccessToken ?? string.Empty;
+                }
+            }
+            catch (AITool.Application.OAuth.OAuthRefreshRefusedException ex)
+            {
+                var rejected = new ForwardOAuthCredentialSnapshot("google", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
+                await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(accessToken, rejected, ct);
+                return StatusCode(StatusCodes.Status401Unauthorized, new { message = ex.Message });
             }
         }
 
-        // Without a refresh, retain the original snapshot even if another request rotates credentials.
-        var credentialSnapshot = credentialAccount is null ? null : new ForwardOAuthCredentialSnapshot("google", credentialAccount.Id, credentialAccount.LinkedSiteId, credentialAccount.AccessToken, credentialAccount.RefreshToken, credentialAccount.LastRefreshAt);
+        var credentialSnapshot = new ForwardOAuthCredentialSnapshot("google", credentialAccount.Id, credentialAccount.LinkedSiteId, credentialAccount.AccessToken, credentialAccount.RefreshToken, credentialAccount.LastRefreshAt);
         IReadOnlyList<(string Slug, string DisplayName)> models;
         try
         {
             using var network = _networkFactory?.CreateForAccount(new AccountIdentity("google", account.Id), "models");
-            models = await (network?.GoogleModels ?? _modelFetcher).FetchAsync(account.AccountKind, accessToken, ct);
+            models = await ModelCredentialRecovery.FetchAsync(_dbContext, HttpContext.RequestServices, credentialSnapshot,
+                token => (network?.GoogleModels ?? _modelFetcher).FetchAsync(account.AccountKind, token, ct), ct,
+                alreadyRefreshed: !ReferenceEquals(credentialAccount, account));
         }
         catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
         {
-            if (credentialSnapshot is not null)
-                await HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>().InvalidateAsync(accessToken, credentialSnapshot, ct);
             return StatusCode(StatusCodes.Status401Unauthorized, new { message = ex.Message });
         }
         catch (Exception ex) when (
@@ -433,7 +439,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
             // Compatibility with the previous GoogleModelFetcher error format only.
             || ex is InvalidOperationException && ex.Message.StartsWith("fetchAvailableModels returned 403:", StringComparison.Ordinal))
         {
-            var disabled = credentialSnapshot is not null && await DisableForModelForbiddenAsync(accessToken, credentialSnapshot, ct);
+            var disabled = await DisableForModelForbiddenAsync(credentialSnapshot.AccessToken ?? string.Empty, credentialSnapshot, ct);
             return StatusCode(StatusCodes.Status403Forbidden, new { message = disabled
                 ? "Google 上游返回 403，已自动禁用该账号，请完成验证或确认账号权限后再手动启用"
                 : "Google 上游返回 403，账号凭证已变更或账号不存在，未禁用当前账号" });
@@ -499,9 +505,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 批量应用模型选择到全部 Google（Antigravity）账号：同厂商模型清单一致，
-    /// 任一账号拉取一次、勾选结果应用到整组（与单账号导入同语义：选中建立/启用，未选中禁用）。
-    /// 逐账号顺序应用，单账号失败不中断整组。
+    /// 仅对源账号应用选择；其他账号权限无法从源账号清单推断，跳过并报告风险。
     /// </summary>
     [HttpPost("accounts/batch-apply-models")]
     public async Task<IActionResult> BatchApplyModels([FromBody] GoogleBatchApplyModelsRequest? req, CancellationToken ct)
@@ -523,6 +527,11 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var results = new List<GoogleBatchApplyResult>(members.Count);
         foreach (var member in members)
         {
+            if (member.Id != source.Id)
+            {
+                results.Add(new GoogleBatchApplyResult(member.Id, member.DisplayName, false, "无法验证该账号的模型权限，已跳过；请逐账号拉取并同步模型"));
+                continue;
+            }
             try
             {
                 await _provisioner.SyncRemoteModelsAsync(member.LinkedSiteId, selections, ct);

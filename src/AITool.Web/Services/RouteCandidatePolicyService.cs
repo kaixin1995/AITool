@@ -47,14 +47,19 @@ public sealed class RouteCandidatePolicyService
     }
 
     /// <summary>
+    /// 捕获用于解除配额休息的版本令牌。
+    /// </summary>
+    public QuotaRestReleaseToken CaptureQuotaRestReleaseToken(Guid linkedSiteId) => _circuitStore.CaptureQuotaRestReleaseToken(linkedSiteId);
+
+    /// <summary>
     /// 仅在新鲜账号配额查询确认账号已实际恢复启用后调用。
-    /// OAuth 隐藏站点无 SiteKey，重置缓存按物理 SiteId 失效；仅解除该站点的配额休息，
+    /// OAuth 隐藏站点无 SiteKey，重置缓存按物理 SiteId 失效；仅解除该站点在令牌捕获前已存在的配额休息，
     /// 不清除普通熔断、失败计数或限流休息，也不依赖站点展示名称。
     /// </summary>
-    public void OnAccountQuotaRecovered(Guid linkedSiteId)
+    public void OnAccountQuotaRecovered(QuotaRestReleaseToken token)
     {
-        _quotaResetCache.TryRemove(linkedSiteId, out _);
-        _circuitStore.ReleaseQuotaRests(linkedSiteId);
+        _quotaResetCache.TryRemove(token.SiteId, out _);
+        _circuitStore.ReleaseQuotaRests(token);
     }
 
     /// <summary>
@@ -138,10 +143,12 @@ public sealed class RouteCandidatePolicyService
         CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        var result = new List<(CachedProxyRouteTarget, DateTimeOffset?)>(routes.Count);
+        var result = new List<(CachedProxyRouteTarget Route, DateTimeOffset? Reset)>(routes.Count);
+        var missIndices = new List<int>();
         var misses = new List<CachedProxyRouteTarget>();
-        foreach (var route in routes)
+        for (var i = 0; i < routes.Count; i++)
         {
+            var route = routes[i];
             if (_quotaResetCache.TryGetValue(route.SiteKeyId ?? route.SiteId, out var cached)
                 && now - cached.FetchedAtUtc < QuotaResetCacheTtl)
             {
@@ -149,6 +156,7 @@ public sealed class RouteCandidatePolicyService
             }
             else
             {
+                missIndices.Add(i);
                 misses.Add(route);
                 result.Add((route, null)); // 占位，回填
             }
@@ -181,23 +189,21 @@ public sealed class RouteCandidatePolicyService
             var byKey = keys.ToLookup(k => k.Id);
             var bySite = keys.ToLookup(k => k.SiteId);
 
-            // OAuth 账号表回退：隐藏站点（无任何带配额缓存的 SiteKey）从账号表取巡检数据。
-            var fallbackSites = routes
-                .Where(r => !HasKeyQuotaData(r, byKey, bySite))
-                .Select(r => r.SiteId)
-                .Distinct()
-                .ToList();
-            var accountResets = fallbackSites.Count > 0
-                ? await LoadAccountResetsAsync(scope.ServiceProvider, fallbackSites, now, cancellationToken)
+            // OAuth 账号表回退：仅从实际未命中项中筛选无 Key 配额且具备 AccountIdentity 的站点，按 provider 分组并对 SiteId 去重
+            var siteIdsByProvider = misses
+                .Where(r => !HasKeyQuotaData(r, byKey, bySite) && r.AccountIdentity is not null)
+                .GroupBy(r => r.AccountIdentity!.ProviderKey, StringComparer.Ordinal)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(r => r.SiteId).Distinct().ToArray(),
+                    StringComparer.Ordinal);
+
+            var accountResets = siteIdsByProvider.Count > 0
+                ? await LoadAccountResetsAsync(scope.ServiceProvider, siteIdsByProvider, now, cancellationToken)
                 : [];
 
-            for (var i = 0; i < routes.Count; i++)
+            foreach (var i in missIndices)
             {
-                if (result[i].Item2 is not null || !misses.Contains(routes[i]))
-                {
-                    continue;
-                }
-
                 var route = routes[i];
                 var hasKeyData = HasKeyQuotaData(route, byKey, bySite);
                 DateTimeOffset? earliest = null;
@@ -238,7 +244,7 @@ public sealed class RouteCandidatePolicyService
                 }
                 else
                 {
-                    // 站点无 Key 配额数据：用账号表回退结果（同样可为 null → 负缓存 60 秒）。
+                    // 站点无 Key 配额数据：用账号表回退结果（无 AccountIdentity 时字典中无记录，等同 null → 负缓存 60 秒）。
                     accountResets.TryGetValue(route.SiteId, out var accountReset);
                     earliest = accountReset;
                 }
@@ -275,12 +281,12 @@ public sealed class RouteCandidatePolicyService
 
     /// <summary>
     /// 账号表配额回退（OAuth 隐藏站点无 SiteKey 行，巡检数据落在账号表）：
-    /// 按站点反查各 OAuth 提供程序的账号，解析巡检缓存的最早未来重置时刻。
+    /// 仅对命中的提供程序批量反查关联站点的账号，解析巡检缓存的最早未来重置时刻。
     /// 一个隐藏站点只属于一个账号/提供程序；无数据站点不进结果（等同 null 负缓存）。
     /// </summary>
     private static async Task<Dictionary<Guid, DateTimeOffset?>> LoadAccountResetsAsync(
         IServiceProvider serviceProvider,
-        IReadOnlyList<Guid> siteIds,
+        IReadOnlyDictionary<string, Guid[]> siteIdsByProvider,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -289,6 +295,11 @@ public sealed class RouteCandidatePolicyService
         {
             foreach (var provider in serviceProvider.GetServices<IAccountQuotaProvider>())
             {
+                if (!siteIdsByProvider.TryGetValue(provider.ProviderKey, out var siteIds) || siteIds.Length == 0)
+                {
+                    continue;
+                }
+
                 var targets = await provider.FindByLinkedSiteIdsAsync(siteIds, cancellationToken);
                 foreach (var group in targets.Where(t => !string.IsNullOrWhiteSpace(t.LastQuotaRawJson))
                              .GroupBy(t => t.LinkedSiteId))
@@ -366,11 +377,19 @@ public sealed class RouteCandidatePolicyService
             var hasKeyData = keys.Any(k => !string.IsNullOrWhiteSpace(k.LastQuotaRawJson));
             if (!hasKeyData)
             {
-                // OAuth 隐藏站点无 Key 配额数据：回退账号表巡检缓存。
-                var accountResets = await LoadAccountResetsAsync(scope.ServiceProvider, [route.SiteId], now, cancellationToken);
-                accountResets.TryGetValue(route.SiteId, out var accountReset);
-                _quotaResetCache[cacheKey] = new QuotaResetEntry(now, accountReset);
-                return accountReset;
+                // OAuth 隐藏站点无 Key 配额数据：仅当具有 AccountIdentity 时回退对应 provider 的账号表。
+                if (route.AccountIdentity is { } owner)
+                {
+                    var accountResets = await LoadAccountResetsAsync(
+                        scope.ServiceProvider,
+                        new Dictionary<string, Guid[]>(StringComparer.Ordinal) { [owner.ProviderKey] = [route.SiteId] },
+                        now,
+                        cancellationToken);
+                    accountResets.TryGetValue(route.SiteId, out earliest);
+                }
+
+                _quotaResetCache[cacheKey] = new QuotaResetEntry(now, earliest);
+                return earliest;
             }
 
             foreach (var key in keys)

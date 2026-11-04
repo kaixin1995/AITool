@@ -27,31 +27,34 @@ public sealed class SiteCascadeDeleter
     /// 删除指定站点及其关联映射、路由规则，并清理空壳路由入口。返回删除的站点数量。
     /// </summary>
     public Task<int> RemoveSitesAsync(IEnumerable<Guid> siteIds, CancellationToken cancellationToken)
-        => ExecuteGraphMutationAsync(() => RemoveSitesCoreAsync(siteIds, cancellationToken), cancellationToken);
+        => ExecuteGraphMutationAsync(db => new SiteCascadeDeleter(db).RemoveSitesCoreAsync(siteIds, cancellationToken), cancellationToken);
 
     /// <summary>
     /// Own the graph lease and transaction. Callers with an existing transaction must acquire the
     /// graph lease before opening it and use the explicit InGraphMutation cleanup method instead.
     /// </summary>
-    public async Task<T> ExecuteGraphMutationAsync<T>(Func<Task<T>> mutation, CancellationToken cancellationToken,
+    public async Task<T> ExecuteGraphMutationAsync<T>(Func<AppDbContext, Task<T>> mutation, CancellationToken cancellationToken,
         ProxyRequestMetadataCache? metadataCache = null)
     {
         // Never wait for the graph gate while holding a DB transaction (inverts the lock order).
         if (_dbContext.Client.Ado.Transaction != null)
             throw new InvalidOperationException("Acquire the route graph gate before starting a cascade transaction.");
         using var graphLease = await RouteGraphMutationGate.AcquireAsync(cancellationToken);
-        await _dbContext.Client.Ado.BeginTranAsync();
+        using var client = _dbContext.Client.CopyNew();
+        var db = new AppDbContext(client, new SemaphoreSlim(1, 1));
+        await client.Ado.ExecuteCommandAsync("PRAGMA busy_timeout=5000;");
+        await client.Ado.BeginTranAsync();
         T result;
         List<string> destructiveSources;
         try
         {
-            var before = await _dbContext.ProxyRouteEntries.ToListAsync(cancellationToken);
-            var beforeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
-            var beforeMappings = await _dbContext.SiteModelMappings.ToListAsync(cancellationToken);
-            result = await mutation();
-            var remainingIds = (await _dbContext.ProxyRouteEntries.Select(e => e.Id).ToListAsync(cancellationToken)).ToHashSet();
-            var afterRules = (await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken)).ToDictionary(r => r.Id);
-            var afterMappings = (await _dbContext.SiteModelMappings.ToListAsync(cancellationToken)).ToDictionary(m => m.Id);
+            var before = await db.ProxyRouteEntries.ToListAsync(cancellationToken);
+            var beforeRules = await db.ProxyRouteRules.ToListAsync(cancellationToken);
+            var beforeMappings = await db.SiteModelMappings.ToListAsync(cancellationToken);
+            result = await mutation(db);
+            var remainingIds = (await db.ProxyRouteEntries.Select(e => e.Id).ToListAsync(cancellationToken)).ToHashSet();
+            var afterRules = (await db.ProxyRouteRules.ToListAsync(cancellationToken)).ToDictionary(r => r.Id);
+            var afterMappings = (await db.SiteModelMappings.ToListAsync(cancellationToken)).ToDictionary(m => m.Id);
             var removedMappings = beforeMappings.Where(m => !afterMappings.TryGetValue(m.Id, out var after)
                 || (m.IsEnabled && !after.IsEnabled) || m.RemoteModelName != after.RemoteModelName).ToList();
             destructiveSources = before.Where(e => !remainingIds.Contains(e.Id)).Select(e => e.EntryName)
@@ -60,11 +63,11 @@ public sealed class SiteCascadeDeleter
                     || (r.TargetKind == "Site" && removedMappings.Any(m => m.SiteId == r.SiteId && m.RemoteModelName == r.SiteModelName)))
                     .Select(r => r.ExternalModelName))
                 .Distinct(StringComparer.Ordinal).ToList();
-            await _dbContext.Client.Ado.CommitTranAsync();
+            await client.Ado.CommitTranAsync();
         }
         catch
         {
-            await _dbContext.Client.Ado.RollbackTranAsync();
+            await client.Ado.RollbackTranAsync();
             throw;
         }
         var cache = metadataCache ?? _metadataCache;
@@ -134,9 +137,9 @@ public sealed class SiteCascadeDeleter
     /// <para>该方法已公开，供 Models 模块删除模型/映射后复用同一套清理逻辑，避免重复实现。</para>
     /// </summary>
     public async Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
-        => await ExecuteGraphMutationAsync(async () =>
+        => await ExecuteGraphMutationAsync(async db =>
         {
-            await CleanupEmptyRouteEntriesAsyncCore(entryNames, cancellationToken);
+            await new SiteCascadeDeleter(db).CleanupEmptyRouteEntriesAsyncCore(entryNames, cancellationToken);
             return true;
         }, cancellationToken);
 

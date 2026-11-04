@@ -204,6 +204,76 @@ public sealed class GoogleModelFetcherDynamicListTests
         models.Should().Contain(("name-only", "name-only"));
     }
 
+    [Fact]
+    public async Task Non_success_body_read_timeout_preserves_received_status()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden)
+        {
+            Content = new ThrowingContent(new TaskCanceledException("simulated read timeout"))
+        });
+        var fetcher = new GoogleModelFetcher(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+            () => fetcher.FetchAsync(GoogleAccountKinds.Antigravity, "token", CancellationToken.None));
+
+        ex.StatusCode.Should().Be(System.Net.HttpStatusCode.Forbidden);
+        ex.Message.Should().StartWith("fetchAvailableModels returned 403");
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_during_error_body_read_propagates()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new StubHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden)
+        {
+            Content = new ThrowingContent(new OperationCanceledException("caller canceled"), () => cts.Cancel())
+        });
+        var fetcher = new GoogleModelFetcher(new HttpClient(handler));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => fetcher.FetchAsync(GoogleAccountKinds.Antigravity, "token", cts.Token));
+    }
+
+    [Fact]
+    public async Task Non_success_500_with_unreadable_body_preserves_status_code()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError)
+        {
+            Content = new ThrowingContent(new HttpRequestException("connection reset while reading error body"))
+        });
+        var fetcher = new GoogleModelFetcher(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+            () => fetcher.FetchAsync(GoogleAccountKinds.Antigravity, "token", CancellationToken.None));
+
+        ex.StatusCode.Should().Be(System.Net.HttpStatusCode.InternalServerError);
+        ex.Message.Should().StartWith("fetchAvailableModels returned 500");
+    }
+
+    private sealed class ThrowingContent : HttpContent
+    {
+        private readonly Exception _exceptionToThrow;
+        private readonly Action? _onRead;
+
+        public ThrowingContent(Exception exceptionToThrow, Action? onRead = null)
+        {
+            _exceptionToThrow = exceptionToThrow;
+            _onRead = onRead;
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context)
+        {
+            _onRead?.Invoke();
+            return Task.FromException(_exceptionToThrow);
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

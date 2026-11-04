@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRenderer, defineComponent, nextTick, ssrContextKey, type App, type Ref } from 'vue'
 import OAuthView from './OAuthView.vue'
+import oauthTemplate from './OAuthView.vue?raw'
 import * as api from '@/api/oauth'
 import * as deviceApi from '@/api/deviceOauth'
 import { getAccountNetworkCapabilities, getAccountNetworkSummaries, getAccountProxyOptions, saveAccountNetworkPolicy, type AccountNetworkSummary } from '@/api/accountNetwork'
@@ -17,7 +18,7 @@ vi.mock('@/api/oauth', async (original) => ({
   startKimiDeviceFlow: vi.fn(), startXaiDeviceFlow: vi.fn(), pollKimiToken: vi.fn(), pollXaiToken: vi.fn(), updateKimiAccount: vi.fn()
 }))
 vi.mock('@/api/deviceOauth', async (original) => ({
-  ...await original<typeof import('@/api/deviceOauth')>(), fetchDeviceOAuthAccounts: vi.fn(), fetchDeviceOAuthVendors: vi.fn()
+  ...await original<typeof import('@/api/deviceOauth')>(), fetchDeviceOAuthAccounts: vi.fn(), fetchDeviceOAuthVendors: vi.fn(), fetchDeviceOAuthModels: vi.fn()
 }))
 vi.mock('@/api/accountNetwork', async (original) => ({
   ...await original<typeof import('@/api/accountNetwork')>(), getAccountNetworkCapabilities: vi.fn(), getAccountNetworkSummaries: vi.fn(), getAccountProxyOptions: vi.fn(), saveAccountNetworkPolicy: vi.fn()
@@ -34,14 +35,33 @@ interface OAuthSetup {
   deviceSessionId: Ref<string>
   deviceFlowError: Ref<string>
   networkSummaries: Ref<Record<string, AccountNetworkSummary>>
+  loading: Ref<boolean>
+  vendorsLoading: Ref<boolean>
+  vendorsLoaded: Ref<boolean>
+  vendorsError: Ref<string>
+  canUseVendorCatalog: Ref<boolean>
+  providerFilter: Ref<string>
+  providerFilterSelectOptions: Ref<Array<{ label: string; value: string }>>
+  accountViewMode: Ref<string>
+  filteredAccounts: Ref<Array<{ id: string }>>
+  editModal: Ref<boolean>
+  editAccount: Ref<{ provider: string } | null>
+  loadDeviceVendors(): Promise<void>
+  loadAccounts(showError: boolean): Promise<void>
+  setProviderFilter(value: string): void
   editDisplayName: Ref<string>
   editRefreshToken: Ref<string>
   editNetworkSelection: Ref<{ mode: 0 | 1 | 2; proxyProfileId?: string | null } | undefined>
   editNetworkConflict: Ref<boolean>
   editPartialError: Ref<string>
   accounts: Ref<Array<{ id: string; displayName: string }>>
+  accountTableRows: Ref<Array<{ id: string; createdAt: string }>>
+  accountTableColumns: Ref<Array<{ key: string; title: string; render?(row: { id: string; createdAt: string }): unknown }>>
   checkedModels: Ref<string[]>
+  modelCatalogIsPublic: Ref<boolean>
+  modelSyncHint: Ref<string>
   applyToGroup: Ref<boolean>
+  handleImportModels(): Promise<void>
   openFetchModels(account: object): Promise<void>
   openEdit(account: object): void
   rebaseEditNetwork(): Promise<void>
@@ -79,7 +99,7 @@ beforeEach(() => {
   vi.mocked(api.listKimiAccounts).mockResolvedValue([])
   vi.mocked(api.listXaiAccounts).mockResolvedValue([])
   vi.mocked(deviceApi.fetchDeviceOAuthAccounts).mockResolvedValue([])
-  vi.mocked(deviceApi.fetchDeviceOAuthVendors).mockResolvedValue([])
+  vi.mocked(deviceApi.fetchDeviceOAuthVendors).mockResolvedValue([{ vendorKey: 'claude', label: 'Claude', chatSupported: true, modelFetchSupported: true }])
   vi.mocked(getAccountNetworkCapabilities).mockResolvedValue({ ready: false })
   vi.mocked(getAccountNetworkSummaries).mockResolvedValue([])
   vi.mocked(getAccountProxyOptions).mockResolvedValue([])
@@ -90,7 +110,119 @@ beforeEach(() => {
   vi.mocked(api.pollXaiToken).mockResolvedValue({ status: 'pending' })
 })
 afterEach(() => { app?.unmount(); app = undefined; vi.useRealTimers(); vi.unstubAllGlobals() })
+describe('OAuth vendor catalog readiness', () => {
+  const vendor = { vendorKey: 'claude', label: 'Claude', chatSupported: true, modelFetchSupported: true }
+  const account = { id: '1', displayName: 'Account', email: null, accountId: null, planType: null,
+    isEnabled: true, isQuotaCooling: false, quotaCoolingUntil: null, lastQuotaCheckedAt: null,
+    tokenExpiresAt: null, createdAt: null }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    let reject!: (reason: Error) => void
+    const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail })
+    return { promise, resolve, reject }
+  }
+
+  // SSR compilation does not expose a client render function in this setup harness.
+  // Check the template wiring alongside the reactive state and event guards below.
+  it('wires catalog-dependent controls and status messages to the shared state', () => {
+    expect(oauthTemplate).toMatch(/:value="providerFilter"\s+:disabled="!canUseVendorCatalog"\s+@update:value="setProviderFilter"/)
+    expect(oauthTemplate).toMatch(/aria-label="编辑账号"\s+:disabled="!canUseVendorCatalog \|\| !canOperateAccount\(acc.provider\)"\s+@click="openEdit\(acc\)"/)
+    expect(oauthTemplate).toContain("disabled: !canUseVendorCatalog.value || !canOperateAccount(row.raw.provider), onClick: () => openEdit(row.raw)")
+    expect(oauthTemplate).toContain('厂商清单加载中，编辑和筛选暂不可用')
+    expect(oauthTemplate).toMatch(/v-else-if="vendorsError"[\s\S]*?{{ vendorsError }}[\s\S]*?@click="loadDeviceVendors">重试/)
+    expect(oauthTemplate).toContain('暂无可选厂商')
+  })
+
+  it('keeps editing and filtering disabled until the parallel catalog request resolves', async () => {
+    const pending = deferred<deviceApi.DeviceOAuthVendor[]>()
+    vi.mocked(deviceApi.fetchDeviceOAuthVendors).mockReturnValue(pending.promise)
+    vi.mocked(api.listOAuthAccounts).mockResolvedValue([account])
+    const state = await mountOAuth()
+    state.accountViewMode.value = 'card'
+    expect(state.accounts.value).toHaveLength(1)
+    expect(state.loading.value).toBe(false)
+    expect(state.vendorsLoading.value).toBe(true)
+    expect(state.canUseVendorCatalog.value).toBe(false)
+    expect(state.vendorsError.value).toBe('')
+    state.openEdit(state.accounts.value[0])
+    state.setProviderFilter('claude')
+    expect(state.editAccount.value).toBeNull()
+    expect(state.providerFilter.value).toBe('all')
+    expect(deviceApi.fetchDeviceOAuthVendors).toHaveBeenCalledTimes(1)
+    const refresh = state.loadAccounts(false)
+    let refreshFinished = false
+    void refresh.then(() => { refreshFinished = true })
+    await flushAsync()
+    expect(deviceApi.fetchDeviceOAuthVendors).toHaveBeenCalledTimes(1)
+    expect(refreshFinished).toBe(false)
+    pending.resolve([vendor])
+    await refresh
+    await flushAsync()
+    expect(refreshFinished).toBe(true)
+    expect(state.canUseVendorCatalog.value).toBe(true)
+    expect(state.providerFilterSelectOptions.value).toContainEqual({ label: 'Claude（0）', value: 'claude' })
+    state.openEdit(state.accounts.value[0])
+    expect(state.editAccount.value?.provider).toBe('codex')
+    state.setProviderFilter('claude')
+    expect(state.providerFilter.value).toBe('claude')
+    expect(state.filteredAccounts.value).toHaveLength(0)
+  })
+
+  it('shows a retry after failure and restores controls only after the retry succeeds', async () => {
+    const pending = deferred<deviceApi.DeviceOAuthVendor[]>()
+    vi.mocked(deviceApi.fetchDeviceOAuthVendors).mockReturnValueOnce(pending.promise).mockResolvedValueOnce([vendor])
+    vi.mocked(api.listOAuthAccounts).mockResolvedValue([account])
+    const state = await mountOAuth()
+    state.accountViewMode.value = 'card'
+    pending.reject(new Error('网络中断'))
+    await flushAsync()
+    expect(state.vendorsError.value).toContain('厂商清单加载失败：网络中断')
+    expect(state.canUseVendorCatalog.value).toBe(false)
+    state.openEdit(state.accounts.value[0])
+    state.setProviderFilter('claude')
+    expect(state.editAccount.value).toBeNull()
+    expect(state.providerFilter.value).toBe('all')
+    const accountRequests = vi.mocked(api.listOAuthAccounts).mock.calls.length
+    void state.loadDeviceVendors()
+    expect(state.vendorsError.value).toBe('')
+    await flushAsync()
+    expect(deviceApi.fetchDeviceOAuthVendors).toHaveBeenCalledTimes(2)
+    expect(api.listOAuthAccounts).toHaveBeenCalledTimes(accountRequests)
+    expect(state.canUseVendorCatalog.value).toBe(true)
+    expect(state.providerFilterSelectOptions.value).toContainEqual({ label: 'Claude（0）', value: 'claude' })
+  })
+
+  it('fails closed with an explicit empty state when the catalog is empty', async () => {
+    vi.mocked(deviceApi.fetchDeviceOAuthVendors).mockResolvedValue([])
+    vi.mocked(api.listOAuthAccounts).mockResolvedValue([account])
+    const state = await mountOAuth()
+    state.accountViewMode.value = 'card'
+    expect(state.vendorsLoaded.value).toBe(true)
+    expect(state.canUseVendorCatalog.value).toBe(false)
+    state.openEdit(state.accounts.value[0])
+    state.setProviderFilter('claude')
+    expect(state.editAccount.value).toBeNull()
+    expect(state.providerFilter.value).toBe('all')
+  })
+})
+
 describe('OAuth model selection and ordering', () => {
+  it.each([['public', true], [undefined, false]] as const)('marks catalog scope %s as public: %s', async (scope, expected) => {
+    vi.mocked(deviceApi.fetchDeviceOAuthVendors).mockResolvedValue([
+      { vendorKey: 'claude', label: 'Claude', chatSupported: true, modelFetchSupported: true, modelCatalogScope: scope }
+    ])
+    vi.mocked(deviceApi.fetchDeviceOAuthModels).mockResolvedValue([
+      { remoteModelName: 'model', displayName: 'Model', existingMappingId: null, isEnabled: false, existingDisplayName: null }
+    ])
+    const state = await mountOAuth()
+    await state.openFetchModels({ id: '1', provider: 'claude', displayName: 'Claude', modelImportSupported: true })
+    expect(deviceApi.fetchDeviceOAuthModels).toHaveBeenCalledWith('1')
+    expect(state.modelCatalogIsPublic.value).toBe(expected)
+    expect(state.checkedModels.value).toEqual([])
+    expect(state.applyToGroup.value).toBe(false)
+  })
+
   it('sorts accounts by name and starts new model selections unchecked', async () => {
     const base = { email: null, accountId: null, planType: null, isEnabled: true, isQuotaCooling: false,
       quotaCoolingUntil: null, lastQuotaCheckedAt: null, tokenExpiresAt: null, createdAt: null }
@@ -106,6 +238,72 @@ describe('OAuth model selection and ordering', () => {
     await state.openFetchModels({ ...base, id: '1', displayName: 'Account 2', provider: 'codex' })
     expect(state.checkedModels.value).toEqual([])
     expect(state.applyToGroup.value).toBe(false)
+  })
+
+  it('sets modelSyncHint distinguishing Codex import-only vs other providers sync semantics', async () => {
+    const base = { email: null, accountId: null, planType: null, isEnabled: true, isQuotaCooling: false,
+      quotaCoolingUntil: null, lastQuotaCheckedAt: null, tokenExpiresAt: null, createdAt: null }
+    vi.spyOn(api, 'fetchOAuthModels').mockResolvedValue({ models: [
+      { remoteModelName: 'm1', displayName: 'm1', existingMappingId: 'map-1', isEnabled: true, existingDisplayName: null },
+      { remoteModelName: 'm2', displayName: 'm2', existingMappingId: null, isEnabled: false, existingDisplayName: null }
+    ] } as Awaited<ReturnType<typeof api.fetchOAuthModels>>)
+    vi.spyOn(api, 'fetchGoogleModels').mockResolvedValue([
+      { remoteModelName: 'g1', displayName: 'g1', existingMappingId: 'map-g1', isEnabled: true, existingDisplayName: null }
+    ])
+
+    const state = await mountOAuth()
+    await state.openFetchModels({ ...base, id: 'codex-1', displayName: 'Codex Account', provider: 'codex' })
+    expect(state.modelSyncHint.value).toContain('只导入勾选项')
+    expect(state.modelSyncHint.value).not.toContain('既有映射会禁用')
+
+    await state.openFetchModels({ ...base, id: 'google-1', displayName: 'Google Account', provider: 'antigravity' })
+    expect(state.modelSyncHint.value).toContain('未勾选的既有映射会禁用')
+  })
+
+  it('keeps deselected existing mappings in selections with selected:false and alerts Codex import-only notice', async () => {
+    const base = { email: null, accountId: null, planType: null, isEnabled: true, isQuotaCooling: false,
+      quotaCoolingUntil: null, lastQuotaCheckedAt: null, tokenExpiresAt: null, createdAt: null }
+    vi.spyOn(api, 'fetchOAuthModels').mockResolvedValue({ models: [
+      { remoteModelName: 'm1', displayName: 'm1', existingMappingId: 'map-1', isEnabled: true, existingDisplayName: null },
+      { remoteModelName: 'm2', displayName: 'm2', existingMappingId: null, isEnabled: false, existingDisplayName: null }
+    ] } as Awaited<ReturnType<typeof api.fetchOAuthModels>>)
+    const importSpy = vi.spyOn(api, 'importSelectedOAuthModels').mockResolvedValue()
+
+    const state = await mountOAuth()
+    await state.openFetchModels({ ...base, id: 'codex-1', displayName: 'Codex Account', provider: 'codex' })
+    // m1 was previously enabled, so checkedModels contains ['m1']. Uncheck m1 and check m2 instead.
+    expect(state.checkedModels.value).toEqual(['m1'])
+    state.checkedModels.value = ['m2']
+
+    await state.handleImportModels()
+
+    expect(importSpy).toHaveBeenCalledWith('codex-1', [
+      { remoteModelName: 'm1', displayName: 'm1', selected: false },
+      { remoteModelName: 'm2', displayName: 'm2', selected: true }
+    ])
+    expect(mocks.message.info).toHaveBeenCalledWith(
+      expect.stringContaining('Codex 只导入勾选项：1 个已启用的既有映射保持启用（未勾选不会停用）')
+    )
+  })
+})
+
+describe('OAuth account table creation time', () => {
+  it('renders the formatted creation time and falls back to a dash for missing values', async () => {
+    const base = { email: null, accountId: null, planType: null, isEnabled: true, isQuotaCooling: false,
+      quotaCoolingUntil: null, lastQuotaCheckedAt: null, tokenExpiresAt: null, createdAt: null }
+    vi.mocked(api.listOAuthAccounts).mockResolvedValue([
+      { ...base, id: 'with-created-at', displayName: 'With created at', createdAt: '2025-06-15T08:30:00Z' },
+      { ...base, id: 'without-created-at', displayName: 'Without created at' }
+    ])
+    const state = await mountOAuth()
+    const withCreatedAt = state.accountTableRows.value.find(row => row.id === 'with-created-at')
+    const withoutCreatedAt = state.accountTableRows.value.find(row => row.id === 'without-created-at')
+    const createdAtColumn = state.accountTableColumns.value.find(column => column.key === 'createdAt')
+
+    expect(createdAtColumn?.title).toBe('创建时间')
+    expect(withCreatedAt?.createdAt).toBe('2025/6/15 16:30:00')
+    expect((createdAtColumn?.render?.(withCreatedAt!) as { children?: unknown } | undefined)?.children).toBe('2025/6/15 16:30:00')
+    expect((createdAtColumn?.render?.(withoutCreatedAt!) as { children?: unknown } | undefined)?.children).toBe('—')
   })
 })
 

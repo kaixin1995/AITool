@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
+using AITool.Domain.Operations;
+using SqlSugar;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Persistence;
@@ -74,6 +76,13 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         return accounts.Select(ToQuotaTarget).ToList();
     }
 
+    public async Task<AccountQuotaTarget?> GetAccountAsync(Guid accountId, CancellationToken cancellationToken)
+    {
+        var account = await _dbContext.CodexAccounts
+            .Where(a => a.Id == accountId && !a.DisabledByFeatureToggle).FirstAsync(cancellationToken);
+        return account is null ? null : ToQuotaTarget(account);
+    }
+
     public async Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
         IReadOnlyList<Guid> siteIds,
         CancellationToken cancellationToken)
@@ -138,7 +147,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             (!enabled && string.Equals(reason, "quota-threshold", StringComparison.OrdinalIgnoreCase)))
         {
             await QuotaAccountStateWriter.ChangeAsync(_dbContext, ProviderKey, account.AccountId, enabled,
-                _scheduleStore, _logger, cancellationToken);
+                _scheduleStore, _logger, cancellationToken, account.QuotaRecheckLeaseToken);
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
             return;
@@ -201,6 +210,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                 await client.Updateable<CodexAccount>()
                     .SetColumns(x => new CodexAccount { DisabledByFeatureToggle = false })
                     .Where(x => x.Id == account.Id && x.RequiresReauth && x.DisabledByFeatureToggle)
+                    .Where(x => SqlFunc.Subqueryable<SystemRuntimeSettings>().Where(s => s.Id == 1 && s.OAuthFeaturesEnabled).Any())
                     .ExecuteCommandAsync(cancellationToken);
                 continue;
             }
@@ -316,11 +326,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
             if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
             using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
-            string body;
-            try { body = await response.Content.ReadAsStringAsync(requestBudget.Token); }
-            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !requestBudget.IsCancellationRequested) { body = string.Empty; }
-
-            var info = new CodexQuotaInfo { RawJson = body, CheckedAt = DateTimeOffset.UtcNow };
+            var info = new CodexQuotaInfo { CheckedAt = DateTimeOffset.UtcNow };
             if (!response.IsSuccessStatusCode)
             {
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh && !string.IsNullOrWhiteSpace(account.RefreshToken))
@@ -332,9 +338,9 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        if (!IsTransientRefreshFailure(ex))
+                        if (ex is AITool.Application.OAuth.OAuthRefreshRefusedException)
                             await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
-                        return new CodexQuotaInfo { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，凭证刷新失败：" + ex.Message };
+                        return new CodexQuotaInfo { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，凭证刷新失败，请检查后重试：" + ex.Message };
                     }
                     if (!string.IsNullOrWhiteSpace(refreshedAccessToken))
                     {
@@ -343,16 +349,21 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                             return await QueryUpstreamAsync(refreshedAccount, ct, false);
                         return new CodexQuotaInfo { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，账号凭证已更新，请重试" };
                     }
+                    return new CodexQuotaInfo { Success = false, UpstreamUnauthorized = true, Error = "凭证刷新未完成，请稍后重试" };
                 }
 
                 info.Success = false;
                 info.UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized;
                 if (info.UpstreamUnauthorized)
                     await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
+                if (!info.UpstreamUnauthorized)
+                    info.RawJson = await response.Content.ReadAsStringAsync(requestBudget.Token);
                 info.Error = $"上游返回 {(int)response.StatusCode}";
                 return info;
             }
 
+            var body = await response.Content.ReadAsStringAsync(requestBudget.Token);
+            info.RawJson = body;
             // 用 codex-patrol 同款解析器分类窗口
             var (planType, windows) = CodexUsageParser.Parse(body);
             info.PlanType = planType;
@@ -451,7 +462,4 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         _logger.LogWarning("Codex account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
 
-    private static bool IsTransientRefreshFailure(Exception ex) =>
-        ex is HttpRequestException http && (http.StatusCode is null || (int)http.StatusCode >= 500 || (int)http.StatusCode == 429)
-        || ex is TimeoutException;
 }

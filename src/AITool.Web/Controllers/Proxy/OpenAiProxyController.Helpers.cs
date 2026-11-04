@@ -37,40 +37,43 @@ public sealed partial class OpenAiProxyController
         return null;
     }
 
+    private static int ReferenceFailureStatusCode(UpstreamReferenceException error)
+        => error.Code == "reference_store_unavailable" ? StatusCodes.Status503ServiceUnavailable : StatusCodes.Status400BadRequest;
+
     private IActionResult ReferenceError(UpstreamReferenceException error)
         // Stream helpers may have selected text/event-stream without writing any bytes.
         // Use an explicit JSON result so MVC cannot negotiate that stale SSE type into a 406.
         => new JsonResult(new { error = new { type = "invalid_request_error", code = error.Code, message = error.Message } })
         {
-            StatusCode = error.Code == "reference_store_unavailable" ? 503 : 400,
+            StatusCode = ReferenceFailureStatusCode(error),
             ContentType = "application/json"
         };
 
-    private readonly Dictionary<CachedProxyRouteTarget, AITool.Application.Networking.AccountIdentity> _referenceOwners = new();
+    private readonly Dictionary<CachedProxyRouteTarget, DerivedReferenceOwnerIdentity> _referenceOwners = new();
 
-    private async Task<AITool.Application.Networking.AccountIdentity> ReferenceOwnerAsync(CachedProxyRouteTarget route, CancellationToken ct)
+    private async Task<DerivedReferenceOwnerIdentity> ReferenceOwnerAsync(CachedProxyRouteTarget route, CancellationToken ct)
     {
-        if (route.AccountIdentity is not null) return route.AccountIdentity;
-        if (_referenceOwners.TryGetValue(route, out var owner)) return owner;
+        if (route.AccountIdentity is not null) return new(route.AccountIdentity, null);
+        if (_referenceOwners.TryGetValue(route, out var derived)) return derived;
         if (_sessionIsolation is null)
         {
             if (_referenceGuard is not null)
                 throw new UpstreamReferenceException("reference_store_unavailable", "Credential reference ownership verification is unavailable.");
             // Isolated compatibility controllers without either security service never accept
             // references (ResolveReferencesAsync fails closed); they do not persist this identity.
-            return new("site", route.SiteKeyId ?? route.SiteId);
+            return new(new("site", route.SiteKeyId ?? route.SiteId), null);
         }
         try
         {
             var templates = BuildReferenceHeaderTemplates(route, route.ResolveProtocolForClient("Responses"));
-            owner = await _sessionIsolation.DeriveReferenceOwnerAsync(null, route.SiteId, route.SiteKeyId, route.ApiKey, ct, templates);
+            derived = await _sessionIsolation.DeriveReferenceOwnerAsync(null, route.SiteId, route.SiteKeyId, route.ApiKey, ct, templates);
         }
         catch (System.Security.Cryptography.CryptographicException)
         {
             throw new UpstreamReferenceException("reference_store_unavailable", "Credential reference ownership verification is unavailable.");
         }
-        _referenceOwners.Add(route, owner);
-        return owner;
+        _referenceOwners.Add(route, derived);
+        return derived;
     }
 
     private async Task<IReadOnlyList<CachedProxyRouteTarget>> RestrictReferenceRoutesAsync(
@@ -79,7 +82,7 @@ public sealed partial class OpenAiProxyController
         if (restriction is null) return routes;
         var matches = new List<CachedProxyRouteTarget>();
         foreach (var route in routes)
-            if (await ReferenceOwnerAsync(route, ct) == restriction.Owner
+            if ((await ReferenceOwnerAsync(route, ct)).Owner == restriction.Owner
                 && UpstreamReferenceNamespace.Create(route.BaseUrl, route.ResolveProtocolForClient("Responses")) == restriction.UpstreamNamespace)
                 matches.Add(route);
         return matches;
@@ -132,7 +135,8 @@ public sealed partial class OpenAiProxyController
     {
         if (route.AccountIdentity is null)
             ValidateOrdinaryReferenceHeaders(BuildReferenceHeaderTemplates(route, protocol), finalHeaders);
-        _referenceOutputContext = new(scope, await ReferenceOwnerAsync(route, ct), UpstreamReferenceNamespace.Create(route.BaseUrl, protocol), restriction);
+        var derived = await ReferenceOwnerAsync(route, ct);
+        _referenceOutputContext = new(scope, derived.Owner, UpstreamReferenceNamespace.Create(route.BaseUrl, protocol), restriction, derived.KeyGeneration);
         _nativeReferenceOutput = string.Equals(protocol, "Responses", StringComparison.OrdinalIgnoreCase);
         _referenceOutputError = null;
         _observedCompletedResponseId = null;
@@ -1519,17 +1523,13 @@ public sealed partial class OpenAiProxyController
     /// 已开始写流的 SSE 连接补发终止符（如引用守卫在流中拒绝输出后），
     /// 避免客户端等待超时；写入失败（客户端已断开）只吞异常。
     /// </summary>
-    private async Task TryWriteReferenceFailureAsync(AITool.Application.Proxy.UpstreamReferenceException error, bool responses)
+    private async Task TryWriteReferenceFailureAsync(AITool.Application.Proxy.UpstreamReferenceException error, bool responses, CancellationToken cancellationToken)
     {
-        try
-        {
-            var payload = responses
-                ? System.Text.Json.JsonSerializer.Serialize(new { type = "response.failed", response = new { status = "failed", error = new { code = error.Code, message = error.Message } } })
-                : System.Text.Json.JsonSerializer.Serialize(new { error = new { code = error.Code, message = error.Message, type = "upstream_reference_error" } });
-            await Response.WriteAsync((responses ? "event: response.failed\n" : "") + "data: " + payload + "\n\n", CancellationToken.None);
-            await Response.Body.FlushAsync(CancellationToken.None);
-        }
-        catch { /* 客户端可能已断开 */ }
+        var payload = responses
+            ? System.Text.Json.JsonSerializer.Serialize(new { type = "response.failed", response = new { status = "failed", error = new { code = error.Code, message = error.Message } } })
+            : System.Text.Json.JsonSerializer.Serialize(new { error = new { code = error.Code, message = error.Message, type = "upstream_reference_error" } });
+        var text = (responses ? "event: response.failed\n" : "") + "data: " + payload + "\n\n";
+        await Response.TryWriteTerminatorAsync(text, cancellationToken);
     }
     /// <summary>
     /// 按运行时设置创建 SSE 首包蓄流器（StreamHeadBufferEnabled 关闭时返回 null，行为与原先完全一致）。

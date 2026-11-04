@@ -35,7 +35,7 @@ public sealed class DeviceOAuthAccount
     /// <summary>
     /// 显示名是否为用户自定义（登录时命名或事后改名）：供给器只在非自定义时允许默认名
     /// 跟随上游昵称/邮箱刷新，自定义名绝不被重登冲掉（对齐 CodexAccount 的同名字段语义）。
-    /// 存量行默认 false（历史行由上游昵称刷新语义继续覆盖，与修复前行为一致）。
+    /// 无此标记的历史账号在升级时保守标记为自定义，以免无法识别的用户命名丢失。
     /// </summary>
     [SugarColumn(IsNullable = false)]
     public bool IsDisplayNameCustom { get; set; }

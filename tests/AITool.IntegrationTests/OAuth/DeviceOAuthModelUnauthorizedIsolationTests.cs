@@ -21,7 +21,8 @@ namespace AITool.IntegrationTests.OAuth;
 public sealed class DeviceOAuthModelUnauthorizedIsolationTests : IDisposable
 {
     private const string OldAccess = "old-access";
-    private const string OldRefresh = "old-refresh";
+    // No refresh token: these cases isolate invalidation of the credential actually sent.
+    private const string? OldRefresh = null;
     private static readonly DateTimeOffset InitialRefresh = new(2022, 1, 1, 0, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset RotatedRefresh = new(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-model-isolation-{Guid.NewGuid():N}.db");
@@ -35,6 +36,8 @@ public sealed class DeviceOAuthModelUnauthorizedIsolationTests : IDisposable
         services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddScoped<ProxyRequestMetadataCache>();
         services.AddScoped<ForwardOAuthInvalidationService>();
+        services.AddSingleton(new DeviceOAuthVendorRegistry([]));
+        services.AddScoped<DeviceOAuthCredentialRefreshService>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
     }
@@ -95,10 +98,17 @@ public sealed class DeviceOAuthModelUnauthorizedIsolationTests : IDisposable
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider } }
         };
-        var fetch = controller.FetchModels(target.Id, CancellationToken.None);
+        var fetchTask = controller.FetchModels(target.Id, CancellationToken.None);
+        var completed = await Task.WhenAny(fetchTask, handler.Entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
+        if (completed == fetchTask)
+        {
+            await fetchTask;
+            Assert.Fail("Fetch completed before entered signal was observed.");
+        }
+
+        Exception? primaryException = null;
         try
         {
-            await handler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             handler.AssertBlockedRequest();
             if (rotation != "none")
             {
@@ -116,51 +126,71 @@ public sealed class DeviceOAuthModelUnauthorizedIsolationTests : IDisposable
                     await rotationDb.UpdateAsync(rotatedSite);
                 }
             }
+
+            handler.Release.TrySetResult(true);
+
+            if (status == 401)
+            {
+                var fetchResult = await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+                var result = fetchResult.Should().BeOfType<ConflictObjectResult>().Subject;
+                result.StatusCode.Should().Be(409);
+                var body = result.Value.Should().BeOfType<ApiResponse>().Subject;
+                body.Success.Should().BeFalse();
+                body.ErrorCode.Should().Be("oauth_reauthorization_required");
+            }
+            else
+            {
+                var error = await Assert.ThrowsAsync<InvalidOperationException>(() => fetchTask.WaitAsync(TimeSpan.FromSeconds(10)));
+                error.Message.Should().Contain("407");
+            }
+
+            var expectedDisabled = status == 401 && rotation == "none";
+            var stored = (await db.DeviceOAuthAccounts.InSingleAsync(target.Id))!;
+            stored.IsEnabled.Should().Be(!expectedDisabled);
+            stored.RequiresReauth.Should().Be(expectedDisabled);
+            stored.AccessToken.Should().Be(rotation is "access" or "all" ? "new-access" : OldAccess);
+            stored.RefreshToken.Should().Be(rotation is "refresh" or "all" ? "new-refresh" : OldRefresh);
+            stored.LastRefreshAt.Should().Be(rotation is "timestamp" or "all" ? RotatedRefresh : InitialRefresh);
+            stored.LinkedSiteId.Should().Be(linkedSite ? targetSite.Id : Guid.Empty);
+            if (linkedSite)
+            {
+                var storedSite = (await db.Sites.InSingleAsync(targetSite.Id))!;
+                storedSite.IsEnabled.Should().Be(!expectedDisabled);
+                storedSite.ApiKey.Should().Be(rotation is "access" or "all" ? "new-access" : OldAccess);
+            }
+            var untouched = (await db.DeviceOAuthAccounts.InSingleAsync(other.Id))!;
+            untouched.IsEnabled.Should().BeTrue();
+            untouched.RequiresReauth.Should().BeFalse();
+            untouched.AccessToken.Should().Be(OldAccess);
+            untouched.RefreshToken.Should().Be(OldRefresh);
+            untouched.LastRefreshAt.Should().Be(InitialRefresh);
+            var storedOtherSite = (await db.Sites.InSingleAsync(otherSite.Id))!;
+            storedOtherSite.IsEnabled.Should().BeTrue();
+            storedOtherSite.ApiKey.Should().Be(OldAccess);
+            (await db.Sites.InSingleAsync(unrelatedSite.Id))!.IsEnabled.Should().BeTrue();
+            handler.AssertRequests();
+        }
+        catch (Exception ex)
+        {
+            primaryException = ex;
+            throw;
         }
         finally
         {
             handler.Release.TrySetResult(true);
+            try
+            {
+                await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch when (primaryException is not null)
+            {
+                // Primary exception takes precedence.
+            }
+            catch (InvalidOperationException) when (status != 401)
+            {
+                // Expected exception already observed in try block.
+            }
         }
-
-        if (status == 401)
-        {
-            var result = (await fetch).Should().BeOfType<ObjectResult>().Subject;
-            result.StatusCode.Should().Be(401);
-            var body = result.Value.Should().BeOfType<ApiResponse>().Subject;
-            body.Success.Should().BeFalse();
-            body.ErrorCode.Should().Be("upstream_unauthorized");
-        }
-        else
-        {
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => fetch);
-            error.Message.Should().Contain("407");
-        }
-
-        var expectedDisabled = status == 401 && rotation == "none";
-        var stored = (await db.DeviceOAuthAccounts.InSingleAsync(target.Id))!;
-        stored.IsEnabled.Should().Be(!expectedDisabled);
-        stored.RequiresReauth.Should().Be(expectedDisabled);
-        stored.AccessToken.Should().Be(rotation is "access" or "all" ? "new-access" : OldAccess);
-        stored.RefreshToken.Should().Be(rotation is "refresh" or "all" ? "new-refresh" : OldRefresh);
-        stored.LastRefreshAt.Should().Be(rotation is "timestamp" or "all" ? RotatedRefresh : InitialRefresh);
-        stored.LinkedSiteId.Should().Be(linkedSite ? targetSite.Id : Guid.Empty);
-        if (linkedSite)
-        {
-            var storedSite = (await db.Sites.InSingleAsync(targetSite.Id))!;
-            storedSite.IsEnabled.Should().Be(!expectedDisabled);
-            storedSite.ApiKey.Should().Be(rotation is "access" or "all" ? "new-access" : OldAccess);
-        }
-        var untouched = (await db.DeviceOAuthAccounts.InSingleAsync(other.Id))!;
-        untouched.IsEnabled.Should().BeTrue();
-        untouched.RequiresReauth.Should().BeFalse();
-        untouched.AccessToken.Should().Be(OldAccess);
-        untouched.RefreshToken.Should().Be(OldRefresh);
-        untouched.LastRefreshAt.Should().Be(InitialRefresh);
-        var storedOtherSite = (await db.Sites.InSingleAsync(otherSite.Id))!;
-        storedOtherSite.IsEnabled.Should().BeTrue();
-        storedOtherSite.ApiKey.Should().Be(OldAccess);
-        (await db.Sites.InSingleAsync(unrelatedSite.Id))!.IsEnabled.Should().BeTrue();
-        handler.AssertRequests();
     }
 
     private sealed class BlockingHandler(string path, int status) : HttpMessageHandler

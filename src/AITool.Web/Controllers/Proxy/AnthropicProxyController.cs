@@ -31,6 +31,11 @@ public sealed class AnthropicProxyController : ControllerBase
         /// 指示当前流是否还允许继续尝试下一条候选路由。
         /// </summary>
         public bool CanFallback { get; init; }
+        /// <summary>
+        /// 上游是否已送达流完成终止事件。客户端在其后断开时，上游已按完整输出计费，
+        /// 主循环据此把 canceled 翻转为成功入账。
+        /// </summary>
+        public bool UpstreamCompleted { get; init; }
     }
 
     /// <summary>
@@ -442,6 +447,37 @@ public sealed class AnthropicProxyController : ControllerBase
                 var streamResult = streamOutcome.Result;
                 if (streamResult.IsCanceled)
                 {
+                    // 客户端中途取消：上游已消耗的部分 token 照常入账（status=canceled），绝不静默丢行。
+                    SafeRecordProxyDiagnostic("Anthropic", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, streamResult, requestId, traceId);
+                    await SafeLogUsageAsync(new UsageLogEntry
+                    {
+                        RequestId = requestId,
+                        AccessKeyId = accessKey.Id,
+                        ProtocolType = "Anthropic",
+                        ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
+                        RequestModel = modelName,
+                        AttemptedModel = route.UpstreamModelName,
+                        TargetSiteId = route.SiteId,
+                        Status = "canceled",
+                        Source = requestSource,
+                        RetryCount = attemptIndex - 1,
+                        RateLimitRetries = streamResult.RateLimitRetryCount,
+                        AttemptIndex = attemptIndex,
+                        IsFinalResult = true,
+                        FallbackTriggered = false,
+                        ErrorMessage = streamResult.ErrorMessage ?? string.Empty,
+                        HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
+                        InputTokens = streamResult.InputTokens,
+                        CachedTokens = streamResult.CachedTokens,
+                        OutputTokens = streamResult.OutputTokens,
+                        IsStreaming = streamResult.IsStreaming,
+                        IsStreamInterrupted = streamResult.IsStreamInterrupted,
+                        FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                        StreamDurationMs = streamResult.StreamDurationMs,
+                        TotalDurationMs = streamResult.TotalDurationMs,
+                        ReasoningEffort = reasoningEffort,
+                        RequestedAt = DateTimeOffset.UtcNow
+                    }, CancellationToken.None);
                     // 客户端取消：同样收口追踪，避免调用记录永远停留在「等待」。
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {
@@ -524,9 +560,47 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             // 上游请求仍使用独立超时控制；但若客户端已经主动取消，则立即结束，不再继续回退后续候选。
+            // 上游可能已消耗部分资源：照常入账 canceled 行，绝不静默丢行。
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
             if (result.IsCanceled)
             {
+                SafeRecordProxyDiagnostic("Anthropic", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
+                await SafeLogUsageAsync(new UsageLogEntry
+                {
+                    RequestId = requestId,
+                    AccessKeyId = accessKey.Id,
+                    ProtocolType = "Anthropic",
+                    ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
+                    RequestModel = modelName,
+                    AttemptedModel = route.UpstreamModelName,
+                    TargetSiteId = route.SiteId,
+                    Status = "canceled",
+                    Source = requestSource,
+                    RetryCount = attemptIndex - 1,
+                    RateLimitRetries = result.RateLimitRetryCount,
+                    AttemptIndex = attemptIndex,
+                    IsFinalResult = true,
+                    FallbackTriggered = false,
+                    ErrorMessage = result.ErrorMessage ?? string.Empty,
+                    HttpStatusCode = result.StatusCode > 0 ? result.StatusCode : null,
+                    InputTokens = result.InputTokens,
+                    CachedTokens = result.CachedTokens,
+                    OutputTokens = result.OutputTokens,
+                    IsStreaming = result.IsStreaming,
+                    IsStreamInterrupted = result.IsStreamInterrupted,
+                    FirstTokenLatencyMs = result.FirstTokenLatencyMs,
+                    StreamDurationMs = result.StreamDurationMs,
+                    TotalDurationMs = result.TotalDurationMs,
+                    ReasoningEffort = reasoningEffort,
+                    RequestedAt = DateTimeOffset.UtcNow
+                }, CancellationToken.None);
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "canceled",
+                    StatusCode = result.StatusCode,
+                    IsStreaming = false,
+                    TotalDurationMs = result.TotalDurationMs
+                });
                 return new EmptyResult();
             }
 
@@ -802,12 +876,7 @@ public sealed class AnthropicProxyController : ControllerBase
         // 流中断但已开始写入时，向客户端补发 Anthropic 终止事件避免挂起
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            await Response.TryWriteTerminatorAsync("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", cancellationToken);
         }
 
         if (result.Success && startedWriting)
@@ -2078,7 +2147,12 @@ public sealed class AnthropicProxyController : ControllerBase
         if (startedWriting)
         {
             // 已写出部分内容：补发收尾事件，客户端不至于挂起；不能再 fallback。
-            await WriteChunkAsync(ProxyProtocolBridge.CompleteGeminiToAnthropicStream(state), CancellationToken.None);
+            var terminator = ProxyProtocolBridge.CompleteGeminiToAnthropicStream(state);
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                responseBuilder.Append(terminator);
+            }
+            await Response.TryWriteTerminatorAsync(terminator, cancellationToken);
             result.ResponseBody = responseBuilder.ToString();
             result.IsStreamInterrupted = true;
         }

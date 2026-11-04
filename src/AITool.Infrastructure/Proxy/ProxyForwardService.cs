@@ -1,3 +1,4 @@
+using AITool.Infrastructure.Common;
 using AITool.Application.Networking;
 using System.Diagnostics;
 using System.Net;
@@ -245,19 +246,13 @@ public sealed class ProxyForwardService : IProxyForwardService
                 if (!response.IsSuccessStatusCode)
                 {
                     stopwatch.Stop();
-                    string errorBody;
-                    try { errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token); }
-                    catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !timeoutCts.Token.IsCancellationRequested) { errorBody = string.Empty; }
                     if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                         && request.RefreshTargetApiKeyAsync is not null
                         && !tokenRefreshAttempted)
                     {
-                        // Preflight before the credential refresh callback can perform network I/O.
                         await ResolveNetworkAsync(request, cancellationToken);
                         tokenRefreshAttempted = true;
-                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(
-                            sentApiKey,
-                            cancellationToken);
+                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(sentApiKey, cancellationToken);
                         if (!string.IsNullOrWhiteSpace(refreshedApiKey))
                         {
                             currentApiKey = refreshedApiKey;
@@ -270,18 +265,19 @@ public sealed class ProxyForwardService : IProxyForwardService
                     if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                         && request.InvalidateTargetCredentialAsync is not null)
                     {
-                        try
-                        {
-                            await request.InvalidateTargetCredentialAsync(sentApiKey, started.CredentialSnapshot, cancellationToken);
-                        }
+                        try { await request.InvalidateTargetCredentialAsync(sentApiKey, started.CredentialSnapshot, cancellationToken); }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception ex) { _logger.LogWarning(ex, "Unable to invalidate rejected forwarding credential"); }
                     }
-
-                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden
-                        && request.DisableTargetCredentialAsync is not null)
+                    var disable = response.StatusCode == System.Net.HttpStatusCode.Forbidden && request.DisableTargetCredentialAsync is not null;
+                    if (disable) await TryDisableTargetCredentialAsync(request, cancellationToken);
+                    var authError = response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden;
+                    var errorBody = authError
+                        ? await HttpErrorBodyReader.ReadAsync(response.Content, cancellationToken)
+                        : await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    var errorMessage = authError && string.IsNullOrWhiteSpace(errorBody) ? $"上游返回 HTTP {(int)response.StatusCode}" : errorBody;
+                    if (disable)
                     {
-                        await TryDisableTargetCredentialAsync(request, cancellationToken);
                         return new ProxyForwardResult
                         {
                             Success = false,
@@ -289,7 +285,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
-                            ErrorMessage = errorBody
+                            ErrorMessage = errorMessage
                         };
                     }
 
@@ -340,7 +336,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
-                            ErrorMessage = errorBody,
+                            ErrorMessage = errorMessage,
                             RateLimitRetryCount = rateLimit429Retries,
                             RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
@@ -563,19 +559,13 @@ public sealed class ProxyForwardService : IProxyForwardService
                 if (!response.IsSuccessStatusCode)
                 {
                     stopwatch.Stop();
-                    string errorBody;
-                    try { errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token); }
-                    catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !timeoutCts.Token.IsCancellationRequested) { errorBody = string.Empty; }
                     if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                         && request.RefreshTargetApiKeyAsync is not null
                         && !tokenRefreshAttempted)
                     {
-                        // Preflight before the credential refresh callback can perform network I/O.
                         await ResolveNetworkAsync(request, cancellationToken);
                         tokenRefreshAttempted = true;
-                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(
-                            sentApiKey,
-                            cancellationToken);
+                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(sentApiKey, cancellationToken);
                         if (!string.IsNullOrWhiteSpace(refreshedApiKey))
                         {
                             currentApiKey = refreshedApiKey;
@@ -588,18 +578,19 @@ public sealed class ProxyForwardService : IProxyForwardService
                     if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                         && request.InvalidateTargetCredentialAsync is not null)
                     {
-                        try
-                        {
-                            await request.InvalidateTargetCredentialAsync(sentApiKey, started.CredentialSnapshot, cancellationToken);
-                        }
+                        try { await request.InvalidateTargetCredentialAsync(sentApiKey, started.CredentialSnapshot, cancellationToken); }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception ex) { _logger.LogWarning(ex, "Unable to invalidate rejected forwarding credential"); }
                     }
-
-                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden
-                        && request.DisableTargetCredentialAsync is not null)
+                    var disable = response.StatusCode == System.Net.HttpStatusCode.Forbidden && request.DisableTargetCredentialAsync is not null;
+                    if (disable) await TryDisableTargetCredentialAsync(request, cancellationToken);
+                    var authError = response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden;
+                    var errorBody = authError
+                        ? await HttpErrorBodyReader.ReadAsync(response.Content, cancellationToken)
+                        : await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    var errorMessage = authError && string.IsNullOrWhiteSpace(errorBody) ? $"上游返回 HTTP {(int)response.StatusCode}" : errorBody;
+                    if (disable)
                     {
-                        await TryDisableTargetCredentialAsync(request, cancellationToken);
                         return new ProxyForwardResult
                         {
                             Success = false,
@@ -607,7 +598,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
-                            ErrorMessage = errorBody
+                            ErrorMessage = errorMessage
                         };
                     }
 
@@ -657,7 +648,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
-                            ErrorMessage = errorBody,
+                            ErrorMessage = errorMessage,
                             RateLimitRetryCount = rateLimit429Retries,
                             RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
@@ -685,8 +676,12 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                 continue;
             }
-            catch (UpstreamReferenceException)
+            catch (UpstreamReferenceException ex)
             {
+                if (ex.PartialResult is not null)
+                {
+                    ex.PartialResult.RateLimitRetryCount = rateLimit429Retries;
+                }
                 // A failed pre-exposure ownership commit is terminal, even before first content.
                 throw;
             }
@@ -1030,8 +1025,26 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
             }
         }
-        catch (UpstreamReferenceException)
+        catch (UpstreamReferenceException ex)
         {
+            stopwatch.Stop();
+            totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+            var snapshot = new ProxyForwardResult
+            {
+                Success = false,
+                StatusCode = (int)response.StatusCode,
+                InputTokens = inputTokens,
+                CachedTokens = cachedTokens,
+                OutputTokens = outputTokens,
+                IsStreaming = isStreaming,
+                HasStartedStreaming = hasFirstContent,
+                IsStreamInterrupted = hasFirstContent,
+                FirstTokenLatencyMs = firstTokenLatencyMs,
+                StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
+                TotalDurationMs = totalDurationMs,
+                ErrorMessage = ex.Message
+            };
+            ex.AttachPartialResult(snapshot);
             // Preserve the terminal guard exception for the controller; never expose or retry output.
             throw;
         }
@@ -1489,6 +1502,25 @@ public sealed class ProxyForwardService : IProxyForwardService
                             acc.Reasoning.Append(rcEl.GetString());
                         }
 
+                        if (deltaEl.TryGetProperty("refusal", out var refusalEl) && refusalEl.ValueKind == JsonValueKind.String)
+                        {
+                            acc.HasRefusal = true;
+                            acc.Refusal.Append(refusalEl.GetString());
+                        }
+
+                        if (deltaEl.TryGetProperty("function_call", out var functionCallEl) && functionCallEl.ValueKind == JsonValueKind.Object)
+                        {
+                            acc.HasFunctionCall = true;
+                            if (functionCallEl.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String)
+                            {
+                                acc.FunctionName.Append(nameEl.GetString());
+                            }
+                            if (functionCallEl.TryGetProperty("arguments", out var argumentsEl) && argumentsEl.ValueKind == JsonValueKind.String)
+                            {
+                                acc.FunctionArguments.Append(argumentsEl.GetString());
+                            }
+                        }
+
                         if (deltaEl.TryGetProperty("tool_calls", out var tcEl) && tcEl.ValueKind == JsonValueKind.Array)
                         {
                             foreach (var tc in tcEl.EnumerateArray())
@@ -1567,6 +1599,18 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     message["reasoning_content"] = acc.Reasoning.ToString();
                 }
+                if (acc.HasRefusal)
+                {
+                    message["refusal"] = acc.Refusal.ToString();
+                }
+                if (acc.HasFunctionCall)
+                {
+                    message["function_call"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["name"] = acc.FunctionName.ToString(),
+                        ["arguments"] = acc.FunctionArguments.ToString(),
+                    };
+                }
                 if (acc.ToolCallsByIndex.Count > 0)
                 {
                     // 对齐非流式 chat.completion 的 tool_calls 形态（id/type/function，无 index 字段）。
@@ -1626,6 +1670,11 @@ public sealed class ProxyForwardService : IProxyForwardService
         public string? FinishReason { get; set; }
         public StringBuilder Content { get; } = new();
         public StringBuilder Reasoning { get; } = new();
+        public bool HasRefusal { get; set; }
+        public StringBuilder Refusal { get; } = new();
+        public bool HasFunctionCall { get; set; }
+        public StringBuilder FunctionName { get; } = new();
+        public StringBuilder FunctionArguments { get; } = new();
         public SortedDictionary<int, ToolCallAccumulator> ToolCallsByIndex { get; } = new();
     }
 

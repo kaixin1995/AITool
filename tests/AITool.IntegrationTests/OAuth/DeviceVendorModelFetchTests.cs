@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Infrastructure.OAuth;
+using AITool.Application.OAuth;
 using FluentAssertions;
 using Xunit;
 
@@ -15,6 +16,16 @@ namespace AITool.IntegrationTests.OAuth;
 /// </summary>
 public sealed class DeviceVendorModelFetchTests
 {
+    [Fact]
+    public void Model_catalog_scope_distinguishes_public_from_account_scoped()
+    {
+        using var http = new HttpClient();
+        IDeviceOAuthVendor claude = new ClaudeOAuthVendor(http);
+        IDeviceOAuthVendor copilot = new CopilotOAuthVendor(http);
+        claude.ModelCatalogScope.Should().Be(DeviceOAuthModelCatalogScope.PublicCatalog);
+        copilot.ModelCatalogScope.Should().Be(DeviceOAuthModelCatalogScope.AccountScoped);
+    }
+
     private sealed record CapturedRequest(
         HttpMethod Method,
         Uri Url,
@@ -379,6 +390,49 @@ public sealed class DeviceVendorModelFetchTests
         JsonDocument.Parse(fallback.Body!).RootElement.GetProperty("function").GetString().Should().Be("solo_agent");
         fallback.Url.Host.Should().Be("trae-api-cn.mchost.guru");
         models.Select(m => m.Slug).Should().Equal("deepseek-v4.1-flash");
+    }
+
+    [Fact]
+    public async Task Trae_falls_back_to_per_function_lists_when_batch_returns_empty_lists()
+    {
+        var handler = new StubHandler(req =>
+        {
+            if (req.Url.AbsolutePath == "/api/ide/v1/batch_get_detail_param")
+            {
+                return Json(HttpStatusCode.OK, """{"function_configs":[{"function":"chat_v3","config_info_list":[]}]}""");
+            }
+
+            var function = JsonDocument.Parse(req.Body!).RootElement.GetProperty("function").GetString();
+            return function == "solo_agent"
+                ? Json(HttpStatusCode.OK, """{"config_info_list":[{"config_name":"deepseek-v4.1-flash","usage":"chat_completion"}]}""")
+                : Json(HttpStatusCode.OK, """{"config_info_list":[]}""");
+        });
+        var vendor = new TraeOAuthVendor(new HttpClient(handler));
+
+        var models = await vendor.FetchModelsAsync(Tokens("jwt-1"), null, CancellationToken.None);
+
+        handler.Requests[0].Url.AbsolutePath.Should().Be("/api/ide/v1/batch_get_detail_param");
+        handler.Requests.Skip(1).Select(r => r.Url.AbsolutePath)
+            .Should().OnlyContain(p => p == "/api/ide/v1/get_detail_param");
+        handler.Requests.Should().HaveCount(1 + TraeFunctions.Length);
+        models.Select(m => m.Slug).Should().Equal("deepseek-v4.1-flash");
+    }
+
+    [Fact]
+    public async Task Trae_reports_fallback_failure_when_batch_and_per_function_lists_are_empty()
+    {
+        var handler = new StubHandler(req => req.Url.AbsolutePath == "/api/ide/v1/batch_get_detail_param"
+            ? Json(HttpStatusCode.OK, """{"function_configs":[{"function":"chat_v3","config_info_list":[]}]}""")
+            : Json(HttpStatusCode.OK, """{"config_info_list":[]}"""));
+        var vendor = new TraeOAuthVendor(new HttpClient(handler));
+
+        var act = () => vendor.FetchModelsAsync(Tokens("jwt-1"), null, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("Trae get_detail_param 兜底失败：*");
+        handler.Requests[0].Url.AbsolutePath.Should().Be("/api/ide/v1/batch_get_detail_param");
+        handler.Requests.Skip(1).Select(r => r.Url.AbsolutePath)
+            .Should().OnlyContain(p => p == "/api/ide/v1/get_detail_param");
+        handler.Requests.Should().HaveCount(1 + TraeFunctions.Length);
     }
 
     [Fact]

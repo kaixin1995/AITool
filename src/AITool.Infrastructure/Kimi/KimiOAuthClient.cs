@@ -191,14 +191,12 @@ public sealed class KimiOAuthClient : IKimiOAuthClient
         using var response = await _httpClient.SendAsync(request, ct);
         var body = await response.Content.ReadAsStringAsync(ct);
 
-        if (response.StatusCode == HttpStatusCode.Unauthorized || response.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new InvalidOperationException($"Kimi refresh_token 已失效或被拒绝 ({(int)response.StatusCode})：{body}");
-        }
-
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"Kimi 刷新 Token 失败 ({(int)response.StatusCode})：{body}");
+            var message = $"Kimi 刷新 Token 失败 ({(int)response.StatusCode})：{body}";
+            if (AITool.Application.OAuth.OAuthRefreshRefusedException.IsCredentialRejection(response.StatusCode, body))
+                throw new AITool.Application.OAuth.OAuthRefreshRefusedException(message);
+            throw new InvalidOperationException(message);
         }
 
         using var doc = JsonDocument.Parse(body);

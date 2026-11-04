@@ -77,7 +77,9 @@ public sealed class MiniMaxOAuthVendor : IDeviceOAuthVendor
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token.AccessToken.Trim());
         }
 
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden && !string.IsNullOrWhiteSpace(token.AccessToken))
         {
             response.Dispose();
@@ -87,7 +89,7 @@ public sealed class MiniMaxOAuthVendor : IDeviceOAuthVendor
             return await ReadModelCatalogResponseAsync(publicResponse, cancellationToken);
         }
 
-        return await ReadModelCatalogResponseAsync(response, cancellationToken);
+        return await ReadModelCatalogResponseAsync(response, requestBudget.Token);
     }
 
     private static async Task<IReadOnlyList<DeviceOAuthRemoteModel>> ReadModelCatalogResponseAsync(
@@ -348,17 +350,17 @@ public sealed class MiniMaxOAuthVendor : IDeviceOAuthVendor
             using var request = new HttpRequestMessage(HttpMethod.Get, _site.Platform + "/v1/api/openplatform/coding_plan/remains");
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + token.AccessToken.Trim());
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            string body;
-            try { body = await response.Content.ReadAsStringAsync(cancellationToken); }
-            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { body = string.Empty; }
+            using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            {
+                return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized, AccessTokenUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized };
+            }
+            var body = await response.Content.ReadAsStringAsync(requestBudget.Token);
             if (response.IsSuccessStatusCode)
             {
                 windows.AddRange(MiniMaxQuotaParser.ParsePlanWindows(body));
-            }
-            else if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
-            {
-                return new DeviceOAuthQuotaResult { Success = false, Error = "凭证失效，请重新登录", CredentialInvalid = true, UpstreamUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized, AccessTokenUnauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized };
             }
             else
             {

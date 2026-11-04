@@ -6,6 +6,7 @@ import {
   importSelectedDeviceModels,
   supportsOAuthModelFetch,
   supportsOAuthModelImport,
+  usesPublicModelCatalog,
   type DeviceOAuthVendor
 } from './deviceOauth'
 
@@ -31,6 +32,18 @@ describe('device OAuth model capabilities', () => {
     expect(mockedHttpPost).toHaveBeenLastCalledWith('/api/admin/device-oauth/sign-in/start', { vendor: 'kiro' })
     await startDeviceOAuthSignIn('kiro', { mode: 2, proxyProfileId: 'stable-id' })
     expect(mockedHttpPost).toHaveBeenLastCalledWith('/api/admin/device-oauth/sign-in/start', { vendor: 'kiro', networkSelection: { mode: 2, proxyProfileId: 'stable-id' } })
+  })
+
+  it('recognizes public catalogs and treats missing or account scope as non-public', () => {
+    const scoped: DeviceOAuthVendor[] = [
+      { ...vendors[0], modelCatalogScope: 'public' },
+      { ...vendors[1], modelCatalogScope: 'account' },
+      vendors[2]
+    ]
+    expect(usesPublicModelCatalog('remote-chat', scoped)).toBe(true)
+    expect(usesPublicModelCatalog('quota-only', scoped)).toBe(false)
+    expect(usesPublicModelCatalog('static-only', scoped)).toBe(false)
+    expect(usesPublicModelCatalog('unknown', scoped)).toBe(false)
   })
 
   it('gates dynamic model fetch on SupportsModelFetch rather than a static catalog', () => {

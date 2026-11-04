@@ -114,15 +114,15 @@ public sealed class JwtTokenServiceTests : IDisposable
         // depending on idle pooled connections, which another fixture can close during cleanup.
         var connectionString = $"Data Source=jwt-{Guid.NewGuid():N};Mode=Memory;Cache=Shared;Pooling=False";
         _keeper = new SqliteConnection(connectionString);
-        _keeper.Open();
-        _sqlSugar = new SqlSugarScope(new ConnectionConfig
-        {
-            ConnectionString = connectionString,
-            DbType = DbType.Sqlite,
-            IsAutoCloseConnection = true
-        }, _ => { });
         try
         {
+            _keeper.Open();
+            _sqlSugar = new SqlSugarScope(new ConnectionConfig
+            {
+                ConnectionString = connectionString,
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = true
+            }, _ => { });
             _sqlSugar.CodeFirst.InitTables(typeof(AITool.Domain.Auth.RefreshTokenRecord));
             _service = new JwtTokenService(options, new AppDbContext(_sqlSugar, _semaphore));
         }
@@ -135,10 +135,10 @@ public sealed class JwtTokenServiceTests : IDisposable
 
     public void Dispose()
     {
-        try { _sqlSugar.Dispose(); }
+        try { _sqlSugar?.Dispose(); }
         finally
         {
-            try { _keeper.Dispose(); }
+            try { _keeper?.Dispose(); }
             finally { _semaphore.Dispose(); }
         }
     }

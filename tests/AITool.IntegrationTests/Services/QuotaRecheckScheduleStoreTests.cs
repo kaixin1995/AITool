@@ -31,10 +31,10 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Ensure_is_idempotent_even_when_duplicate_event_has_newer_success_time()
     {
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         var original = await Row();
         _clock.Advance(TimeSpan.FromMinutes(5));
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         var current = await Row();
         current.NextCheckAtUtcTicks.Should().Be(original.NextCheckAtUtcTicks);
         current.CreatedAtUtcTicks.Should().Be(original.CreatedAtUtcTicks);
@@ -64,13 +64,21 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task New_disable_event_waits_full_interval_regardless_of_last_check()
+    {
+        await Ensure();
+        (await Row()).NextCheckAtUtcTicks.Should().Be((_clock.GetUtcNow() + TimeSpan.FromMinutes(50)).UtcTicks);
+        _intervals.CatchUpCalls.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Reconcile_preserves_existing_due_and_removes_only_ineligible_same_provider()
     {
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         var due = (await Row()).NextCheckAtUtcTicks;
         var removed = Guid.NewGuid();
-        await _store.EnsureScheduledAsync("p", removed, null, default);
-        await _store.EnsureScheduledAsync("other", removed, null, default);
+        await _store.EnsureScheduledAsync("p", removed, default);
+        await _store.EnsureScheduledAsync("other", removed, default);
         _clock.Advance(TimeSpan.FromHours(2));
         var result = await Reconcile(Target(_clock.GetUtcNow()), Target(null));
         result.Should().ContainSingle().Which.NextCheckAt.UtcTicks.Should().Be(due);
@@ -80,11 +88,26 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Unchanged_reconciliation_does_not_draw_intervals_or_modify_rows()
+    {
+        await Reconcile(Target(_clock.GetUtcNow()));
+        var original = await Row();
+        var intervalCalls = _intervals.IntervalCalls;
+        var catchUpCalls = _intervals.CatchUpCalls;
+        _clock.Advance(TimeSpan.FromHours(2));
+        for (var i = 0; i < 5; i++)
+            await Reconcile(Target(null));
+        (await Row()).Should().BeEquivalentTo(original);
+        _intervals.IntervalCalls.Should().Be(intervalCalls);
+        _intervals.CatchUpCalls.Should().Be(catchUpCalls);
+    }
+
+    [Fact]
     public async Task Not_due_cannot_be_acquired_but_exact_due_can()
     {
-        await Ensure(null);
+        await Ensure();
         (await _store.TryAcquireAsync("p", _id, default)).Should().BeNull();
-        _clock.Advance(TimeSpan.FromSeconds(17));
+        _clock.Advance(_intervals.Interval);
         (await _store.TryAcquireAsync("p", _id, default)).Should().NotBeNull();
         (await _store.TryAcquireAsync("p", Guid.NewGuid(), default)).Should().BeNull();
     }
@@ -92,7 +115,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Forced_claim_bypasses_due_but_never_active_lease()
     {
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         var lease = await _store.TryAcquireAsync("p", _id, default, force: true);
         lease.Should().NotBeNull();
         (await Store(CreateProvider()).TryAcquireAsync("p", _id, default, force: true)).Should().BeNull();
@@ -103,8 +126,8 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Concurrent_claims_across_independent_connections_have_exactly_one_winner()
     {
-        await Ensure(null);
-        _clock.Advance(TimeSpan.FromSeconds(17));
+        await Ensure();
+        _clock.Advance(_intervals.Interval);
         var other = Store(CreateProvider());
         using var start = new ManualResetEventSlim();
         var attempts = Enumerable.Range(0, 16).Select(i => Task.Run(async () =>
@@ -123,17 +146,17 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     {
         var other = Store(CreateProvider());
         await Task.WhenAll(Enumerable.Range(0, 12).Select(i => Task.Run(() =>
-            (i % 2 == 0 ? _store : other).EnsureScheduledAsync("p", _id, _clock.GetUtcNow(), default))));
+            (i % 2 == 0 ? _store : other).EnsureScheduledAsync("p", _id, default))));
         (await Rows()).Should().ContainSingle();
     }
 
     [Fact]
     public async Task Inflight_reconcile_and_duplicate_disable_preserve_token_and_deadline()
     {
-        await Ensure(null);
+        await Ensure();
         var lease = await _store.TryAcquireAsync("p", _id, default, force: true);
         var claimed = await Row();
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         await Reconcile(Target(_clock.GetUtcNow()));
         var current = await Row();
         current.NextCheckAtUtcTicks.Should().Be(claimed.NextCheckAtUtcTicks);
@@ -143,7 +166,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Failed_or_still_disabled_completion_schedules_from_completion_and_draws_again()
     {
-        await Ensure(null);
+        await Ensure();
         var lease = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
         _clock.Advance(TimeSpan.FromMinutes(2));
         _intervals.Interval = TimeSpan.FromMinutes(41);
@@ -162,7 +185,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Completion_removes_row_without_resurrection_by_repeated_completion()
     {
-        await Ensure(null);
+        await Ensure();
         var lease = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
         await _store.CompleteAsync(lease, false, default);
         await _store.CompleteAsync(lease, true, default);
@@ -172,13 +195,13 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Reconciliation_deletion_and_recreation_reject_both_forms_of_stale_completion()
     {
-        await Ensure(null);
+        await Ensure();
         var stale = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
         _clock.Advance(QuotaRecheckScheduleStore.LeaseDuration);
         await Reconcile();
         await _store.CompleteAsync(stale, true, default);
         (await Rows()).Should().BeEmpty();
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         var due = (await Row()).NextCheckAtUtcTicks;
         await _store.CompleteAsync(stale, true, default);
         await _store.CompleteAsync(stale, false, default);
@@ -188,7 +211,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Crash_lease_expiry_allows_retry_without_fresh_interval_and_fences_old_worker()
     {
-        await Ensure(null);
+        await Ensure();
         var stale = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
         var started = _clock.GetUtcNow();
         (await Row()).NextCheckAtUtcTicks.Should().Be(started.Add(QuotaRecheckScheduleStore.LeaseDuration).UtcTicks);
@@ -209,7 +232,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [InlineData(false)]
     public async Task Expired_worker_cannot_complete_even_before_replacement_claim(bool keep)
     {
-        await Ensure(null);
+        await Ensure();
         var lease = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
         _clock.Advance(QuotaRecheckScheduleStore.LeaseDuration);
         await _store.CompleteAsync(lease, keep, default);
@@ -219,7 +242,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Schedules_survive_new_store_and_independent_service_provider()
     {
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         var due = (await Row()).NextCheckAtUtcTicks;
         _clock.Advance(TimeSpan.FromMinutes(4));
         var result = await Store(CreateProvider()).ReconcileAsync("p", [Target(_clock.GetUtcNow())], default);
@@ -229,11 +252,11 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Cancellation_does_not_mutate_existing_schedules()
     {
-        await Ensure(null);
+        await Ensure();
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         Func<Task> reconcile = () => _store.ReconcileAsync("p", [], cts.Token);
-        Func<Task> ensure = () => _store.EnsureScheduledAsync("p", Guid.NewGuid(), null, cts.Token);
+        Func<Task> ensure = () => _store.EnsureScheduledAsync("p", Guid.NewGuid(), cts.Token);
         Func<Task> claim = () => _store.TryAcquireAsync("p", _id, cts.Token, force: true);
         await reconcile.Should().ThrowAsync<OperationCanceledException>();
         await ensure.Should().ThrowAsync<OperationCanceledException>();
@@ -246,7 +269,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     {
         var observation = await _store.BeginReconciliationAsync("p", default);
         var other = Store(CreateProvider());
-        await other.EnsureScheduledAsync("p", _id, _clock.GetUtcNow(), default);
+        await other.EnsureScheduledAsync("p", _id, default);
         var original = await Row();
         await _store.ReconcileAsync("p", [], observation, default);
         (await Row()).Should().BeEquivalentTo(original);
@@ -259,10 +282,10 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Same_tick_existing_ensure_fences_stale_exclusion_without_postponing_due()
     {
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         var original = await Row();
         var observation = await _store.BeginReconciliationAsync("p", default);
-        await Store(CreateProvider()).EnsureScheduledAsync("p", _id, _clock.GetUtcNow(), default);
+        await Store(CreateProvider()).EnsureScheduledAsync("p", _id, default);
         await _store.ReconcileAsync("p", [], observation, default);
         var current = await Row();
         current.Generation.Should().NotBe(original.Generation);
@@ -275,9 +298,9 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Stale_exclusion_cannot_remove_claim_or_permit_second_normal_due_claim()
     {
-        await Ensure(null);
+        await Ensure();
         var observation = await _store.BeginReconciliationAsync("p", default);
-        _clock.Advance(TimeSpan.FromSeconds(17));
+        _clock.Advance(_intervals.Interval);
         var other = Store(CreateProvider());
         var lease = (await other.TryAcquireAsync("p", _id, default))!;
         var claimed = await Row();
@@ -292,7 +315,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Even_fresh_observation_never_removes_live_lease_but_cleanup_resumes_after_completion()
     {
-        await Ensure(null);
+        await Ensure();
         var lease = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
         var observation = await _store.BeginReconciliationAsync("p", default);
         await _store.ReconcileAsync("p", [], observation, default);
@@ -308,7 +331,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Expired_observed_lease_is_cleaned_without_waiting_another_interval()
     {
-        await Ensure(null);
+        await Ensure();
         await _store.TryAcquireAsync("p", _id, default, force: true);
         var observation = await _store.BeginReconciliationAsync("p", default);
         _clock.Advance(QuotaRecheckScheduleStore.LeaseDuration);
@@ -319,10 +342,10 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task New_disable_event_survives_old_worker_remove_completion_and_releases_lease()
     {
-        await Ensure(null);
+        await Ensure();
         var lease = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
         var observation = await _store.BeginReconciliationAsync("p", default);
-        await Store(CreateProvider()).EnsureScheduledAsync("p", _id, _clock.GetUtcNow(), default);
+        await Store(CreateProvider()).EnsureScheduledAsync("p", _id, default);
         _clock.Advance(TimeSpan.FromSeconds(10));
         _intervals.Interval = TimeSpan.FromMinutes(43);
         await _store.CompleteAsync(lease, false, default);
@@ -339,11 +362,11 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Old_observation_cannot_delete_same_id_recreated_after_completed_removal()
     {
-        await Ensure(null);
+        await Ensure();
         var observation = await _store.BeginReconciliationAsync("p", default);
         var lease = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
         await _store.CompleteAsync(lease, false, default);
-        await Ensure(_clock.GetUtcNow());
+        await Ensure();
         var recreated = await Row();
         await _store.ReconcileAsync("p", [], observation, default);
         (await Row()).Should().BeEquivalentTo(recreated);
@@ -352,7 +375,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Compatibility_reconcile_without_observation_never_authorizes_cleanup()
     {
-        await Ensure(null);
+        await Ensure();
         var original = await Row();
         await _store.ReconcileAsync("p", [], default);
         (await Row()).Should().BeEquivalentTo(original);
@@ -363,7 +386,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     [Fact]
     public async Task Observation_from_other_provider_is_rejected_without_mutation()
     {
-        await Ensure(null);
+        await Ensure();
         var observation = await _store.BeginReconciliationAsync("other", default);
         Func<Task> reconcile = () => _store.ReconcileAsync("p", [], observation, default);
         await reconcile.Should().ThrowAsync<ArgumentException>();
@@ -396,7 +419,7 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
 
     private QuotaRecheckScheduleStore Store(ServiceProvider provider) =>
         new(provider.GetRequiredService<IServiceScopeFactory>(), _clock, _intervals);
-    private Task Ensure(DateTimeOffset? success) => _store.EnsureScheduledAsync("p", _id, success, default);
+    private Task Ensure() => _store.EnsureScheduledAsync("p", _id, default);
     private async Task<IReadOnlyList<QuotaRecheckScheduleInfo>> Reconcile(params AccountQuotaTarget[] targets)
     {
         var observation = await _store.BeginReconciliationAsync("p", default);
@@ -438,7 +461,8 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     {
         public TimeSpan Interval { get; set; } = TimeSpan.FromMinutes(50);
         public int CatchUpCalls { get; private set; }
-        public TimeSpan NextInterval() => Interval;
+        public int IntervalCalls { get; private set; }
+        public TimeSpan NextInterval() { IntervalCalls++; return Interval; }
         public TimeSpan NextCatchUpDelay()
         {
             CatchUpCalls++;

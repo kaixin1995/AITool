@@ -73,7 +73,7 @@ ProxyProtocolBridge（Gemini 桥）──► daily-cloudcode-pa v1internal 端�
 
 - `frontend/src/views/OAuthView.vue`「账号额度」tab 统一展示 Codex 与 Google 账号（卡片带厂商标签：Codex / Antigravity，Google 卡片额外显示订阅等级、积分与项目 ID）；默认显示全部账号，也可按厂商筛选。所有卡片操作（刷新额度/启停/编辑/拉取模型/删除）按厂商分派对应 API。重置 credits 与凭证导出仅 Codex 可用。
 - 头部「＋ OAuth 登录」与「上传凭证」为厂商下拉：选择 Codex / Antigravity 后进入对应流程（OAuth 弹窗按厂商展示回调地址提示；Google 凭证导入仅支持粘贴含 refresh_token 的 gcli2api JSON）。
-- 模型拉取弹窗展示远端 slug 与友好名称；已有映射按当前状态回显勾选，若账号当前没有任何已启用映射则默认全选本次拉取结果。Codex 保持“仅导入勾选项”语义；Google 按本次完整模型清单同步，未勾选的既有映射会禁用，允许通过全不选清理该账号的路由模型。聊天页优先展示远端 slug，并在名称不同时附带友好名供排查。
+- 模型拉取弹窗展示远端 slug 与友好名称；已有映射按当前状态回显勾选，若账号当前没有任何已启用映射则默认全选本次拉取结果。Codex 保持“仅导入勾选项”语义（弹窗提示文案按厂商区分：Codex 提示只增语义并给出模型库站点映射停用入口）；Google 按本次完整模型清单同步，未勾选的既有映射会禁用，允许通过全不选清理该账号的路由模型。聊天页优先展示远端 slug，并在名称不同时附带友好名供排查。
 - API 模块：`frontend/src/api/oauth.ts`（`listGoogleAccounts` / `startGoogleOAuth` / `completeGoogleOAuth` / `importGoogleCredential` / `refreshGoogleQuota` / `toggleGoogleAccount` / `deleteGoogleAccount` / `updateGoogleAccount` / `fetchGoogleModels` / `importSelectedGoogleModels`）。
 
 ## 测试

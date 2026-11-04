@@ -15,11 +15,13 @@ namespace AITool.IntegrationTests.Codex;
 /// 冷却链路行为锁定（五轮加固的回归保护）：
 /// ① 重置额度时上游不回传新 refresh_token → 存量凭证保留（清空将永久无法刷新）；
 /// ② 冷却恢复写前重读实时启用状态——冷却期间被手动禁用的账号不被自动拉回路由。
+/// ③ 空白 access_token 时独立落盘轮换的 refresh_token，不覆盖原 access_token。
 /// </summary>
 public sealed class CodexCooldownBehaviorTests : IDisposable
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-codex-cooldown-{Guid.NewGuid():N}.db");
     private readonly ServiceProvider _services;
+    private readonly IServiceScope _scope;
 
     public CodexCooldownBehaviorTests()
     {
@@ -30,6 +32,7 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
         services.AddScoped<ProxyRequestMetadataCache>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
+        _scope = _services.CreateScope();
 
         // 冷却恢复尊重 OAuth 功能总开关，测试库开启它。
         using (var scope = _services.CreateScope())
@@ -70,7 +73,8 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
         });
         var service = CreateResetService(oauth);
 
-        await service.ResetAsync(accountId, CancellationToken.None);
+        var result = await service.ResetAsync(accountId, CancellationToken.None);
+        result.Completed.Should().BeTrue();
 
         await using (var scope = _services.CreateAsyncScope())
         {
@@ -170,23 +174,70 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
     }
 
     [Fact]
-    public async Task Reset_ignores_whitespace_access_token_response()
+    public async Task Reset_persists_rotated_refresh_token_when_access_token_is_whitespace()
     {
-        // 上游 2xx 但 access_token 为纯空白：不得用空白值覆盖有效凭证（段 B 跳过），冷却清理照常。
         var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
-        var oauth = new StubOAuthClient(new CodexTokenSet { AccessToken = " ", RefreshToken = "rt-new", ExpiresIn = 3600 });
+        var oauth = new StubOAuthClient(new CodexTokenSet { AccessToken = " ", RefreshToken = "rt-new", IdToken = "id-new", ExpiresIn = 3600 });
 
         await CreateResetService(oauth).ResetAsync(accountId, CancellationToken.None);
 
-        await using (var scope = _services.CreateAsyncScope())
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var row = await db.CodexAccounts.InSingleAsync(accountId);
+        row!.AccessToken.Should().Be("old-at");
+        row.RefreshToken.Should().Be("rt-new", "已轮换的 refresh_token 必须落盘");
+        row.IdToken.Should().Be("id-new");
+        row.TokenExpiresAt.Should().BeNull();
+        row.LastRefreshAt.Should().BeNull();
+        row.IsQuotaCooling.Should().BeFalse();
+        row.QuotaCoolingUntil.Should().BeNull();
+        var site = await db.Sites.InSingleAsync(siteId);
+        site!.ApiKey.Should().Be("old-at");
+        site.IsEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Reset_keeps_credentials_when_all_returned_tokens_are_whitespace()
+    {
+        var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
+        var oauth = new StubOAuthClient(new CodexTokenSet { AccessToken = " ", RefreshToken = "\t", IdToken = " ", ExpiresIn = 3600 });
+
+        await CreateResetService(oauth).ResetAsync(accountId, CancellationToken.None);
+
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var row = await db.CodexAccounts.InSingleAsync(accountId);
+        row!.AccessToken.Should().Be("old-at");
+        row.RefreshToken.Should().Be("rt-keep");
+        row.IdToken.Should().BeNull();
+        row.TokenExpiresAt.Should().BeNull();
+        row.LastRefreshAt.Should().BeNull();
+        row.IsQuotaCooling.Should().BeFalse();
+        row.QuotaCoolingUntil.Should().BeNull();
+        var site = await db.Sites.InSingleAsync(siteId);
+        site!.ApiKey.Should().Be("old-at");
+        site.IsEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Reset_reports_failure_when_partial_refresh_token_cannot_be_persisted()
+    {
+        var (accountId, _) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath}"))
         {
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var row = await db.CodexAccounts.InSingleAsync(accountId);
-            row!.AccessToken.Should().Be("old-at", "空白 access_token 不覆盖有效凭证");
-            row.RefreshToken.Should().Be("rt-keep", "段 B 整体跳过，refresh_token 也不动");
-            row.IsQuotaCooling.Should().BeFalse("跳过落盘不阻断冷却清理");
-            (await db.Sites.InSingleAsync(siteId))!.ApiKey.Should().Be("old-at");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TRIGGER block_refresh_token_update BEFORE UPDATE OF RefreshToken ON CodexAccounts BEGIN SELECT RAISE(ABORT, 'injected account failure'); END;";
+            command.ExecuteNonQuery();
         }
+        var oauth = new StubOAuthClient(new CodexTokenSet { AccessToken = " ", RefreshToken = "rt-new" });
+        var act = () => CreateResetService(oauth).ResetAsync(accountId, CancellationToken.None);
+
+        (await Assert.ThrowsAsync<InvalidOperationException>(act)).Message.Should().Contain("凭证落盘失败");
+        await using var scope = _services.CreateAsyncScope();
+        var row = await scope.ServiceProvider.GetRequiredService<AppDbContext>().CodexAccounts.InSingleAsync(accountId);
+        row!.RefreshToken.Should().Be("rt-keep");
+        row.IsQuotaCooling.Should().BeTrue();
     }
 
     [Fact]
@@ -244,15 +295,53 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
         }
     }
 
-    private CodexQuotaCooldownService CreateResetService(ICodexOAuthClient oauth)
+    [Fact]
+    public async Task Reset_reports_unconfirmed_cooling_when_local_persist_window_expires()
     {
-        var scope = _services.CreateScope();
+        var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
+        var service = CreateResetService(new StubOAuthClient(), TimeSpan.Zero);
+        var result = await service.ResetAsync(accountId, CancellationToken.None);
+
+        result.Completed.Should().BeFalse();
+        result.CoolingCleared.Should().BeFalse();
+        result.UnconfirmedStep.Should().Be("清除冷却标记");
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await db.CodexAccounts.InSingleAsync(accountId))!.IsQuotaCooling.Should().BeTrue();
+        (await db.Sites.InSingleAsync(siteId))!.IsEnabled.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(true, false, false, "恢复站点路由")]
+    [InlineData(true, true, true, null)]
+    [InlineData(false, false, true, null)]
+    public async Task Reset_state_read_confirms_actual_database_state(bool accountEnabled, bool siteEnabled, bool completed, string? step)
+    {
+        var (accountId, _) = await SeedCoolingAccountAsync(accountEnabled, siteEnabled);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Client.Updateable<CodexAccount>()
+            .SetColumns(a => new CodexAccount { IsQuotaCooling = false })
+            .Where(a => a.Id == accountId).ExecuteCommandAsync();
+
+        var result = await CreateResetService(new StubOAuthClient())
+            .TryReadLocalResetStateAsync(accountId, "清除冷却标记");
+        result.Completed.Should().Be(completed);
+        result.CoolingCleared.Should().BeTrue();
+        result.UnconfirmedStep.Should().Be(step);
+    }
+
+    private CodexQuotaCooldownService CreateResetService(ICodexOAuthClient oauth, TimeSpan? timeout = null)
+    {
         return new CodexQuotaCooldownService(
-            scope.ServiceProvider.GetRequiredService<AppDbContext>(),
+            _scope.ServiceProvider.GetRequiredService<AppDbContext>(),
             new ProxyRequestMetadataCache(_services.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(),
                 new ServiceScopeFactoryAdapter(_services)),
             oauth,
-            NullLogger<CodexQuotaCooldownService>.Instance);
+            NullLogger<CodexQuotaCooldownService>.Instance)
+        {
+            LocalPersistTimeout = timeout ?? TimeSpan.FromSeconds(30)
+        };
     }
 
     private async Task<(Guid AccountId, Guid SiteId)> SeedCoolingAccountAsync(bool isEnabled, bool siteEnabled)
@@ -287,6 +376,7 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
 
     public void Dispose()
     {
+        _scope.Dispose();
         _services.Dispose();
         try { File.Delete(_databasePath); } catch { }
         try { File.Delete(_databasePath + "-wal"); } catch { }

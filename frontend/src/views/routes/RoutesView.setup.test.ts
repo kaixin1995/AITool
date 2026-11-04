@@ -3,6 +3,7 @@ import { createRenderer, defineComponent, nextTick, ssrContextKey, type Ref } fr
 import RoutesView from '../RoutesView.vue'
 import * as api from '@/api/routes'
 import type { RouteRuleItem } from '@/api/routes'
+import { ApiError } from '@/api/http'
 
 const mocks = vi.hoisted(() => ({
   warning: vi.fn(),
@@ -18,7 +19,8 @@ vi.mock('naive-ui', () => ({
 vi.mock('@/api/routes', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/routes')>(),
   getRouteEntries: vi.fn(), getRouteRules: vi.fn(), getRouteSiteInstances: vi.fn(),
-  getRouteReferenceTargets: vi.fn(), saveRouteRules: vi.fn(), savePoolQueue: vi.fn(), createRouteEntry: vi.fn()
+  getRouteReferenceTargets: vi.fn(), saveRouteRules: vi.fn(), savePoolQueue: vi.fn(), createRouteEntry: vi.fn(),
+  deleteRouteEntry: vi.fn()
 }))
 
 interface EditorSetup {
@@ -28,6 +30,7 @@ interface EditorSetup {
   selectedSiteInstanceKey: Ref<string | null>
   availabilityDraft: Ref<{ key: string; mode: string; ranges: Array<{ start: string; end: string }> } | null>
   availabilityDirty: Ref<boolean>
+  openAvailabilityKey: Ref<string | null>
   canModifyQueue: Ref<boolean>
   canEdit: Ref<boolean>
   creatingEntry: Ref<boolean>
@@ -46,6 +49,7 @@ interface EditorSetup {
   changeEntry(name: string): void
   loadSelectedEntry(name: string): Promise<void>
   createEntry(): void
+  deleteCurrentEntry(confirmReferenced?: boolean, expectedEntryName?: string | null): Promise<void>
 }
 
 // Execute the actual SFC setup inside a Vue component instance without a DOM,
@@ -102,6 +106,7 @@ beforeEach(() => {
     availabilityMode: 'AllDay', timeRangesJson: ''
   })))
   vi.mocked(api.saveRouteRules).mockResolvedValue({ message: 'saved' })
+  vi.mocked(api.deleteRouteEntry).mockResolvedValue()
 })
 
 describe('RoutesView availability draft protection', () => {
@@ -233,6 +238,88 @@ describe('RoutesView availability draft protection', () => {
     await flushAsync()
     expect(api.createRouteEntry).toHaveBeenCalledWith('new-entry')
     expect(editor.availabilityDraft.value).toBeNull()
+  })
+
+  it('keeps time draft and dirty flag when deletion fails with non-409 error', async () => {
+    const editor = await mountEditor()
+    openDirtyDraft(editor)
+    const originalDraft = editor.availabilityDraft.value
+    vi.mocked(api.deleteRouteEntry).mockRejectedValueOnce(new Error('网络异常，删除失败'))
+
+    await editor.deleteCurrentEntry()
+    await flushAsync()
+
+    expect(api.deleteRouteEntry).toHaveBeenCalledWith('auto', false)
+    expect(editor.availabilityDraft.value).toBe(originalDraft)
+    expect(editor.availabilityDirty.value).toBe(true)
+    expect(editor.openAvailabilityKey.value).toBe('first')
+    expect(mocks.message.error).toHaveBeenCalledWith('网络异常，删除失败')
+  })
+
+  it('retains time draft when 409 reference confirmation dialog is shown and not confirmed', async () => {
+    const editor = await mountEditor()
+    openDirtyDraft(editor)
+    const originalDraft = editor.availabilityDraft.value
+    vi.mocked(api.deleteRouteEntry).mockRejectedValueOnce(new ApiError('被子路由引用', 'ROUTE_ENTRY_REFERENCED', 409))
+
+    await editor.deleteCurrentEntry()
+    await flushAsync()
+
+    expect(api.deleteRouteEntry).toHaveBeenCalledWith('auto', false)
+    expect(mocks.warning).toHaveBeenCalledTimes(1)
+    expect(mocks.warning.mock.calls[0][0]).toMatchObject({
+      title: '该入口正被其他路由引用',
+      positiveText: '仍然删除被引用入口',
+      negativeText: '取消'
+    })
+    expect(editor.availabilityDraft.value).toBe(originalDraft)
+    expect(editor.availabilityDirty.value).toBe(true)
+    expect(editor.openAvailabilityKey.value).toBe('first')
+  })
+
+  it('retries with confirmReferenced=true on 409 dialog confirmation and clears draft on success', async () => {
+    const editor = await mountEditor()
+    openDirtyDraft(editor)
+    vi.mocked(api.deleteRouteEntry)
+      .mockRejectedValueOnce(new ApiError('被子路由引用', 'ROUTE_ENTRY_REFERENCED', 409))
+      .mockResolvedValueOnce()
+    vi.mocked(api.getRouteEntries).mockResolvedValueOnce([{ entryName: 'backup', candidateCount: 0 }])
+    vi.mocked(api.getRouteRules).mockResolvedValueOnce([])
+
+    await editor.deleteCurrentEntry()
+    await flushAsync()
+
+    expect(api.deleteRouteEntry).toHaveBeenCalledTimes(1)
+    expect(api.deleteRouteEntry).toHaveBeenLastCalledWith('auto', false)
+    expect(editor.availabilityDraft.value).not.toBeNull()
+
+    const confirmDelete = mocks.warning.mock.calls[0][0].onPositiveClick
+    await confirmDelete()
+    await flushAsync()
+
+    expect(api.deleteRouteEntry).toHaveBeenCalledTimes(2)
+    expect(api.deleteRouteEntry).toHaveBeenLastCalledWith('auto', true)
+    expect(editor.availabilityDraft.value).toBeNull()
+    expect(editor.openAvailabilityKey.value).toBeNull()
+    expect(editor.availabilityDirty.value).toBe(false)
+    expect(mocks.message.success).toHaveBeenCalledWith('主入口已删除')
+  })
+
+  it('clears time draft and open availability state only after direct deletion succeeds', async () => {
+    const editor = await mountEditor()
+    openDirtyDraft(editor)
+    vi.mocked(api.deleteRouteEntry).mockResolvedValueOnce()
+    vi.mocked(api.getRouteEntries).mockResolvedValueOnce([{ entryName: 'backup', candidateCount: 0 }])
+    vi.mocked(api.getRouteRules).mockResolvedValueOnce([])
+
+    await editor.deleteCurrentEntry()
+    await flushAsync()
+
+    expect(api.deleteRouteEntry).toHaveBeenCalledWith('auto', false)
+    expect(editor.availabilityDraft.value).toBeNull()
+    expect(editor.openAvailabilityKey.value).toBeNull()
+    expect(editor.availabilityDirty.value).toBe(false)
+    expect(mocks.message.success).toHaveBeenCalledWith('主入口已删除')
   })
 })
 

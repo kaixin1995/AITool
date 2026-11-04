@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using AITool.Application.Accounts;
 using AITool.Application.Kimi;
 using AITool.Domain.Kimi;
+using AITool.Domain.Operations;
+using SqlSugar;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Kimi;
 using AITool.Infrastructure.Persistence;
@@ -128,7 +130,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
             (!enabled && string.Equals(reason, "quota-threshold", StringComparison.OrdinalIgnoreCase)))
         {
             await QuotaAccountStateWriter.ChangeAsync(_dbContext, ProviderKey, account.AccountId, enabled,
-                _scheduleStore, _logger, cancellationToken);
+                _scheduleStore, _logger, cancellationToken, account.QuotaRecheckLeaseToken);
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateKimiAccounts();
             return;
@@ -194,6 +196,7 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
                 await client.Updateable<KimiAccount>()
                     .SetColumns(x => new KimiAccount { DisabledByFeatureToggle = false })
                     .Where(x => x.Id == account.Id && x.RequiresReauth && x.DisabledByFeatureToggle)
+                    .Where(x => SqlFunc.Subqueryable<SystemRuntimeSettings>().Where(s => s.Id == 1 && s.OAuthFeaturesEnabled).Any())
                     .ExecuteCommandAsync(cancellationToken);
                 continue;
             }
@@ -305,10 +308,6 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
             using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
             if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
             using var response = await (network?.HttpClient ?? _httpClient).SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
-            string body;
-            try { body = await response.Content.ReadAsStringAsync(requestBudget.Token); }
-            catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !requestBudget.IsCancellationRequested) { body = string.Empty; }
-
             if (!response.IsSuccessStatusCode)
             {
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh && !string.IsNullOrWhiteSpace(account.RefreshToken))
@@ -317,9 +316,9 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
                     try { refreshed = await _credentialRefreshService.RefreshForAccountAsync(account.Id, account.AccessToken, ct); }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        if (!IsTransientRefreshFailure(ex))
+                        if (ex is AITool.Application.OAuth.OAuthRefreshRefusedException)
                             await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
-                        return new QuotaQueryResult { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，凭证刷新失败：" + ex.Message };
+                        return new QuotaQueryResult { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，凭证刷新失败，请检查后重试：" + ex.Message };
                     }
                     if (!string.IsNullOrWhiteSpace(refreshed))
                     {
@@ -328,14 +327,17 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
                             return await QueryUpstreamAsync(refreshedAccount, ct, allowTokenRefresh: false);
                         return new QuotaQueryResult { Success = false, UpstreamUnauthorized = true, Error = "上游 HTTP 401，账号凭证已更新，请重试" };
                     }
+                    return new QuotaQueryResult { Success = false, UpstreamUnauthorized = true, Error = "凭证刷新未完成，请稍后重试" };
                 }
 
                 var unauthorized = response.StatusCode == System.Net.HttpStatusCode.Unauthorized;
                 if (unauthorized)
                     await new ForwardOAuthInvalidationService(_dbContext, _metadataCache).InvalidateAsync(credential.AccessToken!, credential, ct);
-                return new QuotaQueryResult { Success = false, UpstreamUnauthorized = unauthorized, Error = $"上游返回 {(int)response.StatusCode}", RawJson = body };
+                var errorBody = unauthorized ? string.Empty : await response.Content.ReadAsStringAsync(requestBudget.Token);
+                return new QuotaQueryResult { Success = false, UpstreamUnauthorized = unauthorized, Error = $"上游返回 {(int)response.StatusCode}", RawJson = errorBody };
             }
 
+            var body = await response.Content.ReadAsStringAsync(requestBudget.Token);
             var windows = KimiQuotaParser.Parse(body);
             if (windows is null)
             {
@@ -426,7 +428,4 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
         _logger.LogWarning("Kimi account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
 
-    private static bool IsTransientRefreshFailure(Exception ex) =>
-        ex is HttpRequestException http && (http.StatusCode is null || (int)http.StatusCode >= 500 || (int)http.StatusCode == 429)
-        || ex is TimeoutException;
 }

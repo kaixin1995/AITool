@@ -1,4 +1,4 @@
-import { httpGet, httpPost, httpPut, httpDelete } from './http'
+import { httpGet, httpPost, httpPut, httpDelete, notify } from './http'
 
 /** 号池成员行摘要。 */
 export interface AccountPoolMemberSummary {
@@ -15,6 +15,7 @@ export interface AccountPoolSummary {
   name: string
   vendorKey: string
   vendorLabel: string
+  /** Codex 可选套餐筛选；null 或空字符串表示全部套餐，可混合。 */
   planType: string | null
   autoIncludeMembers: boolean
   /** 托管模型白名单；null = 不限（成员模型并集全部生成入口）。 */
@@ -30,6 +31,7 @@ export interface AccountPoolSummary {
 export interface CreateAccountPoolRequest {
   name: string
   vendorKey: string
+  /** Codex 可选套餐筛选；不传、null 或空字符串表示全部套餐，可混合。 */
   planType?: string | null
   autoIncludeMembers: boolean
   memberAccountIds?: string[]
@@ -52,6 +54,15 @@ export interface AccountPoolSyncSummary {
   modelCount: number
   ruleCount: number
   skippedModels: string[]
+}
+
+export interface AccountPoolReconciliationStatus {
+  scanFailure: string | null
+  poolFailures: Record<string, string>
+}
+
+export function fetchPoolSyncStatus(): Promise<AccountPoolReconciliationStatus> {
+  return httpGet<AccountPoolReconciliationStatus>('/api/admin/account-pools/sync-status')
 }
 
 export function fetchAccountPools(): Promise<AccountPoolSummary[]> {
@@ -99,7 +110,12 @@ export async function syncAccountPool(id: string): Promise<AccountPoolSyncSummar
 }
 
 export async function syncAllAccountPools(): Promise<void> {
-  await httpPost('/api/admin/account-pools/sync-all')
+  try {
+    await httpPost('/api/admin/account-pools/sync-all')
+  } catch (error) {
+    notify('warning', '号池同步失败，此前操作的结果不受影响（模型同步结果请参照先前提示）。请前往「路由管理」的「号池」，对相关号池逐个点击「同步」重试。')
+    throw error
+  }
 }
 
 export async function deleteAccountPool(id: string): Promise<void> {

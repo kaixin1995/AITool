@@ -37,6 +37,8 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
         services.AddSqlSugar($"Data Source={_path}");
         services.AddScoped<ProxyRequestMetadataCache>();
         services.AddScoped<ForwardOAuthInvalidationService>();
+        services.AddSingleton(new DeviceOAuthVendorRegistry([]));
+        services.AddScoped<DeviceOAuthCredentialRefreshService>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
         _scope = _services.CreateScope();
@@ -76,34 +78,60 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { RequestServices = _scope.ServiceProvider } }
         };
 
-        var fetch = controller.FetchModels(_accountId, CancellationToken.None);
+        var fetchTask = controller.FetchModels(_accountId, CancellationToken.None);
+        var completed = await Task.WhenAny(fetchTask, entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
+        if (completed == fetchTask)
+        {
+            await fetchTask;
+            Assert.Fail("Fetch completed before entered signal was observed.");
+        }
+
+        Exception? primaryException = null;
         try
         {
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             await RotateAsync(rotation);
+            release.TrySetResult(true);
+
+            if (status == 401)
+            {
+                var fetchResult = await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+                var result = fetchResult.Should().BeOfType<ConflictObjectResult>().Subject;
+                result.StatusCode.Should().Be(409);
+                JsonSerializer.Serialize(result.Value).Should().Contain("oauth_reauthorization_required");
+            }
+            else
+            {
+                await Assert.ThrowsAnyAsync<InvalidOperationException>(() => fetchTask.WaitAsync(TimeSpan.FromSeconds(10)));
+            }
+
+            handler.TargetRequests.Should().ContainSingle();
+            if (vendorKey == "zcode")
+                handler.PublicPaths.Should().Equal("/api/v1/client/configs", "/provider.json");
+            else
+                handler.OtherAuthenticatedRequests.Should().NotBeEmpty("both WorkBuddy probes are exercised");
+            await AssertStateAsync(status == 401 && rotation == "none", rotation);
+        }
+        catch (Exception ex)
+        {
+            primaryException = ex;
+            throw;
         }
         finally
         {
             release.TrySetResult(true);
+            try
+            {
+                await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch when (primaryException is not null)
+            {
+                // Primary exception takes precedence.
+            }
+            catch (InvalidOperationException) when (status != 401)
+            {
+                // Expected exception already observed in try block.
+            }
         }
-
-        if (status == 401)
-        {
-            var result = (await fetch).Should().BeOfType<ObjectResult>().Subject;
-            result.StatusCode.Should().Be(401);
-            JsonSerializer.Serialize(result.Value).Should().Contain("upstream_unauthorized");
-        }
-        else
-        {
-            await Assert.ThrowsAnyAsync<InvalidOperationException>(() => fetch);
-        }
-
-        handler.TargetRequests.Should().ContainSingle();
-        if (vendorKey == "zcode")
-            handler.PublicPaths.Should().Equal("/api/v1/client/configs", "/provider.json");
-        else
-            handler.OtherAuthenticatedRequests.Should().NotBeEmpty("both WorkBuddy probes are exercised");
-        await AssertStateAsync(status == 401 && rotation == "none", rotation);
     }
 
     [Theory]
@@ -166,7 +194,8 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
             await _db.InsertAsync(new DeviceOAuthAccount
             {
                 Id = accountId, LinkedSiteId = siteId, VendorKey = vendorKey, DisplayName = name,
-                AccessToken = "old-access", RefreshToken = "old-refresh", LastRefreshAt = InitialRefresh,
+                // No refresh token: this fixture isolates rejection of the sent credential.
+                AccessToken = "old-access", RefreshToken = null, LastRefreshAt = InitialRefresh,
                 IsEnabled = true
             });
         }
@@ -207,7 +236,7 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
         account.IsEnabled.Should().Be(!disabled);
         account.RequiresReauth.Should().Be(disabled);
         account.AccessToken.Should().Be(rotation == "access" ? "new-access" : "old-access");
-        account.RefreshToken.Should().Be(rotation == "refresh" ? "new-refresh" : "old-refresh");
+        account.RefreshToken.Should().Be(rotation == "refresh" ? "new-refresh" : null);
         account.LastRefreshAt.Should().Be(rotation == "timestamp" ? RotatedRefresh : InitialRefresh);
         var site = await _db.Client.Queryable<Site>().InSingleAsync(_siteId);
         site.IsEnabled.Should().Be(!disabled);
@@ -217,7 +246,7 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
         other.IsEnabled.Should().BeTrue();
         other.RequiresReauth.Should().BeFalse();
         other.AccessToken.Should().Be("old-access");
-        other.RefreshToken.Should().Be("old-refresh");
+        other.RefreshToken.Should().BeNull();
         other.LastRefreshAt.Should().Be(InitialRefresh);
         var otherSite = await _db.Client.Queryable<Site>().InSingleAsync(_otherSiteId);
         otherSite.IsEnabled.Should().BeTrue();

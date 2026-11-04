@@ -10,8 +10,7 @@ namespace AITool.ApplicationTests.Codex;
 /// <summary>
 /// CodexModelCatalog 远端刷新的行为契约：
 /// 超时/网络失败换下一个 URL、全部失败不抛异常、坏数据拒绝、成功后原子替换分层快照。
-/// 注意：目录快照是进程级 static 状态，涉及变更的用例结束时把快照恢复为内置分层，
-/// 避免影响同进程内其他依赖目录内容的测试。
+/// 每个测试注入隔离状态，避免与其他测试共享静态目录快照。
 /// </summary>
 public sealed class CodexModelCatalogTests
 {
@@ -51,11 +50,7 @@ public sealed class CodexModelCatalogTests
         """;
 
     private static CodexModelCatalog CreateCatalog(Dictionary<string, object> script)
-        => new(new HttpClient(new ScriptedHandler(script)), NullLogger<CodexModelCatalog>.Instance);
-
-    private static readonly string[] BuiltinFree = ["gpt-5.5", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review"];
-    private static readonly string[] BuiltinTeam = ["gpt-5.5", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review"];
-    private static readonly string[] BuiltinPlus = ["gpt-5.3-codex-spark", "gpt-5.5", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review"];
+        => new(new HttpClient(new ScriptedHandler(script)), NullLogger<CodexModelCatalog>.Instance, new CodexModelCatalog.CatalogState());
 
     [Fact]
     public async Task Timeout_on_first_url_falls_through_to_second_and_replaces_snapshot()
@@ -75,15 +70,6 @@ public sealed class CodexModelCatalogTests
         result.Source.Should().Contain("githubusercontent.com");
         catalog.GetModelsForPlan("free").Should().Contain(Marker);
         catalog.GetModelsForPlan("plus").Should().Contain(Marker);
-
-        // 恢复内置分层，避免 static 快照影响同进程其他测试。
-        var restore = CreateCatalog(new Dictionary<string, object>
-        {
-            ["router-for.me"] = TierJson(BuiltinFree, BuiltinTeam, BuiltinPlus, BuiltinPlus)
-        });
-        var restored = await restore.TryRefreshFromRemoteAsync();
-        restored.Success.Should().BeTrue();
-        catalog.GetModelsForPlan("free").Should().NotContain(Marker);
     }
 
     [Fact]
@@ -137,13 +123,5 @@ public sealed class CodexModelCatalogTests
 
         result.Success.Should().BeTrue("无 gpt-5.5 但含 gpt-6 代际的目录是合法的上游新形态");
         catalog.GetModelsForPlan("free").Should().Contain("gpt-6-luna");
-
-        // 恢复内置分层，避免 static 快照影响同进程其他测试。
-        var restore = CreateCatalog(new Dictionary<string, object>
-        {
-            ["router-for.me"] = TierJson(BuiltinFree, BuiltinTeam, BuiltinPlus, BuiltinPlus)
-        });
-        (await restore.TryRefreshFromRemoteAsync()).Success.Should().BeTrue();
-        catalog.GetModelsForPlan("free").Should().Contain("gpt-5.5");
     }
 }

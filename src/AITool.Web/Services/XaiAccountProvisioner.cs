@@ -250,9 +250,9 @@ public sealed class XaiAccountProvisioner
     /// </summary>
     public async Task DeleteAsync(Guid accountId, CancellationToken ct)
     {
-        await _cascadeDeleter.ExecuteGraphMutationAsync(async () =>
+        await _cascadeDeleter.ExecuteGraphMutationAsync(async db =>
         {
-            var client = _dbContext.Client;
+            var client = db.Client;
             var account = await client.Queryable<XaiAccount>().InSingleAsync(accountId);
             if (account is null) return false;
             if (_networkPolicies is not null)
@@ -261,7 +261,7 @@ public sealed class XaiAccountProvisioner
                 await _networkPolicies.DeleteInTransactionAsync(client, new AccountIdentity("xai", account.Id), cancellationToken: ct);
             }
             if (account.LinkedSiteId != Guid.Empty)
-                await _cascadeDeleter.RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+                await new SiteCascadeDeleter(db).RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
             await client.Deleteable<XaiAccount>().Where(a => a.Id == accountId).ExecuteCommandAsync(ct);
             return true;
         }, ct, _metadataCache);

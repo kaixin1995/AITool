@@ -3,6 +3,21 @@ import type { ApiResponse, TokenPair } from '@/types/api'
 
 const ACCESS_TOKEN_KEY = 'aitool.accessToken'
 const REFRESH_TOKEN_KEY = 'aitool.refreshToken'
+let authSessionVersion = 0
+
+// 同一页面内的登录、登出及跨标签页令牌变化都使会话相关缓存失效。
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === ACCESS_TOKEN_KEY || event.key === REFRESH_TOKEN_KEY || event.key === null) {
+      authSessionVersion++
+    }
+  })
+}
+
+export function getAuthSessionKey(): string {
+  // 同时读取当前令牌，覆盖 storage 事件尚未送达或令牌被其他代码更改的情况。
+  return JSON.stringify([authSessionVersion, getAccessToken(), getRefreshToken()])
+}
 
 // token 读写（localStorage，刷新页面后仍保留）
 export function getAccessToken(): string {
@@ -12,10 +27,12 @@ export function getRefreshToken(): string {
   return localStorage.getItem(REFRESH_TOKEN_KEY) ?? ''
 }
 export function saveTokens(tokens: TokenPair): void {
+  authSessionVersion++
   localStorage.setItem(ACCESS_TOKEN_KEY, tokens.accessToken)
   localStorage.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken)
 }
 export function clearTokens(): void {
+  authSessionVersion++
   localStorage.removeItem(ACCESS_TOKEN_KEY)
   localStorage.removeItem(REFRESH_TOKEN_KEY)
 }
@@ -26,7 +43,7 @@ let messageHandler: ((type: 'success' | 'error' | 'warning', content: string) =>
 export function setMessageHandler(fn: typeof messageHandler): void {
   messageHandler = fn
 }
-function notify(type: 'success' | 'error' | 'warning', content: string): void {
+export function notify(type: 'success' | 'error' | 'warning', content: string): void {
   if (messageHandler) {
     messageHandler(type, content)
   } else {

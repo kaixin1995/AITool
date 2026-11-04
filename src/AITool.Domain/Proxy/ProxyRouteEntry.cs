@@ -7,6 +7,7 @@ namespace AITool.Domain.Proxy;
 /// </summary>
 [SugarTable("ProxyRouteEntries")]
 [SugarIndex("UX_ProxyRouteEntries_EntryName", nameof(EntryName), OrderByType.Asc, true)]
+[SugarIndex("IX_ProxyRouteEntries_ManagedByPoolId", nameof(ManagedByPoolId), OrderByType.Asc, false)]
 public sealed class ProxyRouteEntry
 {
     /// <summary>

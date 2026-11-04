@@ -2,6 +2,7 @@
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
+import type { SelectRenderLabel } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
 import { ApiError } from '@/api/http'
@@ -13,6 +14,7 @@ import {
   batchApplyDeviceModels,
   supportsOAuthModelFetch,
   supportsOAuthModelImport,
+  usesPublicModelCatalog,
   fetchDeviceOAuthModels,
   deleteDeviceOAuthAccount,
   updateDeviceOAuthAccount,
@@ -76,6 +78,11 @@ const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
 
 // 通用（设备码/授权链接）厂商：登录入口动态并入「+ OAuth 登录」，账号并入统一卡片。
 const deviceVendors = ref<DeviceOAuthVendor[]>([])
+const vendorsLoading = ref(false)
+const vendorsLoaded = ref(false)
+const vendorsError = ref('')
+const canUseVendorCatalog = computed(() => vendorsLoaded.value && !vendorsLoading.value && !vendorsError.value && deviceVendors.value.length > 0)
+let vendorsRequest: Promise<void> | null = null
 const deviceVendorOf = (key?: string): DeviceOAuthVendor | undefined =>
   deviceVendors.value.find(v => v.vendorKey === key)
 const deviceVendorLabel = (key: string): string => deviceVendorOf(key)?.label ?? key
@@ -162,6 +169,9 @@ const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFil
   { label: '全部', value: 'all' }
 ]
 const providerFilter = ref<ProviderFilter>('all')
+function setProviderFilter(value: ProviderFilter): void {
+  if (canUseVendorCatalog.value) providerFilter.value = value
+}
 const statusFilteredAccounts = computed(() => {
   if (accountStatusFilter.value === 'all') return accounts.value
   const enabled = accountStatusFilter.value === 'enabled'
@@ -200,14 +210,19 @@ interface AccountTableRow {
   email: string
   windows: AccountTableWindow[]
   tokenExpiry: string
+  createdAt: string
   isEnabled: boolean
   canFetchModels: boolean
   raw: UnifiedAccount
 }
 
 
+function canOperateAccount(provider: string): boolean {
+  return Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, provider) || (canUseVendorCatalog.value && !!deviceVendorOf(provider))
+}
+
 function canFetchModelsProvider(provider: string): boolean {
-  return supportsOAuthModelFetch(provider, deviceVendors.value)
+  return canOperateAccount(provider) && supportsOAuthModelFetch(provider, deviceVendors.value)
 }
 
 // 窗口短名：去掉「窗口/额度」及特定提示后缀，只留「5 小时/每周/MCP 月度」等核心词；保留业务数值括号（如资源包积分）。
@@ -236,6 +251,7 @@ const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.valu
     usedPercent: w.usedPercent
   })),
   tokenExpiry: acc.tokenExpiresAt ? formatTokenExpiryShort(acc.tokenExpiresAt) : '',
+  createdAt: acc.createdAt ? formatBeijingTime(acc.createdAt) : '',
   isEnabled: acc.isEnabled,
   canFetchModels: canFetchModelsProvider(acc.provider),
   raw: acc
@@ -247,12 +263,21 @@ const baseAccountTableColumns = [
     key: 'name',
     minWidth: 190,
     render(row: AccountTableRow) {
-      const nodes = [h('div', { class: 'oauth-table-name', style: row.raw.requiresReauth ? { color: '#e5484d' } : undefined }, row.name)]
-      const subs = [row.plan, row.email].filter(Boolean)
-      if (subs.length > 0) {
-        nodes.push(h('div', { class: 'oauth-table-sub' }, subs.join(' · ')))
+      const nodes = [h('div', { class: 'oauth-table-name', title: row.name, style: row.raw.requiresReauth ? { color: '#e5484d' } : undefined }, row.name)]
+      const subText = [row.plan, row.email].filter(Boolean).join(' · ')
+      if (subText) {
+        nodes.push(h('div', { class: 'oauth-table-sub', title: subText }, subText))
       }
       return h('div', { class: 'oauth-table-name-cell' }, { default: () => nodes })
+    }
+  },
+  {
+    title: '创建时间',
+    key: 'createdAt',
+    width: 150,
+    ellipsis: { tooltip: true },
+    render(row: AccountTableRow) {
+      return h('span', { class: 'oauth-table-nowrap oauth-table-token', title: row.createdAt || '—' }, row.createdAt || '—')
     }
   },
   {
@@ -327,15 +352,15 @@ const baseAccountTableColumns = [
     width: 220,
     render(row: AccountTableRow) {
       const buttons = [
-        h(NButton, { size: 'tiny', secondary: true, onClick: () => handleRefreshQuota(row.raw) }, { default: () => '刷新' }),
-        h(NButton, { size: 'tiny', secondary: true, onClick: () => openEdit(row.raw) }, { default: () => '编辑' })
+        h(NButton, { size: 'tiny', secondary: true, disabled: !canOperateAccount(row.raw.provider), onClick: () => handleRefreshQuota(row.raw) }, { default: () => '刷新' }),
+        h(NButton, { size: 'tiny', secondary: true, disabled: !canUseVendorCatalog.value || !canOperateAccount(row.raw.provider), onClick: () => openEdit(row.raw) }, { default: () => '编辑' })
       ]
       if (row.canFetchModels) {
         buttons.push(h(NButton, { size: 'tiny', secondary: true, onClick: () => openFetchModels(row.raw) }, { default: () => '模型' }))
       }
-      buttons.push(h(NButton, { size: 'tiny', secondary: true, onClick: () => handleToggle(row.raw) }, { default: () => (row.isEnabled ? '禁用' : '启用') }))
+      buttons.push(h(NButton, { size: 'tiny', secondary: true, disabled: !canOperateAccount(row.raw.provider), onClick: () => handleToggle(row.raw) }, { default: () => (row.isEnabled ? '禁用' : '启用') }))
       buttons.push(h(NPopconfirm, { onPositiveClick: () => handleDelete(row.raw) }, {
-        trigger: () => h(NButton, { size: 'tiny', secondary: true, type: 'error' }, { default: () => '删除' }),
+        trigger: () => h(NButton, { size: 'tiny', secondary: true, type: 'error', disabled: !canOperateAccount(row.raw.provider) }, { default: () => '删除' }),
         default: () => '确认删除该账号？'
       }))
       return h('div', { class: 'oauth-table-actions' }, { default: () => buttons })
@@ -357,9 +382,16 @@ const filteredAccounts = computed(() => providerFilter.value === 'all'
   ? statusFilteredAccounts.value
   : statusFilteredAccounts.value.filter(acc => acc.provider === providerFilter.value))
 
+const renderProviderFilterLabel: SelectRenderLabel = (option, selected) => {
+  const label = 'label' in option && typeof option.label === 'string' ? option.label : ''
+  return selected
+    ? [h('span', { class: 'oauth-provider-filter-a11y' }, '账号厂商筛选'), label]
+    : label
+}
+
 const loginDropdownOptions = computed(() => [
   ...PROVIDER_LOGIN_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 登录` })),
-  ...deviceVendors.value.map(v => ({ key: v.vendorKey, label: `${v.label} 登录` }))
+  ...deviceVendors.value.map(v => ({ key: v.vendorKey, label: `${v.label} 登录`, disabled: !canUseVendorCatalog.value }))
 ])
 const importDropdownOptions = PROVIDER_IMPORT_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 凭证` }))
 
@@ -509,6 +541,7 @@ const resetCreditSubmitting = ref(false)
 // 拉取/导入模型弹窗
 const modelModal = ref(false)
 const modelAccount = ref<UnifiedAccount | null>(null)
+const modelCatalogIsPublic = computed(() => usesPublicModelCatalog(modelAccount.value?.provider ?? '', deviceVendors.value))
 type EditableOAuthModel = OAuthRemoteModelItem & { alias: string }
 
 const modelList = ref<EditableOAuthModel[]>([])
@@ -543,10 +576,16 @@ const canSubmitModelSync = computed(() => (
   canImportModels.value && !modelLoading.value && modelList.value.length > 0
   && (modelAccount.value?.provider !== 'codex' || checkedModels.value.length > 0)
 ))
+const isCodexImportOnly = computed(() => modelAccount.value?.provider === 'codex')
+const modelSyncHint = computed(() => {
+  if (!canImportModels.value) return '该账号无关联聊天站点，远端模型目录仅供查看，不能导入或用于聊天转发。'
+  return isCodexImportOnly.value
+    ? 'Codex 只导入勾选项：未勾选的新模型不会导入，已启用的既有映射也不会被停用（本弹窗不会停用任何映射）；如需停用，请到「模型库 → 该模型 → 站点映射」关闭对应映射。'
+    : '只有勾选项会导入或启用，本次清单内未勾选的既有映射会禁用；清单外映射保持不变。'
+})
 
 // —— 批量应用到同组 ——
-// 同组账号共用一份模型清单（Codex 同套餐、其余同厂商）：组内任一账号拉取一次，
-// 勾选结果可一键应用到组内全部账号，免去逐账号重复操作。
+// 旧批量接口保留逐项结果；其他账号的权限无法推断，会被跳过。
 const applyToGroup = ref(false)
 const modelGroupAccounts = computed<UnifiedAccount[]>(() => {
   const acc = modelAccount.value
@@ -562,6 +601,7 @@ const modelGroupMode = computed(() => applyToGroup.value && modelGroupCount.valu
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const pollingIntervalMs = 10_000
 let accountsRequestId = 0
+let pageLoadId = 0
 let inspectionRequestId = 0
 
 // 使巡检前已经发出的旧查询失效，避免响应晚到时覆盖巡检后的新数据。
@@ -570,15 +610,32 @@ function invalidatePendingRefreshes(): void {
   inspectionRequestId++
 }
 
-async function loadDeviceVendors(): Promise<void> {
-  try {
-    deviceVendors.value = await fetchDeviceOAuthVendors()
-  } catch {
-    // 功能开关关闭时静默（登录下拉退化为五家内置厂商）。
-  }
+function loadDeviceVendors(): Promise<void> {
+  if (vendorsRequest) return vendorsRequest
+  vendorsLoading.value = true
+  vendorsError.value = ''
+  vendorsRequest = (async () => {
+    try {
+      deviceVendors.value = await Promise.resolve().then(() => fetchDeviceOAuthVendors())
+      vendorsLoaded.value = true
+    } catch (e) {
+      vendorsLoaded.value = false
+      vendorsError.value = `厂商清单加载失败：${(e as Error)?.message || '请稍后重试'}`
+    } finally {
+      vendorsLoading.value = false
+      vendorsRequest = null
+    }
+  })()
+  return vendorsRequest
 }
 
-async function loadAccounts(showError: boolean): Promise<void> {
+async function loadAccounts(showError: boolean, onAccountsSettled?: () => void): Promise<void> {
+  const accountsTask = loadAccountsRequest(showError).finally(() => onAccountsSettled?.())
+  const vendorsTask = vendorsRequest ?? (vendorsLoaded.value || vendorsError.value ? Promise.resolve() : loadDeviceVendors())
+  await Promise.allSettled([accountsTask, vendorsTask])
+}
+
+async function loadAccountsRequest(showError: boolean): Promise<void> {
   const requestId = ++accountsRequestId
   // Codex、Google、Kimi 与 xAI 账号合并展示；接口在功能开关关闭时返回 404。
   const [codexResult, googleResult, kimiResult, xaiResult, deviceResult] = await Promise.allSettled([
@@ -621,11 +678,6 @@ async function loadAccounts(showError: boolean): Promise<void> {
   }
 
   // 通用厂商账号：并入统一卡片（厂商标签用各自 label；额度窗口复用卡片进度条）。
-  // 自愈：厂商清单挂载时拉取失败（静默）但设备账号列表拿到了——编辑/筛选依赖厂商清单，补拉一次。
-  if (deviceResult.status === 'fulfilled' && deviceVendors.value.length === 0) {
-    void loadDeviceVendors()
-  }
-
   const deviceAccounts: UnifiedAccount[] = deviceResult.status === 'fulfilled'
     ? deviceResult.value.map(acc => ({
         id: acc.id,
@@ -706,12 +758,14 @@ async function loadInspection(force = false): Promise<void> {
 async function load(): Promise<void> {
   loading.value = true
   featureDisabled.value = false
-  const tasks: Promise<void>[] = [loadAccounts(true)]
+  const loadId = ++pageLoadId
+  const tasks: Promise<void>[] = [loadAccounts(true, () => {
+    if (pageLoadId === loadId) loading.value = false
+  })]
   if (activeTab.value === 'inspection') {
     tasks.push(loadInspection(true))
   }
   await Promise.all(tasks)
-  loading.value = false
 }
 
 let silentRefreshInFlight: Promise<void> | null = null
@@ -844,6 +898,7 @@ function formatSeconds(secs: number): string {
 }
 
 function openOAuthModal(provider: string = 'codex'): void {
+  if (!canOperateAccount(provider)) return
   oauthProvider.value = provider
   legacyNetworkConfirmed.value = false
   deviceFlowError.value = ''
@@ -856,6 +911,7 @@ function openOAuthModal(provider: string = 'codex'): void {
 }
 
 async function handleStartOAuth(): Promise<void> {
+  if (!canOperateAccount(oauthProvider.value)) return
   if (networkLoadState.value === 'loading' || networkLoadState.value === 'error' || (networkLoadState.value === 'legacy' && !legacyNetworkConfirmed.value)) {
     message.warning(networkLoadState.value === 'loading' ? '网络策略正在加载' : networkError.value || '请先确认网络策略')
     return
@@ -1069,6 +1125,7 @@ async function handleCompleteOAuth(): Promise<void> {
 }
 
 async function handleToggle(acc: UnifiedAccount): Promise<void> {
+  if (!canOperateAccount(acc.provider)) return
   try {
     if (deviceVendorOf(acc.provider)) {
       await toggleDeviceOAuthAccount(acc.id, !acc.isEnabled)
@@ -1085,6 +1142,7 @@ async function handleToggle(acc: UnifiedAccount): Promise<void> {
   } catch (e) { message.error((e as Error).message) }
 }
 async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
+  if (!canOperateAccount(acc.provider)) return
   try {
     if (deviceVendorOf(acc.provider)) {
       await refreshDeviceOAuthQuota(acc.id)
@@ -1106,6 +1164,7 @@ async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
   } catch (e) { message.error((e as Error).message) }
 }
 async function handleDelete(acc: UnifiedAccount): Promise<void> {
+  if (!canOperateAccount(acc.provider)) return
   if (deviceVendorOf(acc.provider)) {
     await deleteDeviceOAuthAccount(acc.id)
   } else if (acc.provider === 'codex') {
@@ -1143,6 +1202,7 @@ async function handleRunInspection(force: boolean): Promise<void> {
 
 // 编辑（重命名 + 修改凭证）
 function openEdit(acc: UnifiedAccount): void {
+  if (!canUseVendorCatalog.value || !canOperateAccount(acc.provider)) return
   editAccount.value = acc
   editDisplayName.value = acc.displayName
   editRefreshToken.value = ''
@@ -1163,6 +1223,7 @@ async function rebaseEditNetwork(): Promise<void> {
   editPartialError.value = '已载入最新网络策略；请核对待保存选择后再次保存。账户资料尚未提交。'
 }
 async function handleSaveEdit(): Promise<void> {
+  if (!canUseVendorCatalog.value || (editAccount.value && !canOperateAccount(editAccount.value.provider))) return
   if (editNetworkConflict.value) { message.warning('网络策略已变化，请先确认基于最新策略重新编辑'); return }
   if (!editAccount.value || !editDisplayName.value.trim()) { message.warning('名称不能为空'); return }
   if (networkReady.value && editNetworkSelection.value && !networkSelectionValid(editNetworkSelection.value)) { message.warning('请选择有效代理方案'); return }
@@ -1209,9 +1270,10 @@ async function handleSaveEdit(): Promise<void> {
         editRefreshToken.value || undefined
       )
     } else if (deviceVendorOf(editAccount.value.provider)) {
+      const renamed = editDisplayName.value.trim() !== editAccount.value.displayName
       await updateDeviceOAuthAccount(
         editAccount.value.id,
-        editDisplayName.value.trim(),
+        renamed ? editDisplayName.value.trim() : undefined,
         editRefreshToken.value || undefined
       )
       // Final success is shown only after the independent network write succeeds.
@@ -1378,13 +1440,14 @@ async function handleImportModels(): Promise<void> {
   modelLoading.value = true
   try {
     const checked = new Set(checkedModels.value)
+    const keptEnabled = modelList.value.filter(m => m.existingMappingId && m.isEnabled && !checked.has(m.remoteModelName)).map(m => m.remoteModelName)
     const selections: OAuthModelSelection[] = modelList.value.map(model => ({
       remoteModelName: model.remoteModelName,
       displayName: model.alias.trim() || model.remoteModelName,
       selected: checked.has(model.remoteModelName)
     }))
     if (modelGroupMode.value) {
-      // 组模式：勾选结果批量应用到同组全部账号（单账号失败不中断整组，逐账号结果汇总提示）。
+      // 兼容旧批量接口：未验证权限的其他账号会被跳过并提示。
       let summary: { succeeded: number; failed: number }
       if (deviceVendorOf(modelAccount.value.provider)) {
         summary = await batchApplyDeviceModels(
@@ -1393,6 +1456,9 @@ async function handleImportModels(): Promise<void> {
         )
       } else if (modelAccount.value.provider === 'codex') {
         summary = await api.batchApplyOAuthModels(modelAccount.value.id, selections)
+        if (keptEnabled.length > 0) {
+          message.info(`Codex 只导入勾选项：${keptEnabled.length} 个已启用的既有映射保持启用（未勾选不会停用）`)
+        }
       } else if (modelAccount.value.provider === 'antigravity') {
         summary = await api.batchApplyGoogleModels(modelAccount.value.id, selections)
       } else if (modelAccount.value.provider === 'kimi') {
@@ -1403,7 +1469,7 @@ async function handleImportModels(): Promise<void> {
         throw new Error('该厂商不支持导入模型')
       }
       if (summary.failed > 0) {
-        message.warning(`已应用到 ${summary.succeeded} 个账号，${summary.failed} 个失败（该账号模型未同步）`)
+        message.warning(`已应用到 ${summary.succeeded} 个账号，${summary.failed} 个未同步：账号模型权限可能不同，请逐账号拉取并同步`)
       } else {
         message.success(`已应用到 ${summary.succeeded} 个账号`)
       }
@@ -1415,6 +1481,9 @@ async function handleImportModels(): Promise<void> {
       message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
     } else if (modelAccount.value.provider === 'codex') {
       await api.importSelectedOAuthModels(modelAccount.value.id, selections)
+      if (keptEnabled.length > 0) {
+        message.info(`Codex 只导入勾选项：${keptEnabled.length} 个已启用的既有映射保持启用（未勾选不会停用）`)
+      }
       message.success(`已导入 ${checkedModels.value.length} 个模型`)
     } else if (modelAccount.value.provider === 'antigravity') {
       await api.importSelectedGoogleModels(modelAccount.value.id, selections)
@@ -1728,8 +1797,7 @@ watch(() => route.query.tab, () => {
 })
 
 onMounted(() => {
-  void loadDeviceVendors()
-  load()
+  void load()
   pollTimer = setInterval(() => {
     if (document.visibilityState === 'visible') {
       void refreshSilently()
@@ -1754,8 +1822,11 @@ onUnmounted(() => {
           </NButtonGroup>
 
           <NSelect
-            v-model:value="providerFilter"
+            :value="providerFilter"
+            :disabled="!canUseVendorCatalog"
+            @update:value="setProviderFilter"
             :options="providerFilterSelectOptions"
+            :render-label="renderProviderFilterLabel"
             size="small"
             style="width: 170px"
           />
@@ -1777,6 +1848,11 @@ onUnmounted(() => {
         </template>
       </template>
     </PageHeader>
+    <NAlert v-if="vendorsLoading" type="info">厂商清单加载中，编辑和筛选暂不可用</NAlert>
+    <NAlert v-else-if="vendorsError" type="error">
+      {{ vendorsError }} <NButton size="small" @click="loadDeviceVendors">重试</NButton>
+    </NAlert>
+    <NAlert v-else-if="vendorsLoaded && deviceVendors.length === 0" type="warning">暂无可选厂商</NAlert>
     <NSpin :show="loading">
       <NTabs v-model:value="activeTab" type="line" animated>
         <NTabPane name="accounts" tab="账号额度">
@@ -1803,7 +1879,7 @@ onUnmounted(() => {
                 size="small"
                 :bordered="false"
                 :max-height="640"
-                :scroll-x="1050"
+                :scroll-x="1320"
               />
               <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
               <article
@@ -1885,14 +1961,14 @@ onUnmounted(() => {
                     <div v-if="acc.lastQuotaCheckedAt">刷新时间：{{ formatDateTime(acc.lastQuotaCheckedAt) }}</div>
                   </div>
                   <div class="oauth-card-actions">
-                    <NButton class="oauth-icon-button" circle secondary title="刷新额度" aria-label="刷新额度" @click="handleRefreshQuota(acc)">
+                    <NButton class="oauth-icon-button" circle secondary title="刷新额度" aria-label="刷新额度" :disabled="!canOperateAccount(acc.provider)" @click="handleRefreshQuota(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
                     </NButton>
-                    <NButton class="oauth-icon-button" circle secondary :title="acc.isEnabled ? '禁用账号' : '启用账号'" :aria-label="acc.isEnabled ? '禁用账号' : '启用账号'" @click="handleToggle(acc)">
+                    <NButton class="oauth-icon-button" circle secondary :title="acc.isEnabled ? '禁用账号' : '启用账号'" :aria-label="acc.isEnabled ? '禁用账号' : '启用账号'" :disabled="!canOperateAccount(acc.provider)" @click="handleToggle(acc)">
                       <svg v-if="acc.isEnabled" viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                       <svg v-else viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
                     </NButton>
-                    <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
+                    <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" :disabled="!canUseVendorCatalog || !canOperateAccount(acc.provider)" @click="openEdit(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </NButton>
                     <NButton v-if="canFetchModelsProvider(acc.provider)" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
@@ -1900,7 +1976,7 @@ onUnmounted(() => {
                     </NButton>
                     <NPopconfirm @positive-click="handleDelete(acc)">
                       <template #trigger>
-                        <NButton class="oauth-icon-button danger" circle secondary title="删除账号" aria-label="删除账号">
+                        <NButton class="oauth-icon-button danger" circle secondary title="删除账号" aria-label="删除账号" :disabled="!canOperateAccount(acc.provider)">
                           <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                         </NButton>
                       </template>
@@ -2158,7 +2234,7 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="editModal = false">取消</NButton>
-          <NButton type="primary" :loading="editLoading" :disabled="editNetworkConflict" @click="handleSaveEdit">保存</NButton>
+          <NButton type="primary" :loading="editLoading" :disabled="editNetworkConflict || !canUseVendorCatalog || (editAccount != null && !canOperateAccount(editAccount.provider))" @click="handleSaveEdit">保存</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -2213,7 +2289,10 @@ onUnmounted(() => {
     <!-- 拉取/导入模型弹窗 -->
     <NModal v-model:show="modelModal" :title="`拉取模型 - ${modelAccount?.displayName ?? ''}`" preset="card" style="width: 720px; max-width: 94vw">
       <NSpin :show="modelLoading">
-        <NEmpty v-if="!modelLoading && modelList.length === 0" description="该账号无可用模型" size="small" />
+        <NAlert v-if="modelCatalogIsPublic" type="warning">
+          该清单来自厂商公共模型目录（models.dev），不代表该账号订阅的实际可用范围；请只勾选确认可用的模型，上游拒绝的模型请取消勾选。
+        </NAlert>
+        <NEmpty v-if="!modelLoading && modelList.length === 0" :description="modelCatalogIsPublic ? '未从公共模型目录获取到文本模型' : '该账号无可用模型'" size="small" />
         <template v-else>
           <div class="oauth-model-toolbar">
             <NInput v-model:value="modelSearch" size="small" clearable placeholder="搜索模型" />
@@ -2226,11 +2305,9 @@ onUnmounted(() => {
               已选 {{ visibleCheckedModelCount }} / {{ filteredModelList.length }} 个
             </NCheckbox>
           </div>
-          <div class="oauth-model-hint">{{ canImportModels ? '只有勾选项会导入或启用，本次清单内未勾选的既有映射会禁用；清单外映射保持不变。' : '该账号无关联聊天站点，远端模型目录仅供查看，不能导入或用于聊天转发。' }}</div>
+          <div class="oauth-model-hint">{{ modelSyncHint }}</div>
           <div v-if="canImportModels && modelGroupCount > 1" class="oauth-model-group-apply">
-            <NCheckbox v-model:checked="applyToGroup">
-              同时应用到同组全部 {{ modelGroupCount }} 个账号{{ modelAccount?.provider === 'codex' ? `（Codex · ${modelAccount?.planType || '未知套餐'}，同套餐模型清单一致）` : '' }}
-            </NCheckbox>
+            各账号的模型权限可能不同，请逐账号拉取并同步模型，其他账号不会自动应用。
           </div>
           <div class="oauth-model-list-header">
             <span class="col-check"></span>
@@ -2267,14 +2344,16 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="modelModal = false">取消</NButton>
-                    <NPopconfirm v-if="canImportModels && modelGroupMode" @positive-click="handleImportModels">
+          <NPopconfirm v-if="canImportModels && modelGroupMode" @positive-click="handleImportModels">
             <template #trigger>
-              <NButton type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading">应用到组（{{ modelGroupCount }} 个账号）</NButton>
+              <NButton type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading">{{ isCodexImportOnly ? `导入到组（${modelGroupCount} 个账号）` : `应用到组（${modelGroupCount} 个账号）` }}</NButton>
             </template>
-            将应用到：{{ modelGroupAccounts.map(a => a.displayName).join('、') }}。未勾选的清单内模型会被禁用；各账号模型权限可能不同。确定继续？
+            {{ isCodexImportOnly
+              ? `将把勾选项导入到：${modelGroupAccounts.map(a => a.displayName).join('、')}。Codex 只增：未勾选项不会被导入或停用，仅源账号会被写入；各账号模型权限可能不同。确定继续？`
+              : `将应用到：${modelGroupAccounts.map(a => a.displayName).join('、')}。未勾选的清单内模型会被禁用；各账号模型权限可能不同。确定继续？` }}
           </NPopconfirm>
           <NButton v-else-if="canImportModels" type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
-            <template v-if="modelGroupMode">应用到组（{{ modelGroupCount }} 个账号）</template>
+            <template v-if="modelGroupMode">{{ isCodexImportOnly ? `导入到组（${modelGroupCount} 个账号）` : `应用到组（${modelGroupCount} 个账号）` }}</template>
             <template v-else>{{ modelAccount?.provider === 'codex' ? '导入选中' : '同步启用' }}（{{ checkedModels.length }}）</template>
           </NButton>
         </NSpace>
@@ -3064,6 +3143,20 @@ onUnmounted(() => {
 </style>
 
 <style>
+.oauth-provider-filter-a11y {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.n-base-select-option .oauth-provider-filter-a11y {
+  display: none;
+}
 /* 表格视图单元格——必须是非 scoped 全局块。
    原因：这些 class 都出现在 NDataTable columns 的 h() 渲染函数里，由 Naive UI 的 Cell
    组件在自己的渲染上下文中调用，元素上没有本组件的 data-v 属性，scoped 选择器永远匹配不上。
@@ -3097,14 +3190,16 @@ onUnmounted(() => {
   gap: 4px 6px;
 }
 /* 行容器只做语义分组：display:contents 让「文字/条/百分比」直接成为网格项；
-   各自钉死列号，避免纯 label 行（资源包等）被自动流排到同一行并排 */
+   纯文本行用整行跨列（grid-column: 1 / -1）实现分行并使用整格宽度，带进度条行仍钉死各自列纵向对齐 */
 .oauth-table-window-row {
   display: contents;
 }
-.oauth-table-window-name,
+.oauth-table-window-name {
+  grid-column: 1;
+}
 .oauth-table-window-label-only,
 .oauth-table-window-none {
-  grid-column: 1;
+  grid-column: 1 / -1;
 }
 .oauth-table-window-bar {
   grid-column: 2;
@@ -3143,10 +3238,12 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 .oauth-table-window-none {
+  min-width: 0;
   font-size: 12px;
   color: var(--text-color-secondary, #888);
 }
 .oauth-table-window-label-only {
+  min-width: 0;
   font-size: 12px;
   color: var(--text-color-secondary, #666);
   line-height: 1.4;

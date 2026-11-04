@@ -1528,7 +1528,28 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
         for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
             var line = lines[lineIndex];
-            await onSseDataAsync(line, cancellationToken);
+            try
+            {
+                await onSseDataAsync(line, cancellationToken);
+            }
+            catch (UpstreamReferenceException ex)
+            {
+                // 模拟真实转发层：遇到守卫异常时附加已累计的状态码与 token 统计
+                ex.AttachPartialResult(new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 200,
+                    InputTokens = 10,
+                    CachedTokens = 2,
+                    OutputTokens = 5,
+                    IsStreaming = true,
+                    HasStartedStreaming = true,
+                    IsStreamInterrupted = true,
+                    TotalDurationMs = 42,
+                    ErrorMessage = ex.Message
+                });
+                throw;
+            }
             if (AfterStreamingLineAsync is not null)
                 await AfterStreamingLineAsync(lineIndex, line);
         }

@@ -452,6 +452,8 @@ builder.Services.AddScoped<SiteCascadeDeleter>();
 builder.Services.AddScoped<CodexAccountProvisioner>();
 // 号池同步（生成式：把池成员展开成普通路由规则，托管标记挂在路由条目上）。
 builder.Services.AddScoped<AccountPoolSyncService>();
+builder.Services.AddSingleton<AccountPoolReconciliationService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AccountPoolReconciliationService>());
 // Google 账号供给（Antigravity 隐藏 Site + 模型映射）。
 builder.Services.AddScoped<GoogleAccountProvisioner>();
 // Kimi 账号供给（隐藏 Site + 模型映射）。

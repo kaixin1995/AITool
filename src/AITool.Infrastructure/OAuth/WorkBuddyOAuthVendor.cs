@@ -112,7 +112,10 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             // 渠道校验（code 11128）是内容审查：转发层识别此标记后按 WorkBuddyChatAdapter
             // 改写请求体（已知官方客户端提示词整行替换 + 拼写修正 + 首消息补 system）。内部标记，不透传。
             ["X-AITool-Rewrite-Channel"] = "workbuddy",
-        });
+        })
+    {
+        DomainIdentityHeaderName = "X-Domain",
+    };
 
     public async Task<DeviceOAuthStartResult> StartSignInAsync(CancellationToken cancellationToken)
     {
@@ -310,7 +313,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
 
     /// <summary>
     /// 模型目录两级取数（对齐 workbuddy-manager fetch_models）：企业端点与 /v3/config 并发请求，
-    /// 合并时 v3 为主、企业补缺。国内版企业端点按 agents(name=cli) 白名单过滤；国内两路
+    /// 合并时 v3 为主、企业补缺。国内版按各路非空 agents(name=cli) 白名单过滤合并结果；国内两路
     /// 都剔除非对话模型（nes-/completion-/codewise- 前缀、输出 ≤256、text-to-image）；国际版取全量。
     /// </summary>
     private sealed record ModelProbeResult(JsonElement? Data, string? Error);
@@ -342,7 +345,8 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
                     continue;
                 }
 
-                var (code, root) = UnwrapEnvelope(JsonDocument.Parse(body).RootElement.Clone());
+                using var document = JsonDocument.Parse(body);
+                var (code, root) = UnwrapEnvelope(document.RootElement);
                 if (code != 0)
                 {
                     lastError = "code=" + code;
@@ -351,7 +355,7 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
 
                 if (root.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
                 {
-                    return new ModelProbeResult(root, null);
+                    return new ModelProbeResult(root.Clone(), null);
                 }
 
                 lastError = "响应 data 不是模型目录对象或数组";
@@ -403,6 +407,25 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
 
         var merged = new List<DeviceOAuthRemoteModel>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // 收集各来源的 CLI 白名单及非对话模型，再统一约束合并结果。
+        // 空白名单沿用全量回退；多个非空白名单同时生效。
+        var cliLists = new List<HashSet<string>>();
+        var nonChatIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (_site == SiteSpec.China)
+        {
+            foreach (var data in new[] { enterprise.Data, v3.Data })
+            {
+                if (data is not { } payload) continue;
+                var cliIds = GetCliModelIds(payload);
+                if (cliIds.Count > 0) cliLists.Add(cliIds);
+                var chatIds = ParseModelPayload(payload, false, true)
+                    .Select(model => model.Slug).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var model in ParseModelPayload(payload, false, false))
+                {
+                    if (!chatIds.Contains(model.Slug)) nonChatIds.Add(model.Slug);
+                }
+            }
+        }
         // v3 配置优先（字段更完整），企业目录只补充 v3 没有的模型。
         if (v3.Data is { } v3Data)
         {
@@ -419,11 +442,16 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         {
             foreach (var model in ParseModelPayload(
                          enterpriseData,
-                         applyCliFilter: _site == SiteSpec.China,
+                         applyCliFilter: false,
                          applyNonChatFilter: _site == SiteSpec.China))
             {
                 if (seen.Add(model.Slug)) merged.Add(model);
             }
+        }
+
+        if (_site == SiteSpec.China)
+        {
+            merged.RemoveAll(model => nonChatIds.Contains(model.Slug) || cliLists.Any(ids => !ids.Contains(model.Slug)));
         }
 
         if (merged.Count == 0)
@@ -438,6 +466,31 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
     /// 解析单路响应为模型列表（对象列表与字符串窄表两种形态）。
     /// applyCliFilter 仅控制 CN 企业目录的 agents.cli 白名单；applyNonChatFilter 控制国内版两路共有的非对话过滤。
     /// </summary>
+    private static HashSet<string> GetCliModelIds(JsonElement data)
+    {
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (data.ValueKind != JsonValueKind.Object || !data.TryGetProperty("agents", out var agents)
+            || agents.ValueKind != JsonValueKind.Array) return ids;
+        foreach (var agent in agents.EnumerateArray())
+        {
+            if (agent.ValueKind != JsonValueKind.Object || !agent.TryGetProperty("name", out var name)
+                || name.ValueKind != JsonValueKind.String || !string.Equals(name.GetString(), "cli", StringComparison.OrdinalIgnoreCase)) continue;
+            if (agent.TryGetProperty("models", out var models) && models.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var model in models.EnumerateArray())
+                    if (model.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(model.GetString()))
+                        ids.Add(model.GetString()!.Trim());
+            }
+            break;
+        }
+        return ids;
+    }
+
+    private static bool HasNonChatPrefix(string id) =>
+        id.StartsWith("nes-", StringComparison.OrdinalIgnoreCase)
+        || id.StartsWith("completion-", StringComparison.OrdinalIgnoreCase)
+        || id.StartsWith("codewise-", StringComparison.OrdinalIgnoreCase);
+
     internal static IReadOnlyList<DeviceOAuthRemoteModel> ParseModelPayload(JsonElement data, bool applyCliFilter, bool applyNonChatFilter)
     {
         var outModels = new List<DeviceOAuthRemoteModel>();
@@ -448,7 +501,8 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             {
                 if (item.ValueKind != JsonValueKind.String) continue;
                 var mid = item.GetString()!.Trim();
-                if (mid.Length > 0 && seen.Add(mid)) outModels.Add(new DeviceOAuthRemoteModel(mid, mid));
+                if (mid.Length > 0 && (!applyNonChatFilter || !HasNonChatPrefix(mid)) && seen.Add(mid))
+                    outModels.Add(new DeviceOAuthRemoteModel(mid, mid));
             }
             return outModels;
         }
@@ -684,10 +738,12 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             request.Content = new StringContent(body, Encoding.UTF8, "application/json");
         }
 
-        using var response = await _httpClient.SendAsync(request, preserveUnauthorized ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead, cancellationToken);
-        string text;
-        try { text = await response.Content.ReadAsStringAsync(cancellationToken); }
-        catch (Exception ex) when (preserveUnauthorized && response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !cancellationToken.IsCancellationRequested) { text = string.Empty; }
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, preserveUnauthorized ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead, requestBudget.Token);
+        if (preserveUnauthorized && response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            return ((int)response.StatusCode, string.Empty);
+        var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
         return ((int)response.StatusCode, text);
     }
 

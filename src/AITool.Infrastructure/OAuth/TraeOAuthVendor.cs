@@ -202,7 +202,7 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
             }
         }
 
-        return lists;
+        return lists.Count == 0 ? null : lists;
     }
 
     /// <summary>逐 function 兜底（IDE 老形态 /api/ide/v1/get_detail_param）。</summary>
@@ -268,10 +268,12 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
             request.Headers.TryAddWithoutValidation(name, value);
         }
 
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
         if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
-        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        var text = await response.Content.ReadAsStringAsync(requestBudget.Token);
         if (!response.IsSuccessStatusCode)
         {
             if ((int)response.StatusCode is 401 or 403
@@ -355,7 +357,8 @@ public sealed class TraeOAuthVendor : IDeviceOAuthVendor
     {
         try
         {
-            return JsonDocument.Parse(text).RootElement.Clone();
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.Clone();
         }
         catch (JsonException ex)
         {

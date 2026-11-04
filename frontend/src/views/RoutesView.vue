@@ -368,12 +368,11 @@ function createEntry(): void {
 async function deleteCurrentEntry(confirmReferenced = false, expectedEntryName = selectedEntryName.value): Promise<void> {
   const entryName = selectedEntryName.value
   if (!canEdit.value || isPoolManaged.value || !entryName || entryName !== expectedEntryName) return
-  // The entry popconfirm explicitly authorizes discarding all unsaved changes.
-  cancelAvailability()
 
   deletingEntry.value = true
   try {
     await api.deleteRouteEntry(entryName, confirmReferenced)
+    // 删除失败或引用冲突二次确认取消时必须保留草稿，仅在服务端确认删除成功后才清空草稿与状态
     rules.value = []
     availabilityDraft.value = null
     openAvailabilityKey.value = null
