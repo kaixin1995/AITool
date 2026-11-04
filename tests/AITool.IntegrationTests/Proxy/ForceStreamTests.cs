@@ -127,13 +127,16 @@ public sealed class ForceStreamTests
     }
 
     [Fact]
-    public void Aggregate_tolerates_keepalive_lines()
+    public void Aggregate_tolerates_keepalive_and_malformed_data_lines()
     {
-        // SSE 规范允许空 data: keep-alive 行；杂行不能把整个聚合判失败（P1 回归）。
+        // SSE 规范允许空 data: keep-alive 行；非 JSON 的非空杂行（中转链路可能注入）按噪音跳过，
+        // 不能把整个聚合判失败（ee303d2 确立的宽容语义，防把本可成功的请求变成 502）。
         const string sse = """
             data:
 
             : stream starting
+
+            data: not-json-garbage
 
             data: {"id":"c5","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":"stop"}]}
 
@@ -148,12 +151,18 @@ public sealed class ForceStreamTests
     }
 
     [Fact]
-    public void Aggregate_rejects_nonempty_malformed_data_and_error_events()
+    public void Aggregate_rejects_error_events_but_tolerates_malformed_lines()
     {
         const string chunk = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"stop\"}]}\n\n";
-        ProxyForwardService.TryAggregateChatCompletionSse(chunk + "data: {broken\n\ndata: [DONE]\n").Should().BeNull();
+        // 上游显式 error 事件是确定性失败信号 → 聚合失败。
         ProxyForwardService.TryAggregateChatCompletionSse(chunk + "data: {\"error\":{\"message\":\"bad\"}}\n\ndata: [DONE]\n").Should().BeNull();
+        // 非 JSON 杂行不是失败信号 → 跳过后聚合成功。
+        var tolerated = ProxyForwardService.TryAggregateChatCompletionSse(chunk + "data: {broken\n\ndata: [DONE]\n");
+        tolerated.Should().NotBeNull("杂行应被容错跳过");
+        System.Text.Json.JsonDocument.Parse(tolerated!).RootElement
+            .GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("partial");
     }
+
     [Fact]
     public void Aggregate_truncated_stream_keeps_null_finish_reason()
     {
@@ -163,7 +172,30 @@ public sealed class ForceStreamTests
 
             """;
 
-        ProxyForwardService.TryAggregateChatCompletionSse(sse).Should().BeNull();
+        var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
+        result.Should().NotBeNull();
+        var obj = System.Text.Json.JsonDocument.Parse(result!);
+        var choice = obj.RootElement.GetProperty("choices")[0];
+        choice.GetProperty("message").GetProperty("content").GetString().Should().Be("部分回答");
+        choice.GetProperty("finish_reason").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null, "截断流保留 null 而非伪造 stop");
+    }
+
+    [Fact]
+    public void Aggregate_missing_finish_reason_with_done_gets_stop_fallback()
+    {
+        // 部分实现不逐 choice 发 finish_reason（只在末块发或干脆不发）：流已正常收尾（[DONE]）
+        // → 兜底 stop 判定成功，而非把本可成功的请求变成 502。
+        const string sse = """
+            data: {"id":"c8","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"全量输出"}}]}
+
+            data: [DONE]
+            """;
+
+        var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
+        result.Should().NotBeNull();
+        var obj = System.Text.Json.JsonDocument.Parse(result!);
+        obj.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("全量输出");
+        obj.RootElement.GetProperty("choices")[0].GetProperty("finish_reason").GetString().Should().Be("stop");
     }
 
     [Fact]

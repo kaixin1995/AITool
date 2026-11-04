@@ -219,6 +219,60 @@ public sealed class AccountPoolSyncService
         var poolOwnedEntries = await client.Queryable<ProxyRouteEntry>()
             .Where(e => e.ManagedByPoolId == pool.Id).ToListAsync(ct);
 
+        // ②″ 存量认领（幂等，升级自愈）：旧版本部署生成的池入口/规则没有 ManagedByPoolId 标记，
+        // 不重新认领的话池会把这些模型整体当"被占用"跳过（失管），排除成员/删池也无法清理。
+        // 与手工路由在形态上不可完全区分，认领条件取池生成器的确定性输出特征，全部满足才打标：
+        // 入口未被任何池认领；名下规则数 ≥2（单条与手工不可区分，保守跳过）；每站点恰好一条且
+        // 精确覆盖持有该映射的全部当前成员站点（不多不少）；全部为"直连同形"（未认领 + 直连 +
+        // 上游名=站点模型名=入口名）。不满足的入口按占用跳过（手工保护语义不变）。
+        var unclaimedEntries = candidateEntries.Where(e => e.ManagedByPoolId is null).ToList();
+        if (unclaimedEntries.Count > 0)
+        {
+            var claimRules = new List<ProxyRouteRule>();
+            foreach (var batch in unclaimedEntries.Select(e => e.EntryName).Distinct(StringComparer.Ordinal).Chunk(400))
+                claimRules.AddRange(await client.Queryable<ProxyRouteRule>()
+                    .Where(r => batch.Contains(r.ExternalModelName)).ToListAsync(ct));
+            var claimRulesByEntry = claimRules.ToLookup(r => r.ExternalModelName, StringComparer.Ordinal);
+            var claimedEntryIds = new List<Guid>();
+            foreach (var entry in unclaimedEntries)
+            {
+                var rules = claimRulesByEntry[entry.EntryName].ToList();
+                if (rules.Count < 2) continue;
+                if (!rules.All(r => r.ManagedByPoolId is null
+                    && (string.IsNullOrEmpty(r.TargetKind) || r.TargetKind == "Site")
+                    && r.UpstreamModelName == entry.EntryName
+                    && r.SiteModelName == entry.EntryName))
+                {
+                    continue;
+                }
+                // 池生成的确定性形态：规则恰好覆盖持有该映射的全部当前（未排除）成员站点。
+                var eligibleSites = members.Where(m => !m.Excluded)
+                    .Select(m => m.LinkedSiteId)
+                    .Where(siteId => mappingsBySite[siteId].Any(mm => mm.RemoteModelName == entry.EntryName))
+                    .ToHashSet();
+                var ruleSites = rules.Select(r => r.SiteId).ToList();
+                if (ruleSites.Distinct().Count() != rules.Count
+                    || !ruleSites.All(eligibleSites.Contains)
+                    || ruleSites.Count != eligibleSites.Count)
+                {
+                    continue;
+                }
+                entry.ManagedByPoolId = pool.Id;
+                claimedEntryIds.Add(entry.Id);
+                await client.Updateable(entry).UpdateColumns(e => e.ManagedByPoolId).ExecuteCommandAsync(ct);
+                foreach (var rule in rules)
+                {
+                    rule.ManagedByPoolId = pool.Id;
+                    rule.ManagedPoolMemberSiteId = rule.SiteId;
+                    await client.Updateable(rule)
+                        .UpdateColumns(r => new { r.ManagedByPoolId, r.ManagedPoolMemberSiteId })
+                        .ExecuteCommandAsync(ct);
+                }
+            }
+            if (claimedEntryIds.Count > 0)
+                poolOwnedEntries.AddRange(candidateEntries.Where(e => claimedEntryIds.Contains(e.Id)));
+        }
+
         var ruleNamesToCheck = exposedModels.Distinct(StringComparer.Ordinal).ToList();
         var allRuleNames = new HashSet<string>(StringComparer.Ordinal);
         if (ruleNamesToCheck.Count > 0)

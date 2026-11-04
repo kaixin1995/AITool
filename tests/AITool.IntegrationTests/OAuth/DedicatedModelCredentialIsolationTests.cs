@@ -1,6 +1,9 @@
 using System.Net;
 using AITool.Application.Codex;
 using AITool.Application.Google;
+using AITool.Application.Kimi;
+using AITool.Application.OAuth;
+using AITool.Application.Xai;
 using AITool.Domain.Codex;
 using AITool.Domain.Google;
 using AITool.Domain.Kimi;
@@ -39,6 +42,19 @@ public sealed class DedicatedModelCredentialIsolationTests : IDisposable
         services.AddSqlSugar($"Data Source={_path}");
         services.AddScoped<ProxyRequestMetadataCache>();
         services.AddScoped<ForwardOAuthInvalidationService>();
+        // ModelCredentialRecovery 的 401 刷新路径按 provider 从容器解析对应刷新服务；
+        // 刷新上游统一抛"明确拒绝"异常 → recovery 走 Invalidate(旧快照) + 401，是否禁用交给
+        // ForwardOAuthInvalidationService 的精确凭证匹配守卫判定——正是本测试锁定的主题
+        // （凭证被并发轮换的账号绝不能被这次 401 误禁）。
+        services.AddSingleton(new DeviceOAuthVendorRegistry([]));
+        services.AddScoped<DeviceOAuthCredentialRefreshService>();
+        services.AddScoped<CodexCredentialRefreshService>();
+        services.AddScoped<GoogleCredentialRefreshService>();
+        services.AddScoped<KimiCredentialRefreshService>();
+        services.AddSingleton<ICodexOAuthClient>(new RefusingCodexOAuthClient());
+        services.AddSingleton<IGoogleOAuthClient>(new RefusingGoogleOAuthClient());
+        services.AddSingleton<IKimiOAuthClient>(new RefusingKimiOAuthClient());
+        services.AddSingleton<IXaiOAuthClient>(new RefusingXaiOAuthClient());
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
         _scope = _services.CreateScope();
@@ -50,10 +66,6 @@ public sealed class DedicatedModelCredentialIsolationTests : IDisposable
     [InlineData("google", "none", false)]
     [InlineData("kimi", "none", false)]
     [InlineData("xai", "none", false)]
-    [InlineData("codex", "access", true)]
-    [InlineData("google", "access", true)]
-    [InlineData("kimi", "access", true)]
-    [InlineData("xai", "access", true)]
     [InlineData("codex", "refresh", true)]
     [InlineData("google", "refresh", true)]
     [InlineData("kimi", "refresh", true)]
@@ -62,13 +74,21 @@ public sealed class DedicatedModelCredentialIsolationTests : IDisposable
     [InlineData("google", "timestamp", true)]
     [InlineData("kimi", "timestamp", true)]
     [InlineData("xai", "timestamp", true)]
+    // access 组期望为 false（ec9c1c4 语义）：401 时 access 已被并发轮换 → 刷新服务复用新凭证
+    // 重试一次（SentToken=new-access）→ 上游连当前有效凭证也拒绝 → Invalidate 精确匹配当前
+    // 凭证并禁用。refresh/timestamp 组仅单一字段变化，Invalidate 的全字段守卫不匹配 → 不禁用。
+    [InlineData("codex", "access", false)]
+    [InlineData("google", "access", false)]
+    [InlineData("kimi", "access", false)]
+    [InlineData("xai", "access", false)]
     public async Task Model_401_only_disables_the_exact_credential_sent(string provider, string rotation, bool enabled)
     {
         await SeedAsync(provider);
         using var handler = new Handler(HttpStatusCode.Unauthorized, () => RotateAsync(provider, rotation));
         using var client = new HttpClient(handler);
         var result = await FetchAsync(provider, client);
-        handler.SentToken.Should().Be("old-access");
+        // access 组的最后一次请求是 recovery 用并发轮换后的新凭证做的重试；其余组只发送过一次。
+        handler.SentToken.Should().Be(rotation == "access" ? "new-access" : "old-access");
         if (provider == "codex") result.Should().BeOfType<OkObjectResult>();
         else result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(401);
         await AssertStateAsync(provider, enabled, rotation);
@@ -346,6 +366,45 @@ public sealed class DedicatedModelCredentialIsolationTests : IDisposable
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { RequestServices = _scope.ServiceProvider } }
         };
+    }
+
+    // 拒绝型 OAuth client：RefreshTokenAsync 一律抛"明确拒绝"（上游判定凭证失效），
+    // 触发 recovery 的 Invalidate+401 收口路径；其余成员本测试不会触达。
+    // 对齐 ec9c1c4 在 DeviceOAuthModelUnauthorizedIsolationTests 的容器适配思路。
+    private static Task<T> Refused<T>() => Task.FromException<T>(new OAuthRefreshRefusedException("test: refresh token refused"));
+
+    private sealed class RefusingCodexOAuthClient : ICodexOAuthClient
+    {
+        public (string State, string Verifier) CreateOAuthSession() => throw new NotSupportedException();
+        public Task<string> BuildAuthorizeUrlAsync(string state, string verifier, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<CodexTokenSet> ExchangeCodeAsync(string code, string verifier, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<CodexTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken) => Refused<CodexTokenSet>();
+    }
+
+    private sealed class RefusingGoogleOAuthClient : IGoogleOAuthClient
+    {
+        public GoogleOAuthSession CreateSession() => throw new NotSupportedException();
+        public string BuildAuthorizeUrl(string accountKind, GoogleOAuthSession session) => throw new NotSupportedException();
+        public Task<GoogleTokenSet> ExchangeCodeAsync(string accountKind, string code, CancellationToken ct) => throw new NotSupportedException();
+        public Task<GoogleTokenSet> RefreshTokenAsync(string accountKind, string refreshToken, CancellationToken ct) => Refused<GoogleTokenSet>();
+        public Task<string?> GetUserEmailAsync(string accessToken, CancellationToken ct) => throw new NotSupportedException();
+        public Task<IReadOnlyList<string>> GetUserProjectsAsync(string accessToken, CancellationToken ct) => throw new NotSupportedException();
+        public Task<GoogleCodeAssistProfile> LoadCodeAssistProfileAsync(string accountKind, string accessToken, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private sealed class RefusingKimiOAuthClient : IKimiOAuthClient
+    {
+        public Task<KimiDeviceCodeResponse> StartDeviceFlowAsync(string? deviceId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<KimiTokenExchangeResult> ExchangeDeviceCodeAsync(string deviceCode, string? deviceId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<KimiTokenSet> RefreshTokenAsync(string refreshToken, string? deviceId, CancellationToken ct) => Refused<KimiTokenSet>();
+    }
+
+    private sealed class RefusingXaiOAuthClient : IXaiOAuthClient
+    {
+        public Task<XaiDeviceCodeResponse> StartDeviceFlowAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<XaiTokenExchangeResult> ExchangeDeviceCodeAsync(string deviceCode, CancellationToken ct) => throw new NotSupportedException();
+        public Task<XaiTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken ct)
+            => Task.FromException<XaiTokenSet>(new XaiRefreshTokenInvalidException());
     }
 
     private sealed class RefreshGoogleOAuth : IGoogleOAuthClient

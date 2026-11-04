@@ -1,5 +1,6 @@
 using AITool.Application.Codex;
 using AITool.Domain.Proxy;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
@@ -648,6 +649,35 @@ public sealed class AccountPoolSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Reconciliation_skips_full_pass_when_fingerprint_unchanged()
+    {
+        // 轻量快速路径：行数指纹无变化的轮次只做 COUNT 聚合查询，不加载全表/不逐池签名/不重跑同步。
+        var (provisioner, sync, db) = CreateServices();
+        var a = await provisioner.ProvisionFromTokensAsync(Input("fp-a", "fa@p.com", "team", "at-fa"), default);
+        await provisioner.UpsertRemoteModelsAsync(a.LinkedSiteId, [("m1", "m1")], default);
+        var pool = new AccountPool { Name = "fp-pool", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+        var worker = new AccountPoolReconciliationService(_services.GetRequiredService<IServiceScopeFactory>(), NullLogger<AccountPoolReconciliationService>.Instance);
+        await worker.RunOnceAsync(default);
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().ContainSingle();
+
+        var skipSqls = new List<string>();
+        db.Client.Aop.OnLogExecuting = (sql, _) => skipSqls.Add(sql);
+        await worker.RunOnceAsync(default, forceFull: false);
+        db.Client.Aop.OnLogExecuting = null;
+        skipSqls.Should().NotBeEmpty("快速路径仍执行指纹 COUNT 查询");
+        skipSqls.All(sql => sql.Contains("COUNT", StringComparison.OrdinalIgnoreCase))
+            .Should().BeTrue("指纹不变的轮次只允许 COUNT 聚合查询，不得全量加载");
+
+        // 指纹变化（新增一行账号）→ 非强制轮也做全量对账。
+        var b = await provisioner.ProvisionFromTokensAsync(Input("fp-b", "fb@p.com", "team", "at-fb"), default);
+        await provisioner.UpsertRemoteModelsAsync(b.LinkedSiteId, [("m1", "m1")], default);
+        await worker.RunOnceAsync(default, forceFull: false);
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
+            .Should().HaveCount(2, "指纹变化的非强制轮做全量对账并同步新成员");
+    }
+
+    [Fact]
     public async Task Reconciliation_reports_failures_and_retries_without_another_change()
     {
         var (_, _, db) = CreateServices();
@@ -767,6 +797,88 @@ public sealed class AccountPoolSyncTests : IDisposable
         {
             db.Client.Aop.OnLogExecuting = null;
         }
+    }
+
+    [Fact]
+    public async Task Legacy_unmarked_pool_entry_is_reclaimed_and_member_exclusion_cleans_rules()
+    {
+        // 升级自愈：旧版本生成的池入口/规则没有 ManagedByPoolId 标记（否则池整体失管：
+        // 模型被当"被占用"跳过、排除成员/删池也无法清理）。同步时按严格形态条件重新认领，
+        // 认领后排除成员 → 既有 obsolete 清理逻辑接管。
+        var (provisioner, sync, db) = CreateServices();
+        var teamA = await provisioner.ProvisionFromTokensAsync(Input("legacy-a", "la@p.com", "team", "lt-1"), default);
+        var teamB = await provisioner.ProvisionFromTokensAsync(Input("legacy-b", "lb@p.com", "team", "lt-2"), default);
+        await provisioner.UpsertRemoteModelsAsync(teamA.LinkedSiteId, [("m1", "m1")], default);
+        await provisioner.UpsertRemoteModelsAsync(teamB.LinkedSiteId, [("m1", "m1")], default);
+
+        var pool = new AccountPool { Name = "legacy-pool", VendorKey = "codex", PlanType = "team" };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+        await db.Client.Insertable(new[]
+        {
+            new AccountPoolMember { PoolId = pool.Id, AccountRefId = teamA.Id, LinkedSiteId = teamA.LinkedSiteId, Priority = 0 },
+            new AccountPoolMember { PoolId = pool.Id, AccountRefId = teamB.Id, LinkedSiteId = teamB.LinkedSiteId, Priority = 1 },
+        }).ExecuteCommandAsync();
+
+        // 模拟旧版本产物：无标记入口 + 直连同形规则（全部指向当前成员站点）。
+        var legacyEntry = new ProxyRouteEntry { EntryName = "m1" };
+        await db.Client.Insertable(legacyEntry).ExecuteCommandAsync();
+        await db.Client.Insertable(new[]
+        {
+            new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = teamA.LinkedSiteId, Priority = 0 },
+            new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = teamB.LinkedSiteId, Priority = 0 },
+        }).ExecuteCommandAsync();
+
+        var result = await sync.SyncPoolAsync(pool.Id, default);
+        result.SkippedModels.Should().BeEmpty("存量入口应被重新认领而不是当占用跳过");
+
+        var claimedEntry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
+        claimedEntry.ManagedByPoolId.Should().Be(pool.Id, "无标记的池存量入口被重新认领");
+        var claimedRules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
+        claimedRules.Should().HaveCount(2);
+        claimedRules.All(r => r.ManagedByPoolId == pool.Id).Should().BeTrue("存量规则一并打标");
+
+        // 认领后排除成员 B → 再次同步应清理 B 的规则（修复 ec72856 的存量漏删面）。
+        var memberB = await db.AccountPoolMembers.FirstAsync(m => m.AccountRefId == teamB.Id);
+        memberB.Excluded = true;
+        await db.Client.Updateable(memberB).UpdateColumns(m => m.Excluded).ExecuteCommandAsync();
+        await sync.SyncPoolAsync(pool.Id, default);
+
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
+            .Should().ContainSingle(r => r.SiteId == teamA.LinkedSiteId, "排除成员的存量规则在认领后可被正常清理");
+    }
+
+    [Fact]
+    public async Task Legacy_entry_with_non_member_site_rule_is_not_claimed()
+    {
+        // 保守防线：入口下存在指向非成员站点的规则（可能是手工添加）→ 整个入口不认领，保持手工语义。
+        var (provisioner, sync, db) = CreateServices();
+        var team = await provisioner.ProvisionFromTokensAsync(Input("legacy-guard", "lg@p.com", "team", "lt-3"), default);
+        await provisioner.UpsertRemoteModelsAsync(team.LinkedSiteId, [("m1", "m1")], default);
+
+        var pool = new AccountPool { Name = "legacy-guard-pool", VendorKey = "codex", PlanType = "team" };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+        await db.Client.Insertable(new AccountPoolMember
+        {
+            PoolId = pool.Id, AccountRefId = team.Id, LinkedSiteId = team.LinkedSiteId, Priority = 0
+        }).ExecuteCommandAsync();
+
+        var otherSite = new Site { Name = "manual-site", BaseUrl = "https://manual.invalid", ApiKey = "k", IsEnabled = true };
+        await db.Client.Insertable(otherSite).ExecuteCommandAsync();
+        await db.Client.Insertable(new ProxyRouteEntry { EntryName = "m1" }).ExecuteCommandAsync();
+        await db.Client.Insertable(new[]
+        {
+            // 一条指向成员站点（同形）+ 一条指向非成员站点（可能是手工规则）。
+            new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = team.LinkedSiteId, Priority = 0 },
+            new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = otherSite.Id, Priority = 1 },
+        }).ExecuteCommandAsync();
+
+        var result = await sync.SyncPoolAsync(pool.Id, default);
+        result.SkippedModels.Should().Contain("m1", "含非成员站点规则的入口不被认领，按占用跳过");
+
+        var entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
+        entry.ManagedByPoolId.Should().BeNull("可能包含手工规则的入口保持未认领");
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1" && r.ManagedByPoolId != null).ToListAsync())
+            .Should().BeEmpty("规则不被打标");
     }
 
     private (CodexAccountProvisioner Provisioner, AccountPoolSyncService Sync, AppDbContext Db) CreateServices()

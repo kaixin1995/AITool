@@ -753,7 +753,10 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
         if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("code", out var codeEl))
         {
             var code = codeEl.ValueKind == JsonValueKind.Number && codeEl.TryGetInt32(out var c) ? c : -1;
-            var data = root.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Object ? d : default;
+            // data 兼容对象与数组两种形态：模型目录的 /v3/config 存在字符串窄表（data 为数组），
+            // 仅认对象会把整路目录丢弃（probe 层本就声明接受数组，见 ProbeModelEndpointAsync）。
+            // 其余调用点（发码/轮询/刷新）均以 ValueKind == Object 消费，数组放行不改变其行为。
+            var data = root.TryGetProperty("data", out var d) && d.ValueKind is JsonValueKind.Object or JsonValueKind.Array ? d : default;
             return (code, data);
         }
 

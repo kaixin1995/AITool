@@ -1473,6 +1473,8 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
     public string? BaseUrl { get; set; }
     public bool StreamHeadBufferEnabled { get; set; }
     public bool CancelAfterStreamingCallbacks { get; set; }
+    /// <summary>回调全部回放后以 Success=false（非取消）收尾，模拟上游在流尾非取消中断。</summary>
+    public bool FailStreamingAfterCallbacks { get; set; }
     public bool FailStreamingBeforeCallbacks { get; set; }
     public Func<int, string, Task>? AfterStreamingLineAsync { get; set; }
 
@@ -1556,7 +1558,7 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
 
         return new ProxyForwardResult
         {
-            Success = !CancelAfterStreamingCallbacks,
+            Success = !CancelAfterStreamingCallbacks && !FailStreamingAfterCallbacks,
             IsCanceled = CancelAfterStreamingCallbacks,
             StatusCode = 200,
             ResponseBody = string.Join("\n", lines),
@@ -1564,7 +1566,8 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
             CachedTokens = 2,
             OutputTokens = 5,
             IsStreaming = true,
-            HasStartedStreaming = true
+            HasStartedStreaming = true,
+            ErrorMessage = FailStreamingAfterCallbacks ? "upstream connection reset after callbacks" : null
         };
     }
 

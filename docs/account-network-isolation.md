@@ -46,7 +46,7 @@ handler 创建后不改共享状态；关闭自动 Cookie 容器，不共享可�
 
 所有已接入的托管 OAuth 账号统一应用隔离，没有为旧账号提供默认绕过。升级可能使部分旧会话/上游缓存不再续接，需开启新会话或提交完整历史；这也是获批的兼容边界。
 
-派生器使用独立随机 256-bit 密钥、版本 1 和 HMAC-SHA256，对 `版本 + 可信客户端 scope + provider + 本地账号 GUID + 字段域 + 原始 seed` 采用长度前缀 strict UTF-8 编码。Proxy scope 来自 ProxyAccessKey.Id，管理 Chat 使用独立 admin scope；路由/号池/引用入口、workspace、token 不进入账号身份。
+派生器使用独立随机 256-bit 密钥、派生协议版本 1 和 HMAC-SHA256，对 `版本 + 可信客户端 scope + provider + 本地账号 GUID + 字段域 + 原始 seed` 采用长度前缀 strict UTF-8 编码。Proxy scope 来自 ProxyAccessKey.Id，管理 Chat 使用独立 admin scope；路由/号池/引用入口、workspace、token 不进入账号身份。
 
 入口先捕获原始 seed，在选定账号、协议转换、emulation 和 extra headers 合并后改写：
 
@@ -59,7 +59,7 @@ handler 创建后不改共享状态；关闭自动 Cookie 容器，不共享可�
 | 客户端别名/设备身份 | `X-Session-Id`/`X-Conversation-Id` 可提供入口 seed，不凭空添加转发别名；WorkBuddy `X-Session-ID` 等设备头和 User-Agent 不随意重写。 |
 | 普通非托管 API 站点 | 不应用账号会话字段改写；其上游引用仍受独立归属约束。 |
 
-没有稳定 session 的 HTTP 请求用请求级随机 seed，因此仅保证**本请求及其重试**稳定，不承诺跨 HTTP 请求/进程重启自动重建同一会话。WebSocket 可以用连接级 seed；断线重连不能自动还原进程内 transcript。相同账号、key ring、数据库、客户端 scope 和显式 seed 才有重启稳定性。
+没有稳定 session 的 HTTP 请求用请求级随机 seed，因此仅保证**本请求及其重试**稳定，不承诺跨 HTTP 请求/进程重启自动重建同一会话。WebSocket 可以用连接级 seed；断线重连不能自动还原进程内 transcript。相同账号、未变更的会话密钥、客户端 scope 和显式 seed 才能保持派生结果跨重启稳定；当前 v2 密钥随数据库保存，不依赖 key ring 解密。
 
 共用同一个访问密钥且不提供独立 session 的多个终端用户无法被自动区分。隔离不修改设备/安装指纹，不承诺隐藏服务商关联、解除限制、改善模型质量或将不同账号变成可共享上游状态的账号。
 
@@ -84,7 +84,12 @@ handler 创建后不改共享状态；关闭自动 Cookie 容器，不共享可�
 1. CodeFirst 补 `ProxyProfiles.Revision/ProtectedUsername/ProtectedPassword/ConfigurationError/ProtectedLegacyConfiguration` 并创建 `AccountNetworkPolicies`、`SessionIsolationKeys`、`SessionIsolationKeyMetadata`、`UpstreamReferenceOwners`。补列本身不加密旧 URL。
 2. 凭据迁移将合法 userinfo 拆分、按 profile Id/字段用途进行 Data Protection 保护，公开 endpoint 不含用户名密码；正常重复执行不再改写。
 3. 不合法的旧 profile 禁用并记录固定错误码 `invalid_legacy_proxy_endpoint`；原始配置仅留在受保护的修复字段，不让单条坏配置阻断无关账号。无效 profile 被明确选择时仍失败。不得将隔离原文直接打日志或返回 API。
-4. 会话密钥与 metadata 指纹原子初始化；已有标记/密钥不一致、损坏、未知版本或无法解密时 fail closed，不静默换随机密钥。
+4. 会话隔离密钥当前以 Base64 原始字节保存在 `SessionIsolationKeys`（存储版本 v2），不依赖外部 key ring；metadata 保存存储字符串的 SHA-256 指纹。存储版本与派生协议版本独立，派生仍使用版本 1。
+5. 旧 v1 行若能用原 Data Protection key ring 解密，会在事务内尝试原地升级为 v2，密钥材料和派生结果不变；升级写入失败会记录警告，保留可读取的 v1 行并在后续读取时重试。旧 key ring 丢失导致 v1 无法解密时，则按下述损坏恢复处理。
+6. 会话密钥或 metadata 缺失、不一致、损坏、版本未知或无法解密时，代码会尝试事务性生成新密钥，并同时清空 `UpstreamReferenceOwners`；并发初始化/修复采用已成功持久化的有效密钥。密钥轮换会改变派生标识，旧引用可能无法续接，需要新建会话或提供完整历史。首次部署同样会初始化密钥；两表同时丢失时无法区分首次部署与数据损坏。
+7. 无法解密的代理方案凭证不会通过生成密钥恢复：启动迁移会保留原密文、禁用相应方案并标记 `proxy_secrets_undecryptable`，其他有效方案继续迁移；需要恢复匹配的 key ring 或重新录入凭证并处理方案状态。该隔离不等于绕过网络策略回退直连。
+
+自动恢复不保证所有启动故障都可忽略：数据库不可写、事务失败、密钥轮换后无法重新读取，或 key ring 目录配置/权限失败等仍可能导致操作或启动失败。
 
 迁移前应备份数据库与 ring。历史数据库备份仍可能保有明文 userinfo；当前逻辑不承诺 SQLite 空闲页/WAL/旧备份已安全擦除，也没有将所有既有 OAuth token 改为密文存储。不要误称为“全库加密”。
 
@@ -106,11 +111,11 @@ Data Protection 应用名固定为 **`AITool.NetworkSecurity.v1`**，不复用�
 
 ### 备份、重启与多实例
 
-一起保存一致性 SQLite 备份（正确处理 WAL，使用受支持备份/停机流程）、完整 ring（含历史 key）、应用名/路径与服务身份/权限配置；备份存储本身应加密并限权。只恢复 DB、换 ring 或改应用名可能使代理凭据/会话密钥不可解密，应恢复配套材料，不能自动重置来掩盖故障。
+一起保存一致性 SQLite 备份（正确处理 WAL，使用受支持备份/停机流程）、完整 ring（含历史 key）、应用名/路径与服务身份/权限配置；备份存储本身应加密并限权。当前 v2 会话密钥随数据库备份恢复；但代理凭据和尚未升级的旧 v1 会话密钥仍依赖匹配的 ring 和应用名。只恢复 DB、换 ring 或改应用名可能导致代理方案被隔离，或旧 v1 会话密钥自动轮换；应优先恢复配套材料，并检查启动日志及受影响方案状态。
 
-会话 HMAC 密钥版本 1 没有本次提供的运维轮换流程；Data Protection 自身 key 生命周期与会话 HMAC key 不是一回事。删 ring/删 HMAC 行不是安全轮换。若密钥行与 metadata 同时被删，新进程无法区分首次部署与双重破坏；权限与配套备份仍必要。
+Data Protection 的 key 生命周期、会话密钥存储版本 v2 与派生协议版本 v1 是不同概念。自动修复是故障恢复，不是无损的运维轮换流程；不要通过删除 ring 或会话密钥行来执行常规轮换。密钥轮换会清除持久引用归属，权限与配套备份仍必要。
 
-多实例共享同一 DB 时必须共享兼容持久化 ring、应用名及密钥数据，并验证文件共享/锁和 SQLite 部署拓扑受支持。相同 ring 的不同 DB 仍各自生成 HMAC secret。现有独立 provider/并发测试不是任意网络文件系统、多机故障恢复或真实重启演练。
+多实例共享同一 DB 时会使用该库内的 v2 会话密钥；涉及代理凭据或尚未升级的 v1 密钥时，还需共享兼容的持久化 ring 和应用名。应验证文件共享/锁和 SQLite 部署拓扑受支持。不同 DB 各自生成会话密钥，即使共用 ring 也不会因此共用该密钥。现有独立 provider/并发测试不是任意网络文件系统、多机故障恢复或真实重启演练。
 
 reference owner 的持久归属可跨 provider 重建恢复到原 TTL；WS transcript、待登录 session 与缺 seed 的随机上下文不能从该表还原。恢复 ring 也不能让服务商已丢失的历史重新出现。
 
@@ -142,11 +147,11 @@ reference owner 的持久归属可跨 provider 重建恢复到原 TTL；WS trans
 | 旧/新账号策略、provider GUID、撤销/版本 | `Services/AccountNetworkPolicyStoreTests.All_provider_tables_support_legacy_direct_and_delete_without_touching_credentials`；`Profile_binding_uses_stable_id_and_reads_current_endpoint_revision_and_protected_credentials`；`Bound_profiles_fail_closed_after_change_and_invalid_rebinding_rolls_back` | 五类账号行与配置失败断言；不是五类全部远端业务操作。 |
 | 供给/删除原子性、编辑与刷新竞争 | `Services/AccountNetworkPolicyStoreTests.Caller_transaction_can_rollback_new_account_and_policy_together`；`Final_binding_revalidates_frozen_profile_inside_caller_transaction_without_leaking_policy`；`Assignment_and_actual_profile_delete_serialize_under_contention_in_both_orderings`；`Services/AccountNetworkLifecycleRaceTests.Linked_site_and_account_refresh_share_single_flight_and_return_persisted_token`；`Account_delete_failure_rolls_back_policy_account_and_entire_site_graph_without_invalidating_cache` | 临时 DB、事务回滚、受控竞争；覆盖的是指定操作交错，不是任意竞争穷举。 |
 | API 探索不依赖开发者页、缺字段/批量失败 | `Services/AccountNetworkPoliciesApiTests.DiscoveryIsIndependentOfDeveloperUiAndNeverReturnsEndpointOrSecrets`；`MissingSelectionDoesNotClearAndBatchReportsPartialSuccess`；`NumericSelectionRoundTripsAndSummaryShowsDisabledBindingWithoutFallback` | 控制器合同与脱敏摘要，不能替代 GUI。 |
-| secret CRUD、迁移、删除冲突、probe | `Developer/ProxyProfileCredentialTests.LegacyCrud_StillUsesSameResponseShapes_AndNeverReturnsCredentials`；`Update_ExplicitKeepReplaceClear_AndStaleRevisionAreSafe`；`Migration_QuarantinesInvalidLegacyProfilesWithoutBlockingStartup`；`Delete_ReferencedProfileReturns409AndReferences_ThenSucceedsAfterUnbinding`；`Probe_ByProfileIdUsesStoredCredentials_AndOnly2xxIsSuccess`；`ProbeHandler_UsesExplicitNetworkCredentialAndNormalTlsVerification` | 合成凭据；probe 有本地上游，TLS 配置有 handler 检查。旧备份/空闲页擦除不在断言内。 |
+| secret CRUD、迁移、删除冲突、probe | `Developer/ProxyProfileCredentialTests.LegacyCrud_StillUsesSameResponseShapes_AndNeverReturnsCredentials`；`Update_ExplicitKeepReplaceClear_AndStaleRevisionAreSafe`；`Migration_QuarantinesInvalidLegacyProfilesWithoutBlockingStartup`；`Migration_LostRing_QuarantinesProtectedProfilesInsteadOfBlockingStartup`；`Delete_ReferencedProfileReturns409AndReferences_ThenSucceedsAfterUnbinding`；`Probe_ByProfileIdUsesStoredCredentials_AndOnly2xxIsSuccess`；`ProbeHandler_UsesExplicitNetworkCredentialAndNormalTlsVerification` | 合成凭据；probe 有本地上游，TLS 配置有 handler 检查。旧备份/空闲页擦除不在断言内。 |
 | 日志/错误不含代理秘密 | `Services/HttpLogFormatterTests.Proxy_configuration_body_is_omitted_even_when_not_valid_json`；`Developer/ProxyProfileCredentialTests.InvalidUrls_AreRejectedWithoutEchoingCredentials` | 指定 body/错误路径验证，不是所有诊断/厂商异常的完整秘密扫描。 |
 | key ring 跟最终 SQL DI、覆盖路径、memory | `Services/NetworkSecurityStartupTests.Default_key_ring_follows_effective_SQL_DI_replacement_not_configuration_connection_string`；`Configured_relative_or_absolute_override_is_resolved_against_content_root`；`Memory_database_without_override_fails_outside_Testing`；`Testing_memory_database_gets_stable_per_container_but_isolated_key_directory` | 生产 options 注册与真实 DP/临时文件，不启动 Web host；同文件覆盖相对 DB、不同 DB、显式 memory override。 |
 | 生产旧库迁移、restart、Unix | `Services/NetworkSecurityStartupTests.Production_CodeFirst_upgrades_populated_legacy_profiles_and_preserves_account_credentials_and_cache`；`Restart_with_same_database_and_production_options_preserves_credentials_and_session_derivation`；`Key_directory_is_owner_only_on_Unix_including_preexisting_permissive_directory` | 旧 ProxyProfiles 物理 schema、Codex 凭据/缓存保留、重复初始化和重建 provider；不是 OS 进程崩溃演练；Unix 分支在 Windows 直接返回，ACL 需运维。 |
-| HMAC 版本/随机 key/损坏/原子初始化 | `Services/SessionIsolationKeyTests.Derivation_matches_explicit_versioned_length_prefixed_hmac_contract`；`Concurrent_instances_claim_one_key_and_all_use_the_persisted_winner`；`Deleted_key_on_live_and_restarted_stores_fails_closed_instead_of_rotating`；`Missing_metadata_or_replaced_ciphertext_is_not_silently_blessed`；`Unavailable_key_ring_and_wrong_purpose_fail_without_modifying_database` | 临时 DB/独立 providers，含 marker、用途和恢复边界；不支持自动 key 轮换或多机灾备宣称。 |
+| HMAC 派生、v2 存储、v1 升级及损坏恢复 | `Services/SessionIsolationKeyTests.Derivation_matches_explicit_versioned_length_prefixed_hmac_contract`；`Initialization_persists_raw_v2_key_directly_in_the_database`；`Concurrent_instances_claim_one_key_and_all_use_the_persisted_winner`；`Legacy_v1_row_upgrades_in_place_to_raw_v2_without_rotating`；`Legacy_v1_row_under_lost_ring_or_wrong_purpose_rotates_to_v2_once`；`Corrupt_or_missing_secret_rotates_atomically_and_derivation_recovers`；`Deleted_key_rows_self_heal_and_full_deletion_reinitializes` | 临时 DB/独立 providers，验证原地升级、损坏轮换和并发初始化；不代表真实部署、多机灾备或所有故障均可自动恢复。 |
 | 专用厂商登录/导入、opaque pin/single-flight | `OAuth/DedicatedOAuthLoginNetworkTests.Login_pins_profile_before_first_request_and_changed_profile_aborts_exchange`；`Duplicate_raw_and_multipart_imports_preserve_policy_and_use_exact_existing_account`；`Failed_explicit_policy_publication_rolls_back_credentials_for_final_existing_identity`；`Concurrent_successful_device_polls_exchange_once_then_replay_is_rejected` | Codex/Google/Kimi/xAI theory 范围按方法 InlineData；用 concrete controllers/clients 和 recording transport，不访问真实厂商。 |
 | 专用厂商额度/刷新/credits、不误判失效 | `Services/DedicatedOAuthNetworkTests.Quota_services_send_real_requests_with_each_accounts_guid_and_selected_proxy`；`Concrete_oauth_clients_refresh_concurrently_without_mixing_headers_cookies_or_tokens`；`Background_refresh_uses_account_policy_and_persists_rotated_tokens_and_site_key`；`Quota_401_refreshes_credentials_and_retries_through_the_same_account_policy`；`Codex_reset_credit_query_and_consume_use_the_selected_account_proxy`；`Proxy_policy_failure_during_background_refresh_preserves_credentials_and_reauth_state` | 方法名虽含 real_requests，实际是生产请求构造送入 recording transport，不是真代理出网；额度/刷新四厂商，401 theory 为 Codex/Google/Kimi，credits 仅 Codex。 |
 | 通用 vendor、无隐藏 Site、轮换响应撤销 | `OAuth/DeviceOAuthNetworkTests.Accounts_A_B_models_are_isolated_and_repeat_sends_resolve_current_policy`；`Cross_login_pending_polls_keep_distinct_fixed_context_and_revocation_fails_closed`；`No_site_credential_refresh_uses_exact_account_and_network_failure_is_not_reauth`；`Approved_rotating_refresh_persists_after_revocation_during_response_and_next_send_is_blocked`；`Every_factory_variant_preserves_region_timeout_and_account_or_pending_binding` | 使用 fake transport 验证 12 种厂商变体的绑定及代表性请求；不代表每个厂商的每种操作都已真实联网验证。 |

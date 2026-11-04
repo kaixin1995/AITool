@@ -8,8 +8,12 @@ public interface IQuotaRecheckScheduleStore
     /// <summary>Clock used to evaluate lease expiry by the transactional state writer.</summary>
     DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
 
-    /// <summary>仅额度自动禁用事件调用；从事件时刻起随机等待，已存在的日程不被重复禁用推迟。</summary>
-    Task EnsureScheduledAsync(string providerKey, Guid accountId, CancellationToken cancellationToken);
+    /// <summary>
+    /// 仅额度自动禁用事件调用。到期即查：距上次检查已超过随机间隔（含从未检查）的账号
+    /// 立即以 0–60 秒错峰复查（额度窗口可能早已重置）；未到期则按「上次检查 + 40–60 分钟随机」排程，
+    /// 最迟约一小时内必有下一次复查（防上游提前重置长期无人发现）。已存在的日程不被重复禁用推迟。
+    /// </summary>
+    Task EnsureScheduledAsync(string providerKey, Guid accountId, DateTimeOffset? lastQuotaCheckedAt, CancellationToken cancellationToken);
 
     /// <summary>在提供程序枚举之前捕获日程版本；枚举失败时丢弃观察结果，不能用于清理。</summary>
     Task<QuotaRecheckObservation> BeginReconciliationAsync(string providerKey, CancellationToken cancellationToken)

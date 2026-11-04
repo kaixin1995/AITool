@@ -1404,8 +1404,8 @@ public sealed class ProxyForwardService : IProxyForwardService
             // 多 choice（客户端 n>1）按 choice.index 分桶聚合，不能只取 choices[0]。
             var choicesByIndex = new SortedDictionary<int, ChoiceAccumulator>();
             var hasAnyChunk = false;
-
-
+            var sawDone = false;
+            var sawAnyFinishReason = false;
 
             foreach (var rawLine in sseBody.Split('\n'))
             {
@@ -1418,22 +1418,28 @@ public sealed class ProxyForwardService : IProxyForwardService
                 var payload = line["data:".Length..].Trim();
                 if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
-
+                    sawDone = true;
                     break;
                 }
 
                 if (payload.Length == 0) continue;
-                // Only empty data is a keepalive; malformed nonempty data can hide lost content.
+                // SSE 允许 keep-alive 空行；非 JSON 的非空 data 行按杂行容错跳过——
+                // 中转链路注入的杂行不该把本可成功的聚合判成 502（ee303d2 确立的宽容语义，
+                // 上游显式 error 事件仍然判失败）。是否被截断由收尾兜底规则诚实上报。
                 JsonDocument doc;
                 try
                 {
                     doc = JsonDocument.Parse(payload);
                 }
-                catch (JsonException) { return null; }
+                catch (JsonException)
+                {
+                    continue;
+                }
 
                 using (doc)
                 {
                     var chunk = doc.RootElement;
+                    // 上游显式下发的 error 事件（对象顶层含 error 属性）才是确定性失败信号。
                     if (chunk.ValueKind == JsonValueKind.Object && chunk.TryGetProperty("error", out _)) return null;
                     if (chunk.ValueKind != JsonValueKind.Object
                         || !chunk.TryGetProperty("object", out var objectEl)
@@ -1478,8 +1484,8 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                         if (choice.TryGetProperty("finish_reason", out var frEl) && frEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(frEl.GetString()))
                         {
+                            sawAnyFinishReason = true;
                             acc.FinishReason ??= frEl.GetString();
-
                         }
 
                         if (!choice.TryGetProperty("delta", out var deltaEl) || deltaEl.ValueKind != JsonValueKind.Object)
@@ -1567,10 +1573,17 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
             }
 
-            if (!hasAnyChunk || choicesByIndex.Count == 0 || choicesByIndex.Values.Any(choice => string.IsNullOrWhiteSpace(choice.FinishReason)))
+            // 宽容门槛（ee303d2）：只要收到过有效 chunk 就允许聚合成功；缺失的 finish_reason
+            // 按收尾兜底规则补齐。部分实现不逐 choice 发 finish_reason（只在末块发或不发），
+            // 严格要求会把本可成功的请求变成 502。显式 error 事件已在上方单独判失败。
+            if (!hasAnyChunk)
             {
                 return null;
             }
+
+            // 流正常收尾（见过 [DONE] 或 finish_reason）才允许 stop 兜底；
+            // 半途掐断的流保留 finish_reason=null，不把静默截断洗白成正常完成。
+            var fallbackFinishReason = sawDone || sawAnyFinishReason ? "stop" : null;
 
             var result = new System.Text.Json.Nodes.JsonObject
             {
@@ -1583,9 +1596,6 @@ public sealed class ProxyForwardService : IProxyForwardService
             {
                 result["system_fingerprint"] = systemFingerprint;
             }
-
-            // Every choice must have an explicit finish reason before a non-streaming success.
-
 
             var choicesArray = new System.Text.Json.Nodes.JsonArray();
             foreach (var (choiceIndex, acc) in choicesByIndex)
@@ -1640,7 +1650,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     ["index"] = choiceIndex,
                     ["message"] = message,
-                    ["finish_reason"] = acc.FinishReason,
+                    ["finish_reason"] = acc.FinishReason ?? fallbackFinishReason,
                 });
             }
             result["choices"] = choicesArray;

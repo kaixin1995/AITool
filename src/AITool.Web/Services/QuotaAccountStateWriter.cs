@@ -19,19 +19,19 @@ internal static class QuotaAccountStateWriter
     {
         "codex" => ChangeAsync<CodexAccount>(db, providerKey, accountId, enabled,
             a => a.Id == accountId && !a.ManuallyDisabled && !a.DisabledByFeatureToggle && !a.RequiresReauth && !a.IsQuotaCooling,
-            a => new CodexAccount { IsEnabled = enabled }, a => a.LinkedSiteId, scheduleStore, logger, ct, leaseToken),
+            a => new CodexAccount { IsEnabled = enabled }, a => a.LinkedSiteId, a => a.LastQuotaCheckedAt, scheduleStore, logger, ct, leaseToken),
         "google" => ChangeAsync<GoogleAccount>(db, providerKey, accountId, enabled,
             a => a.Id == accountId && !a.ManuallyDisabled && !a.DisabledByFeatureToggle && !a.DisabledByUpstream && !a.RequiresReauth && !a.IsQuotaCooling,
-            a => new GoogleAccount { IsEnabled = enabled }, a => a.LinkedSiteId, scheduleStore, logger, ct, leaseToken),
+            a => new GoogleAccount { IsEnabled = enabled }, a => a.LinkedSiteId, a => a.LastQuotaCheckedAt, scheduleStore, logger, ct, leaseToken),
         "kimi" => ChangeAsync<KimiAccount>(db, providerKey, accountId, enabled,
             a => a.Id == accountId && !a.ManuallyDisabled && !a.DisabledByFeatureToggle && !a.IsDeleted && !a.RequiresReauth,
-            a => new KimiAccount { IsEnabled = enabled }, a => a.LinkedSiteId, scheduleStore, logger, ct, leaseToken),
+            a => new KimiAccount { IsEnabled = enabled }, a => a.LinkedSiteId, a => a.LastQuotaCheckedAt, scheduleStore, logger, ct, leaseToken),
         "xai" => ChangeAsync<XaiAccount>(db, providerKey, accountId, enabled,
             a => a.Id == accountId && !a.ManuallyDisabled && !a.DisabledByFeatureToggle && !a.IsDeleted && !a.RequiresReauth,
-            a => new XaiAccount { IsEnabled = enabled }, a => a.LinkedSiteId, scheduleStore, logger, ct, leaseToken),
+            a => new XaiAccount { IsEnabled = enabled }, a => a.LinkedSiteId, a => a.LastQuotaCheckedAt, scheduleStore, logger, ct, leaseToken),
         "device-oauth" => ChangeAsync<DeviceOAuthAccount>(db, providerKey, accountId, enabled,
             a => a.Id == accountId && !a.ManuallyDisabled && !a.DisabledByFeatureToggle && !a.IsDeleted && !a.RequiresReauth,
-            a => new DeviceOAuthAccount { IsEnabled = enabled }, a => a.LinkedSiteId, scheduleStore, logger, ct, leaseToken),
+            a => new DeviceOAuthAccount { IsEnabled = enabled }, a => a.LinkedSiteId, a => a.LastQuotaCheckedAt, scheduleStore, logger, ct, leaseToken),
         _ => throw new ArgumentOutOfRangeException(nameof(providerKey)),
     };
 
@@ -93,9 +93,10 @@ internal static class QuotaAccountStateWriter
 
     private static async Task<bool> ChangeAsync<T>(AppDbContext db, string providerKey, Guid accountId, bool enabled,
         Expression<Func<T, bool>> eligible, Expression<Func<T, T>> update,
-        Func<T, Guid> linkedSiteId,
+        Func<T, Guid> linkedSiteId, Func<T, DateTimeOffset?> lastQuotaSuccess,
         IQuotaRecheckScheduleStore? scheduleStore, ILogger logger, CancellationToken ct, Guid? leaseToken) where T : class, new()
     {
+        DateTimeOffset? lastSuccess = null;
         using var client = db.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         await client.Ado.BeginTranAsync();
@@ -137,6 +138,8 @@ internal static class QuotaAccountStateWriter
 
             var current = await client.Queryable<T>().InSingleAsync(accountId);
             var siteId = linkedSiteId(current);
+            // 到期即查的排程依据：事务内读到的账号级「上次检查时间」（禁用写入后仍为旧值）。
+            lastSuccess = lastQuotaSuccess(current);
             if (siteId != Guid.Empty)
             {
                 await client.Updateable<Site>().SetColumns(s => new Site { IsEnabled = enabled })
@@ -158,7 +161,7 @@ internal static class QuotaAccountStateWriter
             using var scheduleTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
-                var scheduleTask = scheduleStore.EnsureScheduledAsync(providerKey, accountId, scheduleTimeout.Token);
+                var scheduleTask = scheduleStore.EnsureScheduledAsync(providerKey, accountId, lastSuccess, scheduleTimeout.Token);
                 // Some database operations ignore cancellation. Bound our wait independently and
                 // observe any eventual failure even when the underlying write outlives this request.
                 _ = scheduleTask.ContinueWith(static task => { _ = task.Exception; },

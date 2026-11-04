@@ -2798,7 +2798,10 @@ onUnmounted(() => {
 
 .oauth-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  /* 竖长方形卡片：列宽锁在 360–390，不随窗口拉伸（剩余空间转为整体两侧留白），
+     窗口越宽排更多列而不是把卡片撑宽；列间距恒定 18px。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 390px));
+  justify-content: center;
   align-items: stretch;
   gap: 18px;
   margin-top: 16px;
@@ -2956,25 +2959,23 @@ onUnmounted(() => {
   padding-right: 6px;
   scrollbar-color: var(--border-color-global) transparent;
   scrollbar-width: thin;
+  /* 各窗口行共享同一套列轨道（行内 subgrid 对齐）：
+     标签列 fit-content 按卡片内最长标签取宽，进度条紧跟其后 8px 开始，
+     消灭短标签（如「5 小时限额」）和进度条之间的大片留白。 */
+  display: grid;
+  grid-template-columns: fit-content(180px) 1fr 44px;
+  column-gap: 8px;
+  align-content: start;
 }
 
 .oauth-window {
   display: grid;
-  grid-template-columns: minmax(180px, 1.35fr) minmax(120px, 1fr) 56px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   align-items: center;
-  column-gap: 12px;
   row-gap: 6px;
   padding: 10px 0 12px;
   border-bottom: 1px solid var(--border-color-soft);
-}
-
-.oauth-window.no-progress {
-  grid-template-columns: 1fr auto;
-}
-
-/* 两列网格下重置时间不越界到隐式第三列 */
-.oauth-window.no-progress .oauth-window-reset {
-  grid-column: 2;
 }
 
 .oauth-window:last-child {
@@ -2984,14 +2985,16 @@ onUnmounted(() => {
 .oauth-window-label {
   min-width: 0;
   overflow: visible;
+  /* 右对齐：短标签直接贴住自己的进度条，不留空档（左缘参差由列轨道吸收） */
   color: var(--text-color-secondary);
   font-size: 13px;
+  text-align: right;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
 .oauth-window-percent {
-  min-width: 56px;
+  min-width: 44px;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 600;
@@ -3107,7 +3110,6 @@ onUnmounted(() => {
   .oauth-grid,
   .account-kpi-row,
   .account-meta-grid,
-  .oauth-window,
   .inspection-summary-grid,
   .inspection-log-row {
     grid-template-columns: 1fr;
@@ -3116,19 +3118,6 @@ onUnmounted(() => {
   /* 窄屏单列无跨卡片对齐约束且行高更松，上限放宽回原值避免频繁滚动 */
   .oauth-windows-container {
     max-height: 320px;
-  }
-
-  .oauth-window-reset {
-    grid-column: 1;
-  }
-
-  /* no-progress 双列规则特异性更高，窄屏同样收敛为单列 */
-  .oauth-window.no-progress {
-    grid-template-columns: 1fr;
-  }
-
-  .oauth-window.no-progress .oauth-window-reset {
-    grid-column: 1;
   }
 
   .oauth-card-header,

@@ -20,13 +20,13 @@ public sealed class QuotaRecheckScheduleStore(
     public DateTimeOffset UtcNow => timeProvider.GetUtcNow();
 
     public async Task EnsureScheduledAsync(string providerKey, Guid accountId,
-        CancellationToken cancellationToken)
+        DateTimeOffset? lastQuotaCheckedAt, CancellationToken cancellationToken)
     {
         ValidateProvider(providerKey);
         cancellationToken.ThrowIfCancellationRequested();
         using var scope = scopeFactory.CreateScope();
         using var client = OpenClient(scope);
-        await InsertMissingAsync(client, providerKey, accountId, lastQuotaCheckedAt: null, InsertOrigin.NewDisableEvent, cancellationToken);
+        await InsertMissingAsync(client, providerKey, accountId, lastQuotaCheckedAt, InsertOrigin.NewDisableEvent, cancellationToken);
     }
 
     public async Task<QuotaRecheckObservation> BeginReconciliationAsync(string providerKey, CancellationToken cancellationToken)
@@ -191,20 +191,19 @@ public sealed class QuotaRecheckScheduleStore(
 
     private enum InsertOrigin { NewDisableEvent, HistoricalBackfill }
 
-    // Reconcile 补排不是新禁用事件，只有它使用历史检查时间与错峰补查。
-    // 新禁用事件从事件时刻起算完整随机退避（40–60 分钟），避免刚禁用就立即复查。
+    // 新禁用事件与 Reconcile 补排共用同一套到期计算；两者只在冲突处理上不同
+    // （新禁用事件刷新 Generation，补排不动已存在日程）。
     private async Task InsertMissingAsync(ISqlSugarClient client, string providerKey, Guid accountId,
         DateTimeOffset? lastQuotaCheckedAt, InsertOrigin origin, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var now = timeProvider.GetUtcNow();
-        // 新禁用事件从事件时刻计时；只有历史补排才允许以「上次成功查询时间」为起点，
-        // 并在该时间未知/已逾期时用 0–60 秒错峰，避免新禁用账号几秒后就被复查。
-        var next = origin == InsertOrigin.NewDisableEvent
-            ? now + intervals.NextInterval()
-            : lastQuotaCheckedAt is { } last && last + intervals.NextInterval() is var due && due > now
-                ? due
-                : now + intervals.NextCatchUpDelay();
+        // 到期即查：距上次检查已超过随机间隔（含从未检查）→ 立即以 0–60 秒错峰复查——
+        // 额度窗口可能早已重置，不该再等一个完整间隔；未到期 → next = last + 40–60 分钟随机，
+        // 天然保证最迟约一小时内必有下一次复查（额度被上游提前重置也不会长期无人发现）。
+        var next = lastQuotaCheckedAt is { } last && last + intervals.NextInterval() is var due && due > now
+            ? due
+            : now + intervals.NextCatchUpDelay();
 
         // An Ensure event renews the generation even on conflict, but NEVER postpones due
         // or alters a current lease. Historical backfill insertion is not a new disable event.

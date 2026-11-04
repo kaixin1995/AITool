@@ -42,8 +42,8 @@ public sealed class QuotaRecheckScheduleMigrationTests
             (await context.QuotaRecheckSchedules.CountAsync()).Should().Be(0);
             var store = new QuotaRecheckScheduleStore(provider.GetRequiredService<IServiceScopeFactory>(),
                 TimeProvider.System, new QuotaRecheckIntervalSource());
-            await store.EnsureScheduledAsync("codex", account.Id, default);
-            await store.EnsureScheduledAsync("google", account.Id, default);
+            await store.EnsureScheduledAsync("codex", account.Id, null, default);
+            await store.EnsureScheduledAsync("google", account.Id, null, default);
             (await context.QuotaRecheckSchedules.CountAsync()).Should().Be(2, "provider and account form the composite key");
             var persisted = await context.QuotaRecheckSchedules.ToListAsync();
             persisted.Should().OnlyContain(s => s.NextCheckAtUtcTicks > 0 && s.CreatedAtUtcTicks > 0);
@@ -111,7 +111,7 @@ public sealed class QuotaRecheckScheduleMigrationTests
             var observation = await store.BeginReconciliationAsync("p", default);
             await store.ReconcileAsync("p", [], observation, default);
             (await context.QuotaRecheckSchedules.CountAsync()).Should().Be(1, "migration-default generation never overrides active lease protection");
-            await store.EnsureScheduledAsync("p", id, default);
+            await store.EnsureScheduledAsync("p", id, null, default);
             row = (await context.QuotaRecheckSchedules.ToListAsync()).Single();
             row.Generation.Should().NotBeEmpty();
             row.NextCheckAtUtcTicks.Should().Be(due);

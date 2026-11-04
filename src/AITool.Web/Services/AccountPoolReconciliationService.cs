@@ -1,4 +1,12 @@
 using System.Text.Json;
+using AITool.Domain.Codex;
+using AITool.Domain.Google;
+using AITool.Domain.Kimi;
+using AITool.Domain.OAuth;
+using AITool.Domain.Proxy;
+using AITool.Domain.SiteCatalog;
+using AITool.Domain.Sites;
+using AITool.Domain.Xai;
 using AITool.Infrastructure.Persistence;
 
 namespace AITool.Web.Services;
@@ -15,6 +23,12 @@ public sealed class AccountPoolReconciliationService : BackgroundService
     private readonly Dictionary<Guid, string> _failures = new();
     private readonly object _statusGate = new();
     private string? _scanFailure;
+    private string? _lastFingerprint;
+
+    // 轻量轮询节奏：多数轮次只做 COUNT 指纹比对（行数无变化即跳过全量对账），
+    // 每 FullScanEveryPasses 轮无条件全量，兜住行数不变的更新类变更（改名/映射启停等）。
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
+    private const int FullScanEveryPasses = 6;
 
     public AccountPoolReconciliationService(IServiceScopeFactory scopeFactory, ILogger<AccountPoolReconciliationService> logger)
     {
@@ -31,16 +45,27 @@ public sealed class AccountPoolReconciliationService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var pass = 0;
         while (!stoppingToken.IsCancellationRequested)
         {
-            await RunOnceAsync(stoppingToken);
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+            // 首轮强制全量（修复中断的池工作）；此后仅指纹变化、存在待重试失败或周期性强制轮做全量。
+            var forceFull = pass % FullScanEveryPasses == 0;
+            await RunOnceAsync(stoppingToken, forceFull);
+            pass++;
+            await Task.Delay(PollInterval, stoppingToken);
         }
     }
 
-    /// <summary>Runs one pass. Snapshots are recorded before syncing, so concurrent changes are observed on the next pass.</summary>
-    public async Task RunOnceAsync(CancellationToken ct)
+    /// <summary>Runs one full pass. Snapshots are recorded before syncing, so concurrent changes are observed on the next pass.</summary>
+    public Task RunOnceAsync(CancellationToken ct) => RunOnceAsync(ct, forceFull: true);
+
+    internal async Task RunOnceAsync(CancellationToken ct, bool forceFull)
     {
+        if (!forceFull && !HasPendingFailures() && await FingerprintUnchangedAsync(ct))
+        {
+            return;
+        }
+
         try
         {
             using var scope = _scopeFactory.CreateScope();
@@ -98,6 +123,62 @@ public sealed class AccountPoolReconciliationService : BackgroundService
             lock (_statusGate) _scanFailure = ex.Message;
             _logger.LogError(ex, "Account pool reconciliation scan failed; will retry");
         }
+
+        // 全量完成后刷新指纹基线（含强制轮），使紧随其后的快速轮无需再全量学习一次指纹。
+        await TryRefreshFingerprintAsync(ct);
+    }
+
+    private bool HasPendingFailures()
+    {
+        lock (_statusGate) return _failures.Count > 0 || _scanFailure is not null;
+    }
+
+    /// <summary>
+    /// 轻量指纹：池/成员/映射/站点/各厂商账号表的行数聚合。行数无变化的大多数轮次
+    /// 以此跳过全量对账；行数不变的更新类变更由周期性强制全量兜底。
+    /// 指纹查询失败时按"已变化"处理（退化为全量，绝不因指纹故障漏对账）。
+    /// </summary>
+    private async Task<bool> FingerprintUnchangedAsync(CancellationToken ct)
+    {
+        try
+        {
+            var fingerprint = await ComputeFingerprintAsync(ct);
+            if (fingerprint == _lastFingerprint) return true;
+            _lastFingerprint = fingerprint;
+            return false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Account pool reconciliation fingerprint check failed; running full pass");
+            return false;
+        }
+    }
+
+    private async Task TryRefreshFingerprintAsync(CancellationToken ct)
+    {
+        try { _lastFingerprint = await ComputeFingerprintAsync(ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { /* 基线刷新失败无害：下一快速轮会多做一次全量 */ }
+    }
+
+    private async Task<string> ComputeFingerprintAsync(CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var client = scope.ServiceProvider.GetRequiredService<AppDbContext>().Client;
+        return string.Join(',',
+            await client.Queryable<AccountPool>().CountAsync(ct),
+            await client.Queryable<AccountPoolMember>().CountAsync(ct),
+            await client.Queryable<SiteModelMapping>().CountAsync(ct),
+            await client.Queryable<Site>().CountAsync(ct),
+            await client.Queryable<CodexAccount>().CountAsync(ct),
+            await client.Queryable<GoogleAccount>().CountAsync(ct),
+            await client.Queryable<KimiAccount>().CountAsync(ct),
+            await client.Queryable<XaiAccount>().CountAsync(ct),
+            await client.Queryable<DeviceOAuthAccount>().CountAsync(ct));
     }
 }
 

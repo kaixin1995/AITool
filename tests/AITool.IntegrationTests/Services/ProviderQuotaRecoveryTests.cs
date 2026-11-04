@@ -776,7 +776,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         public HashSet<(string Key, Guid Id)> Scheduled { get; } = [];
         public Action<CancellationToken>? BeforeEnsure { get; set; }
         public Task? EnsureResult { get; set; }
-        public Task EnsureScheduledAsync(string providerKey, Guid accountId, CancellationToken cancellationToken)
+        public Task EnsureScheduledAsync(string providerKey, Guid accountId, DateTimeOffset? lastQuotaCheckedAt, CancellationToken cancellationToken)
         {
             BeforeEnsure?.Invoke(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();

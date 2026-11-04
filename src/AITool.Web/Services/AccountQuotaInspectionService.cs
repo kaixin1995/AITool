@@ -326,7 +326,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                         await _scheduleStore.CompleteAsync(lease,
                             keepScheduled: !success || (current is not null && IsRecoveryEligible(current)), cleanup.Token);
                     else if (current is not null && IsRecoveryEligible(current))
-                        await _scheduleStore.EnsureScheduledAsync(provider.ProviderKey, current.AccountId, cleanup.Token);
+                        await _scheduleStore.EnsureScheduledAsync(provider.ProviderKey, current.AccountId, current.LastQuotaCheckedAt, cleanup.Token);
                     if (lease is not null)
                         AddLog("schedule", $"账号 {account.DisplayName} 额度恢复复查完成（完成后随机间隔）");
                 }

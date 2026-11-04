@@ -281,7 +281,7 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
     {
         var concurrentlyDisabled = Guid.NewGuid();
         _provider.SnapshotCallback = () => _store.EnsureScheduledAsync(_provider.ProviderKey,
-            concurrentlyDisabled, CancellationToken.None);
+            concurrentlyDisabled, null, CancellationToken.None);
         await Tick();
         Rows().Should().ContainSingle().Which.AccountId.Should().Be(concurrentlyDisabled);
         _provider.SnapshotCallback = null;

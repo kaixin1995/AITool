@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Application.Networking;
@@ -520,12 +521,65 @@ public sealed class AccountSessionIsolationTests : IDisposable
             new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain("data: [DONE]", "桥接流必须补发 [DONE] 终止符，OpenAI 兼容客户端才能正常收尾");
+        // 恰好一次 [DONE]：桥补发的终止符不得与转换块自带的终止符叠加成双发。
+        Regex.Matches(body, "data: \\[DONE\\]").Should().HaveCount(1, "OpenAI 兼容客户端以 [DONE] 收尾，缺失会挂起、重复会解析异常");
         body.Should().Contain("finish_reason", "completed 事件应桥接出收尾 chunk");
 
         var rows = await AssertUsageRowsAsync(factory);
         rows.Should().ContainSingle();
         rows.Single().Status.Should().Be("success", "完成事件已到（usage 已提取），客户端其后断开按成功入账而非 canceled");
+    }
+
+    [Fact]
+    public async Task Chat_to_responses_bridge_does_not_double_done_when_upstream_interrupts_after_completion()
+    {
+        // 边界回归（2026-11-04 反审）：completed 事件已转换输出（[DONE] 已发）后，上游连接
+        // 非取消中断（Success=false、IsCanceled=false）——桥不得因 IsStreamInterrupted 再补发第二个 [DONE]。
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            FailStreamingAfterCallbacks = true,
+            StreamingLines =
+            [
+                "event: response.created",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_post_done_break\",\"output\":[]}}", "",
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_post_done_break\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":8,\"output_tokens\":4}}}", ""
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        Regex.Matches(body, "data: \\[DONE\\]").Should().HaveCount(1,
+            "completed 转换块已发 [DONE]，其后上游中断不得再补发（双发会让严格解析的客户端异常）");
+    }
+
+    [Fact]
+    public async Task Chat_passthrough_does_not_double_done_when_upstream_interrupts_after_done()
+    {
+        // 边界回归：Chat→Chat 透传中上游 [DONE] 已透传后非取消中断——不得再补发第二个 [DONE]。
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            FailStreamingAfterCallbacks = true,
+            StreamingLines =
+            [
+                "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}", "",
+                "data: [DONE]", ""
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        Regex.Matches(body, "data: \\[DONE\\]").Should().HaveCount(1,
+            "上游 [DONE] 已透传，其后中断不得补发第二个（双发会让严格解析的客户端异常）");
     }
 
     [Fact]

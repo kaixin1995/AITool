@@ -651,8 +651,10 @@ public sealed partial class OpenAiProxyController
             }
         }
 
-        // 流中断但已开始写入时，向客户端补发终止信号避免挂起
-        if (result.IsStreamInterrupted && startedWriting)
+        // 流中断但已开始写入时，向客户端补发终止信号避免挂起。
+        // 上游 [DONE] 已透传（receivedDoneEvent）后不再补发（其后中断会双发）；
+        // IsCanceled（客户端已断开）补发无意义。
+        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent)
         {
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
@@ -855,10 +857,11 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        // 桥接流从不透传上游 [DONE]（Responses 上游本身没有）：OpenAI 兼容客户端以
-        // data: [DONE] 收尾——完成与中断都必须补发终止符，否则客户端会挂起等待直至超时 abort
-        // （实测 DSH 对 Codex 桥接模型大量取消的直接原因）。
-        if (startedWriting)
+        // Responses→Chat 的转换块在 response.completed 时已自带 [DONE]（Protocol 2278）：
+        // completed 已到就不再补发（即使其后上游非取消中断，也会双发）；
+        // IsCanceled（客户端已断开，多数是读完 [DONE] 正常关闭）补发无意义。
+        // 仅「completed 未到 + 非取消的中断」补终止符防客户端挂起。
+        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent)
         {
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
@@ -1165,9 +1168,11 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        // 桥接流从不透传上游 [DONE]（Anthropic 上游没有）：完成与中断都必须补发终止符，
-        // 否则 OpenAI 兼容客户端会挂起等待直至超时 abort。
-        if (startedWriting)
+        // Anthropic→Chat 的转换块在 message_stop 时已自带 [DONE]（见 FlushAnthropicSseBlockAsync）：
+        // message_stop 已到就不再补发（即使其后上游非取消中断，也会双发）；
+        // IsCanceled（客户端已断开，多数是读完 [DONE] 正常关闭）补发无意义。
+        // 仅「message_stop 未到 + 非取消的中断」补终止符防客户端挂起。
+        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !state.ReceivedMessageStop)
         {
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }

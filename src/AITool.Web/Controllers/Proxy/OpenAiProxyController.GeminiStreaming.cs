@@ -122,8 +122,8 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        // 桥接流从不透传上游 [DONE]（Gemini 上游没有）：完成与中断都必须补发终止符，
-        // 否则 OpenAI 兼容客户端会挂起等待直至超时 abort。
+        // Gemini→Chat 的逐块转换不输出终止符（[DONE] 仅在 Complete* 收尾块，流式路径不调用）：
+        // 完成与中断都必须补发，否则 OpenAI 兼容客户端会挂起等待直至超时 abort。
         if (startedWriting)
         {
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
