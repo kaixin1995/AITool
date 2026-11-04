@@ -535,7 +535,9 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                     ["x-stainless-package-version"] = WorkBuddyClientConstants.StainlessPackageVersion,
                     ["x-stainless-retry-count"] = "0",
                     ["x-stainless-runtime"] = "node",
-                    ["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion
+                    ["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion,
+                    // 内部标记（不透传）：转发层据此做渠道校验 11128 的请求体内容适配。
+                    ["X-AITool-Rewrite-Channel"] = "workbuddy"
                 }, JsonOptions),
                 IsBuiltIn = true,
                 IsEnabled = true,

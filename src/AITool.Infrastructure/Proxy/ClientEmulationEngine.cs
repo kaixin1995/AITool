@@ -185,6 +185,8 @@ public static partial class ClientEmulationEngine
                 headers["x-stainless-retry-count"] = "0";
                 headers["x-stainless-runtime"] = "node";
                 headers["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion;
+                // 内部标记（不透传）：转发层据此做 WorkBuddy 渠道校验 11128 的请求体内容适配。
+                headers[ProxyForwardService.RewriteChannelHeader] = "workbuddy";
                 break;
 
             case ClientEmulationConstants.None:

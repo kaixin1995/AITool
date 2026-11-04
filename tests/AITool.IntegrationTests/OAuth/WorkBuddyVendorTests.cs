@@ -78,6 +78,8 @@ public sealed class WorkBuddyVendorTests
         chat.ExtraHeaders["X-Agent-Type"].Should().Be("main");
         // 上游只接受流式（11101）：标记头驱动代理层强制 stream:true + SSE 聚合。
         chat.ExtraHeaders["X-AITool-Force-Stream"].Should().Be("true");
+        // 渠道校验（11128）内容审查：标记头驱动转发层改写请求体（首消息补 system + 指纹行替换）。
+        chat.ExtraHeaders["X-AITool-Rewrite-Channel"].Should().Be("workbuddy");
         // 渠道校验（code 11128）要求完整官方客户端指纹：UA 版本 / x-stainless / X-IDE / 会话 ID 模板。
         chat.ExtraHeaders["User-Agent"].Should().Be("WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0");
         chat.ExtraHeaders["x-stainless-lang"].Should().Be("js");

@@ -209,6 +209,8 @@ public sealed class ProxyForwardService : IProxyForwardService
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
         var isStreaming = request.EnableStreaming || IsStreamingRequest(request.RequestBody);
+        // 站点标记驱动的内容适配（WorkBuddy 渠道校验 11128：请求体改写，详见 WorkBuddyChatAdapter）。
+        requestBody = ApplyChannelRewrite(request, requestBody);
 
         // 站点标记强制上游流式（WorkBuddy code 11101 等）：客户端非流式时改写请求体加 stream:true，
         // 响应 SSE 由下方聚合逻辑还原为完整 JSON，客户端无感知。
@@ -535,6 +537,8 @@ public sealed class ProxyForwardService : IProxyForwardService
         var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
+        // 站点标记驱动的内容适配（WorkBuddy 渠道校验 11128：请求体改写，详见 WorkBuddyChatAdapter）。
+        requestBody = ApplyChannelRewrite(request, requestBody);
 
         var credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
 
@@ -1210,6 +1214,12 @@ public sealed class ProxyForwardService : IProxyForwardService
                 continue;
             }
 
+            // 内部标记头（渠道校验内容适配），不透传给上游。
+            if (string.Equals(header.Key, RewriteChannelHeader, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase))
             {
                 httpRequest.Headers.Remove("Authorization");
@@ -1234,6 +1244,27 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// 强制 stream:true，并将返回的 SSE 聚合回完整 JSON。
     /// </summary>
     public const string ForceStreamHeader = "X-AITool-Force-Stream";
+
+    /// <summary>
+    /// 站点侧通过 ExtraHeadersJson 携带 <c>X-AITool-Rewrite-Channel: workbuddy</c> 驱动
+    /// 转发层做 WorkBuddy 渠道校验内容适配（code 11128）：已知官方客户端提示词整行改写 +
+    /// 请求体拼写修正（max_completion_tokens→max_tokens、developer→system、首消息补 system），
+    /// 详见 <see cref="WorkBuddyChatAdapter"/>。内部标记头，不透传给上游。
+    /// </summary>
+    public const string RewriteChannelHeader = "X-AITool-Rewrite-Channel";
+
+    /// <summary>按 RewriteChannelHeader 标记对请求体做渠道内容适配；无标记或无改动时原样返回。</summary>
+    internal static string ApplyChannelRewrite(ProxyForwardRequest request, string requestBody)
+    {
+        if (!request.ForwardHeaders.TryGetValue(RewriteChannelHeader, out var channel))
+        {
+            return requestBody;
+        }
+
+        return string.Equals(channel.Trim(), "workbuddy", StringComparison.OrdinalIgnoreCase)
+            ? WorkBuddyChatAdapter.Rewrite(requestBody)
+            : requestBody;
+    }
 
     /// <summary>解析 Anthropic 协议的鉴权头集合（key 形态：默认 x-api-key / bearer 形态：Authorization Bearer）。</summary>
     public static IEnumerable<(string Name, string Value)> ResolveAnthropicAuthHeaders(

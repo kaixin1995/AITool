@@ -109,6 +109,9 @@ public sealed class WorkBuddyOAuthVendor : IDeviceOAuthVendor
             // 上游只接受流式请求（code 11101「Non-stream chat request is currently not supported」）。
             // 转发层识别此标记后强制 stream:true，并在客户端非流式时把 SSE 聚合回完整 JSON。
             ["X-AITool-Force-Stream"] = "true",
+            // 渠道校验（code 11128）是内容审查：转发层识别此标记后按 WorkBuddyChatAdapter
+            // 改写请求体（已知官方客户端提示词整行替换 + 拼写修正 + 首消息补 system）。内部标记，不透传。
+            ["X-AITool-Rewrite-Channel"] = "workbuddy",
         });
 
     public async Task<DeviceOAuthStartResult> StartSignInAsync(CancellationToken cancellationToken)

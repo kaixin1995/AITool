@@ -184,6 +184,8 @@ public sealed class ClientEmulationEngineTests
         Assert.False(headers.ContainsKey("X-User-Id"));
         Assert.False(headers.ContainsKey("X-Domain"));
         Assert.False(headers.ContainsKey("X-Machine-ID"));
+        // 内部标记（不透传）：转发层据此做渠道校验 11128 的请求体内容适配。
+        Assert.Equal("workbuddy", headers[ProxyForwardService.RewriteChannelHeader]);
     }
 
     [Fact]
