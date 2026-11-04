@@ -492,6 +492,43 @@ public sealed class AccountSessionIsolationTests : IDisposable
     }
 
     [Fact]
+    public async Task Chat_to_responses_bridge_sends_done_terminator_and_settles_post_completion_cancel_as_success()
+    {
+        // 回归（2026-11-04 实例 1M→gpt-6.1-terra 实测）：Codex Responses 上游经桥转成
+        // OpenAI Chat 流后从不发 data: [DONE]（上游没有该终止符，桥只在异常中断时补发），
+        // DSH 等 [DONE] 挂起后 abort——同一模型大量取消而部分成功。修复：
+        // a) 桥在完成/中断时都补发终止符；b) UpstreamCompleted 填充使完成事件后的取消翻转为 success 入账。
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            CancelAfterStreamingCallbacks = true,
+            StreamingLines =
+            [
+                "event: response.created",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bridge_cancel\",\"output\":[]}}", "",
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\",\"output_index\":0,\"content_index\":0}", "",
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bridge_cancel\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}", ""
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        await EnableDeveloperTraceAsync(factory);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.PostAsync("/v1/chat/completions",
+            new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("data: [DONE]", "桥接流必须补发 [DONE] 终止符，OpenAI 兼容客户端才能正常收尾");
+        body.Should().Contain("finish_reason", "completed 事件应桥接出收尾 chunk");
+
+        var rows = await AssertUsageRowsAsync(factory);
+        rows.Should().ContainSingle();
+        rows.Single().Status.Should().Be("success", "完成事件已到（usage 已提取），客户端其后断开按成功入账而非 canceled");
+    }
+
+    [Fact]
     public async Task Client_canceled_stream_still_logs_usage_row_instead_of_vanishing()
     {
         // 回归（2026-11-04 实例实测）：客户端（DeepSeek Harness 等 CLI 在收到完成事件后断开）

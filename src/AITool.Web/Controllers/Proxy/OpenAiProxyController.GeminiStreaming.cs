@@ -122,7 +122,9 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        if (result.IsStreamInterrupted && startedWriting)
+        // 桥接流从不透传上游 [DONE]（Gemini 上游没有）：完成与中断都必须补发终止符，
+        // 否则 OpenAI 兼容客户端会挂起等待直至超时 abort。
+        if (startedWriting)
         {
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
@@ -130,7 +132,8 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting && _referenceOutputError is null
+            CanFallback = !startedWriting && _referenceOutputError is null,
+            UpstreamCompleted = state.FinishReason is not null
         };
     }
 

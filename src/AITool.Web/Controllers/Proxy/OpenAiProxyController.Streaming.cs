@@ -855,7 +855,10 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        if (result.IsStreamInterrupted && startedWriting)
+        // 桥接流从不透传上游 [DONE]（Responses 上游本身没有）：OpenAI 兼容客户端以
+        // data: [DONE] 收尾——完成与中断都必须补发终止符，否则客户端会挂起等待直至超时 abort
+        // （实测 DSH 对 Codex 桥接模型大量取消的直接原因）。
+        if (startedWriting)
         {
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
@@ -863,7 +866,8 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting && _referenceOutputError is null
+            CanFallback = !startedWriting && _referenceOutputError is null,
+            UpstreamCompleted = receivedDoneEvent
         };
     }
 
@@ -1161,8 +1165,9 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        // 流中断但已开始写入时，向客户端补发终止信号避免挂起
-        if (result.IsStreamInterrupted && startedWriting)
+        // 桥接流从不透传上游 [DONE]（Anthropic 上游没有）：完成与中断都必须补发终止符，
+        // 否则 OpenAI 兼容客户端会挂起等待直至超时 abort。
+        if (startedWriting)
         {
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
@@ -1170,7 +1175,8 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting && _referenceOutputError is null
+            CanFallback = !startedWriting && _referenceOutputError is null,
+            UpstreamCompleted = state.ReceivedMessageStop
         };
     }
 
