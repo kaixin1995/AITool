@@ -42,6 +42,7 @@ interface OAuthSetup {
   canUseVendorCatalog: Ref<boolean>
   providerFilter: Ref<string>
   providerFilterSelectOptions: Ref<Array<{ label: string; value: string }>>
+  accountStatusFilter: Ref<string>
   accountViewMode: Ref<string>
   filteredAccounts: Ref<Array<{ id: string }>>
   editModal: Ref<boolean>
@@ -161,12 +162,13 @@ describe('OAuth vendor catalog readiness', () => {
     await flushAsync()
     expect(refreshFinished).toBe(true)
     expect(state.canUseVendorCatalog.value).toBe(true)
-    expect(state.providerFilterSelectOptions.value).toContainEqual({ label: 'Claude（0）', value: 'claude' })
+    // 当前状态下没有任何账号的厂商不进下拉
+    expect(state.providerFilterSelectOptions.value).not.toContainEqual({ label: 'Claude（0）', value: 'claude' })
     state.openEdit(state.accounts.value[0])
     expect(state.editAccount.value?.provider).toBe('codex')
     state.setProviderFilter('claude')
-    expect(state.providerFilter.value).toBe('claude')
-    expect(state.filteredAccounts.value).toHaveLength(0)
+    expect(state.providerFilter.value).toBe('all')
+    expect(state.filteredAccounts.value).toHaveLength(1)
   })
 
   it('shows a retry after failure and restores controls only after the retry succeeds', async () => {
@@ -190,7 +192,32 @@ describe('OAuth vendor catalog readiness', () => {
     expect(deviceApi.fetchDeviceOAuthVendors).toHaveBeenCalledTimes(2)
     expect(api.listOAuthAccounts).toHaveBeenCalledTimes(accountRequests)
     expect(state.canUseVendorCatalog.value).toBe(true)
-    expect(state.providerFilterSelectOptions.value).toContainEqual({ label: 'Claude（0）', value: 'claude' })
+    expect(state.providerFilterSelectOptions.value).not.toContainEqual({ label: 'Claude（0）', value: 'claude' })
+  })
+
+  it('defaults the status filter to enabled and self-heals a vendor selection that lost all accounts', async () => {
+    const deviceAccount: deviceApi.DeviceOAuthAccount = {
+      id: 'dev-1', vendorKey: 'claude', vendorLabel: 'Claude', displayName: 'Claude Acc', email: 'c@x.test',
+      isEnabled: true, manuallyDisabled: false, disabledByFeatureToggle: false, requiresReauth: false,
+      tokenExpiresAt: null, linkedSiteId: '', modelImportSupported: false, createdAt: '', lastQuotaCheckedAt: null,
+      planType: null, windows: []
+    }
+    vi.mocked(deviceApi.fetchDeviceOAuthAccounts).mockResolvedValue([deviceAccount])
+    vi.mocked(api.listOAuthAccounts).mockResolvedValue([{ ...account, id: 'codex-off', displayName: 'Off', isEnabled: false }])
+    const state = await mountOAuth()
+    state.accountViewMode.value = 'card'
+    // 页面默认「已启用」：禁用的 Codex 账号不进列表
+    expect(state.accountStatusFilter.value).toBe('enabled')
+    expect(state.filteredAccounts.value.map(a => a.id)).toEqual(['dev-1'])
+    expect(state.providerFilterSelectOptions.value).toContainEqual({ label: 'Claude（1）', value: 'claude' })
+    state.setProviderFilter('claude')
+    expect(state.providerFilter.value).toBe('claude')
+    // 该厂商唯一账号被禁用后：选项从下拉消失，残留选中项自动回落到「全部」
+    vi.mocked(deviceApi.fetchDeviceOAuthAccounts).mockResolvedValue([{ ...deviceAccount, isEnabled: false }])
+    await state.loadAccounts(false)
+    await flushAsync()
+    expect(state.providerFilterSelectOptions.value).not.toContainEqual({ label: 'Claude（0）', value: 'claude' })
+    expect(state.providerFilter.value).toBe('all')
   })
 
   it('fails closed with an explicit empty state when the catalog is empty', async () => {

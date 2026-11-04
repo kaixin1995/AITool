@@ -162,7 +162,8 @@ const accountViewMode = ref<AccountViewMode>(
 )
 watch(accountViewMode, mode => localStorage.setItem('oauth:viewMode', mode))
 
-const accountStatusFilter = ref<AccountStatusFilter>('all')
+// 默认只看已启用账号：进页面先聚焦可用账号，禁用/全部由用户显式切换。
+const accountStatusFilter = ref<AccountStatusFilter>('enabled')
 const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFilter }> = [
   { label: '已启用', value: 'enabled' },
   { label: '已禁用', value: 'disabled' },
@@ -170,7 +171,10 @@ const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFil
 ]
 const providerFilter = ref<ProviderFilter>('all')
 function setProviderFilter(value: ProviderFilter): void {
-  if (canUseVendorCatalog.value) providerFilter.value = value
+  if (!canUseVendorCatalog.value) return
+  // 空厂商不在下拉里，程序化设置同样拒绝，避免残留一个看不见的失效选项。
+  if (value !== 'all' && !providerFilterOptions.value.some(option => option.key === value)) return
+  providerFilter.value = value
 }
 const statusFilteredAccounts = computed(() => {
   if (accountStatusFilter.value === 'all') return accounts.value
@@ -190,7 +194,8 @@ const providerFilterOptions = computed(() => {
     label: v.label,
     count: statusFilteredAccounts.value.filter(acc => acc.provider === v.vendorKey).length
   }))
-  return [...staticOptions, ...deviceOptions]
+  // 当前状态筛选下一个账号都没有的厂商不进下拉，避免在长列表里翻找空厂商。
+  return [...staticOptions, ...deviceOptions].filter(option => option.key === 'all' || option.count > 0)
 })
 // 表格视图行（复用卡片同源数据与操作；窗口合并为一列文本便于扫读）。
 interface AccountTableWindow {
@@ -431,6 +436,13 @@ function getOAuthTabFromHash(): 'accounts' | 'inspection' {
 const activeTab = ref(getOAuthTabFromHash())
 const loading = ref(false)
 const accounts = ref<UnifiedAccount[]>([])
+// 状态切换/账号变动后选中厂商变空时自动回落到「全部」，不让失效筛选卡住列表。
+// 放在 accounts 声明之后：watch 注册即求值 computed 链，提前声明会踩 TDZ。
+watch(providerFilterOptions, options => {
+  if (providerFilter.value !== 'all' && !options.some(option => option.key === providerFilter.value)) {
+    providerFilter.value = 'all'
+  }
+})
 const networkReady = ref(false)
 const networkLoadState = ref<'loading' | 'ready' | 'disabled' | 'legacy' | 'error'>('loading')
 const legacyNetworkConfirmed = ref(false)
@@ -2934,8 +2946,10 @@ onUnmounted(() => {
 :global([data-theme='dark']) .oauth-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
 .oauth-windows-container {
+  /* 上限对齐两行满额度窗口的自然高度（= 原双窗 Codex 卡尺寸 132px）：
+     小内容保持卡片原有自然高度不强行垫高，超限的多资源包账号封顶并在容器内滚动。 */
   flex: 1 1 auto;
-  max-height: 320px;
+  max-height: 132px;
   min-height: 60px;
   margin: 16px 0;
   overflow-y: auto;
@@ -3097,6 +3111,11 @@ onUnmounted(() => {
   .inspection-summary-grid,
   .inspection-log-row {
     grid-template-columns: 1fr;
+  }
+
+  /* 窄屏单列无跨卡片对齐约束且行高更松，上限放宽回原值避免频繁滚动 */
+  .oauth-windows-container {
+    max-height: 320px;
   }
 
   .oauth-window-reset {
