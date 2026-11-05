@@ -241,6 +241,33 @@ function windowShortLabel(label: string): string {
     .trim() || label
 }
 
+// 表格额度列：积分资源包逐行列出太浪费，折叠成一条「资源包 ×N（共 X 积分）」汇总（卡片视图不受影响，仍是滚动收纳）。
+const PACKAGE_CREDIT_RE = /剩余\s*([\d.]+)\s*积分/
+function collapsePackageWindows(windows: AccountTableRow['windows']): AccountTableRow['windows'] {
+  const progress = windows.filter(w => w.usedPercent != null)
+  const packages = windows.filter(w => w.usedPercent == null && w.label.startsWith('资源包'))
+  const others = windows.filter(w => w.usedPercent == null && !w.label.startsWith('资源包'))
+  let credits = 0
+  let parsed = 0
+  for (const w of packages) {
+    const matched = w.label.match(PACKAGE_CREDIT_RE)
+    if (matched) {
+      credits += Number.parseFloat(matched[1])
+      parsed++
+    }
+  }
+  const summaryLabel = packages.length === 0
+    ? null
+    : parsed === packages.length
+      ? `资源包 ×${packages.length}（共 ${Number(credits.toFixed(2))} 积分）`
+      : `资源包 ×${packages.length}`
+  return [
+    ...progress,
+    ...others,
+    ...(summaryLabel ? [{ label: summaryLabel, shortLabel: '资源包', usedPercent: null }] : [])
+  ]
+}
+
 const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.value.map(acc => ({
   id: acc.id,
   name: acc.displayName,
@@ -309,7 +336,7 @@ const baseAccountTableColumns = [
     render(row: AccountTableRow) {
       if (row.windows.length === 0) return h('span', { class: 'oauth-table-sub' }, '—')
       return h('div', { class: 'oauth-table-windows' }, {
-        default: () => row.windows.map(w => {
+        default: () => collapsePackageWindows(row.windows).map(w => {
           if (w.usedPercent == null) {
             return h('div', { class: 'oauth-table-window-row' }, {
               default: () => [h('span', { class: 'oauth-table-window-label-only', title: w.label }, w.label)]
@@ -2798,10 +2825,10 @@ onUnmounted(() => {
 
 .oauth-grid {
   display: grid;
-  /* 竖长方形卡片：列宽锁在 360–390，不随窗口拉伸（剩余空间转为整体两侧留白），
-     窗口越宽排更多列而不是把卡片撑宽；列间距恒定 18px。 */
-  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 390px));
-  justify-content: center;
+  /* 竖长方形卡片：列宽锁在 360–375，不随窗口拉伸，
+     窗口越宽排更多列而不是把卡片撑宽；整体靠左，剩余空白留右侧。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 375px));
+  justify-content: start;
   align-items: stretch;
   gap: 18px;
   margin-top: 16px;
