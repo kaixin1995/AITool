@@ -39,7 +39,7 @@ public sealed class ForwardOAuthInvalidationTests : IDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddMemoryCache();
-        services.AddSqlSugar($"Data Source={_path}");
+        services.AddSqlSugar($"Data Source={_path};Pooling=False");
         services.AddScoped<ProxyRequestMetadataCache>();
         services.AddScoped<ForwardOAuthInvalidationService>();
         _services = services.BuildServiceProvider();
@@ -114,6 +114,58 @@ public sealed class ForwardOAuthInvalidationTests : IDisposable
     }
 
     [Theory]
+    [MemberData(nameof(ChangedCredentials))]
+    public async Task Rotation_after_snapshot_and_before_invalidation_write_preserves_account(string provider, string field, string transition)
+    {
+        var target = await SeedAsync(provider, transition == "from-null" && field == "RefreshToken", transition == "from-null" && field == "LastRefreshAt");
+        var snapshot = await ResolveSnapshotAsync(target);
+        object? replacement = transition == "to-null" ? null : field switch
+        {
+            "AccessToken" => "new-access",
+            "RefreshToken" => "new-refresh",
+            _ => RefreshedAt.AddHours(1)
+        };
+
+        var client = _db.Client;
+        using var release = new ManualResetEventSlim(false);
+        var checkedSnapshot = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var intercepted = 0;
+        client.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (!sql.TrimStart().StartsWith("PRAGMA busy_timeout", StringComparison.OrdinalIgnoreCase)
+                || Interlocked.CompareExchange(ref intercepted, 1, 0) != 0) return;
+            checkedSnapshot.TrySetResult(true);
+            if (!release.Wait(TimeSpan.FromSeconds(15))) throw new TimeoutException("Invalidation was not released");
+        };
+
+        // The snapshot/token check precedes this PRAGMA. Pause before BeginTran: SQLite's
+        // transaction takes a write lock, so waiting at UPDATE would prevent rotation committing.
+        // SQLite's async operations may complete synchronously; keep the AOP wait off the test thread.
+        var invalidation = Task.Run(() => _invalidation.InvalidateAsync(AccessToken, snapshot, CancellationToken.None));
+        try
+        {
+            await checkedSnapshot.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            // The rotation commits before invalidation can start its transaction and write.
+            await ChangeCredentialAsync(target, field, replacement);
+        }
+        finally
+        {
+            release.Set();
+            client.Aop.OnLogExecuting = null;
+        }
+        await invalidation.WaitAsync(TimeSpan.FromSeconds(15));
+
+        await AssertStateAsync(target, enabled: true, requiresReauth: false, siteEnabled: true);
+        var persisted = await ReadAccountAsync(target);
+        switch (field)
+        {
+            case "AccessToken": persisted.AccessToken.Should().Be((string?)replacement); break;
+            case "RefreshToken": persisted.RefreshToken.Should().Be((string?)replacement); break;
+            default: persisted.LastRefreshAt.Should().Be((DateTimeOffset?)replacement); break;
+        }
+    }
+
+    [Theory]
     [MemberData(nameof(Providers))]
     public async Task Different_sent_token_or_missing_snapshot_cannot_disable_account_or_site(string provider)
     {
@@ -144,6 +196,82 @@ public sealed class ForwardOAuthInvalidationTests : IDisposable
         result.StatusCode.Should().Be(401);
         handler.Calls.Should().Be(1);
         await AssertStateAsync(target, false, true, false);
+    }
+
+    public static IEnumerable<object[]> RefreshCases()
+    {
+        foreach (var provider in new[] { "codex", "google", "kimi", "device-oauth" })
+        foreach (var streaming in new[] { false, true })
+        foreach (var outcome in new[] { "success", "failed-refresh", "rejected-retry" })
+            yield return new object[] { provider, streaming, outcome };
+    }
+
+    [Theory]
+    [MemberData(nameof(RefreshCases))]
+    public async Task Forward_401_refreshes_once_and_retries_only_with_new_credential(string provider, bool streaming, string outcome)
+    {
+        const string newToken = "refreshed-access";
+        var target = await SeedAsync(provider, false, false);
+        var other = await SeedAsync(provider, false, false);
+        var handler = new RefreshRetryHandler(outcome == "success", streaming);
+        using var client = new HttpClient(handler);
+        var forward = new ProxyForwardService(client, NullLogger<ProxyForwardService>.Instance,
+            networkPolicyResolver: new DirectPolicy(), credentialResolver: _resolver);
+        var refreshTokens = new List<string>();
+        var invalidatedTokens = new List<string>();
+        var request = new ProxyForwardRequest
+        {
+            SiteId = target.SiteId, ManagedSource = target.Source,
+            AccountIdentity = new AccountIdentity(provider, target.AccountId), TargetBaseUrl = target.BaseUrl,
+            TargetApiKey = AccessToken, RequestBody = "{}", RequestTimeoutSeconds = 10,
+            RefreshTargetApiKeyAsync = async (token, _) =>
+            {
+                refreshTokens.Add(token);
+                if (outcome == "failed-refresh") return null;
+                await ChangeCredentialAsync(target, "AccessToken", newToken);
+                return newToken;
+            },
+            InvalidateTargetCredentialAsync = async (token, snapshot, ct) =>
+            {
+                invalidatedTokens.Add(token);
+                await _invalidation.InvalidateAsync(token, snapshot, ct);
+            }
+        };
+
+        var result = streaming
+            ? await forward.ForwardStreamingAsync(request, (_, _) => Task.CompletedTask)
+            : await forward.ForwardAsync(request);
+
+        refreshTokens.Should().Equal(AccessToken);
+        handler.Tokens.Should().Equal(outcome == "failed-refresh" ? new[] { AccessToken } : new[] { AccessToken, newToken });
+        result.Success.Should().Be(outcome == "success");
+        result.StatusCode.Should().Be(outcome == "success" ? 200 : 401);
+        invalidatedTokens.Should().Equal(outcome switch
+        {
+            "success" => Array.Empty<string>(),
+            "failed-refresh" => new[] { AccessToken },
+            _ => new[] { newToken }
+        });
+        await AssertStateAsync(target, outcome == "success", outcome != "success", outcome == "success");
+        await AssertStateAsync(other, true, false, true);
+    }
+
+    private sealed class RefreshRetryHandler(bool retrySucceeds, bool streaming) : HttpMessageHandler
+    {
+        public List<string> Tokens { get; } = new();
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Tokens.Add(request.Headers.Authorization?.Parameter ?? string.Empty);
+            var success = Tokens.Count > 1 && retrySucceeds;
+            // 非流式请求的成功体必须是可用响应结构（HasUsableResponse 要求 choices/output 非空）；
+            // 纯 [DONE] 会被聚合层正确判为无效流（651b1c3 收紧后无 chunk 的流不再聚合成功）。
+            return Task.FromResult(new HttpResponseMessage(success ? HttpStatusCode.OK : HttpStatusCode.Unauthorized)
+            {
+                Content = new StringContent(success
+                    ? (streaming ? "data: [DONE]\n\n" : "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}")
+                    : "rejected")
+            });
+        }
     }
 
     [Theory]
@@ -192,11 +320,74 @@ public sealed class ForwardOAuthInvalidationTests : IDisposable
         await AssertStateAsync(other, true, false, true);
     }
 
+    [Theory]
+    [InlineData("codex", typeof(CodexCredentialRefreshService))]
+    [InlineData("google", typeof(GoogleCredentialRefreshService))]
+    [InlineData("kimi", typeof(KimiCredentialRefreshService))]
+    [InlineData("device-oauth", typeof(DeviceOAuthCredentialRefreshService))]
+    public async Task Health_refresh_callback_dispatches_to_matching_service_with_site_and_stale_token(string provider, Type expectedService)
+    {
+        var target = await SeedAsync(provider, false, false);
+        var cache = _scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var services = new RefreshServices(new Dictionary<Type, object>
+        {
+            [typeof(CodexCredentialRefreshService)] = new CodexCredentialRefreshService(_db, null!, cache, NullLogger<CodexCredentialRefreshService>.Instance),
+            [typeof(GoogleCredentialRefreshService)] = new GoogleCredentialRefreshService(_db, null!, cache, NullLogger<GoogleCredentialRefreshService>.Instance),
+            [typeof(KimiCredentialRefreshService)] = new KimiCredentialRefreshService(_db, null!, cache, NullLogger<KimiCredentialRefreshService>.Instance),
+            [typeof(DeviceOAuthCredentialRefreshService)] = new DeviceOAuthCredentialRefreshService(_db, null!, cache, NullLogger<DeviceOAuthCredentialRefreshService>.Instance)
+        });
+        var request = new ProxyForwardRequest { SiteId = target.SiteId, ManagedSource = target.Source.ToUpperInvariant() };
+        new HealthCredentialCallbacks(services).Configure(request);
+
+        request.RefreshTargetApiKeyAsync.Should().NotBeNull();
+        // The stored token differs from the rejected token: the real service must select this
+        // site and return its current token without making any network request.
+        var refreshed = await request.RefreshTargetApiKeyAsync!("stale-token", CancellationToken.None);
+        refreshed.Should().Be(AccessToken);
+        services.Requested.Should().Equal(expectedService);
+    }
+
+    [Theory]
+    [InlineData("xai_oauth")]
+    [InlineData("unmanaged")]
+    [InlineData(null)]
+    public void Health_does_not_configure_unsupported_refresh_sources(string? source)
+    {
+        var request = new ProxyForwardRequest { SiteId = Guid.NewGuid(), ManagedSource = source };
+        new HealthCredentialCallbacks(_scope.ServiceProvider).Configure(request);
+        request.RefreshTargetApiKeyAsync.Should().BeNull();
+        (request.InvalidateTargetCredentialAsync is not null).Should().Be(source == "xai_oauth");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Health_does_not_configure_callbacks_without_site_identity(bool empty)
+    {
+        var request = new ProxyForwardRequest { SiteId = empty ? Guid.Empty : null, ManagedSource = "Codex" };
+        new HealthCredentialCallbacks(_scope.ServiceProvider).Configure(request);
+        request.RefreshTargetApiKeyAsync.Should().BeNull();
+        request.InvalidateTargetCredentialAsync.Should().BeNull();
+    }
+
+    private sealed class RefreshServices(Dictionary<Type, object> services) : IServiceProvider
+    {
+        public List<Type> Requested { get; } = new();
+        public object? GetService(Type serviceType)
+        {
+            Requested.Add(serviceType);
+            return services.GetValueOrDefault(serviceType);
+        }
+    }
+
     private sealed class OfflineHealthCallbacks(HealthCredentialCallbacks inner) : IHealthCredentialCallbacks
     {
         public void Configure(ProxyForwardRequest request)
         {
             inner.Configure(request);
+            var refreshable = !string.Equals(request.ManagedSource, "xai_oauth", StringComparison.OrdinalIgnoreCase);
+            (request.RefreshTargetApiKeyAsync is not null).Should().Be(refreshable);
+            request.InvalidateTargetCredentialAsync.Should().NotBeNull();
             if (request.RefreshTargetApiKeyAsync is not null)
                 request.RefreshTargetApiKeyAsync = (_, _) => Task.FromResult<string?>(null);
         }

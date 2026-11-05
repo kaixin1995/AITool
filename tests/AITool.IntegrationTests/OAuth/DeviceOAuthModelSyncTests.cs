@@ -79,6 +79,41 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Sync_reenables_shared_item_and_invalidates_model_and_route_caches()
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var provisioner = new DeviceOAuthAccountProvisioner(db, cache,
+            new SiteCascadeDeleter(db), NullLogger<DeviceOAuthAccountProvisioner>.Instance);
+        var vendor = new TestVendor("shared-item", chatSupported: true);
+        var account = await provisioner.ProvisionAsync(vendor, "test", null, "shared-user",
+            new DeviceOAuthTokenSet { AccessToken = "at" }, null, CancellationToken.None);
+        var item = new AITool.Domain.Models.ModelLibraryItem { ModelName = "shared", DisplayName = "shared", IsEnabled = false };
+        await db.InsertAsync(item);
+        foreach (var slug in new[] { "remote-a", "remote-b" })
+        {
+            await db.InsertAsync(new AITool.Domain.SiteCatalog.SiteModelMapping
+            {
+                SiteId = account.LinkedSiteId, ModelLibraryItemId = item.Id, RemoteModelName = slug, IsEnabled = true
+            });
+        }
+
+        (await cache.GetEnabledModelAsync(item.Id, CancellationToken.None)).Should().BeNull();
+        (await cache.GetRouteModelsAsync(CancellationToken.None)).Should().NotContain(m => m.ModelName == "shared");
+
+        var changed = await provisioner.SyncSelectedModelsAsync(account.Id,
+            [("remote-a", "shared", true), ("remote-b", "shared", true)], CancellationToken.None);
+
+        changed.Should().Be(1, "the shared library item is enabled once, without changing either mapping");
+        (await db.ModelLibraryItems.InSingleAsync(item.Id))!.IsEnabled.Should().BeTrue();
+        (await cache.GetEnabledModelAsync(item.Id, CancellationToken.None)).Should().NotBeNull();
+        (await cache.GetRouteModelsAsync(CancellationToken.None)).Should().ContainSingle(m => m.ModelName == "shared");
+        (await provisioner.SyncSelectedModelsAsync(account.Id,
+            [("remote-a", "shared", true), ("remote-b", "shared", true)], CancellationToken.None)).Should().Be(0);
+    }
+
+    [Fact]
     public async Task Sync_rejects_accounts_without_a_live_chat_site()
     {
         await using var scope = _services.CreateAsyncScope();
@@ -206,18 +241,19 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
             HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider }
         };
 
-        var fetchTask = controller.FetchModels(account.Id, CancellationToken.None);
-        var completed = await Task.WhenAny(fetchTask, entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
-        if (completed == fetchTask)
-        {
-            await fetchTask;
-            Assert.Fail("Fetch completed before entered signal was observed.");
-        }
-
+        using var fetchCancellation = new CancellationTokenSource();
+        var fetchTask = controller.FetchModels(account.Id, fetchCancellation.Token);
         Exception? primaryException = null;
         IActionResult? fetchResult = null;
         try
         {
+            var completed = await Task.WhenAny(fetchTask, entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
+            if (completed == fetchTask)
+            {
+                await fetchTask;
+                Assert.Fail("Fetch completed before entered signal was observed.");
+            }
+
             if (rotate)
             {
                 await using var rotationScope = _services.CreateAsyncScope();
@@ -261,10 +297,12 @@ public sealed class DeviceOAuthModelSyncTests : IDisposable
         }
         finally
         {
+            if (!fetchTask.IsCompleted)
+                fetchCancellation.Cancel();
             release.TrySetResult(true);
             try
             {
-                await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+                await fetchTask;
             }
             catch when (primaryException is not null)
             {

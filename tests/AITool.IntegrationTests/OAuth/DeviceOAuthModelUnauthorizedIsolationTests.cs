@@ -98,17 +98,18 @@ public sealed class DeviceOAuthModelUnauthorizedIsolationTests : IDisposable
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider } }
         };
-        var fetchTask = controller.FetchModels(target.Id, CancellationToken.None);
-        var completed = await Task.WhenAny(fetchTask, handler.Entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
-        if (completed == fetchTask)
-        {
-            await fetchTask;
-            Assert.Fail("Fetch completed before entered signal was observed.");
-        }
-
+        using var fetchCancellation = new CancellationTokenSource();
+        var fetchTask = controller.FetchModels(target.Id, fetchCancellation.Token);
         Exception? primaryException = null;
         try
         {
+            var completed = await Task.WhenAny(fetchTask, handler.Entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
+            if (completed == fetchTask)
+            {
+                await fetchTask;
+                Assert.Fail("Fetch completed before entered signal was observed.");
+            }
+
             handler.AssertBlockedRequest();
             if (rotation != "none")
             {
@@ -177,10 +178,12 @@ public sealed class DeviceOAuthModelUnauthorizedIsolationTests : IDisposable
         }
         finally
         {
+            if (!fetchTask.IsCompleted)
+                fetchCancellation.Cancel();
             handler.Release.TrySetResult(true);
             try
             {
-                await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+                await fetchTask;
             }
             catch when (primaryException is not null)
             {

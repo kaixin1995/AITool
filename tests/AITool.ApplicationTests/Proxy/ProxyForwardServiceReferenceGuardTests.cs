@@ -66,7 +66,9 @@ public sealed class ProxyForwardServiceReferenceGuardTests
                         // 在第三条（第2个 content delta）回调中抛出守卫异常。
                         if (lineCount >= 3)
                         {
-                            throw new UpstreamReferenceException("reference_store_unavailable", "Reference ownership could not be verified.");
+                            var error = new UpstreamReferenceException("reference_store_unavailable", "Reference ownership could not be verified.");
+                            error.SetHasExposedOutput(true);
+                            throw error;
                         }
                     }
                     return Task.CompletedTask;
@@ -88,6 +90,36 @@ public sealed class ProxyForwardServiceReferenceGuardTests
         partial.IsStreaming.Should().BeTrue();
         partial.TotalDurationMs.Should().BeGreaterThanOrEqualTo(0);
         partial.ResponseBody.Should().BeEmpty("守卫拒绝的流式输出绝对不能将 ResponseBody 填入 PartialResult（防止暴露未经守卫许可的内容）");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Guard_snapshot_uses_downstream_exposure_not_buffered_upstream_content(bool exposed)
+    {
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.output_text.delta\"}\n\n", Encoding.UTF8, "text/event-stream")
+        });
+        var linesSeen = 0;
+        Func<Task> act = async () => await service.ForwardStreamingAsync(CreateStreamingRequest(), (line, _) =>
+        {
+            // 模拟按 SSE 块缓冲：上游首条 data 已解析，但首个内容仍可被拒绝；
+            // 或者下游已写出非内容事件后再拒绝内容。
+            if (line.Length == 0 && ++linesSeen == 2)
+            {
+                var error = new UpstreamReferenceException("reference_store_unavailable", "Reference ownership could not be verified.");
+                error.SetHasExposedOutput(exposed);
+                throw error;
+            }
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+
+        var error = (await act.Should().ThrowAsync<UpstreamReferenceException>()).Which;
+        error.PartialResult.Should().NotBeNull();
+        error.PartialResult!.HasStartedStreaming.Should().Be(exposed);
+        error.PartialResult.IsStreamInterrupted.Should().Be(exposed);
+        error.PartialResult.ResponseBody.Should().BeEmpty();
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler

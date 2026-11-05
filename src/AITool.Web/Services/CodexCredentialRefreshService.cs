@@ -1,7 +1,6 @@
 using AITool.Application.Networking;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
-using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
 
 namespace AITool.Web.Services;
@@ -11,11 +10,6 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed class CodexCredentialRefreshService
 {
-    /// <summary>
-    /// 同一隐藏站点的 401 刷新采用 single-flight，避免并发请求重复轮换 refresh_token。
-    /// </summary>
-    private static readonly KeyedAsyncLock RefreshLocks = new();
-
     private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly ICodexOAuthClient _oauth;
@@ -51,7 +45,9 @@ public sealed class CodexCredentialRefreshService
     public async Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
     {
         if (linkedSiteId == Guid.Empty) return null;
-        var accounts = await _dbContext.CodexAccounts.Where(a => a.LinkedSiteId == linkedSiteId)
+        cancellationToken.ThrowIfCancellationRequested();
+        using var queryClient = _dbContext.Client.CopyNew();
+        var accounts = await queryClient.Queryable<CodexAccount>().Where(a => a.LinkedSiteId == linkedSiteId)
             .ToListAsync(cancellationToken);
         if (accounts.Count != 1) return null;
         try
@@ -96,20 +92,7 @@ public sealed class CodexCredentialRefreshService
             account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(
                 tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
             account.LastRefreshAt = DateTimeOffset.UtcNow;
-            // 列限定写回（token 五列）：account 是转发路径的快照，整行写回会把供给刚
-            // 升级的 DisplayName/Email/PlanType/AccountId 回滚成旧值。
-            // 已知残余：token 五列与其他刷新写者 last-writer-wins——HTTP 窗口内用户重登写入的
-            // 新凭证可能被本请求轮换出的（通常仍有效的）凭证整组替换，低概率且凭证可用，接受。
-            await _dbContext.Client.Updateable(account)
-                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                .ExecuteCommandAsync(cancellationToken);
-
-            var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-            if (site is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-            {
-                site.ApiKey = tokens.AccessToken;
-                await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(cancellationToken);
-            }
+            await CodexCredentialPersistence.SaveAsync(_dbContext, account, cancellationToken);
         }, cancellationToken);
 
         _metadataCache.InvalidateRouteTargets();

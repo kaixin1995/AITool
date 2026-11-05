@@ -504,7 +504,7 @@ public sealed class DeviceOAuthAccountProvisioner
             {
                 await client.Updateable(updates).UpdateColumns(m => new { m.IsEnabled, m.ModelLibraryItemId }).ExecuteCommandAsync(ct);
             }
-            changed = newMappings.Count + updates.Count;
+            changed = newMappings.Count + updates.Count + itemsToEnable.Count;
             ct.ThrowIfCancellationRequested();
             client.Ado.CommitTran();
         }

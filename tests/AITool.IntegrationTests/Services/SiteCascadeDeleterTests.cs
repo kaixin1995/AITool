@@ -26,7 +26,7 @@ public sealed class SiteCascadeDeleterTests
         var dbPath = Path.Combine(Path.GetTempPath(), $"aitool-cascade-{Guid.NewGuid():N}.db");
         var sqlSugar = new SqlSugarClient(new ConnectionConfig
         {
-            ConnectionString = $"Data Source={dbPath}",
+            ConnectionString = $"Data Source={dbPath};Pooling=False",
             DbType = DbType.Sqlite,
             IsAutoCloseConnection = true
         });

@@ -117,13 +117,21 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
                   && configs.ValueKind == JsonValueKind.Object
             ? GetString(configs, "builtin_provider_config_json")
             : null;
-        if (string.IsNullOrWhiteSpace(url) || !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        // 只信任明确列出的发布主机，不能使用后缀匹配：上游响应可能被篡改。
+        // 拒绝用户信息、非标准端口和 IP 字面量，避免访问本机/内网或其他服务。
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var configUri)
+            || configUri.Scheme != Uri.UriSchemeHttps
+            || configUri.HostNameType != UriHostNameType.Dns
+            || !configUri.Host.Equals("cdn.z.ai", StringComparison.OrdinalIgnoreCase)
+            || !configUri.IsDefaultPort
+            || !string.IsNullOrEmpty(configUri.UserInfo))
         {
-            throw new InvalidOperationException("ZCode configs 未返回 provider 配置 URL（builtin_provider_config_json），无法拉取动态模型目录");
+            throw new InvalidOperationException("ZCode configs 未返回可信的 provider 配置 URL（builtin_provider_config_json），无法拉取动态模型目录");
         }
 
         // 配置 URL 是直接 JSON（CDN 发布物），不是 {code,msg,data} 信封。
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        // 注入的生产 HttpClient 必须禁用自动重定向；3xx 一律作为下载失败处理。
+        using var request = new HttpRequestMessage(HttpMethod.Get, configUri);
         request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
         using var response = await _httpClient.SendAsync(request, ct);
@@ -151,18 +159,25 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
             auth: token.AccessToken.Trim(), ct: ct, modelAccessToken: true);
         if (data.ValueKind != JsonValueKind.Array)
         {
-            return false;
+            throw new InvalidOperationException("ZCode 订阅响应格式异常：data 必须是订阅数组，无法判定套餐");
         }
 
+        var hasValidSubscription = false;
         foreach (var subscription in data.EnumerateArray())
         {
-            if (GetString(subscription, "status")?.Equals("VALID", StringComparison.OrdinalIgnoreCase) == true)
+            var status = GetString(subscription, "status");
+            if (status is null)
             {
-                return true;
+                throw new InvalidOperationException("ZCode 订阅响应格式异常：订阅缺少有效的 status，无法判定套餐");
+            }
+
+            if (status.Equals("VALID", StringComparison.OrdinalIgnoreCase))
+            {
+                hasValidSubscription = true;
             }
         }
 
-        return false;
+        return hasValidSubscription;
     }
 
     /// <summary>billing/balance → active plan 下未花完桶的模型名（对齐参考 startPlan 的 live models）。</summary>
@@ -845,8 +860,12 @@ public sealed class ZCodeOAuthVendor : IDeviceOAuthVendor
             throw new InvalidOperationException($"Z.ai HTTP {(int)response.StatusCode}: {GetString(envelope, "msg")}");
         }
 
-        if (envelope.ValueKind == JsonValueKind.Object
-            && envelope.TryGetProperty("code", out var code)
+        if (envelope.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException("Z.ai 响应格式异常：响应信封必须是 JSON 对象");
+        }
+
+        if (envelope.TryGetProperty("code", out var code)
             && code.ValueKind == JsonValueKind.Number
             && code.TryGetInt32(out var codeValue)
             && codeValue is not 0 and not 200)

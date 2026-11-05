@@ -12,12 +12,15 @@ using AITool.Domain.OAuth;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using SqlSugar;
 
 namespace AITool.IntegrationTests.Proxy;
@@ -351,6 +354,29 @@ public sealed class AccountSessionIsolationTests : IDisposable
         forwarder.Requests.Should().ContainSingle();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stream_guard_failure_reports_interruption_only_after_downstream_write(bool writeCommentFirst)
+    {
+        var lines = new List<string>();
+        if (writeCommentFirst)
+            lines.AddRange([": upstream heartbeat", string.Empty]);
+        lines.AddRange(["data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_rejected\",\"output\":[]}}", string.Empty]);
+        var forwarder = new ResponsesFakeProxyForwardService { StreamingLines = lines };
+        await using var factory = new ResponsesWebApplicationFactory(forwarder, new FailingCommitGuard());
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.PostAsync("/v1/responses", new StringContent("{\"model\":\"auto\",\"input\":[],\"stream\":true}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().NotContain("resp_rejected").And.Contain("reference_store_unavailable");
+        forwarder.Requests.Should().ContainSingle();
+        var usage = (await AssertUsageRowsAsync(factory)).Should().ContainSingle().Subject;
+        usage.Status.Should().Be("fail");
+        usage.IsStreamInterrupted.Should().Be(writeCommentFirst);
+    }
+
     [Fact]
     public async Task Stream_commit_failure_after_first_chunk_settles_developer_trace_instead_of_staying_pending()
     {
@@ -400,6 +426,81 @@ public sealed class AccountSessionIsolationTests : IDisposable
         usage.CachedTokens.Should().Be(2);
         usage.OutputTokens.Should().Be(5);
         usage.IsStreamInterrupted.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(true, false, 35, 15, 7)]
+    [InlineData(false, false, 0, 0, 0)]
+    [InlineData(true, true, 900, 15, 90)]
+    public async Task Real_forwarder_settles_only_usage_parsed_before_stream_guard_failure(
+        bool includePriorUsage, bool includeRejectedUsage, int expectedInput, int expectedCached, int expectedOutput)
+    {
+        // The forwarder parses each data line before the blank line triggers the guard;
+        // usage on the rejected event is therefore included, but unread usage is not.
+        // Responses input includes cache reads and cache writes.
+        var priorUsage = includePriorUsage
+            ? ",\"usage\":{\"input_tokens\":50,\"input_tokens_details\":{\"cached_tokens\":5,\"cached_creation_tokens\":10},\"output_tokens\":7}"
+            : "";
+        var rejectedUsage = includeRejectedUsage ? ",\"usage\":{\"input_tokens\":900,\"output_tokens\":90}" : "";
+        var sse = $"data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_real_fault\",\"status\":\"in_progress\",\"output\":[]{priorUsage}}}}}\n\n"
+            + $"data: {{\"type\":\"response.output_text.delta\",\"delta\":\"rejected-secret\"{rejectedUsage}}}\n\n"
+            + "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_real_fault\",\"usage\":{\"input_tokens\":999,\"output_tokens\":99}}}\n\n";
+        var handler = new ControlledSseHandler(sse);
+        var guard = new SecondCommitFailingGuard();
+        await using var factory = new ResponsesWebApplicationFactory(new ResponsesFakeProxyForwardService(), guard, services =>
+        {
+            services.RemoveAll<IProxyForwardService>();
+            services.AddTransient<IProxyForwardService>(sp => new ProxyForwardService(
+                new HttpClient(handler, disposeHandler: false), sp.GetRequiredService<ILogger<ProxyForwardService>>(),
+                sp.GetRequiredService<INetworkTransport>(), new DirectForwardPolicy(), sp.GetRequiredService<IForwardCredentialResolver>()));
+        });
+        using var client = factory.CreateClient();
+        await EnableDeveloperTraceAsync(factory);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        using var response = await client.PostAsync("/v1/responses",
+            new StringContent("{\"model\":\"auto\",\"input\":[],\"stream\":true}", Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("resp_real_fault").And.Contain("reference_store_unavailable")
+            .And.NotContain("rejected-secret").And.NotContain("response.completed");
+        handler.Requests.Should().Be(1, "a reference failure must not retry or switch routes");
+
+        var attempt = factory.Services.GetRequiredService<DeveloperInvocationTraceStore>().List()
+            .Should().ContainSingle().Subject.Attempts.Should().ContainSingle().Subject;
+        attempt.Status.Should().Be("fail");
+        attempt.ErrorMessage.Should().Contain("reference_store_unavailable");
+        attempt.StatusCode.Should().Be(200);
+        attempt.InputTokens.Should().Be(expectedInput);
+        attempt.CachedTokens.Should().Be(expectedCached);
+        attempt.OutputTokens.Should().Be(expectedOutput);
+
+        var usage = (await AssertUsageRowsAsync(factory)).Should().ContainSingle().Subject;
+        usage.Status.Should().Be("fail");
+        usage.HttpStatusCode.Should().Be(200);
+        usage.InputTokens.Should().Be(expectedInput);
+        usage.CachedTokens.Should().Be(expectedCached);
+        usage.OutputTokens.Should().Be(expectedOutput);
+        usage.IsStreamInterrupted.Should().BeTrue();
+    }
+
+    private sealed class DirectForwardPolicy : IForwardNetworkPolicyResolver
+    {
+        public Task<ForwardNetworkPolicyResolution> ResolveAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new ForwardNetworkPolicyResolution(ResolvedNetworkConfiguration.Legacy, "reference-test", true));
+    }
+
+    private sealed class ControlledSseHandler(string sse) : HttpMessageHandler
+    {
+        public int Requests { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(sse, Encoding.UTF8, "text/event-stream")
+            });
+        }
     }
 
     [Fact]
@@ -492,25 +593,46 @@ public sealed class AccountSessionIsolationTests : IDisposable
         factory.Services.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
     }
 
-    [Fact]
-    public async Task Chat_to_responses_bridge_sends_done_terminator_and_settles_post_completion_cancel_as_success()
+    [Theory]
+    [InlineData("Responses", false)]
+    [InlineData("Responses", true)]
+    [InlineData("Anthropic", false)]
+    [InlineData("Anthropic", true)]
+    [InlineData("Gemini", false)]
+    [InlineData("Gemini", true)]
+    public async Task Chat_bridge_sends_one_final_done_and_settles_completion_as_success(string protocol, bool cancelAfterCompletion)
     {
-        // 回归（2026-11-04 实例 1M→gpt-6.1-terra 实测）：Codex Responses 上游经桥转成
-        // OpenAI Chat 流后从不发 data: [DONE]（上游没有该终止符，桥只在异常中断时补发），
-        // DSH 等 [DONE] 挂起后 abort——同一模型大量取消而部分成功。修复：
-        // a) 桥在完成/中断时都补发终止符；b) UpstreamCompleted 填充使完成事件后的取消翻转为 success 入账。
+        // 各上游完成标记后正常返回或取消，都必须让 Chat 客户端收到唯一的流尾终止符并按成功入账。
         var forwarder = new ResponsesFakeProxyForwardService
         {
-            CancelAfterStreamingCallbacks = true,
-            StreamingLines =
-            [
-                "event: response.created",
-                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bridge_cancel\",\"output\":[]}}", "",
-                "event: response.output_text.delta",
-                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\",\"output_index\":0,\"content_index\":0}", "",
-                "event: response.completed",
-                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bridge_cancel\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}", ""
-            ]
+            IsAnthropicOnly = protocol == "Anthropic",
+            IsGeminiOnly = protocol == "Gemini",
+            CancelAfterStreamingCallbacks = cancelAfterCompletion,
+            StreamingLines = protocol switch
+            {
+                "Anthropic" =>
+                [
+                    "event: message_start", "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_bridge\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}", "",
+                    "event: content_block_start", "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}", "",
+                    "event: content_block_delta", "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}", "",
+                    "event: content_block_stop", "data: {\"type\":\"content_block_stop\",\"index\":0}", "",
+                    "event: message_delta", "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}", "",
+                    "event: message_stop", "data: {\"type\":\"message_stop\"}", ""
+                ],
+                "Gemini" =>
+                [
+                    "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]}}]}}", "",
+                    "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5}}}", "",
+                    // Gemini 终止符（648c30e：finishReason 只证明候选结束，需 [DONE]/EOF 才能证明全流完成以支撑翻转）
+                    "data: [DONE]", ""
+                ],
+                _ =>
+                [
+                    "event: response.created", "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bridge_cancel\",\"output\":[]}}", "",
+                    "event: response.output_text.delta", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\",\"output_index\":0,\"content_index\":0}", "",
+                    "event: response.completed", "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_bridge_cancel\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}", ""
+                ]
+            }
         };
         await using var factory = new ResponsesWebApplicationFactory(forwarder);
         await EnableDeveloperTraceAsync(factory);
@@ -521,13 +643,15 @@ public sealed class AccountSessionIsolationTests : IDisposable
             new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await response.Content.ReadAsStringAsync();
-        // 恰好一次 [DONE]：桥补发的终止符不得与转换块自带的终止符叠加成双发。
-        Regex.Matches(body, "data: \\[DONE\\]").Should().HaveCount(1, "OpenAI 兼容客户端以 [DONE] 收尾，缺失会挂起、重复会解析异常");
-        body.Should().Contain("finish_reason", "completed 事件应桥接出收尾 chunk");
+        Regex.Matches(body, "data: \\[DONE\\]").Should().HaveCount(1, "终止符缺失会挂起、重复会解析异常");
+        body.TrimEnd().Should().EndWith("data: [DONE]", "终止符必须位于流尾");
+        body.Should().Contain("hello");
+        body.Should().Contain("finish_reason", "完成事件应桥接出收尾 chunk");
+        forwarder.Requests.Should().ContainSingle().Which.ProtocolType.Should().Be(protocol);
 
         var rows = await AssertUsageRowsAsync(factory);
         rows.Should().ContainSingle();
-        rows.Single().Status.Should().Be("success", "完成事件已到（usage 已提取），客户端其后断开按成功入账而非 canceled");
+        rows.Single().Status.Should().Be("success", "完成后正常返回或取消均应按成功入账");
     }
 
     [Fact]

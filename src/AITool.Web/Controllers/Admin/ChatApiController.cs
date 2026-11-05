@@ -1461,6 +1461,10 @@ public sealed class ChatApiController : ControllerBase
             };
           }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             stopwatch.Stop();

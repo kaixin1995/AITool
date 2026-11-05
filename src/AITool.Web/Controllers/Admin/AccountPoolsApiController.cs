@@ -165,6 +165,10 @@ public sealed class AccountPoolsApiController : ControllerBase
         {
             return NotFound(ApiResponse.Fail("号池不存在", "pool_not_found"));
         }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, "sync_rejected"));
+        }
     }
 
     /// <summary>手动同步（成员映射变更后刷新生成规则）。</summary>
@@ -183,6 +187,35 @@ public sealed class AccountPoolsApiController : ControllerBase
         {
             return BadRequest(ApiResponse.Fail(ex.Message, "sync_rejected"));
         }
+    }
+
+    /// <summary>管理员核实旧入口和规则后显式认领；不会立即删除规则，需再同步。</summary>
+    [HttpPost("{id:guid}/claim-legacy-entry")]
+    public async Task<IActionResult> ClaimLegacyEntry(Guid id, [FromBody] ClaimLegacyEntryRequest? request, CancellationToken ct)
+    {
+        if (request is null || !request.Confirm || request.ObservedRuleIds is null || request.ClaimRuleIds is null)
+            return BadRequest(ApiResponse.Fail("必须确认并提供完整规则快照和要认领的规则", "confirmation_required"));
+        try
+        {
+            await _syncService.ClaimLegacyEntryAsync(id, request.EntryId, request.ObservedRuleIds, request.ClaimRuleIds, ct);
+            return Ok(ApiResponse.Ok(new { claimed = true }));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound(ApiResponse.Fail("号池不存在", "pool_not_found"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, "claim_rejected"));
+        }
+    }
+
+    public sealed class ClaimLegacyEntryRequest
+    {
+        public bool Confirm { get; set; }
+        public Guid EntryId { get; set; }
+        public List<Guid>? ObservedRuleIds { get; set; }
+        public List<Guid>? ClaimRuleIds { get; set; }
     }
 
     /// <summary>
@@ -256,6 +289,10 @@ public sealed class AccountPoolsApiController : ControllerBase
         catch (KeyNotFoundException)
         {
             return NotFound(ApiResponse.Fail("号池不存在", "pool_not_found"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, "sync_rejected"));
         }
     }
 

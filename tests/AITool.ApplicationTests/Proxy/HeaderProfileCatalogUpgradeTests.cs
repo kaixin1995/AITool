@@ -10,7 +10,7 @@ namespace AITool.ApplicationTests.Proxy;
 /// <summary>
 /// 请求头目录升级与存量回填单元测试。
 /// 重点验证 EnsureBuiltInHeaderPresent 对 WorkBuddy 存量档案的补全行为：
-/// 仅补缺失键、空字典/非法 JSON/空 HeadersJson 不动且不抛、显式 false 保留。
+/// 仅补缺失键（包括空字典）、非法 JSON/空 HeadersJson 不动且不抛、显式 false 保留。
 /// </summary>
 public sealed class HeaderProfileCatalogUpgradeTests
 {
@@ -70,7 +70,7 @@ public sealed class HeaderProfileCatalogUpgradeTests
     }
 
     [Fact]
-    public void EnsureBuiltInHeaderPresent_Ignores_Empty_Dictionary_Without_Throwing()
+    public void EnsureBuiltInHeaderPresent_Adds_ForceStream_To_Empty_Dictionary()
     {
         var profile = new HeaderProfile
         {
@@ -84,8 +84,36 @@ public sealed class HeaderProfileCatalogUpgradeTests
             ProxyForwardService.ForceStreamHeader,
             "true");
 
-        modified.Should().BeFalse();
-        profile.HeadersJson.Should().Be("{}");
+        modified.Should().BeTrue();
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(profile.HeadersJson);
+        parsed.Should().ContainSingle()
+            .Which.Should().Be(new KeyValuePair<string, string>(ProxyForwardService.ForceStreamHeader, "true"));
+
+        var upgradedJson = profile.HeadersJson;
+        HeaderProfileCatalogService.EnsureBuiltInHeaderPresent(
+            profile, ProxyForwardService.ForceStreamHeader, "true").Should().BeFalse();
+        profile.HeadersJson.Should().Be(upgradedJson);
+    }
+
+    [Fact]
+    public void EnsureBuiltInDefaults_Upgrades_Existing_Empty_WorkBuddy_Profile()
+    {
+        var profile = new HeaderProfile
+        {
+            Key = ClientEmulationConstants.WorkBuddy,
+            IsBuiltIn = true,
+            HeadersJson = "{}"
+        };
+        var profiles = new List<HeaderProfile> { profile };
+        var upgrade = typeof(HeaderProfileCatalogService).GetMethod(
+            "EnsureBuiltInDefaults", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        upgrade.Should().NotBeNull();
+        upgrade!.Invoke(null, new object[] { profiles });
+
+        var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(profile.HeadersJson);
+        parsed.Should().ContainSingle()
+            .Which.Should().Be(new KeyValuePair<string, string>(ProxyForwardService.ForceStreamHeader, "true"));
     }
 
     [Fact]

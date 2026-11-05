@@ -32,7 +32,7 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
         var services = new ServiceCollection();
         services.AddMemoryCache();
         services.AddLogging();
-        services.AddSqlSugar($"Data Source={_databasePath}");
+        services.AddSqlSugar($"Data Source={_databasePath};Pooling=False");
         services.AddScoped<ProxyRequestMetadataCache>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());

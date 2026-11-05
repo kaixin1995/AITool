@@ -53,7 +53,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var result = ex.PartialResult ?? new ProxyForwardResult();
         result.Success = false;
         result.IsStreaming = true;
-        result.IsStreamInterrupted = true;
+        result.HasStartedStreaming = ex.HasExposedOutput;
+        result.IsStreamInterrupted = ex.HasExposedOutput;
         result.IsCanceled = false;
         result.ErrorMessage = $"upstream reference guard rejected stream output ({ex.Code})";
 

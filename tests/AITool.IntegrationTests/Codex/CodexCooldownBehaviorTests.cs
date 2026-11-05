@@ -28,7 +28,7 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
         var services = new ServiceCollection();
         services.AddMemoryCache();
         services.AddLogging();
-        services.AddSqlSugar($"Data Source={_databasePath}");
+        services.AddSqlSugar($"Data Source={_databasePath};Pooling=False");
         services.AddScoped<ProxyRequestMetadataCache>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
@@ -47,7 +47,7 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
     public async Task Reset_reports_failure_when_rotated_account_token_cannot_be_persisted()
     {
         var (accountId, _) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: true);
-        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath}"))
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             connection.Open();
             using var command = connection.CreateCommand();
@@ -132,7 +132,7 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
         // 真正锁定写序：site 表 UPDATE 被触发器强制失败——账号 token 五列必须已先行落库
         //（若写序为 site 先/账号后，账号写会因同一异常中断，AccessToken 仍是旧值）。
         var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: true);
-        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath}"))
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             connection.Open();
             using var command = connection.CreateCommand();
@@ -223,7 +223,7 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
     public async Task Reset_reports_failure_when_partial_refresh_token_cannot_be_persisted()
     {
         var (accountId, _) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
-        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath}"))
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath};Pooling=False"))
         {
             connection.Open();
             using var command = connection.CreateCommand();
@@ -257,6 +257,61 @@ public sealed class CodexCooldownBehaviorTests : IDisposable
             row.AccessToken.Should().Be("new-at", "token 刷新照常");
             (await db.Sites.InSingleAsync(siteId))!.IsEnabled.Should().BeFalse("禁用账号的站点不拉回路由");
         }
+    }
+
+    [Fact]
+    public async Task Reset_rolls_back_cooling_when_site_restore_fails()
+    {
+        var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TRIGGER block_site_enable BEFORE UPDATE OF IsEnabled ON Sites BEGIN SELECT RAISE(ABORT, 'injected site failure'); END;";
+            command.ExecuteNonQuery();
+        }
+
+        var act = () => CreateResetService(new StubOAuthClient()).ResetAsync(accountId, CancellationToken.None);
+        await Assert.ThrowsAnyAsync<Exception>(act);
+
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await db.CodexAccounts.InSingleAsync(accountId))!.IsQuotaCooling.Should().BeTrue();
+        (await db.Sites.InSingleAsync(siteId))!.IsEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Reset_waits_for_concurrent_disable_before_restoring_site()
+    {
+        var (accountId, siteId) = await SeedCoolingAccountAsync(isEnabled: true, siteEnabled: false);
+        var service = CreateResetService(new StubOAuthClient());
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath};Pooling=False");
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE CodexAccounts SET IsEnabled = 0, ManuallyDisabled = 1 WHERE Id = $id";
+            command.Parameters.AddWithValue("$id", accountId.ToString());
+            command.ExecuteNonQuery().Should().Be(1);
+        }
+
+        var reset = Task.Run(() => service.ResetAsync(accountId, CancellationToken.None));
+        try
+        {
+            await Task.Delay(200);
+            reset.IsCompleted.Should().BeFalse("禁用事务持有 SQLite 写锁");
+        }
+        finally
+        {
+            transaction.Commit();
+        }
+        (await reset).Completed.Should().BeTrue();
+
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await db.CodexAccounts.InSingleAsync(accountId))!.IsEnabled.Should().BeFalse();
+        (await db.Sites.InSingleAsync(siteId))!.IsEnabled.Should().BeFalse();
     }
 
     [Fact]

@@ -336,6 +336,42 @@ public sealed class FirstTierModelFetchTests
         handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"));
     }
 
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"code\":0,\"data\":null}")]
+    [InlineData("{\"code\":0,\"data\":{}}")]
+    [InlineData("{\"code\":0,\"data\":\"unexpected\"}")]
+    [InlineData("{\"code\":0,\"data\":[null]}")]
+    [InlineData("{\"code\":0,\"data\":[{}]}")]
+    [InlineData("{\"code\":0,\"data\":[{\"status\":42}]}")]
+    [InlineData("{\"code\":0,\"data\":[{\"status\":\"VALID\"},{}]}")]
+    [InlineData("[]")]
+    public async Task ZCode_rejects_unrecognizable_subscription_responses(string response)
+    {
+        var handler = ZCodeHandler(subscription: () => Json(response));
+        using var http = new HttpClient(handler);
+        var vendor = new ZCodeOAuthVendor(http);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+
+        ex.Message.Should().Contain("响应格式异常").And.NotContain("Start Plan");
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"));
+    }
+
+    [Fact]
+    public async Task ZCode_recognizes_a_well_formed_non_valid_subscription()
+    {
+        var handler = ZCodeHandler(subscription: () => Json(Envelope(new[] { new { status = "EXPIRED" } })));
+        using var http = new HttpClient(handler);
+        var vendor = new ZCodeOAuthVendor(http);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+
+        ex.Message.Should().Contain("Start Plan").And.NotContain("响应格式异常");
+    }
+
     [Fact]
     public async Task ZCode_returns_plan_catalog_without_zai_token()
     {
@@ -382,6 +418,52 @@ public sealed class FirstTierModelFetchTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
         handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("insecure.example.com"));
+    }
+
+    [Theory]
+    [InlineData("https://127.0.0.1/provider.json")]
+    [InlineData("https://[::1]/provider.json")]
+    [InlineData("https://169.254.169.254/latest/meta-data")]
+    [InlineData("https://192.168.1.1/provider.json")]
+    [InlineData("https://localhost/provider.json")]
+    [InlineData("https://evil.example/provider.json")]
+    [InlineData("https://cdn.z.ai.evil.example/provider.json")]
+    [InlineData("https://evil.example@cdn.z.ai/provider.json")]
+    [InlineData("https://cdn.z.ai@evil.example/provider.json")]
+    [InlineData("https://cdn.z.ai:8443/provider.json")]
+    [InlineData("http://cdn.z.ai/provider.json")]
+    public async Task ZCode_rejects_untrusted_config_urls_before_download(string url)
+    {
+        var handler = ZCodeHandler(configs: () => Json(Envelope(new
+        {
+            configs = new { builtin_provider_config_json = url },
+        })));
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new ZCodeOAuthVendor(http).FetchModelsAsync(Token, null, CancellationToken.None));
+        handler.Requests.Should().ContainSingle();
+        handler.Requests.Single().Uri.Host.Should().Be("zcode.z.ai");
+    }
+
+    [Theory]
+    [InlineData("https://127.0.0.1/private")]
+    [InlineData("https://evil.example/provider.json")]
+    [InlineData("/other.json")]
+    public async Task ZCode_rejects_config_download_redirects(string location)
+    {
+        var handler = ZCodeHandler(providerConfig: () =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Redirect);
+            response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+            return response;
+        });
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new ZCodeOAuthVendor(http).FetchModelsAsync(Token, null, CancellationToken.None));
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests.Last().Uri.AbsoluteUri.Should().Be(ConfigUrl);
     }
 
     [Fact]

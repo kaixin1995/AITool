@@ -1322,11 +1322,13 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-responses-test-{Guid.NewGuid():N}.db");
     private readonly ResponsesFakeProxyForwardService _fakeForwardService;
     private readonly IUpstreamReferenceGuard? _referenceGuard;
+    private readonly Action<IServiceCollection>? _configureServices;
 
-    public ResponsesWebApplicationFactory(ResponsesFakeProxyForwardService fakeForwardService, IUpstreamReferenceGuard? referenceGuard = null)
+    public ResponsesWebApplicationFactory(ResponsesFakeProxyForwardService fakeForwardService, IUpstreamReferenceGuard? referenceGuard = null, Action<IServiceCollection>? configureServices = null)
     {
         _fakeForwardService = fakeForwardService;
         _referenceGuard = referenceGuard;
+        _configureServices = configureServices;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -1342,6 +1344,7 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
                 services.RemoveAll<IUpstreamReferenceGuard>();
                 services.AddSingleton<IUpstreamReferenceGuard>(_referenceGuard);
             }
+            _configureServices?.Invoke(services);
         });
     }
 
@@ -1376,10 +1379,10 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
                 Name = "OpenAI Site",
                 BaseUrl = _fakeForwardService.BaseUrl ?? "https://openai.example.com",
                 ApiKey = "openai-key",
-                ProtocolType = _fakeForwardService.IsOpenAiChatOnly ? "OpenAI" : "Responses",
-                SupportsOpenAi = _fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
+                ProtocolType = _fakeForwardService.IsGeminiOnly ? "Gemini" : _fakeForwardService.IsOpenAiChatOnly ? "OpenAI" : "Responses",
+                SupportsOpenAi = !_fakeForwardService.IsGeminiOnly && (_fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses),
                 SupportsAnthropic = false,
-                SupportsResponses = !_fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
+                SupportsResponses = !_fakeForwardService.IsGeminiOnly && (!_fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses),
                 ManagedSource = _fakeForwardService.ManagedSource,
                 IsEnabled = true
             });
@@ -1467,6 +1470,7 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
     public List<string>? StreamingLines { get; set; }
     public List<List<string>>? StreamingLinesByCall { get; set; }
     public bool IsAnthropicOnly { get; set; }
+    public bool IsGeminiOnly { get; set; }
     public bool IsOpenAiChatOnly { get; set; }
     public bool SupportsOpenAiAndResponses { get; set; }
     public string? ManagedSource { get; set; }

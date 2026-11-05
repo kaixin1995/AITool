@@ -22,6 +22,7 @@ public sealed partial class OpenAiProxyController
 {
     private UpstreamReferenceContext? _referenceOutputContext;
     private UpstreamReferenceException? _referenceOutputError;
+    private bool _referenceOutputExposed;
     private bool _nativeReferenceOutput;
     private string? _observedCompletedResponseId;
 
@@ -139,6 +140,7 @@ public sealed partial class OpenAiProxyController
         _referenceOutputContext = new(scope, derived.Owner, UpstreamReferenceNamespace.Create(route.BaseUrl, protocol), restriction, derived.KeyGeneration);
         _nativeReferenceOutput = string.Equals(protocol, "Responses", StringComparison.OrdinalIgnoreCase);
         _referenceOutputError = null;
+        _referenceOutputExposed = false;
         _observedCompletedResponseId = null;
     }
 
@@ -159,7 +161,12 @@ public sealed partial class OpenAiProxyController
                 if (root?["type"]?.ToString() == "response.completed")
                     _observedCompletedResponseId = root["response"]?["id"]?.ToString();
             }
-            catch (UpstreamReferenceException ex) { _referenceOutputError = ex; throw; }
+            catch (UpstreamReferenceException ex)
+            {
+                ex.SetHasExposedOutput(_referenceOutputExposed);
+                _referenceOutputError = ex;
+                throw;
+            }
         }
     }
 

@@ -10,12 +10,10 @@ using SqlSugar;
 namespace AITool.Web.Services;
 
 /// <summary>
-/// Owns the deployment's independent random 256-bit derivation key, stored raw in the
-/// database (v2) so it travels with the database file through redeploys and restores. The
-/// key is an HMAC salt for session identifier isolation, not storage encryption — the same
-/// database already holds OAuth tokens in plaintext, so a Data Protection wrapper would add
-/// a loss-prone external dependency (a key ring directory) without protecting anything.
-/// Legacy v1 rows (DP ciphertext) are upgraded in place at first read without rotating.
+/// Owns the deployment's independent random 256-bit derivation key. By default it writes
+/// v1 Data Protection ciphertext compatible with older instances. After a coordinated
+/// cutover, opt-in v2 stores raw bytes in the database without an external key ring.
+/// Switching between formats preserves key material when the original ring is available.
 /// Absent or unreadable state self-heals by atomic rotation: a fresh key, its marker, and
 /// dependent persisted state (upstream reference ownership, whose legacy owner identities
 /// are derived from this key) are committed together in one transaction.
@@ -25,17 +23,19 @@ public sealed class SessionIsolationKeyStore
     internal const int KeySizeBytes = 32;
     internal const string ProtectionPurpose = "AITool.SessionIsolation.KeyStorage.v1";
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IDataProtector _protector; // Legacy v1 unprotect only; new keys are raw.
+    private readonly IDataProtector _protector;
     private readonly ILogger<SessionIsolationKeyStore>? _logger;
+    private readonly bool _rawStorageEnabled;
 
     public SessionIsolationKeyStore(IServiceScopeFactory scopeFactory, IDataProtectionProvider protectionProvider,
-        ILogger<SessionIsolationKeyStore>? logger = null)
+        ILogger<SessionIsolationKeyStore>? logger = null, bool rawStorageEnabled = false)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(protectionProvider);
         _scopeFactory = scopeFactory;
         _protector = protectionProvider.CreateProtector(ProtectionPurpose);
         _logger = logger;
+        _rawStorageEnabled = rawStorageEnabled;
     }
 
     /// <summary>
@@ -90,12 +90,19 @@ public sealed class SessionIsolationKeyStore
                 LogRotation(reason);
                 key = await RotateAsync(client, ct);
             }
-            else if (legacy)
+            else if (legacy && _rawStorageEnabled)
             {
                 var legacyKey = key;
                 key = null;
                 try { key = await TryUpgradeToRawAsync(client, legacyKey, rows[0].ProtectedKey, metadata[0].ProtectedKeyFingerprint, ct); }
                 finally { CryptographicOperations.ZeroMemory(legacyKey); }
+            }
+            else if (!legacy && !_rawStorageEnabled)
+            {
+                var rawKey = key;
+                key = null;
+                try { key = await ConvertToCompatibleAsync(client, rawKey, rows[0].ProtectedKey, metadata[0].ProtectedKeyFingerprint, ct); }
+                finally { CryptographicOperations.ZeroMemory(rawKey); }
             }
             ct.ThrowIfCancellationRequested();
             var result = key;
@@ -118,7 +125,7 @@ public sealed class SessionIsolationKeyStore
             reason == RepairReason.UndecryptablePersistedKey
                 ? "The persisted session isolation key is unreadable. Rotating automatically: derived session "
                 + "identifiers change and persisted upstream references are invalidated until expiry. Legacy v1 rows from a "
-                + "deployment that lost its Data Protection key ring rotate once, then persist as raw v2 forever."
+                + "deployment that lost its Data Protection key ring rotate once using the configured storage format."
                 : "The persisted session isolation key metadata is invalid. Rotating automatically: derived session "
                 + "identifiers change and persisted upstream references are invalidated until expiry.");
     }
@@ -182,13 +189,56 @@ public sealed class SessionIsolationKeyStore
         LogRotation(reason);
         return await RotateAsync(client, ct);
     }
+    // Before rolling back to a v1-only binary, run this release in compatibility mode
+    // with all v2 writers stopped. Unlike an upgrade failure, a failed downgrade must
+    // fail closed: returning a v2 row would allow an old instance to rotate it.
+    private async Task<byte[]> ConvertToCompatibleAsync(ISqlSugarClient client, byte[] key, string raw,
+        string fingerprint, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var ciphertext = Convert.ToBase64String(_protector.Protect(key));
+        client.Ado.BeginTran();
+        try
+        {
+            var updated = await client.Ado.ExecuteCommandAsync("""
+                UPDATE SessionIsolationKeys SET Version = 1, ProtectedKey = @ciphertext
+                WHERE Id = 1 AND Version = 2 AND ProtectedKey = @raw
+                  AND EXISTS (SELECT 1 FROM SessionIsolationKeyMetadata WHERE Id = 1 AND Version = 2 AND ProtectedKeyFingerprint = @fingerprint);
+                """, new SugarParameter("@ciphertext", ciphertext), new SugarParameter("@raw", raw),
+                new SugarParameter("@fingerprint", fingerprint));
+            if (updated == 1)
+            {
+                var marker = await client.Ado.ExecuteCommandAsync("""
+                    UPDATE SessionIsolationKeyMetadata SET Version = 1, ProtectedKeyFingerprint = @newFingerprint
+                    WHERE Id = 1 AND Version = 2 AND ProtectedKeyFingerprint = @oldFingerprint;
+                    """, new SugarParameter("@newFingerprint", Fingerprint(ciphertext)), new SugarParameter("@oldFingerprint", fingerprint));
+                if (marker != 1) throw new InvalidOperationException("Session key marker changed during downgrade.");
+            }
+            ct.ThrowIfCancellationRequested();
+            client.Ado.CommitTran();
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
+        }
+        var (rows, metadata) = await ReadStateAsync(client, ct);
+        var (current, _, legacy) = Unlock(rows, metadata);
+        if (current is not null && legacy) return current;
+        if (current is not null) CryptographicOperations.ZeroMemory(current);
+        throw new InvalidOperationException("Session isolation key could not be converted to v1; stop all v2 writers before rollback.");
+    }
+
     private async Task<byte[]> RotateAsync(ISqlSugarClient client, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var candidate = RandomNumberGenerator.GetBytes(KeySizeBytes);
-        // Raw v2 storage: the database file is this secret's persistence unit.
-        var stored = Convert.ToBase64String(candidate);
-        CryptographicOperations.ZeroMemory(candidate);
+        // Compatibility mode writes exactly the v1 ciphertext understood by old instances.
+        // Raw v2 is opt-in only after every old instance has stopped.
+        string stored;
+        try { stored = Convert.ToBase64String(_rawStorageEnabled ? candidate : _protector.Protect(candidate)); }
+        finally { CryptographicOperations.ZeroMemory(candidate); }
+        var storageVersion = _rawStorageEnabled ? SessionIsolationKey.CurrentVersion : SessionIsolationKey.LegacyCiphertextVersion;
         ct.ThrowIfCancellationRequested();
         client.Ado.BeginTran();
         try
@@ -204,7 +254,7 @@ public sealed class SessionIsolationKeyStore
                 """, new[]
             {
                 new SugarParameter("@id", SessionIsolationKey.SingletonId),
-                new SugarParameter("@version", SessionIsolationKey.CurrentVersion),
+                new SugarParameter("@version", storageVersion),
                 new SugarParameter("@fingerprint", Fingerprint(stored))
             });
             ct.ThrowIfCancellationRequested();
@@ -215,10 +265,17 @@ public sealed class SessionIsolationKeyStore
                 CryptographicOperations.ZeroMemory(adopted);
                 ct.ThrowIfCancellationRequested();
                 client.Ado.CommitTran();
-                // Reread from the committed state instead of trusting the transaction-local copy.
+                // A concurrent v2 writer must not leave compatibility mode claiming a
+                // successful startup with a row that an old binary would rotate.
                 var (currentRows, currentMetadata) = await ReadStateAsync(client, ct);
-                var (winner, _, _) = Unlock(currentRows, currentMetadata);
-                return winner ?? throw new CryptographicException(RotationUnreadableMessage);
+                var (winner, _, winnerLegacy) = Unlock(currentRows, currentMetadata);
+                if (winner is null) throw new CryptographicException(RotationUnreadableMessage);
+                if (!_rawStorageEnabled && !winnerLegacy)
+                {
+                    try { return await ConvertToCompatibleAsync(client, winner, currentRows[0].ProtectedKey, currentMetadata[0].ProtectedKeyFingerprint, ct); }
+                    finally { CryptographicOperations.ZeroMemory(winner); }
+                }
+                return winner;
             }
             // Replace any absent or damaged state atomically. Key and marker are committed
             // together, so no intermediate state reads as a valid deployment. Derived owner
@@ -235,7 +292,7 @@ public sealed class SessionIsolationKeyStore
                 """, new[]
             {
                 new SugarParameter("@id", SessionIsolationKey.SingletonId),
-                new SugarParameter("@version", SessionIsolationKey.CurrentVersion),
+                new SugarParameter("@version", storageVersion),
                 new SugarParameter("@fingerprint", Fingerprint(stored))
             });
             ct.ThrowIfCancellationRequested();
@@ -245,7 +302,7 @@ public sealed class SessionIsolationKeyStore
                 """, new[]
             {
                 new SugarParameter("@id", SessionIsolationKey.SingletonId),
-                new SugarParameter("@version", SessionIsolationKey.CurrentVersion),
+                new SugarParameter("@version", storageVersion),
                 new SugarParameter("@protectedKey", stored)
             });
             ct.ThrowIfCancellationRequested();

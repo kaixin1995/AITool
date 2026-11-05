@@ -491,6 +491,8 @@ public sealed class RouteRulesApiController : ControllerBase
             var graphError = ValidateGraph(parent, graphEntries, graphRules);
             if (graphError is not null) return BadRequest(new { message = graphError });
             mutationSnapshot = await _metadataCache.CaptureMutationSnapshotAsync(entryName, cancellationToken);
+            mutationSnapshot = await _metadataCache.IncludeProposedRouteTargetsAsync(
+                mutationSnapshot, db, newRules, graphEntries, graphRules, cancellationToken);
             if (existingEntry is null) await db.InsertAsync(parent, cancellationToken);
             if (oldRules.Count > 0) await db.DeleteRangeAsync(oldRules, cancellationToken);
             if (newRules.Count > 0) await db.InsertRangeAsync(newRules, cancellationToken);
@@ -542,6 +544,8 @@ public sealed class RouteRulesApiController : ControllerBase
                 instanceCounts[rule.UpstreamModelName] = rule.InstancePriority + 1;
                 rule.IsEnabled = item.IsEnabled!.Value;
             }
+            snapshot = await _metadataCache.IncludeProposedRouteTargetsAsync(
+                snapshot, db, existing, [entry], existing, cancellationToken);
             if (existing.Count > 0) await db.Client.Updateable(existing)
                 .UpdateColumns(r => new { r.Priority, r.ModelPriority, r.InstancePriority, r.IsEnabled })
                 .ExecuteCommandAsync(cancellationToken);

@@ -35,6 +35,7 @@ public sealed partial class OpenAiProxyController
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
+        var receivedDoneEvent = false;
         var state = new ProxyProtocolBridge.GeminiToOpenAiStreamState();
         var responseId = $"chatcmpl-{Guid.NewGuid():N}";
 
@@ -49,6 +50,7 @@ public sealed partial class OpenAiProxyController
             await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
             await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
             await Response.Body.FlushAsync(token);
         }
 
@@ -63,6 +65,7 @@ public sealed partial class OpenAiProxyController
             pendingSseLines.Clear();
             if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
             {
+                receivedDoneEvent = true;
                 return;
             }
 
@@ -89,7 +92,7 @@ public sealed partial class OpenAiProxyController
             await FlushGeminiBlockAsync(cancellationToken);
         }
 
-        // Gemini 流没有 [DONE] 标记：finishReason 出现即视为正常完成，由收尾块统一结束。
+        // Gemini 通常以 EOF 结束；finishReason 只表示候选结束，不证明后续用量已收齐。
         if (result.Success)
         {
             await WriteChunkAsync(ProxyProtocolBridge.CompleteGeminiToOpenAiStream(modelName, responseId, state) ?? string.Empty, cancellationToken);
@@ -111,9 +114,8 @@ public sealed partial class OpenAiProxyController
                 : "stream ended before any gemini candidate";
         }
 
-        if (state.FinishReason is not null)
+        if (result.Success && !result.IsStreamInterrupted && state.FinishReason is not null)
         {
-            result.IsStreamInterrupted = false;
             result.ErrorMessage = null;
         }
 
@@ -122,9 +124,9 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        // Gemini→Chat 的逐块转换不输出终止符（[DONE] 仅在 Complete* 收尾块，流式路径不调用）：
-        // 完成与中断都必须补发，否则 OpenAI 兼容客户端会挂起等待直至超时 abort。
-        if (startedWriting)
+        // 正常收尾的 CompleteGeminiToOpenAiStream 已包含 [DONE]；未执行收尾时才补发，
+        // 避免正常完成重复发送，同时让中断或完成后取消的客户端不再等待终止符。
+        if (startedWriting && !state.Completed)
         {
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
@@ -133,7 +135,8 @@ public sealed partial class OpenAiProxyController
         {
             Result = result,
             CanFallback = !startedWriting && _referenceOutputError is null,
-            UpstreamCompleted = state.FinishReason is not null
+            // 只有上游明确的流终止符能在取消结果中证明整个响应已结束。
+            UpstreamCompleted = receivedDoneEvent
         };
     }
 
@@ -174,6 +177,7 @@ public sealed partial class OpenAiProxyController
             await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
             await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
             await Response.Body.FlushAsync(token);
         }
 
@@ -341,6 +345,7 @@ public sealed partial class OpenAiProxyController
                     await CommitReferenceOutputAsync(wsPayload, token);
                     startedWriting = true;
                     await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
+                    _referenceOutputExposed = true;
                 }
             }
         }

@@ -28,7 +28,7 @@ public sealed class AccountPoolSyncTests : IDisposable
         var services = new ServiceCollection();
         services.AddMemoryCache();
         services.AddLogging();
-        services.AddSqlSugar($"Data Source={_databasePath}");
+        services.AddSqlSugar($"Data Source={_databasePath};Pooling=False");
         services.AddScoped<ProxyRequestMetadataCache>();
         services.AddScoped<AccountPoolSyncService>();
         _services = services.BuildServiceProvider();
@@ -288,6 +288,88 @@ public sealed class AccountPoolSyncTests : IDisposable
         (await db.ProxyRouteEntries.AnyAsync(e => e.EntryName == "m2" && e.ManagedByPoolId == pool.Id)).Should()
             .BeFalse("消失模型的托管入口被清理");
         (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Sync_waits_for_external_writer_before_collision_detection()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var account = await provisioner.ProvisionFromTokensAsync(Input("external-writer", "external@p.com", "team", "at-1"), CancellationToken.None);
+        await provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId, [("external-model", "external-model")], CancellationToken.None);
+        var pool = new AccountPool { Name = "external-pool", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+
+        // An independent connection represents a writer in another process, bypassing both
+        // in-process gates. Its uncommitted entry must become visible before sync checks names.
+        using var external = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath};Pooling=False");
+        await external.OpenAsync();
+        using var transaction = external.BeginTransaction();
+        using var command = external.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT INTO ProxyRouteEntries (Id, EntryName, CreatedAt) VALUES ($id, $name, $created)";
+        command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString());
+        command.Parameters.AddWithValue("$name", "external-model");
+        command.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow);
+        await command.ExecuteNonQueryAsync();
+
+        var enteredGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AccountPoolSyncService.SyncGateAcquiredAsync = _ => { enteredGate.TrySetResult(true); return Task.CompletedTask; };
+        try
+        {
+            var syncing = Task.Run(() => sync.SyncPoolAsync(pool.Id, CancellationToken.None));
+            await enteredGate.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.Delay(200);
+            syncing.IsCompleted.Should().BeFalse("the database writer must be acquired before reading collision candidates");
+            transaction.Commit();
+            var result = await syncing.WaitAsync(TimeSpan.FromSeconds(10));
+            result.SkippedModels.Should().Contain("external-model");
+            (await db.ProxyRouteEntries.Where(e => e.EntryName == "external-model").ToListAsync())
+                .Should().ContainSingle(e => e.ManagedByPoolId == null);
+            (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "external-model").ToListAsync()).Should().BeEmpty();
+        }
+        finally
+        {
+            AccountPoolSyncService.SyncGateAcquiredAsync = null;
+        }
+    }
+
+    [Fact]
+    public async Task Delete_waits_for_external_writer_and_preserves_its_rule()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var account = await provisioner.ProvisionFromTokensAsync(Input("delete-writer", "delete@p.com", "team", "at-1"), CancellationToken.None);
+        await provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId, [("delete-model", "delete-model")], CancellationToken.None);
+        var pool = new AccountPool { Name = "delete-pool", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
+        await sync.CreatePoolAsync(pool, null, CancellationToken.None);
+
+        using var external = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_databasePath};Pooling=False");
+        await external.OpenAsync();
+        using var transaction = external.BeginTransaction();
+        using var command = external.CreateCommand();
+        command.Transaction = transaction;
+        // Copy a valid generated rule but remove the ownership marker, as a manual writer would.
+        command.CommandText = "UPDATE ProxyRouteRules SET ManagedByPoolId = NULL, ManagedPoolMemberSiteId = NULL WHERE ExternalModelName = 'delete-model'";
+        (await command.ExecuteNonQueryAsync()).Should().Be(1);
+
+        var enteredGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        AccountPoolSyncService.SyncGateAcquiredAsync = _ => { enteredGate.TrySetResult(true); return Task.CompletedTask; };
+        try
+        {
+            var deleting = Task.Run(() => sync.DeletePoolAsync(pool.Id, CancellationToken.None));
+            await enteredGate.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.Delay(200);
+            deleting.IsCompleted.Should().BeFalse("delete must wait for the external writer before inspecting ownership");
+            transaction.Commit();
+            await deleting.WaitAsync(TimeSpan.FromSeconds(10));
+            (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "delete-model").ToListAsync())
+                .Should().ContainSingle(r => r.ManagedByPoolId == null);
+            (await db.ProxyRouteEntries.Where(e => e.EntryName == "delete-model").ToListAsync())
+                .Should().ContainSingle(e => e.ManagedByPoolId == null);
+        }
+        finally
+        {
+            AccountPoolSyncService.SyncGateAcquiredAsync = null;
+        }
     }
 
     [Fact]
@@ -649,35 +731,6 @@ public sealed class AccountPoolSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task Reconciliation_skips_full_pass_when_fingerprint_unchanged()
-    {
-        // 轻量快速路径：行数指纹无变化的轮次只做 COUNT 聚合查询，不加载全表/不逐池签名/不重跑同步。
-        var (provisioner, sync, db) = CreateServices();
-        var a = await provisioner.ProvisionFromTokensAsync(Input("fp-a", "fa@p.com", "team", "at-fa"), default);
-        await provisioner.UpsertRemoteModelsAsync(a.LinkedSiteId, [("m1", "m1")], default);
-        var pool = new AccountPool { Name = "fp-pool", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
-        await db.Client.Insertable(pool).ExecuteCommandAsync();
-        var worker = new AccountPoolReconciliationService(_services.GetRequiredService<IServiceScopeFactory>(), NullLogger<AccountPoolReconciliationService>.Instance);
-        await worker.RunOnceAsync(default);
-        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync()).Should().ContainSingle();
-
-        var skipSqls = new List<string>();
-        db.Client.Aop.OnLogExecuting = (sql, _) => skipSqls.Add(sql);
-        await worker.RunOnceAsync(default, forceFull: false);
-        db.Client.Aop.OnLogExecuting = null;
-        skipSqls.Should().NotBeEmpty("快速路径仍执行指纹 COUNT 查询");
-        skipSqls.All(sql => sql.Contains("COUNT", StringComparison.OrdinalIgnoreCase))
-            .Should().BeTrue("指纹不变的轮次只允许 COUNT 聚合查询，不得全量加载");
-
-        // 指纹变化（新增一行账号）→ 非强制轮也做全量对账。
-        var b = await provisioner.ProvisionFromTokensAsync(Input("fp-b", "fb@p.com", "team", "at-fb"), default);
-        await provisioner.UpsertRemoteModelsAsync(b.LinkedSiteId, [("m1", "m1")], default);
-        await worker.RunOnceAsync(default, forceFull: false);
-        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
-            .Should().HaveCount(2, "指纹变化的非强制轮做全量对账并同步新成员");
-    }
-
-    [Fact]
     public async Task Reconciliation_reports_failures_and_retries_without_another_change()
     {
         var (_, _, db) = CreateServices();
@@ -735,11 +788,62 @@ public sealed class AccountPoolSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task Sync_queries_proxy_route_rules_with_scoped_where_clauses()
+    public async Task Sync_reuses_one_rule_query_for_candidates_and_stale_entries()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var account = await provisioner.ProvisionFromTokensAsync(Input("reuse", "reuse@example.test", "team", "token"), default);
+        await provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId, [("kept", "kept"), ("stale", "stale"), ("occupied", "occupied")], default);
+        var manualCollision = new ProxyRouteRule { ExternalModelName = "occupied", UpstreamModelName = "occupied", SiteModelName = "occupied", SiteId = account.LinkedSiteId };
+        await db.Client.Insertable(manualCollision).ExecuteCommandAsync();
+        var pool = new AccountPool { Name = "reuse-rules", VendorKey = "codex", PlanType = "team", AutoIncludeMembers = true };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+        await sync.SyncPoolAsync(pool.Id, default);
+
+        var retained = (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "kept").ToListAsync()).Single();
+        retained.Priority = 42;
+        await db.Client.Updateable(retained).UpdateColumns(r => r.Priority).ExecuteCommandAsync();
+        var manualStale = new ProxyRouteRule { ExternalModelName = "stale", UpstreamModelName = "manual", SiteModelName = "manual", SiteId = account.LinkedSiteId };
+        await db.Client.Insertable(manualStale).ExecuteCommandAsync();
+        await db.Client.Deleteable<Domain.SiteCatalog.SiteModelMapping>().Where(m => m.RemoteModelName == "stale").ExecuteCommandAsync();
+
+        var sqls = new List<string>();
+        db.Client.Aop.OnLogExecuting = (sql, _) => sqls.Add(sql);
+        AccountPoolSyncResult result;
+        try
+        {
+            result = await sync.SyncPoolAsync(pool.Id, default);
+        }
+        finally
+        {
+            db.Client.Aop.OnLogExecuting = null;
+        }
+
+        var nameQueries = sqls.Where(sql => sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("ProxyRouteRules", StringComparison.OrdinalIgnoreCase)
+            && sql.Contains("WHERE", StringComparison.OrdinalIgnoreCase)
+            && sql[(sql.IndexOf("WHERE", StringComparison.OrdinalIgnoreCase))..].Contains("ExternalModelName", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        nameQueries.Should().ContainSingle("候选模型和陈旧入口的规则应在同一批查询中获取");
+        result.SkippedModels.Should().ContainSingle().Which.Should().Be("occupied");
+        var keptRules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "kept").ToListAsync();
+        keptRules.Should().ContainSingle().Which.Priority.Should().Be(42);
+        var staleRules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "stale").ToListAsync();
+        staleRules.Should().ContainSingle().Which.Id.Should().Be(manualStale.Id);
+        (await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "stale")).ManagedByPoolId.Should().BeNull();
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "occupied").ToListAsync()).Should().ContainSingle().Which.Id.Should().Be(manualCollision.Id);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    [InlineData(401)]
+    public async Task Sync_queries_proxy_route_rules_with_scoped_where_clauses(int modelCount)
     {
         var (provisioner, sync, db) = CreateServices();
         var team = await provisioner.ProvisionFromTokensAsync(Input("scope-test", "st@example.test", "team", "token-st"), default);
-        await provisioner.UpsertRemoteModelsAsync(team.LinkedSiteId, [("m1", "m1"), ("m2", "m2")], default);
+        var models = Enumerable.Range(0, modelCount).Select(i => $"model-{i:D3}").ToArray();
+        if (models.Length > 0)
+            await provisioner.UpsertRemoteModelsAsync(team.LinkedSiteId, models.Select(m => (m, m)).ToArray(), default);
 
         var pool = new AccountPool { Name = "scope-check-pool", VendorKey = "codex", PlanType = "team" };
         await db.Client.Insertable(pool).ExecuteCommandAsync();
@@ -750,8 +854,9 @@ public sealed class AccountPoolSyncTests : IDisposable
             LinkedSiteId = team.LinkedSiteId,
             Priority = 0
         }).ExecuteCommandAsync();
-
-        // 插入若干无关的手工路由规则，确保不会被无 WHERE 全表扫描
+        // A stale owned entry must be included alongside current candidate model names.
+        if (modelCount > 0)
+            await db.Client.Insertable(new ProxyRouteEntry { EntryName = "stale-model", ManagedByPoolId = pool.Id }).ExecuteCommandAsync();
         var unrelatedRules = new[]
         {
             new ProxyRouteRule { ExternalModelName = "unrelated-1", UpstreamModelName = "u1", SiteModelName = "u1", SiteId = Guid.NewGuid(), Priority = 1 },
@@ -759,52 +864,79 @@ public sealed class AccountPoolSyncTests : IDisposable
         };
         await db.Client.Insertable(unrelatedRules).ExecuteCommandAsync();
 
-        var executedSqls = new List<string>();
-        db.Client.Aop.OnLogExecuting = (sql, _) =>
+        var queries = new List<(string Sql, Dictionary<string, object?> Parameters)>();
+        db.Client.Aop.OnLogExecuting = (sql, parameters) =>
         {
-            executedSqls.Add(sql);
+            if (sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("ProxyRouteRules", StringComparison.OrdinalIgnoreCase))
+                queries.Add((sql, parameters.ToDictionary(p => p.ParameterName, p => (object?)p.Value)));
         };
-
+        AccountPoolSyncResult result;
         try
         {
-            var result = await sync.SyncPoolAsync(pool.Id, default);
-            result.RuleCount.Should().Be(2);
-
-            // 过滤出针对 ProxyRouteRules 表的 SELECT 语句
-            var ruleSelectQueries = executedSqls
-                .Where(sql => sql.Contains("ProxyRouteRules", StringComparison.OrdinalIgnoreCase)
-                    && sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            ruleSelectQueries.Should().NotBeEmpty("同步过程中应当执行针对 ProxyRouteRules 的查询");
-            foreach (var query in ruleSelectQueries)
-            {
-                query.Should().Contain("WHERE", "针对 ProxyRouteRules 的查询必须包含 WHERE 子句，禁止全表扫描");
-            }
-
-            // 同步后 unrelated 规则原样保留，池规则/计数正确
-            var dbUnrelated = await db.ProxyRouteRules
-                .Where(r => r.ExternalModelName.StartsWith("unrelated-"))
-                .ToListAsync();
-            dbUnrelated.Should().HaveCount(2);
-
-            var poolRules = await db.ProxyRouteRules
-                .Where(r => r.ManagedByPoolId == pool.Id)
-                .ToListAsync();
-            poolRules.Should().HaveCount(2);
+            result = await sync.SyncPoolAsync(pool.Id, default);
         }
         finally
         {
             db.Client.Aop.OnLogExecuting = null;
         }
+
+        result.RuleCount.Should().Be(modelCount);
+        var expectedNames = models.ToList();
+        if (modelCount > 0) expectedNames.Add("stale-model");
+        var actualNames = new List<string>();
+        var poolSnapshots = 0;
+        var nameBatches = 0;
+        foreach (var (sql, parameters) in queries)
+        {
+            var whereIndex = sql.IndexOf("WHERE", StringComparison.OrdinalIgnoreCase);
+            whereIndex.Should().BeGreaterThanOrEqualTo(0, "every rules query must be scoped");
+            var predicate = sql[whereIndex..];
+            // The mutation's pre-snapshot is scoped by pool ID, not by model name.
+            var poolMatch = System.Text.RegularExpressions.Regex.Match(predicate,
+                @"^WHERE\s*\(\s*`ManagedByPoolId`\s*=\s*(?<param>@\w+)\s*\)\s*$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (poolMatch.Success)
+            {
+                poolSnapshots++;
+                parameters.Should().ContainKey(poolMatch.Groups["param"].Value);
+                parameters[poolMatch.Groups["param"].Value].Should().NotBeNull();
+                parameters[poolMatch.Groups["param"].Value]!.ToString().Should().Be(pool.Id.ToString());
+                continue;
+            }
+
+            // Require the entire predicate to be an IN over ExternalModelName: an unrelated
+            // WHERE, an OR bypass, or an IN on another column cannot satisfy this assertion.
+            var nameMatch = System.Text.RegularExpressions.Regex.Match(predicate,
+                @"^WHERE\s*\(\s*`ExternalModelName`\s+IN\s*\(\s*(?<values>(?:'(?:''|[^'])*'|@\w+)(?:\s*,\s*(?:'(?:''|[^'])*'|@\w+))*)\s*\)\s*\)\s*$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            nameMatch.Success.Should().BeTrue($"unexpected rules predicate: {predicate}");
+            var values = System.Text.RegularExpressions.Regex.Matches(nameMatch.Groups["values"].Value, @"'(?:''|[^'])*'|@\w+");
+            values.Count.Should().BeInRange(1, 400);
+            nameBatches++;
+            foreach (System.Text.RegularExpressions.Match value in values)
+            {
+                if (value.Value.StartsWith("@"))
+                {
+                    parameters.Should().ContainKey(value.Value);
+                    actualNames.Add(parameters[value.Value]!.ToString()!);
+                }
+                else
+                    actualNames.Add(value.Value[1..^1].Replace("''", "'"));
+            }
+        }
+        poolSnapshots.Should().Be(1);
+        nameBatches.Should().Be((expectedNames.Count + 399) / 400, "empty sets issue no name query and large sets are batched");
+        actualNames.Should().BeEquivalentTo(expectedNames, "every candidate and stale model must be queried exactly once");
+
+        (await db.ProxyRouteRules.Where(r => r.ExternalModelName.StartsWith("unrelated-")).ToListAsync()).Should().HaveCount(2);
+        (await db.ProxyRouteRules.Where(r => r.ManagedByPoolId == pool.Id).ToListAsync()).Should().HaveCount(modelCount);
     }
 
     [Fact]
-    public async Task Legacy_unmarked_pool_entry_is_reclaimed_and_member_exclusion_cleans_rules()
+    public async Task Unmarked_entry_matching_pool_shape_is_preserved_through_sync_exclusion_and_deletion()
     {
-        // 升级自愈：旧版本生成的池入口/规则没有 ManagedByPoolId 标记（否则池整体失管：
-        // 模型被当"被占用"跳过、排除成员/删池也无法清理）。同步时按严格形态条件重新认领，
-        // 认领后排除成员 → 既有 obsolete 清理逻辑接管。
+        // 即使与旧版池产物完全同形，也可能是手工路由；不能推断归属。
         var (provisioner, sync, db) = CreateServices();
         var teamA = await provisioner.ProvisionFromTokensAsync(Input("legacy-a", "la@p.com", "team", "lt-1"), default);
         var teamB = await provisioner.ProvisionFromTokensAsync(Input("legacy-b", "lb@p.com", "team", "lt-2"), default);
@@ -819,32 +951,99 @@ public sealed class AccountPoolSyncTests : IDisposable
             new AccountPoolMember { PoolId = pool.Id, AccountRefId = teamB.Id, LinkedSiteId = teamB.LinkedSiteId, Priority = 1 },
         }).ExecuteCommandAsync();
 
-        // 模拟旧版本产物：无标记入口 + 直连同形规则（全部指向当前成员站点）。
+        // 两条手工规则恰好覆盖全部成员站点，与旧版池产物无法区分。
         var legacyEntry = new ProxyRouteEntry { EntryName = "m1" };
         await db.Client.Insertable(legacyEntry).ExecuteCommandAsync();
-        await db.Client.Insertable(new[]
+        var manualRules = new[]
         {
             new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = teamA.LinkedSiteId, Priority = 0 },
-            new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = teamB.LinkedSiteId, Priority = 0 },
-        }).ExecuteCommandAsync();
+            new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = teamB.LinkedSiteId, Priority = 1 },
+        };
+        await db.Client.Insertable(manualRules).ExecuteCommandAsync();
+
+        async Task AssertPreservedAsync()
+        {
+            var entry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
+            entry.Id.Should().Be(legacyEntry.Id);
+            entry.ManagedByPoolId.Should().BeNull();
+            var rules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
+            rules.Select(r => (r.Id, r.SiteId, r.Priority)).Should().BeEquivalentTo(
+                manualRules.Select(r => (r.Id, r.SiteId, r.Priority)));
+            rules.Should().OnlyContain(r => r.ManagedByPoolId == null && r.ManagedPoolMemberSiteId == null);
+        }
 
         var result = await sync.SyncPoolAsync(pool.Id, default);
-        result.SkippedModels.Should().BeEmpty("存量入口应被重新认领而不是当占用跳过");
+        result.SkippedModels.Should().Contain("m1");
+        await AssertPreservedAsync();
 
-        var claimedEntry = await db.ProxyRouteEntries.FirstAsync(e => e.EntryName == "m1");
-        claimedEntry.ManagedByPoolId.Should().Be(pool.Id, "无标记的池存量入口被重新认领");
-        var claimedRules = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
-        claimedRules.Should().HaveCount(2);
-        claimedRules.All(r => r.ManagedByPoolId == pool.Id).Should().BeTrue("存量规则一并打标");
-
-        // 认领后排除成员 B → 再次同步应清理 B 的规则（修复 ec72856 的存量漏删面）。
         var memberB = await db.AccountPoolMembers.FirstAsync(m => m.AccountRefId == teamB.Id);
         memberB.Excluded = true;
         await db.Client.Updateable(memberB).UpdateColumns(m => m.Excluded).ExecuteCommandAsync();
-        await sync.SyncPoolAsync(pool.Id, default);
+        (await sync.SyncPoolAsync(pool.Id, default)).SkippedModels.Should().Contain("m1");
+        await AssertPreservedAsync();
 
-        (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync())
-            .Should().ContainSingle(r => r.SiteId == teamA.LinkedSiteId, "排除成员的存量规则在认领后可被正常清理");
+        await sync.DeletePoolAsync(pool.Id, default);
+        await AssertPreservedAsync();
+    }
+
+    [Theory]
+    [InlineData("excluded")]
+    [InlineData("deleted")]
+    [InlineData("single")]
+    public async Task Administrator_can_recover_legacy_entry_without_inference(string scenario)
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var a = await provisioner.ProvisionFromTokensAsync(Input("recover-a", "ra@p.com", "team", "ra"), default);
+        var b = await provisioner.ProvisionFromTokensAsync(Input("recover-b", "rb@p.com", "team", "rb"), default);
+        await provisioner.UpsertRemoteModelsAsync(a.LinkedSiteId, [("m1", "m1")], default);
+        await provisioner.UpsertRemoteModelsAsync(b.LinkedSiteId, [("m1", "m1")], default);
+        var pool = new AccountPool { Name = "recover", VendorKey = "codex", PlanType = "team" };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+        await db.Client.Insertable(new AccountPoolMember { PoolId = pool.Id, AccountRefId = a.Id, LinkedSiteId = a.LinkedSiteId }).ExecuteCommandAsync();
+        if (scenario == "excluded")
+            await db.Client.Insertable(new AccountPoolMember { PoolId = pool.Id, AccountRefId = b.Id, LinkedSiteId = b.LinkedSiteId, Excluded = true }).ExecuteCommandAsync();
+        if (scenario == "deleted")
+        {
+            await db.Client.Insertable(new AccountPoolMember { PoolId = pool.Id, AccountRefId = b.Id, LinkedSiteId = b.LinkedSiteId }).ExecuteCommandAsync();
+            await db.Client.Deleteable<AITool.Domain.Codex.CodexAccount>().Where(x => x.Id == b.Id).ExecuteCommandAsync();
+        }
+        var entry = new ProxyRouteEntry { EntryName = "m1" };
+        var first = new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = a.LinkedSiteId, Priority = 7 };
+        var stale = new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = b.LinkedSiteId };
+        var manual = new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "other", SiteModelName = "other", SiteId = b.LinkedSiteId };
+        var rules = scenario == "single" ? new[] { first } : new[] { first, stale, manual };
+        await db.Client.Insertable(entry).ExecuteCommandAsync();
+        await db.Client.Insertable(rules).ExecuteCommandAsync();
+        (await sync.SyncPoolAsync(pool.Id, default)).SkippedModels.Should().Contain("m1");
+        var ids = rules.Select(r => r.Id).ToArray();
+        var selected = scenario == "single" ? new[] { first.Id } : new[] { first.Id, stale.Id };
+        await sync.ClaimLegacyEntryAsync(pool.Id, entry.Id, ids, selected, default);
+        (await db.ProxyRouteEntries.FirstAsync(e => e.Id == entry.Id)).ManagedByPoolId.Should().Be(pool.Id);
+        (await sync.SyncPoolAsync(pool.Id, default)).SkippedModels.Should().BeEmpty();
+        var remaining = await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1").ToListAsync();
+        remaining.Should().ContainSingle(r => r.Id == first.Id && r.ManagedByPoolId == pool.Id && r.Priority == 7);
+        if (scenario != "single")
+        {
+            remaining.Should().NotContain(r => r.Id == stale.Id);
+            remaining.Should().ContainSingle(r => r.Id == manual.Id && r.ManagedByPoolId == null);
+        }
+    }
+
+    [Fact]
+    public async Task Legacy_claim_rejects_stale_snapshot_and_other_pool_rules_atomically()
+    {
+        var (_, sync, db) = CreateServices();
+        var pool = new AccountPool { Name = "claim-guard", VendorKey = "codex" };
+        var entry = new ProxyRouteEntry { EntryName = "m1" };
+        var rule = new ProxyRouteRule { ExternalModelName = "m1", UpstreamModelName = "m1", SiteModelName = "m1", SiteId = Guid.NewGuid() };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+        await db.Client.Insertable(entry).ExecuteCommandAsync();
+        await db.Client.Insertable(rule).ExecuteCommandAsync();
+        await FluentActions.Invoking(() => sync.ClaimLegacyEntryAsync(pool.Id, entry.Id, [], [rule.Id], default)).Should().ThrowAsync<InvalidOperationException>();
+        rule.ManagedByPoolId = Guid.NewGuid();
+        await db.Client.Updateable(rule).UpdateColumns(r => r.ManagedByPoolId).ExecuteCommandAsync();
+        await FluentActions.Invoking(() => sync.ClaimLegacyEntryAsync(pool.Id, entry.Id, [rule.Id], [rule.Id], default)).Should().ThrowAsync<InvalidOperationException>();
+        (await db.ProxyRouteEntries.FirstAsync(e => e.Id == entry.Id)).ManagedByPoolId.Should().BeNull();
     }
 
     [Fact]
@@ -879,6 +1078,57 @@ public sealed class AccountPoolSyncTests : IDisposable
         entry.ManagedByPoolId.Should().BeNull("可能包含手工规则的入口保持未认领");
         (await db.ProxyRouteRules.Where(r => r.ExternalModelName == "m1" && r.ManagedByPoolId != null).ToListAsync())
             .Should().BeEmpty("规则不被打标");
+    }
+
+    [Fact]
+    public async Task Reconciliation_background_pass_detects_updates_without_row_count_changes()
+    {
+        var (provisioner, _, db) = CreateServices();
+        var account = await provisioner.ProvisionFromTokensAsync(Input("reconcile", "reconcile@p.com", "team", "at-reconcile"), default);
+        await provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId, [("m1", "m1")], default);
+        var pool = new AccountPool { Name = "reconcile-pool", VendorKey = "codex", PlanType = "team" };
+        await db.Client.Insertable(pool).ExecuteCommandAsync();
+        await db.Client.Insertable(new AccountPoolMember
+        {
+            PoolId = pool.Id, AccountRefId = account.Id, LinkedSiteId = account.LinkedSiteId
+        }).ExecuteCommandAsync();
+
+        var reconciliation = new AccountPoolReconciliationService(
+            _services.GetRequiredService<IServiceScopeFactory>(), NullLogger<AccountPoolReconciliationService>.Instance);
+        await reconciliation.RunOnceAsync(default);
+        (await db.ProxyRouteRules.Where(r => r.ManagedByPoolId == pool.Id).ToListAsync()).Should().ContainSingle();
+        await reconciliation.StartAsync(default);
+        try
+        {
+            async Task WaitForRuleCountAsync(int count)
+            {
+                // 后台 5s 轮询 + 全量并发下的调度/DB 竞争：等待型断言需要充分余量（曾 15s 在全量下超时）。
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                while ((await db.ProxyRouteRules.Where(r => r.ManagedByPoolId == pool.Id).ToListAsync()).Count != count)
+                    await Task.Delay(100, timeout.Token);
+            }
+
+            var mapping = await db.SiteModelMappings.FirstAsync(m => m.SiteId == account.LinkedSiteId);
+            mapping.IsEnabled = false;
+            await db.Client.Updateable(mapping).UpdateColumns(m => m.IsEnabled).ExecuteCommandAsync();
+            await WaitForRuleCountAsync(0);
+
+            mapping.IsEnabled = true;
+            await db.Client.Updateable(mapping).UpdateColumns(m => m.IsEnabled).ExecuteCommandAsync();
+            await WaitForRuleCountAsync(1);
+
+            var member = await db.AccountPoolMembers.FirstAsync(m => m.PoolId == pool.Id);
+            member.Excluded = true;
+            await db.Client.Updateable(member).UpdateColumns(m => m.Excluded).ExecuteCommandAsync();
+            await WaitForRuleCountAsync(0);
+            reconciliation.GetStatus().PoolFailures.Should().BeEmpty();
+            reconciliation.GetStatus().ScanFailure.Should().BeNull();
+        }
+        finally
+        {
+            await reconciliation.StopAsync(default);
+            reconciliation.Dispose();
+        }
     }
 
     private (CodexAccountProvisioner Provisioner, AccountPoolSyncService Sync, AppDbContext Db) CreateServices()

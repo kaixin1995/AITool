@@ -38,7 +38,7 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddSqlSugar($"Data Source={_databasePath}");
+        services.AddSqlSugar($"Data Source={_databasePath};Pooling=False");
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<ModelConcurrencyLimiter>();
         _serviceProvider = services.BuildServiceProvider();

@@ -37,7 +37,7 @@ public sealed class SessionIsolationKeyTests : IDisposable
         try
         {
             InsertKey(Protector(_provider).Protect(legacyKey));
-            var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(), _provider.GetRequiredService<IDataProtectionProvider>());
+            var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(), _provider.GetRequiredService<IDataProtectionProvider>(), rawStorageEnabled: true);
             using var client = Client();
 
             // v1 状态下代次
@@ -68,6 +68,83 @@ public sealed class SessionIsolationKeyTests : IDisposable
         {
             CryptographicOperations.ZeroMemory(legacyKey);
         }
+    }
+
+    [Fact]
+    public async Task Rolling_upgrade_and_staged_rollback_keep_v1_compatible_and_preserve_key()
+    {
+        // Emulate the old binary's v1 reader against the same real SQLite DB and DP ring.
+        var key = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            InsertKey(Protector(_provider).Protect(key));
+            var compatible = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(),
+                _provider.GetRequiredService<IDataProtectionProvider>());
+            var other = CreateProvider();
+            var compatibleOther = new SessionIsolationKeyStore(other.GetRequiredService<IServiceScopeFactory>(),
+                other.GetRequiredService<IDataProtectionProvider>());
+            var before = Row().ProtectedKey;
+            var expected = await Derive(new SessionIsolationDeriver(compatible));
+            for (var i = 0; i < 3; i++)
+            {
+                Row().Version.Should().Be(1);
+                Marker().Version.Should().Be(1);
+                Marker().ProtectedKeyFingerprint.Should().Be(Fingerprint(Row().ProtectedKey));
+                Protector(other).Unprotect(Convert.FromBase64String(Row().ProtectedKey)).Should().Equal(key);
+                (await Derive(new SessionIsolationDeriver(compatibleOther))).Should().Be(expected);
+                Row().ProtectedKey.Should().Be(before);
+            }
+
+            // Only after v1 instances stop may v2 be enabled.
+            (await Derive(Deriver(other))).Should().Be(expected);
+            Row().Version.Should().Be(2);
+            // Stop all v2 writers, then run the compatibility release before old binaries.
+            (await Derive(new SessionIsolationDeriver(compatible))).Should().Be(expected);
+            Row().Version.Should().Be(1);
+            Marker().Version.Should().Be(1);
+            Marker().ProtectedKeyFingerprint.Should().Be(Fingerprint(Row().ProtectedKey));
+            Protector(other).Unprotect(Convert.FromBase64String(Row().ProtectedKey)).Should().Equal(key);
+            (await Derive(new SessionIsolationDeriver(compatibleOther))).Should().Be(expected);
+        }
+        finally { CryptographicOperations.ZeroMemory(key); }
+    }
+
+    [Fact]
+    public async Task Failed_rollback_conversion_leaves_raw_pair_unchanged_and_fails_closed()
+    {
+        var expected = await Derive(Deriver(_provider));
+        var raw = Row().ProtectedKey;
+        using var client = Client();
+        client.Ado.ExecuteCommand("""
+            CREATE TRIGGER reject_session_key_downgrade BEFORE UPDATE ON SessionIsolationKeyMetadata
+            WHEN NEW.Version = 1 BEGIN SELECT RAISE(ABORT, 'reject downgrade'); END;
+            """);
+        var compatible = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(),
+            _provider.GetRequiredService<IDataProtectionProvider>());
+        await Assert.ThrowsAnyAsync<Exception>(() => compatible.EnsureInitializedAsync());
+        Row().Version.Should().Be(2);
+        Row().ProtectedKey.Should().Be(raw);
+        Marker().Version.Should().Be(2);
+        Marker().ProtectedKeyFingerprint.Should().Be(Fingerprint(raw));
+        client.Ado.ExecuteCommand("DROP TRIGGER reject_session_key_downgrade;");
+        (await Derive(new SessionIsolationDeriver(compatible))).Should().Be(expected);
+        Row().Version.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Compatibility_mode_initializes_and_repairs_in_v1_format()
+    {
+        var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(),
+            _provider.GetRequiredService<IDataProtectionProvider>());
+        var first = await Derive(new SessionIsolationDeriver(store));
+        Row().Version.Should().Be(1);
+        Protector(_provider).Unprotect(Convert.FromBase64String(Row().ProtectedKey)).Should().HaveCount(32);
+        SetCiphertext("corrupt");
+        (await Derive(new SessionIsolationDeriver(store))).Should().NotBe(first);
+        Row().Version.Should().Be(1);
+        Marker().Version.Should().Be(1);
+        Marker().ProtectedKeyFingerprint.Should().Be(Fingerprint(Row().ProtectedKey));
+        Protector(_provider).Unprotect(Convert.FromBase64String(Row().ProtectedKey)).Should().HaveCount(32);
     }
 
     [Fact]
@@ -128,13 +205,13 @@ public sealed class SessionIsolationKeyTests : IDisposable
     public async Task Startup_bootstrap_is_idempotent_and_corrupt_persisted_state_rotates_automatically()
     {
         var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(),
-            _provider.GetRequiredService<IDataProtectionProvider>());
+            _provider.GetRequiredService<IDataProtectionProvider>(), rawStorageEnabled: true);
         await store.EnsureInitializedAsync();
         var ciphertext = Row().ProtectedKey;
         await store.EnsureInitializedAsync();
         var restarted = CreateProvider();
         var restartedStore = new SessionIsolationKeyStore(restarted.GetRequiredService<IServiceScopeFactory>(),
-            restarted.GetRequiredService<IDataProtectionProvider>());
+            restarted.GetRequiredService<IDataProtectionProvider>(), rawStorageEnabled: true);
         await restartedStore.EnsureInitializedAsync();
         Row().ProtectedKey.Should().Be(ciphertext);
         // A deployment that lost its Data Protection key ring must come back up on its own:
@@ -544,7 +621,7 @@ public sealed class SessionIsolationKeyTests : IDisposable
         using var cancellation = new CancellationTokenSource();
         var provider = new CancelOnUnprotectProvider(_provider.GetRequiredService<IDataProtectionProvider>(), cancellation);
         var deriver = new SessionIsolationDeriver(new SessionIsolationKeyStore(
-            _provider.GetRequiredService<IServiceScopeFactory>(), provider));
+            _provider.GetRequiredService<IServiceScopeFactory>(), provider, rawStorageEnabled: true));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             deriver.DeriveAsync("client", "provider", _accountId, "session", "seed", cancellation.Token));
         provider.Unprotected.Should().NotBeNull().And.OnlyContain(b => b == 0, "取消后必须清理已解密的密钥");
@@ -609,24 +686,68 @@ public sealed class SessionIsolationKeyTests : IDisposable
             using var client = Client();
             using var cts = new CancellationTokenSource();
             cts.Cancel();
-            var realConn = (Microsoft.Data.Sqlite.SqliteConnection)client.Ado.Connection;
-            var faultingConn = new FaultingBeginTranDbConnection(realConn, new OperationCanceledException(cts.Token));
-            client.Ado.Connection = faultingConn;
+            var ado = System.Reflection.DispatchProxy.Create<IAdo, TransactionCallProxy>();
+            var adoProxy = (TransactionCallProxy)ado;
+            adoProxy.Inner = client.Ado;
+            adoProxy.BeginFault = new OperationCanceledException(cts.Token);
+            var observingClient = System.Reflection.DispatchProxy.Create<ISqlSugarClient, TransactionCallProxy>();
+            var clientProxy = (TransactionCallProxy)observingClient;
+            clientProxy.Inner = client;
+            clientProxy.AdoOverride = ado;
 
             var store = new SessionIsolationKeyStore(_provider.GetRequiredService<IServiceScopeFactory>(),
                 _provider.GetRequiredService<IDataProtectionProvider>());
 
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                store.TryUpgradeToRawAsync(client, legacyKey, before.ProtectedKey, fingerprint, default));
+            var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                store.TryUpgradeToRawAsync(observingClient, legacyKey, before.ProtectedKey, fingerprint, default));
 
-            faultingConn.BeginTranCalls.Should().Be(1);
+            exception.CancellationToken.Should().Be(cts.Token);
+            adoProxy.BeginTranCalls.Should().Be(1);
+            adoProxy.RollbackTranCalls.Should().Be(0, "the transaction never started");
 
             var currentRow = Row();
             currentRow.Version.Should().Be(SessionIsolationKey.LegacyCiphertextVersion);
+            currentRow.ProtectedKey.Should().Be(before.ProtectedKey);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(legacyKey);
+        }
+    }
+
+    // DispatchProxy observes IAdo.RollbackTran itself, including calls that SqlSugar would
+    // otherwise turn into a no-op (or whose exception the upgrade code would swallow).
+    public class TransactionCallProxy : System.Reflection.DispatchProxy
+    {
+        public object Inner { get; set; } = null!;
+        public IAdo? AdoOverride { get; set; }
+        public Exception? BeginFault { get; set; }
+        public int BeginTranCalls { get; private set; }
+        public int RollbackTranCalls { get; private set; }
+
+        protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
+        {
+            ArgumentNullException.ThrowIfNull(targetMethod);
+            if (targetMethod.Name == "get_Ado" && AdoOverride is not null) return AdoOverride;
+            if (targetMethod.Name == nameof(IAdo.BeginTran))
+            {
+                BeginTranCalls++;
+                if (BeginFault is not null) throw BeginFault;
+            }
+            if (targetMethod.Name == nameof(IAdo.RollbackTran))
+            {
+                RollbackTranCalls++;
+                return null;
+            }
+            try
+            {
+                return targetMethod.Invoke(Inner, args);
+            }
+            catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+                throw;
+            }
         }
     }
 
@@ -755,7 +876,7 @@ public sealed class SessionIsolationKeyTests : IDisposable
     }
 
     private static SessionIsolationDeriver Deriver(ServiceProvider provider) => new(new SessionIsolationKeyStore(
-        provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<IDataProtectionProvider>()));
+        provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<IDataProtectionProvider>(), rawStorageEnabled: true));
     private Task<string> Derive(SessionIsolationDeriver deriver) =>
         deriver.DeriveAsync("client", "provider", _accountId, "session", "seed");
     private static IDataProtector Protector(ServiceProvider provider) =>

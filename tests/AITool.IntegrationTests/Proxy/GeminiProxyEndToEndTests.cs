@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using AITool.Application.Networking;
+using AITool.Application.Proxy;
 using AITool.Domain.Google;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
@@ -123,6 +124,77 @@ public sealed class GeminiProxyEndToEndTests
     }
 
     [Fact]
+    public async Task Chat_stream_reads_final_usage_after_finish_reason_until_eof()
+    {
+        const string geminiSse =
+            "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}]}}\n\n" +
+            "data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":30,\"cachedContentTokenCount\":6,\"candidatesTokenCount\":9,\"thoughtsTokenCount\":2}}}\n\n";
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(geminiSse, Encoding.UTF8, "text/event-stream")
+            });
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsync("/v1/chat/completions",
+            new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        body.Should().Contain("hello").And.Contain("data: [DONE]");
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("success");
+        logs[0].InputTokens.Should().Be(24);
+        logs[0].CachedTokens.Should().Be(6);
+        logs[0].OutputTokens.Should().Be(11);
+    }
+
+    [Theory]
+    [InlineData(false, false, "canceled", 7)]
+    [InlineData(true, false, "canceled", 11)]
+    [InlineData(true, true, "success", 11)]
+    public async Task Chat_stream_cancel_is_only_settled_after_upstream_done(
+        bool includeFinalUsage, bool includeDone, string expectedStatus, int expectedOutputTokens)
+    {
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            CancelAfterStreamingCallbacks = true,
+            StreamingLines =
+            [
+                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":30,\"cachedContentTokenCount\":6,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":2}}}", ""
+            ]
+        };
+        if (includeFinalUsage)
+        {
+            forwarder.StreamingLines.Add("data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":30,\"cachedContentTokenCount\":6,\"candidatesTokenCount\":9,\"thoughtsTokenCount\":2}}}");
+            forwarder.StreamingLines.Add("");
+        }
+        if (includeDone)
+        {
+            forwarder.StreamingLines.Add("data: [DONE]");
+            forwarder.StreamingLines.Add("");
+        }
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            _ => throw new InvalidOperationException("The fake forwarder must handle the request."),
+            forwarder: forwarder);
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsync("/v1/chat/completions",
+            new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        forwarder.Requests.Should().ContainSingle().Which.ProtocolType.Should().Be("Gemini");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be(expectedStatus);
+        logs[0].InputTokens.Should().Be(24);
+        logs[0].CachedTokens.Should().Be(6);
+        logs[0].OutputTokens.Should().Be(expectedOutputTokens);
+    }
+
+    [Fact]
     public async Task Refresh_quota_for_antigravity_account_returns_bucket_windows()
     {
         // Antigravity 额度链路：refresh-quota → fetchAvailableModels → 按前缀聚合为
@@ -241,16 +313,19 @@ public sealed class GeminiProxyEndToEndTests
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
         private readonly string _accountKind;
         private readonly string _baseUrl;
+        private readonly IProxyForwardService? _forwarder;
         private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-gemini-e2e-{Guid.NewGuid():N}.db");
 
         public GeminiProxyWebApplicationFactory(
             Func<HttpRequestMessage, HttpResponseMessage> responder,
             string accountKind = "Antigravity",
-            string baseUrl = "https://daily-cloudcode-pa.googleapis.com")
+            string baseUrl = "https://daily-cloudcode-pa.googleapis.com",
+            IProxyForwardService? forwarder = null)
         {
             _responder = responder;
             _accountKind = accountKind;
             _baseUrl = baseUrl;
+            _forwarder = forwarder;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -259,6 +334,11 @@ public sealed class GeminiProxyEndToEndTests
             builder.ConfigureServices(services =>
             {
                 IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
+                if (_forwarder is not null)
+                {
+                    services.RemoveAll<IProxyForwardService>();
+                    services.AddSingleton(_forwarder);
+                }
 
                 // 真实 ProxyForwardService + 可控 handler（替换 IHttpClientFactory）。
                 var handler = new StubHandler(_responder);

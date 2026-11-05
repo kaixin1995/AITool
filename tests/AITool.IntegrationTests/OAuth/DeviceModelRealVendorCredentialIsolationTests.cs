@@ -78,17 +78,18 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { RequestServices = _scope.ServiceProvider } }
         };
 
-        var fetchTask = controller.FetchModels(_accountId, CancellationToken.None);
-        var completed = await Task.WhenAny(fetchTask, entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
-        if (completed == fetchTask)
-        {
-            await fetchTask;
-            Assert.Fail("Fetch completed before entered signal was observed.");
-        }
-
+        using var fetchCancellation = new CancellationTokenSource();
+        var fetchTask = controller.FetchModels(_accountId, fetchCancellation.Token);
         Exception? primaryException = null;
         try
         {
+            var completed = await Task.WhenAny(fetchTask, entered.Task).WaitAsync(TimeSpan.FromSeconds(10));
+            if (completed == fetchTask)
+            {
+                await fetchTask;
+                Assert.Fail("Fetch completed before entered signal was observed.");
+            }
+
             await RotateAsync(rotation);
             release.TrySetResult(true);
 
@@ -118,10 +119,12 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
         }
         finally
         {
+            if (!fetchTask.IsCompleted)
+                fetchCancellation.Cancel();
             release.TrySetResult(true);
             try
             {
-                await fetchTask.WaitAsync(TimeSpan.FromSeconds(10));
+                await fetchTask;
             }
             catch when (primaryException is not null)
             {
@@ -170,8 +173,8 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
             if (uri.Host == "zcode.z.ai" && uri.AbsolutePath == "/api/v1/client/configs")
                 return Task.FromResult(endpoint == "configs"
                     ? Json(status, "{}")
-                    : Json(HttpStatusCode.OK, "{\"code\":0,\"data\":{\"configs\":{\"builtin_provider_config_json\":\"https://config.example.invalid/provider.json\"}}}"));
-            if (endpoint == "provider" && uri.Host == "config.example.invalid" && uri.AbsolutePath == "/provider.json")
+                    : Json(HttpStatusCode.OK, "{\"code\":0,\"data\":{\"configs\":{\"builtin_provider_config_json\":\"https://cdn.z.ai/provider.json\"}}}"));
+            if (endpoint == "provider" && uri.Host == "cdn.z.ai" && uri.AbsolutePath == "/provider.json")
                 return Task.FromResult(Json(status, "{}"));
             throw new InvalidOperationException("Unexpected fake upstream request: " + uri);
         }
@@ -269,9 +272,9 @@ public sealed class DeviceModelRealVendorCredentialIsolationTests : IDisposable
             {
                 request.Headers.Contains("Authorization").Should().BeFalse();
                 PublicPaths.Enqueue(uri.AbsolutePath);
-                return Json(HttpStatusCode.OK, "{\"code\":0,\"data\":{\"configs\":{\"builtin_provider_config_json\":\"https://config.example.invalid/provider.json\"}}}");
+                return Json(HttpStatusCode.OK, "{\"code\":0,\"data\":{\"configs\":{\"builtin_provider_config_json\":\"https://cdn.z.ai/provider.json\"}}}");
             }
-            if (endpoint == "zcode-subscription" && uri.Host == "config.example.invalid" && uri.AbsolutePath == "/provider.json")
+            if (endpoint == "zcode-subscription" && uri.Host == "cdn.z.ai" && uri.AbsolutePath == "/provider.json")
             {
                 request.Headers.Contains("Authorization").Should().BeFalse();
                 PublicPaths.Enqueue(uri.AbsolutePath);

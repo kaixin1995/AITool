@@ -85,6 +85,99 @@ public sealed class ForceStreamForwardE2eTests
     }
 
     [Fact]
+    public async Task Malformed_sse_chunk_returns_bad_gateway_instead_of_partial_answer()
+    {
+        const string sse = """
+            data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"before"}}]}
+
+            data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"lost
+
+            data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"after"},"finish_reason":"stop"}]}
+
+            data: [DONE]
+            """;
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(sse, Encoding.UTF8, "text/event-stream")
+        });
+
+        var result = await service.ForwardAsync(ChatRequest(streamInBody: false));
+
+        result.Success.Should().BeFalse();
+        result.StatusCode.Should().Be(502);
+        result.ResponseBody.Should().BeNullOrEmpty();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Truncated_sse_returns_bad_gateway_instead_of_partial_answer(bool anotherChoiceFinished)
+    {
+        const string partial = """
+            data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}
+
+            """;
+        const string finishedChoice = """
+
+            data: {"object":"chat.completion.chunk","choices":[{"index":1,"delta":{"content":"complete"},"finish_reason":"stop"}]}
+
+            """;
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(partial + (anotherChoiceFinished ? finishedChoice : ""), Encoding.UTF8, "text/event-stream")
+        });
+
+        var result = await service.ForwardAsync(ChatRequest(streamInBody: false));
+
+        result.Success.Should().BeFalse();
+        result.StatusCode.Should().Be(502);
+        result.ResponseBody.Should().BeNullOrEmpty();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Complete_sse_with_done_or_all_choices_finished_succeeds(bool withDone)
+    {
+        const string chunks = """
+            data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"complete"},"finish_reason":"length"},{"index":1,"delta":{"content":"answer"},"finish_reason":"stop"}]}
+
+            """;
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(chunks + (withDone ? "\ndata: [DONE]\n\n" : ""), Encoding.UTF8, "text/event-stream")
+        });
+
+        var result = await service.ForwardAsync(ChatRequest(streamInBody: false));
+
+        result.Success.Should().BeTrue();
+        using var json = System.Text.Json.JsonDocument.Parse(result.ResponseBody!);
+        var choices = json.RootElement.GetProperty("choices");
+        choices[0].GetProperty("finish_reason").GetString().Should().Be("length");
+        choices[1].GetProperty("finish_reason").GetString().Should().Be("stop");
+    }
+
+    [Fact]
+    public async Task Empty_choices_only_sse_returns_bad_gateway()
+    {
+        const string sse = """
+            data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0}}
+
+            data: [DONE]
+            """;
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(sse, Encoding.UTF8, "text/event-stream")
+        });
+
+        var result = await service.ForwardAsync(ChatRequest(streamInBody: false));
+
+        result.Success.Should().BeFalse();
+        result.StatusCode.Should().Be(502);
+        result.ResponseBody.Should().BeNullOrEmpty();
+    }
+
+    [Fact]
     public async Task Aggregation_preserves_fragmented_refusal_and_legacy_function_call_per_choice()
     {
         const string sse = """

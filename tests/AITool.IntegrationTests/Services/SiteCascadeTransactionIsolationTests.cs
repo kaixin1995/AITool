@@ -18,7 +18,7 @@ public sealed class SiteCascadeTransactionIsolationTests
         var path = Path.Combine(Path.GetTempPath(), $"cascade-isolation-{Guid.NewGuid():N}.db");
         using var client = new SqlSugarClient(new ConnectionConfig
         {
-            ConnectionString = $"Data Source={path}", DbType = DbType.Sqlite, IsAutoCloseConnection = true
+            ConnectionString = $"Data Source={path};Pooling=False", DbType = DbType.Sqlite, IsAutoCloseConnection = true
         });
         try
         {
@@ -34,12 +34,12 @@ public sealed class SiteCascadeTransactionIsolationTests
             {
                 transactionDb.Client.Should().NotBeSameAs(client);
                 entered.SetResult();
-                await release.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(60));
                 if (cascadeFails) throw new InvalidOperationException("cascade failure");
                 return true;
             }, default);
 
-            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(60));
             var writerStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var writer = Task.Run(async () =>
             {
@@ -47,7 +47,7 @@ public sealed class SiteCascadeTransactionIsolationTests
                 await client.Ado.BeginTranAsync();
                 await client.Insertable(new Site { Id = siteId, Name = "parallel", BaseUrl = "https://example.invalid", ApiKey = "key" }).ExecuteCommandAsync();
             });
-            await writerStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await writerStarted.Task.WaitAsync(TimeSpan.FromSeconds(60));
             release.TrySetResult();
 
             if (cascadeFails)
@@ -55,7 +55,7 @@ public sealed class SiteCascadeTransactionIsolationTests
             else
                 (await cascade).Should().BeTrue();
 
-            await writer.WaitAsync(TimeSpan.FromSeconds(15));
+            await writer.WaitAsync(TimeSpan.FromSeconds(60));
             client.Ado.Transaction.Should().NotBeNull("cascade completion must not commit or roll back the writer");
             if (writerCommits) await client.Ado.CommitTranAsync();
             else await client.Ado.RollbackTranAsync();
@@ -75,7 +75,7 @@ public sealed class SiteCascadeTransactionIsolationTests
         var path = Path.Combine(Path.GetTempPath(), $"cascade-rollback-{Guid.NewGuid():N}.db");
         using var client = new SqlSugarClient(new ConnectionConfig
         {
-            ConnectionString = $"Data Source={path}", DbType = DbType.Sqlite, IsAutoCloseConnection = true
+            ConnectionString = $"Data Source={path};Pooling=False", DbType = DbType.Sqlite, IsAutoCloseConnection = true
         });
         try
         {

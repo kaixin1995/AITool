@@ -37,9 +37,7 @@ public sealed class AccountPoolSyncService
     }
 
     /// <summary>
-    /// 池同步全局串行化：同步是低频管理操作，但「导入后自动 sync-all」与「手动同步/成员编辑」
-    /// 可能交错——碰撞检测与写入跨连接事务非原子，交错时靠入口唯一索引兜底只能保证不脏写、
-    /// 不保证不报错（一方 UNIQUE 冲突异常）。全局单锁把交错收敛为排队，零行为损失。
+    /// 进程内排队，减少低频管理操作的数据库锁竞争；跨进程互斥由 MutateAsync 的 SQLite 写事务保证。
     /// </summary>
     private static readonly SemaphoreSlim _syncGate = new(1, 1);
 
@@ -49,6 +47,43 @@ public sealed class AccountPoolSyncService
     /// <summary>同步单个池：物化自动成员 → 按模型重生成托管入口与规则（全局串行化）。</summary>
     public Task<AccountPoolSyncResult> SyncPoolAsync(Guid poolId, CancellationToken ct)
         => MutateAsync(poolId, client => SyncPoolCoreAsync(client, poolId, ct), ct);
+
+    /// <summary>
+    /// 管理员核实后显式认领旧入口及指定规则。完整规则 ID 快照用于拒绝过期确认；
+    /// 未选规则保持手工归属。认领本身不清理规则，后续同步才按当前成员状态收口。
+    /// </summary>
+    public Task ClaimLegacyEntryAsync(Guid poolId, Guid entryId, IReadOnlyList<Guid> observedRuleIds,
+        IReadOnlyList<Guid> claimRuleIds, CancellationToken ct)
+        => MutateAsync(poolId, async client =>
+        {
+            await FindPoolAsync(client, poolId, ct);
+            var entry = (await client.Queryable<ProxyRouteEntry>().Where(e => e.Id == entryId).ToListAsync(ct)).FirstOrDefault();
+            if (entry is null || entry.ManagedByPoolId != null)
+                throw new InvalidOperationException("入口不存在或已被号池托管，请重新检查");
+            var rules = await client.Queryable<ProxyRouteRule>().Where(r => r.ExternalModelName == entry.EntryName).ToListAsync(ct);
+            var observed = observedRuleIds.ToHashSet();
+            var selected = claimRuleIds.ToHashSet();
+            if (observed.Count != observedRuleIds.Count || selected.Count != claimRuleIds.Count
+                || selected.Count == 0 || !observed.SetEquals(rules.Select(r => r.Id))
+                || !selected.IsSubsetOf(observed))
+                throw new InvalidOperationException("规则快照已变化或选择无效，请重新检查");
+            var claimed = rules.Where(r => selected.Contains(r.Id)).ToList();
+            if (claimed.Any(r => r.ManagedByPoolId != null || r.ManagedPoolMemberSiteId != null
+                || !(string.IsNullOrEmpty(r.TargetKind) || r.TargetKind == "Site")
+                || r.UpstreamModelName != entry.EntryName || r.SiteModelName != entry.EntryName))
+                throw new InvalidOperationException("只能认领未托管的同模型直连规则");
+            if (rules.Any(r => r.ManagedByPoolId != null))
+                throw new InvalidOperationException("入口下有其他托管规则，不能认领");
+            entry.ManagedByPoolId = poolId;
+            await client.Updateable(entry).UpdateColumns(e => e.ManagedByPoolId).ExecuteCommandAsync(ct);
+            foreach (var rule in claimed)
+            {
+                rule.ManagedByPoolId = poolId;
+                rule.ManagedPoolMemberSiteId = rule.SiteId;
+                await client.Updateable(rule).UpdateColumns(r => new { r.ManagedByPoolId, r.ManagedPoolMemberSiteId }).ExecuteCommandAsync(ct);
+            }
+            return true;
+        }, ct);
 
     /// <summary>Create the pool, members and generated graph in one serialized transaction.</summary>
     public Task<AccountPoolSyncResult> CreatePoolAsync(AccountPool pool, IReadOnlyList<Guid>? memberIds, CancellationToken ct)
@@ -114,12 +149,19 @@ public sealed class AccountPoolSyncService
             }
             using var graphLease = await RouteGraphMutationGate.AcquireAsync(ct);
             using var client = _dbContext.Client.CopyNew();
+            // Keep the same connection until commit. Acquiring a write lock before *any* reads
+            // serializes collision checks and mutations even against other application processes.
+            // The no-op UPDATE also forces a write lock if the provider begins a deferred transaction.
+            client.CurrentConnectionConfig.IsAutoCloseConnection = false;
+            client.Ado.Open();
             client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
             await client.Ado.BeginTranAsync();
             T result;
             List<string> destructiveSources;
             try
             {
+                await client.Ado.ExecuteCommandAsync("UPDATE AccountPools SET Id = Id WHERE 0;");
+                ct.ThrowIfCancellationRequested();
                 // Pool mutations may physically delete only entries and rules owned by this pool.
                 // If that invariant changes, the invalidation snapshot must also be expanded.
                 var before = await client.Queryable<ProxyRouteEntry>().Where(e => e.ManagedByPoolId == poolId)
@@ -151,10 +193,25 @@ public sealed class AccountPoolSyncService
             _metadataCache.InvalidateRuntimeRouteTargets();
             return result;
         }
+        catch (Exception ex) when (IsSqliteContentionOrUniqueConflict(ex))
+        {
+            throw new InvalidOperationException("号池操作与其他数据库写入冲突，请重试", ex);
+        }
         finally
         {
             _syncGate.Release();
         }
+    }
+
+    private static bool IsSqliteContentionOrUniqueConflict(Exception exception)
+    {
+        for (Exception? current = exception; current != null; current = current.InnerException)
+        {
+            if (current is Microsoft.Data.Sqlite.SqliteException sqlite &&
+                (sqlite.SqliteErrorCode is 5 or 6 || sqlite.SqliteExtendedErrorCode is 1555 or 2067))
+                return true;
+        }
+        return false;
     }
 
     private static async Task<AccountPool> FindPoolAsync(ISqlSugarClient client, Guid poolId, CancellationToken ct)
@@ -219,76 +276,20 @@ public sealed class AccountPoolSyncService
         var poolOwnedEntries = await client.Queryable<ProxyRouteEntry>()
             .Where(e => e.ManagedByPoolId == pool.Id).ToListAsync(ct);
 
-        // ②″ 存量认领（幂等，升级自愈）：旧版本部署生成的池入口/规则没有 ManagedByPoolId 标记，
-        // 不重新认领的话池会把这些模型整体当"被占用"跳过（失管），排除成员/删池也无法清理。
-        // 与手工路由在形态上不可完全区分，认领条件取池生成器的确定性输出特征，全部满足才打标：
-        // 入口未被任何池认领；名下规则数 ≥2（单条与手工不可区分，保守跳过）；每站点恰好一条且
-        // 精确覆盖持有该映射的全部当前成员站点（不多不少）；全部为"直连同形"（未认领 + 直连 +
-        // 上游名=站点模型名=入口名）。不满足的入口按占用跳过（手工保护语义不变）。
-        var unclaimedEntries = candidateEntries.Where(e => e.ManagedByPoolId is null).ToList();
-        if (unclaimedEntries.Count > 0)
-        {
-            var claimRules = new List<ProxyRouteRule>();
-            foreach (var batch in unclaimedEntries.Select(e => e.EntryName).Distinct(StringComparer.Ordinal).Chunk(400))
-                claimRules.AddRange(await client.Queryable<ProxyRouteRule>()
-                    .Where(r => batch.Contains(r.ExternalModelName)).ToListAsync(ct));
-            var claimRulesByEntry = claimRules.ToLookup(r => r.ExternalModelName, StringComparer.Ordinal);
-            var claimedEntryIds = new List<Guid>();
-            foreach (var entry in unclaimedEntries)
-            {
-                var rules = claimRulesByEntry[entry.EntryName].ToList();
-                if (rules.Count < 2) continue;
-                if (!rules.All(r => r.ManagedByPoolId is null
-                    && (string.IsNullOrEmpty(r.TargetKind) || r.TargetKind == "Site")
-                    && r.UpstreamModelName == entry.EntryName
-                    && r.SiteModelName == entry.EntryName))
-                {
-                    continue;
-                }
-                // 池生成的确定性形态：规则恰好覆盖持有该映射的全部当前（未排除）成员站点。
-                var eligibleSites = members.Where(m => !m.Excluded)
-                    .Select(m => m.LinkedSiteId)
-                    .Where(siteId => mappingsBySite[siteId].Any(mm => mm.RemoteModelName == entry.EntryName))
-                    .ToHashSet();
-                var ruleSites = rules.Select(r => r.SiteId).ToList();
-                if (ruleSites.Distinct().Count() != rules.Count
-                    || !ruleSites.All(eligibleSites.Contains)
-                    || ruleSites.Count != eligibleSites.Count)
-                {
-                    continue;
-                }
-                entry.ManagedByPoolId = pool.Id;
-                claimedEntryIds.Add(entry.Id);
-                await client.Updateable(entry).UpdateColumns(e => e.ManagedByPoolId).ExecuteCommandAsync(ct);
-                foreach (var rule in rules)
-                {
-                    rule.ManagedByPoolId = pool.Id;
-                    rule.ManagedPoolMemberSiteId = rule.SiteId;
-                    await client.Updateable(rule)
-                        .UpdateColumns(r => new { r.ManagedByPoolId, r.ManagedPoolMemberSiteId })
-                        .ExecuteCommandAsync(ct);
-                }
-            }
-            if (claimedEntryIds.Count > 0)
-                poolOwnedEntries.AddRange(candidateEntries.Where(e => claimedEntryIds.Contains(e.Id)));
-        }
+        // 无归属标记的存量入口即使形态与池产物一致，也可能是手工路由；不能据此认领。
+        // 一律按占用跳过，旧版生成的无标记路由需要管理员检查并手工清理。
 
-        var ruleNamesToCheck = exposedModels.Distinct(StringComparer.Ordinal).ToList();
-        var allRuleNames = new HashSet<string>(StringComparer.Ordinal);
-        if (ruleNamesToCheck.Count > 0)
+        // Query candidate and owned entry names together, so collision detection and
+        // incremental cleanup reuse the same rules (including stale owned entries).
+        var ruleNamesToCheck = exposedModels.Concat(poolOwnedEntries.Select(e => e.EntryName))
+            .Distinct(StringComparer.Ordinal).ToList();
+        var oldRules = new List<ProxyRouteRule>();
+        foreach (var batch in ruleNamesToCheck.Chunk(400))
         {
-            var detectedNames = new List<string>();
-            foreach (var batch in ruleNamesToCheck.Chunk(400))
-            {
-                detectedNames.AddRange(await client.Queryable<ProxyRouteRule>()
-                    .Where(r => batch.Contains(r.ExternalModelName))
-                    .Select(r => r.ExternalModelName)
-                    .ToListAsync(ct));
-            }
-            allRuleNames = detectedNames
-                .Where(n => !string.IsNullOrWhiteSpace(n))
-                .ToHashSet(StringComparer.Ordinal);
+            oldRules.AddRange(await client.Queryable<ProxyRouteRule>()
+                .Where(r => batch.Contains(r.ExternalModelName)).ToListAsync(ct));
         }
+        var rulesByEntry = oldRules.ToLookup(r => r.ExternalModelName, StringComparer.Ordinal);
 
         var skippedModels = new List<string>();
         var keptModels = new List<string>();
@@ -297,7 +298,7 @@ public sealed class AccountPoolSyncService
             entryByName.TryGetValue(modelName, out var existing);
             var ownedByThisPool = existing is { ManagedByPoolId: { } owner } && owner == pool.Id;
             var occupied = !ownedByThisPool
-                && (allRuleNames.Contains(modelName) || existing != null);
+                && (rulesByEntry.Contains(modelName) || existing != null);
             if (occupied)
             {
                 skippedModels.Add(modelName);
@@ -312,18 +313,6 @@ public sealed class AccountPoolSyncService
         var keptSet = keptModels.ToHashSet(StringComparer.Ordinal);
         var staleEntries = poolOwnedEntries.Where(e => !keptSet.Contains(e.EntryName)).ToList();
 
-        var relevantRuleNames = keptModels.Concat(staleEntries.Select(e => e.EntryName))
-            .Distinct(StringComparer.Ordinal).ToList();
-        var oldRules = new List<ProxyRouteRule>();
-        if (relevantRuleNames.Count > 0)
-        {
-            foreach (var batch in relevantRuleNames.Chunk(400))
-            {
-                oldRules.AddRange(await client.Queryable<ProxyRouteRule>()
-                    .Where(r => batch.Contains(r.ExternalModelName)).ToListAsync(ct));
-            }
-        }
-        var rulesByEntry = oldRules.ToLookup(r => r.ExternalModelName, StringComparer.Ordinal);
         var poolOwnedEntryNames = poolOwnedEntries.Select(e => e.EntryName).ToHashSet(StringComparer.Ordinal);
 
         var accountNames = (await ListVendorAccountsAsync(client, pool.VendorKey, pool.PlanType, ct))

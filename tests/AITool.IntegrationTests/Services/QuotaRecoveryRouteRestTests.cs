@@ -27,7 +27,7 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
         var services = new ServiceCollection();
         services.AddMemoryCache();
         services.AddLogging();
-        services.AddSqlSugar($"Data Source={_databasePath}");
+        services.AddSqlSugar($"Data Source={_databasePath};Pooling=False");
         services.AddSingleton<IAccountQuotaProvider>(_accounts);
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
@@ -266,19 +266,55 @@ public sealed class QuotaRecoveryRouteRestTests : IDisposable
     }
 
     [Fact]
-    public void Token_release_removes_old_rest_while_preserving_new_rest_for_same_site()
+    public void Token_release_preserves_all_rests_when_same_site_has_new_quota_rest()
     {
         var siteId = Guid.NewGuid();
         var oldRoute = Route(siteId);
+        var anotherOldRoute = Route(siteId);
         var newRoute = Route(siteId);
+        var until = DateTimeOffset.UtcNow.AddHours(2);
 
-        _store.Rest(oldRoute.CircuitKey, DateTimeOffset.UtcNow.AddHours(2), "old quota", kind: RouteRestKind.Quota, siteId: siteId);
+        _store.Rest(oldRoute.CircuitKey, until, "old quota", kind: RouteRestKind.Quota, siteId: siteId);
+        _store.Rest(anotherOldRoute.CircuitKey, until, "another old quota", kind: RouteRestKind.Quota, siteId: siteId);
         var token = _store.CaptureQuotaRestReleaseToken(siteId);
-        _store.Rest(newRoute.CircuitKey, DateTimeOffset.UtcNow.AddHours(2), "new quota", kind: RouteRestKind.Quota, siteId: siteId);
+        _store.Rest(newRoute.CircuitKey, until, "new quota", kind: RouteRestKind.Quota, siteId: siteId);
 
-        _store.ReleaseQuotaRests(token).Should().Be(1);
-        _store.IsBlocked(oldRoute.CircuitKey).Should().BeFalse();
+        _store.ReleaseQuotaRests(token).Should().Be(0);
+        _store.IsBlocked(oldRoute.CircuitKey).Should().BeTrue();
+        _store.IsBlocked(anotherOldRoute.CircuitKey).Should().BeTrue();
         _store.IsBlocked(newRoute.CircuitKey).Should().BeTrue();
+
+        var freshToken = _store.CaptureQuotaRestReleaseToken(siteId);
+        _store.ReleaseQuotaRests(freshToken).Should().Be(3);
+        _store.IsBlocked(oldRoute.CircuitKey).Should().BeFalse();
+        _store.IsBlocked(anotherOldRoute.CircuitKey).Should().BeFalse();
+        _store.IsBlocked(newRoute.CircuitKey).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Site_quota_version_survives_reset_and_other_site_writes_do_not_invalidate_token()
+    {
+        var siteId = Guid.NewGuid();
+        var otherSiteId = Guid.NewGuid();
+        var oldRoute = Route(siteId);
+        var newRoute = Route(siteId);
+        var otherRoute = Route(otherSiteId);
+        var until = DateTimeOffset.UtcNow.AddHours(2);
+        _store.Rest(oldRoute.CircuitKey, until, "old quota", kind: RouteRestKind.Quota, siteId: siteId);
+        var token = _store.CaptureQuotaRestReleaseToken(siteId);
+
+        _store.Rest(otherRoute.CircuitKey, until, "other site quota", kind: RouteRestKind.Quota, siteId: otherSiteId);
+        _store.ReleaseQuotaRests(token).Should().Be(1);
+        _store.IsBlocked(otherRoute.CircuitKey).Should().BeTrue();
+
+        _store.Rest(oldRoute.CircuitKey, until, "old quota", kind: RouteRestKind.Quota, siteId: siteId);
+        token = _store.CaptureQuotaRestReleaseToken(siteId);
+        _store.Rest(newRoute.CircuitKey, until, "new quota", kind: RouteRestKind.Quota, siteId: siteId);
+        _store.Reset(newRoute.CircuitKey).Should().BeTrue();
+
+        _store.ReleaseQuotaRests(token).Should().Be(0);
+        _store.IsBlocked(oldRoute.CircuitKey).Should().BeTrue();
+        _store.ReleaseQuotaRests(_store.CaptureQuotaRestReleaseToken(siteId)).Should().Be(1);
     }
 
     [Fact]

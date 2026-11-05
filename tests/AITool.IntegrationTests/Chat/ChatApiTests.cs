@@ -11,7 +11,12 @@ using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
+using AITool.Domain.Xai;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Controllers.Admin;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using System.Reflection;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -260,6 +265,82 @@ public sealed class ChatApiTests
 
         body.Should().Contain("Request timed out after 1s");
         fakeOAuth.CancellationTokenObservedCancelled.Should().BeTrue();
+        fakeHttp.Handler.Requests.Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("client")]
+    [InlineData("persistence")]
+    [InlineData("unrelated-cancellation")]
+    public async Task Managed_chat_stream_invalidation_respects_cancellation_and_preserves_upstream_response(string scenario)
+    {
+        FakeChatInvalidationService? invalidation = null;
+        var fakeHttp = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("401"));
+        await using var factory = new ChatWebApplicationFactory(
+            new ChatFakeProxyForwardService(), fakeHttp, "OpenAI", directNetwork: true,
+            configureServices: services =>
+            {
+                services.RemoveAll<ForwardOAuthInvalidationService>();
+                services.AddScoped<ForwardOAuthInvalidationService>(sp => invalidation = new FakeChatInvalidationService(
+                    sp.GetRequiredService<AppDbContext>(), sp.GetRequiredService<ProxyRequestMetadataCache>(), scenario));
+            });
+        using var client = factory.CreateClient(); // Seeds the test database.
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = await db.Sites.InSingleAsync(ChatWebApplicationFactory.SiteId);
+        site.ManagedSource = "xai_oauth"; // xAI has invalidation but no 401 refresh callback.
+        site.ApiKey = "test-token";
+        await db.UpdateAsync(site);
+        var account = new XaiAccount { LinkedSiteId = site.Id, AccessToken = "test-token" };
+        await db.InsertAsync(account);
+
+        var controller = ActivatorUtilities.CreateInstance<ChatApiController>(scope.ServiceProvider);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider }
+        };
+        using var clientCancellation = new CancellationTokenSource();
+        _ = scope.ServiceProvider.GetRequiredService<ForwardOAuthInvalidationService>();
+        var method = typeof(ChatApiController).GetMethod("ForwardStreamAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var forward = (Task)method.Invoke(controller, new object?[]
+        {
+            "OpenAI", site.BaseUrl, site.EndpointPathMode, "test-token", "test-model", "hi", false, "",
+            (Func<string, Task>)(_ => Task.CompletedTask), (Func<string, Task>)(_ => Task.CompletedTask),
+            scenario == "timeout" ? 1 : 10, null, clientCancellation.Token, null, null,
+            new AccountIdentity("xai", account.Id), site.Id, "xai_oauth"
+        })!;
+        invalidation.Should().NotBeNull();
+        await invalidation!.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (scenario == "client") clientCancellation.Cancel();
+
+        if (scenario == "client")
+        {
+            Func<Task> act = async () => await forward.WaitAsync(TimeSpan.FromSeconds(5));
+            await act.Should().ThrowAsync<OperationCanceledException>();
+        }
+        else
+        {
+            await forward.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = forward.GetType().GetProperty("Result")!.GetValue(forward)!;
+            var resultType = result.GetType();
+            resultType.GetProperty("Success")!.GetValue(result).Should().Be(false);
+            var error = (string)resultType.GetProperty("ErrorMessage")!.GetValue(result)!;
+            if (scenario == "timeout")
+            {
+                error.Should().Contain("Request timed out after 1s");
+            }
+            else
+            {
+                error.Should().Be("unauthorized");
+                resultType.GetProperty("StatusCode")!.GetValue(result).Should().Be(401);
+                resultType.GetProperty("ResponseBody")!.GetValue(result).Should().Be("unauthorized");
+            }
+        }
+
+        invalidation.SentToken.Should().Be("test-token");
+        invalidation.Snapshot.Should().NotBeNull();
+        if (scenario is "timeout" or "client") invalidation.ObservedCancellation.Should().BeTrue();
         fakeHttp.Handler.Requests.Should().ContainSingle();
     }
 
@@ -933,6 +1014,33 @@ internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
         }
 
         return clone;
+    }
+}
+
+internal sealed class FakeChatInvalidationService(AppDbContext db, ProxyRequestMetadataCache cache, string scenario)
+    : ForwardOAuthInvalidationService(db, cache)
+{
+    public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public string? SentToken { get; private set; }
+    public object? Snapshot { get; private set; }
+    public bool ObservedCancellation { get; private set; }
+
+    public override async Task InvalidateAsync(string sentToken, object? state, CancellationToken ct)
+    {
+        SentToken = sentToken;
+        Snapshot = state;
+        Entered.TrySetResult();
+        if (scenario == "persistence") throw new InvalidOperationException("persistence failed");
+        if (scenario == "unrelated-cancellation") throw new OperationCanceledException("unrelated cancellation");
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            ObservedCancellation = ct.IsCancellationRequested;
+            throw;
+        }
     }
 }
 

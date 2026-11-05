@@ -28,7 +28,7 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
         var services = new ServiceCollection();
         services.AddMemoryCache();
         services.AddLogging();
-        services.AddSqlSugar($"Data Source={_databasePath}");
+        services.AddSqlSugar($"Data Source={_databasePath};Pooling=False");
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<SiteUsageTracker>();
         services.AddSingleton<IAccountQuotaProvider>(_provider);
@@ -189,11 +189,52 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
 
         var result = await inspection.RunManualAsync(forceRefresh: true, CancellationToken.None);
 
-        result.Accounts.Should().ContainSingle().Which.Action.Should().Be("enable");
-        disabled.Enabled.Should().BeTrue();
-        // 巡检虽然把账号启用了，但健康查询期间新写入的配额休息版本高于查询前捕获的令牌版本，必须保留
+        result.Accounts.Should().ContainSingle().Which.Action.Should().NotBe("enable");
+        disabled.Enabled.Should().BeFalse();
         circuits.IsBlocked(route).Should().BeTrue();
         circuits.GetRest(route).Should().NotBeNull();
+        Schedule(disabled).LeaseToken.Should().BeNull();
+
+        // 后续新鲜查询未遇到新耗尽时仍可恢复。
+        _provider.QueryCallback = null;
+        var later = await inspection.RunManualAsync(forceRefresh: true, CancellationToken.None);
+        later.Accounts.Should().ContainSingle().Which.Action.Should().Be("enable");
+        disabled.Enabled.Should().BeTrue();
+        circuits.IsBlocked(route).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Quota_recovery_serializes_with_same_site_exhaustion_during_async_enable()
+    {
+        var circuits = new RouteCircuitStateStore();
+        var site = Guid.NewGuid();
+        var route = Guid.NewGuid();
+        var token = circuits.CaptureQuotaRestReleaseToken(site);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovery = circuits.TryRunQuotaRecoveryAsync(token, async () =>
+        {
+            entered.SetResult();
+            await finish.Task;
+        }, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var rest = Task.Run(() => circuits.Rest(route, DateTimeOffset.UtcNow.AddDays(1), "quota",
+            kind: RouteRestKind.Quota, siteId: site));
+        try
+        {
+            // A different site's write is not held up by the pending enable.
+            var other = Task.Run(() => circuits.Rest(Guid.NewGuid(), DateTimeOffset.UtcNow.AddDays(1), "quota",
+                kind: RouteRestKind.Quota, siteId: Guid.NewGuid()));
+            await other.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally { finish.TrySetResult(); }
+        (await recovery.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        await rest.WaitAsync(TimeSpan.FromSeconds(5));
+        circuits.IsBlocked(route).Should().BeTrue();
+        var invoked = false;
+        (await circuits.TryRunQuotaRecoveryAsync(token, () => { invoked = true; return Task.CompletedTask; },
+            CancellationToken.None)).Should().BeFalse();
+        invoked.Should().BeFalse();
     }
 
     [Fact]

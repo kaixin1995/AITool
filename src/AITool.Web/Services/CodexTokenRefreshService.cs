@@ -135,8 +135,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
     {
         try
         {
-            // single-flight：OAuth 客户端内部保证同 refresh_token 并发只刷一次
-            // HTTP 调用在锁外执行，避免长时间持有串行锁
+            // 账号凭证锁覆盖读取、上游轮换和落盘；数据库串行锁不覆盖 HTTP。
             using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", account.Id, ct);
             var current = await db.CodexAccounts.InSingleAsync(account.Id);
             if (current is null || current.RequiresReauth || string.IsNullOrWhiteSpace(current.RefreshToken)
@@ -162,18 +161,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
                 if (!string.IsNullOrWhiteSpace(tokens.IdToken)) account.IdToken = tokens.IdToken;
                 account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
                 account.LastRefreshAt = DateTimeOffset.UtcNow;
-                // 列限定写回（token 五列）：account 是扫描时的快照，整行写回会把供给期间
-                // 升级的 DisplayName/Email/PlanType/AccountId 回滚成旧值。
-                await db.Client.Updateable(account)
-                    .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                    .ExecuteCommandAsync(ct);
-
-                var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    site.ApiKey = tokens.AccessToken;
-                    await db.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(ct);
-                }
+                await CodexCredentialPersistence.SaveAsync(db, account, ct);
             }, ct);
 
             _refreshRetryAt.TryRemove(account.Id, out _);

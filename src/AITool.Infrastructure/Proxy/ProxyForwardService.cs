@@ -1037,8 +1037,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                 CachedTokens = cachedTokens,
                 OutputTokens = outputTokens,
                 IsStreaming = isStreaming,
-                HasStartedStreaming = hasFirstContent,
-                IsStreamInterrupted = hasFirstContent,
+                HasStartedStreaming = ex.HasExposedOutput,
+                IsStreamInterrupted = ex.HasExposedOutput,
                 FirstTokenLatencyMs = firstTokenLatencyMs,
                 StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
                 TotalDurationMs = totalDurationMs,
@@ -1405,7 +1405,6 @@ public sealed class ProxyForwardService : IProxyForwardService
             var choicesByIndex = new SortedDictionary<int, ChoiceAccumulator>();
             var hasAnyChunk = false;
             var sawDone = false;
-            var sawAnyFinishReason = false;
 
             foreach (var rawLine in sseBody.Split('\n'))
             {
@@ -1423,9 +1422,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
 
                 if (payload.Length == 0) continue;
-                // SSE 允许 keep-alive 空行；非 JSON 的非空 data 行按杂行容错跳过——
-                // 中转链路注入的杂行不该把本可成功的聚合判成 502（ee303d2 确立的宽容语义，
-                // 上游显式 error 事件仍然判失败）。是否被截断由收尾兜底规则诚实上报。
+                // 非空 data 解析失败可能是丢失的回答或工具调用片段，不能当作噪声跳过。
                 JsonDocument doc;
                 try
                 {
@@ -1433,7 +1430,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
                 catch (JsonException)
                 {
-                    continue;
+                    return null;
                 }
 
                 using (doc)
@@ -1484,7 +1481,6 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                         if (choice.TryGetProperty("finish_reason", out var frEl) && frEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(frEl.GetString()))
                         {
-                            sawAnyFinishReason = true;
                             acc.FinishReason ??= frEl.GetString();
                         }
 
@@ -1573,17 +1569,16 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
             }
 
-            // 宽容门槛（ee303d2）：只要收到过有效 chunk 就允许聚合成功；缺失的 finish_reason
-            // 按收尾兜底规则补齐。部分实现不逐 choice 发 finish_reason（只在末块发或不发），
-            // 严格要求会把本可成功的请求变成 502。显式 error 事件已在上方单独判失败。
-            if (!hasAnyChunk)
+            // 空 choices 的用量块不能单独构成有效结果。[DONE] 是全流结束信号；
+            // 没有 [DONE] 时，必须每个 choice 都有结束原因，才能排除回答被截断。
+            if (!hasAnyChunk || choicesByIndex.Count == 0
+                || (!sawDone && choicesByIndex.Values.Any(acc => acc.FinishReason is null)))
             {
                 return null;
             }
 
-            // 流正常收尾（见过 [DONE] 或 finish_reason）才允许 stop 兜底；
-            // 半途掐断的流保留 finish_reason=null，不把静默截断洗白成正常完成。
-            var fallbackFinishReason = sawDone || sawAnyFinishReason ? "stop" : null;
+            // 只有全流的 [DONE] 可为缺失结束原因的 choice 兜底。
+            var fallbackFinishReason = sawDone ? "stop" : null;
 
             var result = new System.Text.Json.Nodes.JsonObject
             {

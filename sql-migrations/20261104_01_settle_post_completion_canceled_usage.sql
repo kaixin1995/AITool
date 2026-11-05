@@ -1,27 +1,40 @@
 -- ============================================================
 -- 迁移脚本：20261104_01_settle_post_completion_canceled_usage.sql
--- 目标：把「完成事件已到达后被客户端断开」的历史用量行从 canceled 修正为 success
--- 背景：
---   2026-11-04 修复（25cc83d）之前，跨协议桥接流（如 1M→gpt-6.1-terra，Codex Responses
---   上游桥接为 OpenAI Chat）正常完成时不发 data: [DONE] 终止符，部分客户端
---   （DeepSeek Harness 等严格等待终止符的实现）收完内容后挂起直至超时 abort。
---   该类请求上游已完整生成并按成功全额计费（usage 来自 response.completed 事件，
---   能提取到 usage 即证明完成事件已到达），但被记为 canceled。
--- 判据：
---   Status='canceled' 且 (Input+Cached+Output)>0 —— token>0 仅可能来自完成事件，
---   即流已完整交付；token=0 的 canceled 是真正的中途断开（流协议盲区），保持原状。
--- 影响列：
---   Status: canceled → success（与 e8ad10b 起的新契约一致：完成事件后的断开按成功入账）
---   ErrorMessage: 清空（成功行不应携带取消文案）
---   IsStreamInterrupted: 清 0（流已完整完成，非中断）
--- 附注：
---   RequestedAt/Attempts/时长等列不动；修复后的新数据由应用层直接按 success 入账，
---   本脚本只修正历史口径。执行后 usage-logs 概览的成功率与总 Tokens 会相应上升。
+-- 修复 25cc83d 之前，OpenAI Chat 出口跨协议桥接流在完成事件后
+-- 被客户端取消、误记为 canceled 的历史用量行。
+--
+-- 安全约束：用量行不记录 Chat/Responses 具体入口、上游协议或完成事件，
+-- token>0 也不能证明流已完成。因此默认白名单为空，执行不会修改任何行。
+-- 不可根据 token、时长或普通取消文案自行推断并批量加入白名单。
+--
+-- 使用前，逐条核对同一 RequestId 和 AttemptIndex 的独立证据，确认：
+--   1. 该次尝试为受缺少 [DONE] 影响的 OpenAI Chat 跨协议桥接流，且发生在
+--      实际部署 25cc83d 修复之前；
+--   2. 已收到该次上游完整完成事件，客户端在此之后才断开。
+-- 将证据位置及核对结果保存在迁移审计之外的工单中，无法核实的记录保留原状。
+-- 在下方 CTE 用 SELECT '用量行Id' UNION ALL SELECT '另一行Id' 替换空集合，
+-- 仅填写逐条核实的 ProxyUsageLogs.Id，先试运行并检查影响行数后再执行。
+-- 不要把请求链路 ID 当作用量行 ID。
+--
+-- 时间窗口为 UTC：从 2026-11-04 00:00 到修复提交前的 14:00（不含）。
+-- 这是保守的上限而非部署时间证明，窗口外记录不会修改；如果本地时间存储
+-- 或部署时间无法确认，必须先核实，不应将相应记录加入白名单。
+-- 历史数据若已被旧版宽泛脚本修改，无法由此脚本自动恢复，需结合备份审计。
 -- ============================================================
 
+WITH VerifiedUsageIds(Id) AS (
+    SELECT NULL WHERE 0
+)
 UPDATE ProxyUsageLogs
 SET Status = 'success',
     ErrorMessage = '',
+    ErrorCategory = NULL,
     IsStreamInterrupted = 0
-WHERE Status = 'canceled'
-  AND (InputTokens + CachedTokens + OutputTokens) > 0;
+WHERE Id IN (SELECT Id FROM VerifiedUsageIds)
+  AND Status = 'canceled'
+  AND ProtocolType = 'OpenAI'
+  AND ForwardingMode = 'bridge'
+  AND IsStreaming = 1
+  AND IsFinalResult = 1
+  AND datetime(RequestedAt) >= '2026-11-04 00:00:00'
+  AND datetime(RequestedAt) < '2026-11-04 14:00:00';

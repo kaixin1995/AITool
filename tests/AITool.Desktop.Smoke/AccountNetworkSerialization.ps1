@@ -44,14 +44,16 @@ Assert-Smoke ($policyPut -ge 0 -and $cacheRevision -gt $policyPut -and $codexPut
 Assert-Smoke ($saveSource.Contains('expectedRevision = originalPolicy?.Revision') -and $saveSource.Contains('AccountPolicyNeedsReload = true;')) 'Save must retain CAS and require reload after policy/conflict/partial failure.'
 Assert-Smoke ($saveSource.Contains('网络配置已保存，账号资料更新失败') -and $saveSource.Contains('账号资料 / 凭证请求未发送')) 'Save must distinguish policy-first partial success from a policy failure before credential mutation.'
 
-# Static regression guard: NetworkStatus must distinguish policy mode from actual egress.
-# Must not claim "默认不是直连", and must include semantic keywords without locking full sentence text.
-$statusIndex = $source.IndexOf('NetworkStatus = options.Count == 0', [StringComparison]::Ordinal)
-Assert-Smoke ($statusIndex -ge 0) 'Could not locate NetworkStatus assignment in RefreshNetworkAsync.'
-$statusWindowLength = [Math]::Min(1000, $source.Length - $statusIndex)
-$statusWindow = $source.Substring($statusIndex, $statusWindowLength)
-Assert-Smoke (-not $statusWindow.Contains('默认不是直连')) 'NetworkStatus must not claim that default is never direct connection.'
-Assert-Smoke ($statusWindow.Contains('系统代理') -and $statusWindow.Contains('代理方案')) 'NetworkStatus must explain system proxy fallback and proxy profile semantics.'
+# Static regression guard: check each literal branch separately, not nearby comments or other statuses.
+# Deliberately fail if the assignment stops being a simple ternary so this guard is reviewed too.
+$statusMatch = [regex]::Match($source, 'NetworkStatus\s*=\s*options\.Count\s*==\s*0\s*\?\s*"(?<empty>[^"\r\n]*)"\s*:\s*"(?<populated>[^"\r\n]*)"\s*;')
+Assert-Smoke $statusMatch.Success 'Could not locate the literal NetworkStatus ternary in RefreshNetworkAsync.'
+$emptyStatus = $statusMatch.Groups['empty'].Value
+$populatedStatus = $statusMatch.Groups['populated'].Value
+Assert-Smoke ($emptyStatus -match '暂无代理方案' -and $emptyStatus -match '显式选择默认或直连' -and $emptyStatus -match '未指定时保留服务端策略') 'Empty status must explain the lack of profiles, available choices, and preservation of the server policy.'
+Assert-Smoke ($populatedStatus -match '未指定时保留服务端策略' -and $populatedStatus -match '默认：跟随站点配置[^；]*系统代理[^；]*未配置代理即为直连' -and $populatedStatus -match '直连：不走任何代理') 'Populated status must distinguish the default and direct modes and preserve the unspecified policy.'
+Assert-Smoke ($populatedStatus -match '代理方案：失效时阻断请求[^；]*不回退直连') 'Populated status must say that an invalid proxy profile blocks requests without falling back to direct connection.'
+Assert-Smoke (-not $emptyStatus.Contains('默认不是直连') -and -not $populatedStatus.Contains('默认不是直连')) 'Neither NetworkStatus branch may claim that default is never direct connection.'
 
 # Exercise the actual ApiService / System.Text.Json options, including API envelope handling.
 function Read-ApiFixture([type] $ResponseType, [string] $Json) {

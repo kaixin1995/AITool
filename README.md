@@ -38,6 +38,7 @@ README 是全貌入口；`docs/` 下按主题提供**函数级**细节文档：
 
 | 文档 | 内容 |
 |------|------|
+| [docs/project-handoff.md](docs/project-handoff.md) | 项目接手、遥测与取消契约、故障教训及部署协作约束 |
 | [docs/architecture.md](docs/architecture.md) | 分层架构、依赖关系、Program.cs 启动流程、DI 全表、配置节、数据库与实体全字段、SqlSugar 陷阱 |
 | [docs/proxy-pipeline.md](docs/proxy-pipeline.md) | 代理请求全链路函数级拆解（认证→路由→熔断→并发→桥接→转发→流式→用量） |
 | [docs/protocol-bridge.md](docs/protocol-bridge.md) | AITool.Protocol 协议转换：方向矩阵、流式状态机、usage/cache 口径、keep_reasoning、Codex 规范化 |

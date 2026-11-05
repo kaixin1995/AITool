@@ -573,7 +573,25 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                  && !account.DisabledByUpstream
                  && usedPercent.Value < reenableThreshold)
         {
-            await provider.SetEnabledAsync(account, true, "quota-recovered", cancellationToken);
+            // 缓存快照没有查询前的版本栅栏，不能证明它比最近的配额耗尽更新。
+            var recoveryApplied = _routePolicy is null
+                ? await EnableWithoutPolicyAsync()
+                : quotaRestToken.HasValue && await _routePolicy.TryRunQuotaRecoveryAsync(
+                    quotaRestToken.Value,
+                    () => provider.SetEnabledAsync(account, true, "quota-recovered", cancellationToken),
+                    cancellationToken);
+            if (!recoveryApplied)
+            {
+                result.Reason = AppendReason(result.Reason, "额度快照已过期或来自缓存，本轮不自动启用");
+                return result;
+            }
+
+            async Task<bool> EnableWithoutPolicyAsync()
+            {
+                await provider.SetEnabledAsync(account, true, "quota-recovered", cancellationToken);
+                return true;
+            }
+
             // Provider guards can reject recovery when a concurrent manual/feature disable wins.
             var (_, confirmed) = await GetAccountAsync(provider, account.AccountId, cancellationToken);
             if (confirmed?.IsEnabled == true)

@@ -9,6 +9,12 @@ public sealed class RouteCircuitStateStore
     private long _blockDurationTicks;
     private int _failThreshold;
     private long _restVersion;
+    // 保留各站点最近一次配额休息版本，即使休息被清理或重置，旧查询也不能解除同站点的其他休息。
+    private readonly Dictionary<Guid, long> _siteQuotaRestVersions = [];
+    // 同一站点的配额耗尽写入与异步账号回启串行化；不得在持有 _syncRoot 时等待。
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, SemaphoreSlim> _siteQuotaGates = [];
+
+    private SemaphoreSlim QuotaGate(Guid siteId) => _siteQuotaGates.GetOrAdd(siteId, static _ => new SemaphoreSlim(1, 1));
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> _failCounts = [];
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTimeOffset> _blockedRoutes = [];
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CircuitRouteMeta> _routeMeta = [];
@@ -63,11 +69,24 @@ public sealed class RouteCircuitStateStore
     public void Rest(Guid routeId, DateTimeOffset untilUtc, string reason, CircuitRouteMeta? meta = null,
         RouteRestKind kind = RouteRestKind.Other, Guid? siteId = null)
     {
+        var gate = kind == RouteRestKind.Quota && siteId.HasValue ? QuotaGate(siteId.Value) : null;
+        gate?.Wait();
+        try { RestCore(routeId, untilUtc, reason, meta, kind, siteId); }
+        finally { gate?.Release(); }
+    }
+
+    private void RestCore(Guid routeId, DateTimeOffset untilUtc, string reason, CircuitRouteMeta? meta,
+        RouteRestKind kind, Guid? siteId)
+    {
         lock (_syncRoot)
         {
             if (untilUtc <= DateTimeOffset.UtcNow) return;
 
             var version = ++_restVersion;
+            if (kind == RouteRestKind.Quota && siteId is { } quotaSiteId)
+            {
+                _siteQuotaRestVersions[quotaSiteId] = version;
+            }
 
             if (!_restedRoutes.TryGetValue(routeId, out var rests))
             {
@@ -105,15 +124,34 @@ public sealed class RouteCircuitStateStore
         }
     }
 
+    /// <summary>在同站点配额耗尽写入的互斥区内校验版本并执行异步回启。</summary>
+    public async Task<bool> TryRunQuotaRecoveryAsync(QuotaRestReleaseToken token, Func<Task> recovery, CancellationToken cancellationToken)
+    {
+        var gate = QuotaGate(token.SiteId);
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            lock (_syncRoot)
+            {
+                if (_siteQuotaRestVersions.GetValueOrDefault(token.SiteId) > token.Version) return false;
+            }
+            await recovery();
+            return true;
+        }
+        finally { gate.Release(); }
+    }
+
     /// <summary>
-    /// 仅在新鲜配额查询确认恢复后调用：按令牌只释放捕获前已存在的配额休息。
-    /// 不触碰限流/其他休息、普通熔断、失败计数；捕获后写入或刷新的配额休息保持不变。
+    /// 仅在新鲜配额查询确认恢复后调用：如果查询期间该站点出现新的配额休息，
+    /// 则不释放该站点的任何配额休息。不触碰限流/其他休息、普通熔断或失败计数。
     /// 返回移除的配额休息数。
     /// </summary>
     public int ReleaseQuotaRests(QuotaRestReleaseToken token)
     {
         lock (_syncRoot)
         {
+            if (_siteQuotaRestVersions.GetValueOrDefault(token.SiteId) > token.Version) return 0;
+
             var removed = 0;
             var owner = new RestOwner(RouteRestKind.Quota, token.SiteId);
             foreach (var pair in _restedRoutes.ToArray())

@@ -9,9 +9,9 @@ using AITool.Infrastructure.Persistence;
 namespace AITool.Web.Services;
 
 /// <summary>Persists only a rejection of the credential actually sent, not a stale response.</summary>
-public sealed class ForwardOAuthInvalidationService(AppDbContext db, ProxyRequestMetadataCache cache)
+public class ForwardOAuthInvalidationService(AppDbContext db, ProxyRequestMetadataCache cache)
 {
-    public async Task InvalidateAsync(string sentToken, object? state, CancellationToken ct)
+    public virtual async Task InvalidateAsync(string sentToken, object? state, CancellationToken ct)
     {
         if (state is not ForwardOAuthCredentialSnapshot s || !string.Equals(sentToken, s.AccessToken, StringComparison.Ordinal)) return;
         using var client = db.Client.CopyNew();

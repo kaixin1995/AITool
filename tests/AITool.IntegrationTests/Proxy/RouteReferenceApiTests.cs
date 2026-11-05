@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using AITool.Domain.Proxy;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
@@ -20,6 +21,50 @@ public sealed class RouteReferenceApiTests
     {
         await using var scope = factory.Services.CreateAsyncScope();
         return (await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyRouteEntries.FirstAsync(x => x.EntryName == name)).Id;
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Adding_an_active_target_preserves_the_old_entry_and_parent_until_release(bool existing, bool reference)
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var key = new SiteKey { SiteId = SiteId, KeyValue = "active-key" };
+        await using (var scope = factory.Services.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<AppDbContext>().InsertAsync(key);
+
+        const string entry = "edited";
+        if (existing)
+            (await Save(client, entry, [Direct()])).StatusCode.Should().Be(HttpStatusCode.OK);
+        else
+            (await client.PostAsJsonAsync("/api/admin/route-rules/entries", new { entryName = entry })).StatusCode.Should().Be(HttpStatusCode.OK);
+        var entryId = await Entry(factory, entry);
+        if (!reference)
+            (await Save(client, "dependent", [Reference(entryId)])).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var cache = factory.Services.GetRequiredService<ProxyRequestMetadataCache>();
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+        var before = await cache.CaptureEffectiveRouteTargetsAsync(entry, CancellationToken.None);
+        using var active = await limiter.AcquireAsync(factory.Services, key.Id, "gpt-5.5-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(1), CancellationToken.None);
+        active.Acquired.Should().BeTrue();
+        object added = reference ? Reference(await Entry(factory, "chat-prod"))
+            : new { siteId = SiteId, siteModelName = "gpt-5.5-a", upstreamModelName = "gpt-5.5" };
+        var response = await Save(client, entry, existing ? [Direct(), added] : [added]);
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        (await response.Content.ReadAsStringAsync()).Should().Contain("当前请求结束后生效");
+        (await cache.CaptureEffectiveRouteTargetsAsync(entry, CancellationToken.None)).Select(x => x.SiteModelName)
+            .Should().Equal(before.Select(x => x.SiteModelName));
+        if (!reference)
+            (await cache.CaptureEffectiveRouteTargetsAsync("dependent", CancellationToken.None)).Select(x => x.SiteModelName)
+                .Should().Equal(before.Select(x => x.SiteModelName));
+        active.Dispose();
+        (await cache.CaptureEffectiveRouteTargetsAsync(entry, CancellationToken.None)).Should().Contain(x => x.SiteModelName == "gpt-5.5-a");
+        if (!reference)
+            (await cache.CaptureEffectiveRouteTargetsAsync("dependent", CancellationToken.None)).Should().Contain(x => x.SiteModelName == "gpt-5.5-a");
     }
 
     [Fact]

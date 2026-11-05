@@ -127,6 +127,59 @@ public sealed class CredentialRefreshTests : IDisposable
         (await db.Sites.SingleAsync()).ApiKey.Should().Be("new-access-token");
     }
 
+    [Fact]
+    public async Task Codex_provision_waits_for_refresh_and_preserves_rotated_import()
+    {
+        var oauth = new BlockingCodexOAuthClient();
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var id = Guid.NewGuid();
+        db.Sites.Add(new Site { Id = _siteId, Name = "test", ApiKey = "old-access-token", BaseUrl = "https://example.com", IsEnabled = true });
+        db.CodexAccounts.Add(new CodexAccount { Id = id, DisplayName = "test", AccountId = "workspace", Email = "test@example.com", AccessToken = "old-access-token", RefreshToken = "old-refresh-token", LinkedSiteId = _siteId, IsEnabled = true });
+        await db.SaveChangesAsync();
+        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var refresh = new CodexCredentialRefreshService(db, oauth, cache, NullLogger<CodexCredentialRefreshService>.Instance);
+        var provisioner = new CodexAccountProvisioner(db, cache, null!, new SiteCascadeDeleter(db), NullLogger<CodexAccountProvisioner>.Instance);
+        var refreshTask = refresh.RefreshForAccountAsync(id, "old-access-token", CancellationToken.None);
+        await oauth.RefreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var provisionTask = provisioner.ProvisionFromTokensAsync(new CodexProvisionInput
+        {
+            AccountId = "workspace", Email = "test@example.com", AccessToken = "old-access-token", RefreshToken = "old-refresh-token"
+        }, CancellationToken.None);
+        await Task.Delay(150);
+        provisionTask.IsCompleted.Should().BeFalse();
+        oauth.ReleaseRefresh();
+        await Task.WhenAll(refreshTask, provisionTask).WaitAsync(TimeSpan.FromSeconds(10));
+        var account = await db.CodexAccounts.InSingleAsync(id);
+        account.AccessToken.Should().Be("new-access-token");
+        account.RefreshToken.Should().Be("new-refresh-token");
+        (await db.Sites.InSingleAsync(_siteId)).ApiKey.Should().Be("new-access-token");
+    }
+
+    [Fact]
+    public async Task Codex_refresh_keeps_account_credentials_when_site_update_fails()
+    {
+        // 写序合同（788394c 确立，234557a 曾以原子事务反转、写序测试抓回）：
+        // 账号五列先独立落库，site ApiKey 同步失败只保留旧值（可自愈偏态），凭证绝不回滚丢失。
+        var oauth = new BlockingCodexOAuthClient();
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var id = Guid.NewGuid();
+        db.Sites.Add(new Site { Id = _siteId, Name = "test", ApiKey = "old-access-token", BaseUrl = "https://example.com", IsEnabled = true });
+        db.CodexAccounts.Add(new CodexAccount { Id = id, DisplayName = "test", AccessToken = "old-access-token", RefreshToken = "old-refresh-token", LinkedSiteId = _siteId, IsEnabled = true });
+        await db.SaveChangesAsync();
+        await db.Client.Ado.ExecuteCommandAsync("CREATE TRIGGER reject_site_credential BEFORE UPDATE OF ApiKey ON Sites BEGIN SELECT RAISE(ABORT, 'test failure'); END;");
+        var service = new CodexCredentialRefreshService(db, oauth, scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>(), NullLogger<CodexCredentialRefreshService>.Instance);
+        var task = service.RefreshForAccountAsync(id, "old-access-token", CancellationToken.None);
+        await oauth.RefreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        oauth.ReleaseRefresh();
+        await task.WaitAsync(TimeSpan.FromSeconds(10));
+        var account = await db.CodexAccounts.InSingleAsync(id);
+        account.AccessToken.Should().Be("new-access-token", "账号凭证先于 site 写独立落库，site 失败不回滚");
+        account.RefreshToken.Should().Be("new-refresh-token");
+        (await db.Sites.InSingleAsync(_siteId)).ApiKey.Should().Be("old-access-token", "site 写被注入失败，保持旧值（可自愈偏态，下次刷新重写）");
+    }
+
     public void Dispose()
     {
         _serviceProvider.Dispose();

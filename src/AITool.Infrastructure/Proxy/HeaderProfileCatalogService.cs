@@ -343,7 +343,7 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
 
     /// <summary>
     /// 为内置方案的 HeadersJson 补充缺失的头键值对。
-    /// 仅在键不存在时追加；若键已存在（含显式 false 或空值）、HeadersJson 为空、反序列化字典为空或 JSON 非法，均不作改动并返回 false。
+    /// 仅在键不存在时追加；若键已存在（含显式 false 或空值）、HeadersJson 为空、反序列化结果为 null 或 JSON 非法，均不作改动并返回 false。
     /// </summary>
     internal static bool EnsureBuiltInHeaderPresent(HeaderProfile profile, string name, string value)
     {
@@ -355,7 +355,7 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
         try
         {
             var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(profile.HeadersJson, JsonOptions);
-            if (headers == null || headers.Count == 0)
+            if (headers == null)
             {
                 return false;
             }

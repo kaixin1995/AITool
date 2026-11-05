@@ -51,9 +51,12 @@ public sealed class RouteCandidatePolicyService
     /// </summary>
     public QuotaRestReleaseToken CaptureQuotaRestReleaseToken(Guid linkedSiteId) => _circuitStore.CaptureQuotaRestReleaseToken(linkedSiteId);
 
+    public Task<bool> TryRunQuotaRecoveryAsync(QuotaRestReleaseToken token, Func<Task> recovery, CancellationToken cancellationToken) =>
+        _circuitStore.TryRunQuotaRecoveryAsync(token, recovery, cancellationToken);
+
     /// <summary>
     /// 仅在新鲜账号配额查询确认账号已实际恢复启用后调用。
-    /// OAuth 隐藏站点无 SiteKey，重置缓存按物理 SiteId 失效；仅解除该站点在令牌捕获前已存在的配额休息，
+    /// OAuth 隐藏站点无 SiteKey，重置缓存按物理 SiteId 失效；查询期间该站点未出现新配额休息时才解除其配额休息，
     /// 不清除普通熔断、失败计数或限流休息，也不依赖站点展示名称。
     /// </summary>
     public void OnAccountQuotaRecovered(QuotaRestReleaseToken token)
@@ -189,9 +192,9 @@ public sealed class RouteCandidatePolicyService
             var byKey = keys.ToLookup(k => k.Id);
             var bySite = keys.ToLookup(k => k.SiteId);
 
-            // OAuth 账号表回退：仅从实际未命中项中筛选无 Key 配额且具备 AccountIdentity 的站点，按 provider 分组并对 SiteId 去重
+            // 只有没有任何 SiteKey 的 OAuth 隐藏站点才能回退账号表；带 Key 的候选不能借用账号配额。
             var siteIdsByProvider = misses
-                .Where(r => !HasKeyQuotaData(r, byKey, bySite) && r.AccountIdentity is not null)
+                .Where(r => r.SiteKeyId is null && !bySite[r.SiteId].Any() && r.AccountIdentity is not null)
                 .GroupBy(r => r.AccountIdentity!.ProviderKey, StringComparer.Ordinal)
                 .ToDictionary(
                     g => g.Key,
@@ -242,9 +245,9 @@ public sealed class RouteCandidatePolicyService
                         }
                     }
                 }
-                else
+                else if (route.SiteKeyId is null && !bySite[route.SiteId].Any() && route.AccountIdentity is not null)
                 {
-                    // 站点无 Key 配额数据：用账号表回退结果（无 AccountIdentity 时字典中无记录，等同 null → 负缓存 60 秒）。
+                    // 仅无 Key 的 OAuth 隐藏站点可使用账号表数据。
                     accountResets.TryGetValue(route.SiteId, out var accountReset);
                     earliest = accountReset;
                 }
@@ -252,6 +255,10 @@ public sealed class RouteCandidatePolicyService
                 _quotaResetCache[route.SiteKeyId ?? route.SiteId] = new QuotaResetEntry(now, earliest);
                 result[i] = (route, earliest);
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -261,7 +268,7 @@ public sealed class RouteCandidatePolicyService
         return result;
     }
 
-    /// <summary>该候选的站点是否存在任何带配额缓存的 SiteKey（决定是否走账号表回退）。</summary>
+    /// <summary>该候选对应的 SiteKey 是否有配额缓存。</summary>
     private static bool HasKeyQuotaData(
         CachedProxyRouteTarget route,
         ILookup<Guid, Domain.Sites.SiteKey> byKey,
@@ -284,16 +291,16 @@ public sealed class RouteCandidatePolicyService
     /// 仅对命中的提供程序批量反查关联站点的账号，解析巡检缓存的最早未来重置时刻。
     /// 一个隐藏站点只属于一个账号/提供程序；无数据站点不进结果（等同 null 负缓存）。
     /// </summary>
-    private static async Task<Dictionary<Guid, DateTimeOffset?>> LoadAccountResetsAsync(
+    private async Task<Dictionary<Guid, DateTimeOffset?>> LoadAccountResetsAsync(
         IServiceProvider serviceProvider,
         IReadOnlyDictionary<string, Guid[]> siteIdsByProvider,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         var resets = new Dictionary<Guid, DateTimeOffset?>();
-        try
+        foreach (var provider in serviceProvider.GetServices<IAccountQuotaProvider>())
         {
-            foreach (var provider in serviceProvider.GetServices<IAccountQuotaProvider>())
+            try
             {
                 if (!siteIdsByProvider.TryGetValue(provider.ProviderKey, out var siteIds) || siteIds.Length == 0)
                 {
@@ -309,13 +316,29 @@ public sealed class RouteCandidatePolicyService
                         continue;
                     }
 
-                    resets[group.Key] = EarliestAccountResetUtc(provider, group.First().LastQuotaRawJson!, now);
+                    try
+                    {
+                        resets[group.Key] = EarliestAccountResetUtc(provider, group.First().LastQuotaRawJson!, now);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogInformation(ex, "Account quota cache parsing failed for site {SiteId}", group.Key);
+                    }
                 }
             }
-        }
-        catch
-        {
-            // 回退失败按无数据处理（负缓存 60 秒兜底），不影响既有 SiteKey 路径结果。
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // 当前提供程序失败按无数据处理，继续查询其他提供程序。
+                _logger.LogInformation(ex, "Account quota fallback lookup failed for provider {ProviderKey}", provider.ProviderKey);
+            }
         }
 
         return resets;
@@ -377,8 +400,8 @@ public sealed class RouteCandidatePolicyService
             var hasKeyData = keys.Any(k => !string.IsNullOrWhiteSpace(k.LastQuotaRawJson));
             if (!hasKeyData)
             {
-                // OAuth 隐藏站点无 Key 配额数据：仅当具有 AccountIdentity 时回退对应 provider 的账号表。
-                if (route.AccountIdentity is { } owner)
+                // 只有没有任何 SiteKey 的 OAuth 隐藏站点才能回退账号表。
+                if (route.SiteKeyId is null && keys.Count == 0 && route.AccountIdentity is { } owner)
                 {
                     var accountResets = await LoadAccountResetsAsync(
                         scope.ServiceProvider,
@@ -424,6 +447,10 @@ public sealed class RouteCandidatePolicyService
                     break;
                 }
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {

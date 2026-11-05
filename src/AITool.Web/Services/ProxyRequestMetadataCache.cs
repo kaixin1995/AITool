@@ -1207,6 +1207,42 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// Add the proposed generation's concurrency identities without changing the protected
+    /// prewrite plans. Referenced entries use their effective (possibly deferred) leaves.
+    /// </summary>
+    public async Task<RouteTargetsMutationSnapshot> IncludeProposedRouteTargetsAsync(
+        RouteTargetsMutationSnapshot snapshot, AppDbContext dbContext,
+        IReadOnlyCollection<ProxyRouteRule> proposedRules, IReadOnlyCollection<ProxyRouteEntry> entries,
+        IReadOnlyList<ProxyRouteRule> graphRules, CancellationToken cancellationToken)
+    {
+        var enabled = proposedRules.Where(x => x.IsEnabled).ToList();
+        var siteIds = enabled.Where(IsSiteTarget).Select(x => x.SiteId).ToHashSet();
+        var sites = (await dbContext.Sites.ToListAsync(cancellationToken))
+            .Where(x => x.IsEnabled && siteIds.Contains(x.Id)).ToDictionary(x => x.Id);
+        var keys = (await dbContext.SiteKeys.Where(x => x.IsEnabled).ToListAsync(cancellationToken))
+            .Where(x => siteIds.Contains(x.SiteId)).GroupBy(x => x.SiteId)
+            .ToDictionary(x => x.Key, x => x.ToList());
+        var identities = new List<RouteTargetIdentity>();
+        foreach (var rule in enabled.Where(IsSiteTarget))
+        {
+            if (!sites.TryGetValue(rule.SiteId, out var site)) continue;
+            identities.AddRange(ResolveSiteKeyCandidates(site.Id, site.ApiKey, keys)
+                .Select(key => new RouteTargetIdentity(key.SiteKeyId ?? site.Id, rule.SiteModelName)));
+        }
+
+        var entriesById = entries.ToDictionary(x => x.Id);
+        foreach (var rule in enabled.Where(IsRouteEntryReference))
+        {
+            if (GetReferenceStatus(rule, entriesById, graphRules) != "Valid") continue;
+            var source = entriesById[rule.TargetRouteEntryId!.Value];
+            var leaves = await CaptureEffectiveRouteTargetsAsync(source.EntryName, cancellationToken);
+            if (leaves.Any(HasReferenceExpansionMetadata)) continue;
+            identities.AddRange(leaves.Select(x => new RouteTargetIdentity(x.SiteKeyId ?? x.SiteId, x.SiteModelName)));
+        }
+        return snapshot.WithAffectedTargets(identities);
+    }
+
+    /// <summary>
     /// Include direct siblings of dependent parents: their requests also hold the parent's
     /// old fallback ordering, even when the source leaf itself is currently idle.
     /// </summary>
@@ -2196,14 +2232,19 @@ public sealed class RouteTargetsMutationSnapshot
     internal IReadOnlyDictionary<string, IReadOnlyList<CachedProxyRouteTarget>> Plans { get; }
     internal IReadOnlyCollection<RouteTargetIdentity> AffectedTargets { get; }
 
-    internal RouteTargetsMutationSnapshot(string sourceEntryName, IReadOnlyDictionary<string, IReadOnlyList<CachedProxyRouteTarget>> plans)
+    internal RouteTargetsMutationSnapshot(string sourceEntryName, IReadOnlyDictionary<string, IReadOnlyList<CachedProxyRouteTarget>> plans,
+        IEnumerable<RouteTargetIdentity>? additionalTargets = null)
     {
         SourceEntryName = sourceEntryName;
         Plans = plans;
         AffectedTargets = plans.Values.SelectMany(x => x)
             .Select(x => new RouteTargetIdentity(x.SiteKeyId ?? x.SiteId, x.SiteModelName))
+            .Concat(additionalTargets ?? [])
             .Distinct(RouteTargetIdentityComparer.Instance).ToList().AsReadOnly();
     }
+
+    internal RouteTargetsMutationSnapshot WithAffectedTargets(IEnumerable<RouteTargetIdentity> targets) =>
+        new(SourceEntryName, Plans, AffectedTargets.Concat(targets));
 }
 
 internal sealed class DeferredRouteTargetsRefresh

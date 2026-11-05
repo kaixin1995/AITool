@@ -120,11 +120,8 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             .ToListAsync(ct)).FirstOrDefault()
             ?? throw new InvalidOperationException($"Codex account {codexAccountId} not found");
 
-        // 1. 刷新 token（HTTP，锁外）；列限定写回——期间后台刷新/供给可能并发写其他列，整行写会互相回滚。
-        // 刷新请求一旦返回，旧 refresh_token 已被上游消费：落盘段改用独立超时令牌与调用方取消隔离
-        //（管理员中途关页不得丢已轮换的新 token，对齐 CodexCredentialRefreshService 的关键段范式）。
-        // 写序：账号 token 五列先写、site.ApiKey 后写——中途失败的偏态必须落在"账号新/site 旧"侧
-        //（首个 401 触发凭证刷新即秒级自愈），反之 site 新/账号旧 RT 已死则永久无法刷新。
+        // 1. 在账号凭证锁内刷新，并在事务中同步账号和站点。
+        // 上游响应后的落盘段使用独立超时令牌，不随调用方取消。
         if (!string.IsNullOrEmpty(account.RefreshToken))
         {
             // 段 A：上游刷新（HTTP，随调用方取消）。
@@ -156,7 +153,6 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             {
                 using var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 var pct = persistCts.Token;
-                var accountPersisted = false;
                 try
                 {
                     if (hasAccessToken)
@@ -169,46 +165,9 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                     if (hasRefreshToken) account.RefreshToken = tokens.RefreshToken;
                     if (hasIdToken) account.IdToken = tokens.IdToken;
 
-                    if (hasAccessToken)
-                    {
-                        await queryClient.Updateable(account)
-                            .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                            .ExecuteCommandAsync(pct);
-                    }
-                    else if (hasRefreshToken && hasIdToken)
-                    {
-                        await queryClient.Updateable(account)
-                            .UpdateColumns(a => new { a.RefreshToken, a.IdToken })
-                            .ExecuteCommandAsync(pct);
-                    }
-                    else if (hasRefreshToken)
-                    {
-                        await queryClient.Updateable(account)
-                            .UpdateColumns(a => a.RefreshToken)
-                            .ExecuteCommandAsync(pct);
-                    }
-                    else
-                    {
-                        await queryClient.Updateable(account)
-                            .UpdateColumns(a => a.IdToken)
-                            .ExecuteCommandAsync(pct);
-                    }
-
-                    accountPersisted = true;
-
-                    if (hasAccessToken)
-                    {
-                        var site = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
-                        if (site != null)
-                        {
-                            site.ApiKey = tokens.AccessToken;
-                            await queryClient.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
-                        }
-                    }
-                    else
-                    {
+                    await CodexCredentialPersistence.SaveAsync(_dbContext, account, pct);
+                    if (!hasAccessToken)
                         _logger.LogWarning("Quota reset persisted partial credentials without an access token for account {Id}", codexAccountId);
-                    }
                 }
                 catch (OperationCanceledException ex) when (persistCts.IsCancellationRequested)
                 {
@@ -219,11 +178,9 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                 }
                 catch (Exception ex)
                 {
-                    // 账号五列若已写成功则偏态在自愈侧；site 写失败（如 DB busy）不阻断冷却清理。
                     _metadataCache.InvalidateRouteTargets();
                     _metadataCache.InvalidateCodexAccounts();
-                    if (!accountPersisted) throw new InvalidOperationException("刷新后的凭证落盘失败，请检查账号并重新授权。", ex);
-                    _logger.LogWarning(ex, "Account credential persisted but site update failed for {Id}", codexAccountId);
+                    throw new InvalidOperationException("刷新后的凭证落盘失败，请检查账号并重新授权。", ex);
                 }
             }
         }
@@ -238,28 +195,38 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
                 var pct2 = persistCts2.Token;
                 pct2.ThrowIfCancellationRequested();
 
-                // 2. 清冷却（列限定写回）。不越权改 IsEnabled——重置额度只负责冷却，
-                //    手动禁用/阈值自动禁用/总开关禁用不因重置被拉回（与冷却恢复路径语义一致）。
-                account.IsQuotaCooling = false;
-                account.QuotaCoolingUntil = null;
-                await queryClient.Updateable(account)
-                    .UpdateColumns(a => new { a.IsQuotaCooling, a.QuotaCoolingUntil })
-                    .ExecuteCommandAsync(pct2);
-
-                step = "恢复站点路由";
-                // 3. 恢复 Site：写前重读实时启用状态，被禁用的账号不拉回路由。
-                var currentEnabled = (await queryClient.Queryable<Domain.Codex.CodexAccount>()
-                    .Where(a => a.Id == codexAccountId)
-                    .Select(a => a.IsEnabled)
-                    .ToListAsync(pct2)).FirstOrDefault();
-                if (currentEnabled)
+                // 与手动禁用和到期恢复使用同一 SQLite 写锁：先写账号取得写锁，
+                // 再读取实时状态并恢复站点，直到事务提交前都不能被并发禁用插入。
+                await queryClient.Ado.BeginTranAsync();
+                try
                 {
-                    var linkedSite = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
-                    if (linkedSite != null && !linkedSite.IsEnabled)
+                    // 重置只清除冷却，不改变账号的启用状态。
+                    account.IsQuotaCooling = false;
+                    account.QuotaCoolingUntil = null;
+                    await queryClient.Updateable(account)
+                        .UpdateColumns(a => new { a.IsQuotaCooling, a.QuotaCoolingUntil })
+                        .ExecuteCommandAsync(pct2);
+
+                    step = "恢复站点路由";
+                    var current = (await queryClient.Queryable<CodexAccount>()
+                        .Where(a => a.Id == codexAccountId)
+                        .ToListAsync(pct2)).FirstOrDefault();
+                    if (current?.IsEnabled == true)
                     {
-                        linkedSite.IsEnabled = true;
-                        await queryClient.Updateable(linkedSite).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(pct2);
+                        var linkedSite = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(current.LinkedSiteId);
+                        if (linkedSite != null && !linkedSite.IsEnabled)
+                        {
+                            linkedSite.IsEnabled = true;
+                            await queryClient.Updateable(linkedSite).UpdateColumns(s => s.IsEnabled).ExecuteCommandAsync(pct2);
+                        }
                     }
+                    pct2.ThrowIfCancellationRequested();
+                    await queryClient.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await queryClient.Ado.RollbackTranAsync();
+                    throw;
                 }
             }
             catch (OperationCanceledException ex) when (persistCts2.IsCancellationRequested)

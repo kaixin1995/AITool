@@ -352,6 +352,7 @@ public sealed class CodexApiController : ControllerBase
             // 如果传了新的 refresh_token，更新凭证并立即刷新 access_token。
             if (!string.IsNullOrWhiteSpace(req.RefreshToken))
             {
+                using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", id, ct);
                 var account = await GetAccountAsync(id, ct);
                 if (account == null) return NotFound(new { message = "账号不存在" });
 
@@ -364,7 +365,6 @@ public sealed class CodexApiController : ControllerBase
                 CancellationTokenSource? persistCts = null;
                 try
                 {
-                    using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", account.Id, ct);
                     account = await _dbContext.CodexAccounts.InSingleAsync(account.Id) ?? account;
                     if (string.IsNullOrWhiteSpace(account.RefreshToken))
                         return BadRequest(new { message = "账号没有 refresh_token" });
@@ -386,16 +386,7 @@ public sealed class CodexApiController : ControllerBase
                     // 写库用独立超时令牌：刷新已发出即轮换旧 token，管理员中途关页不得丢新凭证。
                     persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                     var pct = persistCts.Token;
-                    await _dbContext.Client.Updateable(account)
-                        .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                        .ExecuteCommandAsync(pct);
-
-                    var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                    if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                    {
-                        site.ApiKey = tokens.AccessToken;
-                        await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
-                    }
+                    await CodexCredentialPersistence.SaveAsync(_dbContext, account, pct);
                     _metadataCache.InvalidateRouteTargets();
                     _metadataCache.InvalidateCodexAccounts();
                 }
@@ -467,16 +458,7 @@ public sealed class CodexApiController : ControllerBase
             // 写库用独立超时令牌：刷新已发出即轮换旧 token，管理员中途关页不得丢新凭证。
             persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var pct = persistCts.Token;
-            await _dbContext.Client.Updateable(account)
-                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt })
-                .ExecuteCommandAsync(pct);
-
-            var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-            if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-            {
-                site.ApiKey = tokens.AccessToken;
-                await _dbContext.Client.Updateable(site).UpdateColumns(s => s.ApiKey).ExecuteCommandAsync(pct);
-            }
+            await CodexCredentialPersistence.SaveAsync(_dbContext, account, pct);
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
             return Ok(ToSummary(account));

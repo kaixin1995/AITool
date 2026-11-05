@@ -59,6 +59,11 @@ public sealed class UpstreamReferenceException(string code, string message) : In
 
     public ProxyForwardResult? PartialResult { get; private set; }
 
+    /// <summary>Whether the downstream writer successfully exposed output before rejecting this event.</summary>
+    public bool HasExposedOutput { get; private set; }
+
+    public void SetHasExposedOutput(bool hasExposedOutput) => HasExposedOutput = hasExposedOutput;
+
     public void AttachPartialResult(ProxyForwardResult partialResult)
     {
         PartialResult = partialResult;

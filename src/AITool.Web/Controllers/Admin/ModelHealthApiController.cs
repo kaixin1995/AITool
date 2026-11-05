@@ -122,20 +122,13 @@ public sealed class ModelHealthApiController : ControllerBase
             .Select(id => models.TryGetValue(id, out var m) ? m.ModelName : null)
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .ToHashSet(StringComparer.Ordinal);
-        var matchedRemoteNames = mappings.Select(m => m.RemoteModelName).ToHashSet(StringComparer.Ordinal);
         var routeRules = await _dbContext.ProxyRouteRules
             .Where(x => matchedModelNames.Contains(x.ExternalModelName))
             .ToListAsync(cancellationToken);
-        var matchedUpstreamNames = routeRules
-            .Select(x => x.UpstreamModelName)
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .ToHashSet(StringComparer.Ordinal);
-
+        // Logs do not retain a route ID or rule validity period. An attempted name alone
+        // (even a current remote name) cannot prove which external model owned the call.
         var allLogs = await _dbContext.ProxyUsageLogs
-            .Where(x => x.RequestedAt >= recentCutoff)
-            .Where(x => matchedModelNames.Contains(x.RequestModel)
-                || matchedRemoteNames.Contains(x.AttemptedModel)
-                || matchedUpstreamNames.Contains(x.AttemptedModel))
+            .Where(x => x.RequestedAt >= recentCutoff && matchedModelNames.Contains(x.RequestModel))
             .ToListAsync(cancellationToken);
 
         var modelSummaries = new List<object>();
@@ -148,22 +141,8 @@ public sealed class ModelHealthApiController : ControllerBase
             var relatedRouteRules = routeRules
                 .Where(x => string.Equals(x.ExternalModelName, modelName, StringComparison.Ordinal))
                 .ToList();
-            var matchedRequestModels = relatedRouteRules
-                .Select(x => x.ExternalModelName)
-                .Concat([modelName])
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Distinct(StringComparer.Ordinal)
-                .ToHashSet(StringComparer.Ordinal);
-            var matchedAttemptedModels = modelMappings
-                .Select(x => x.RemoteModelName)
-                .Concat(relatedRouteRules.Select(x => x.UpstreamModelName))
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Distinct(StringComparer.Ordinal)
-                .ToHashSet(StringComparer.Ordinal);
             var modelLogs = allLogs
-                .Where(l => matchedRequestModels.Contains(l.RequestModel) ||
-                    (matchedAttemptedModels.Contains(l.AttemptedModel) &&
-                     (l.TargetSiteId == Guid.Empty || modelMappings.Any(m => m.SiteId == l.TargetSiteId))))
+                .Where(l => string.Equals(l.RequestModel, modelName, StringComparison.Ordinal))
                 .ToList();
 
             // Historical logs have no mapping ID. A name is evidence only if it identifies

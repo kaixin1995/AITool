@@ -35,6 +35,38 @@ public sealed class PoolQueueEditingTests
     }
 
     [Fact]
+    public async Task Enabling_an_active_pool_candidate_waits_before_publishing()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var (entryId, a, b) = await Seed(factory);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            b.SiteModelName = "new-active";
+            b.IsEnabled = false;
+            await db.UpdateAsync(b);
+        }
+        var cache = factory.Services.GetRequiredService<ProxyRequestMetadataCache>();
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+        (await cache.CaptureEffectiveRouteTargetsAsync("pool-test", CancellationToken.None)).Select(x => x.SiteModelName)
+            .Should().Equal(a.SiteModelName);
+        using var active = await limiter.AcquireAsync(factory.Services, b.SiteId, b.SiteModelName,
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(1), CancellationToken.None);
+        active.Acquired.Should().BeTrue();
+        var response = await client.PostAsJsonAsync("/api/admin/route-rules/pool-queue", new {
+            entryId, rules = new[] { Item(a, true), Item(b, true) }
+        });
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        (await response.Content.ReadAsStringAsync()).Should().Contain("调用中的模型");
+        (await cache.CaptureEffectiveRouteTargetsAsync("pool-test", CancellationToken.None)).Select(x => x.SiteModelName)
+            .Should().Equal(a.SiteModelName);
+        active.Dispose();
+        (await cache.CaptureEffectiveRouteTargetsAsync("pool-test", CancellationToken.None)).Select(x => x.SiteModelName)
+            .Should().Equal(a.SiteModelName, b.SiteModelName);
+    }
+
+    [Fact]
     public async Task Pool_queue_edits_in_place_and_invalidates_referencing_route()
     {
         await using var factory = new ProxyFallbackWebApplicationFactory();

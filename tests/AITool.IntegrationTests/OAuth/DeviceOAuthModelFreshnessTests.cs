@@ -24,7 +24,7 @@ public sealed class DeviceOAuthModelFreshnessTests : IDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddMemoryCache();
-        services.AddSqlSugar($"Data Source={_path}");
+        services.AddSqlSugar($"Data Source={_path};Pooling=False");
         // Independent connections model separate web requests without sharing a SqlSugarScope async context.
         var rootClient = (SqlSugar.ISqlSugarClient)services.Last(d => d.ServiceType == typeof(SqlSugar.ISqlSugarClient)).ImplementationInstance!;
         services.AddScoped<SqlSugar.ISqlSugarClient>(_ => rootClient.CopyNew());

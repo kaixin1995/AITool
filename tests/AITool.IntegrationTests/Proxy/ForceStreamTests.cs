@@ -126,17 +126,40 @@ public sealed class ForceStreamTests
         ProxyForwardService.TryAggregateChatCompletionSse("""data: {"type":"response.completed","response":{}}""").Should().BeNull();
     }
 
-    [Fact]
-    public void Aggregate_tolerates_keepalive_and_malformed_data_lines()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Aggregate_rejects_stream_with_only_empty_choices(bool withDone)
     {
-        // SSE 规范允许空 data: keep-alive 行；非 JSON 的非空杂行（中转链路可能注入）按噪音跳过，
-        // 不能把整个聚合判失败（ee303d2 确立的宽容语义，防把本可成功的请求变成 502）。
+        const string chunk = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":0}}\n\n";
+        ProxyForwardService.TryAggregateChatCompletionSse(chunk + (withDone ? "data: [DONE]\n" : ""))
+            .Should().BeNull("用量块不是回答，不能聚合为空 choices 的成功结果");
+    }
+
+    [Fact]
+    public void Aggregate_accepts_empty_usage_chunk_after_choice()
+    {
+        const string sse = """
+            data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}
+
+            data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}
+
+            data: [DONE]
+            """;
+        var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
+        result.Should().NotBeNull();
+        using var obj = System.Text.Json.JsonDocument.Parse(result!);
+        obj.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("ok");
+        obj.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt64().Should().Be(3);
+    }
+
+    [Fact]
+    public void Aggregate_tolerates_empty_data_and_sse_comments()
+    {
         const string sse = """
             data:
 
             : stream starting
-
-            data: not-json-garbage
 
             data: {"id":"c5","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":"stop"}]}
 
@@ -144,40 +167,72 @@ public sealed class ForceStreamTests
             """;
 
         var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
-        result.Should().NotBeNull("噪音行应被跳过而不是让聚合整体失败");
+        result.Should().NotBeNull();
         var obj = System.Text.Json.JsonDocument.Parse(result!);
         obj.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("好");
         obj.RootElement.GetProperty("choices")[0].GetProperty("finish_reason").GetString().Should().Be("stop");
     }
 
-    [Fact]
-    public void Aggregate_rejects_error_events_but_tolerates_malformed_lines()
+    [Theory]
+    [InlineData("not-json-garbage")]
+    [InlineData("{\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lost")]
+    [InlineData("{\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[")]
+    public void Aggregate_rejects_malformed_data_between_valid_chunks(string malformed)
     {
-        const string chunk = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"stop\"}]}\n\n";
-        // 上游显式 error 事件是确定性失败信号 → 聚合失败。
-        ProxyForwardService.TryAggregateChatCompletionSse(chunk + "data: {\"error\":{\"message\":\"bad\"}}\n\ndata: [DONE]\n").Should().BeNull();
-        // 非 JSON 杂行不是失败信号 → 跳过后聚合成功。
-        var tolerated = ProxyForwardService.TryAggregateChatCompletionSse(chunk + "data: {broken\n\ndata: [DONE]\n");
-        tolerated.Should().NotBeNull("杂行应被容错跳过");
-        System.Text.Json.JsonDocument.Parse(tolerated!).RootElement
-            .GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("partial");
+        const string before = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"before\"}}]}\n\n";
+        const string after = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"after\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n";
+        ProxyForwardService.TryAggregateChatCompletionSse(before + "data: " + malformed + "\n\n" + after)
+            .Should().BeNull("损坏的非空数据可能包含丢失的回答或工具调用");
     }
 
     [Fact]
-    public void Aggregate_truncated_stream_keeps_null_finish_reason()
+    public void Aggregate_rejects_error_events()
     {
-        // 流被上游半途掐断（无 finish_reason、无 [DONE]）：不能伪造 stop 把静默截断洗白成正常完成。
+        const string chunk = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"stop\"}]}\n\n";
+        ProxyForwardService.TryAggregateChatCompletionSse(chunk + "data: {\"error\":{\"message\":\"bad\"}}\n\ndata: [DONE]\n").Should().BeNull();
+    }
+
+    [Fact]
+    public void Aggregate_rejects_truncated_stream_without_terminal_signal()
+    {
         const string sse = """
             data: {"id":"c6","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"部分回答"},"finish_reason":null}]}
 
             """;
 
+        ProxyForwardService.TryAggregateChatCompletionSse(sse).Should().BeNull("截断的回答不能作为成功结果返回");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Aggregate_multiple_choices_only_done_allows_missing_finish_reason_fallback(bool withDone)
+    {
+        // 一个 choice 已结束，不代表另一个 choice 已结束；[DONE] 则是全流收尾信号。
+        const string chunks = """
+            data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":2,"delta":{"content":"部分"}},{"index":0,"delta":{"content":"完成"}}]}
+
+            data: {"id":"c9","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}
+
+            """;
+        var sse = chunks + (withDone ? "\ndata: [DONE]\n" : "");
+
         var result = ProxyForwardService.TryAggregateChatCompletionSse(sse);
+        if (!withDone)
+        {
+            result.Should().BeNull("另一个 choice 的结束原因不能证明本 choice 已完成");
+            return;
+        }
+
         result.Should().NotBeNull();
-        var obj = System.Text.Json.JsonDocument.Parse(result!);
-        var choice = obj.RootElement.GetProperty("choices")[0];
-        choice.GetProperty("message").GetProperty("content").GetString().Should().Be("部分回答");
-        choice.GetProperty("finish_reason").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null, "截断流保留 null 而非伪造 stop");
+        using var obj = System.Text.Json.JsonDocument.Parse(result!);
+        var choices = obj.RootElement.GetProperty("choices");
+        choices.GetArrayLength().Should().Be(2);
+        choices[0].GetProperty("index").GetInt32().Should().Be(0);
+        choices[0].GetProperty("finish_reason").GetString().Should().Be("length");
+        choices[1].GetProperty("index").GetInt32().Should().Be(2);
+        choices[1].GetProperty("message").GetProperty("content").GetString().Should().Be("部分");
+        choices[1].GetProperty("finish_reason").GetString().Should().Be("stop");
     }
 
     [Fact]

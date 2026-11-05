@@ -226,7 +226,13 @@ builder.Services.AddScoped<ForwardOAuthInvalidationService>();
 builder.Services.AddScoped<IHealthCredentialCallbacks, HealthCredentialCallbacks>();
 builder.Services.AddSingleton<NetworkBoundOAuthClientFactory>();
 builder.Services.AddSingleton<NetworkBoundDeviceOAuthVendorFactory>();
-builder.Services.AddSingleton<SessionIsolationKeyStore>();
+// Raw v2 is an explicit, irreversible-for-old-binaries deployment phase. Keep the
+// default v1-compatible during rolling upgrades and staged rollbacks.
+builder.Services.AddSingleton(sp => new SessionIsolationKeyStore(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(),
+    sp.GetRequiredService<ILogger<SessionIsolationKeyStore>>(),
+    builder.Configuration.GetValue<bool>("SessionIsolation:EnableRawV2")));
 builder.Services.AddSingleton<SessionIsolationDeriver>();
 builder.Services.AddSingleton<AccountSessionIsolationService>();
 builder.Services.AddSingleton<IAuxiliarySessionPreparation, AuxiliarySessionPreparation>();
@@ -400,7 +406,9 @@ builder.Services.AddHttpClient("device-oauth-minimax-cn", c => c.Timeout = TimeS
 builder.Services.AddHttpClient("device-oauth-minimax-global", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient("device-oauth-qoder", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient("device-oauth-qoder-cn", c => c.Timeout = TimeSpan.FromSeconds(20));
-builder.Services.AddHttpClient("device-oauth-zcode", c => c.Timeout = TimeSpan.FromSeconds(20));
+// ZCode downloads an upstream-provided config URL; redirects must not bypass its host allowlist.
+builder.Services.AddHttpClient("device-oauth-zcode", c => c.Timeout = TimeSpan.FromSeconds(20))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient("device-oauth-copilot", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient("device-oauth-claude", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient("device-oauth-kiro", c => c.Timeout = TimeSpan.FromSeconds(20));

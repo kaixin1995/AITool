@@ -175,7 +175,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             // 文案口径对照基准：frontend/src/components/AccountNetworkSelector.vue:29、docs/account-network-isolation.md:13。
             // 注意：若未来引入显式 Block 模式需同步修订此处，当前禁止暗示存在独立阻断选项。
             NetworkStatus = options.Count == 0
-                ? "暂无代理方案；可显式选择默认或直连。未指定时保留服务端策略。"
+                ? "暂无代理方案；可显式选择默认或直连。未指定时保留服务端策略。默认：跟随站点配置，未配置出口代理时走系统代理（系统未配置代理即为直连）；直连：不走任何代理。"
                 : "未指定时保留服务端策略。默认：跟随站点配置，未配置出口代理时走系统代理（系统未配置代理即为直连）；直连：不走任何代理；代理方案：失效时阻断请求，不回退直连。仅显示方案名称 / ID，不显示代理地址或密钥。";
         }
         catch (ApiException exception) when (exception.StatusCode == 404)

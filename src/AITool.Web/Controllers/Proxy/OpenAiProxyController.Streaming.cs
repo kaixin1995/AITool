@@ -80,6 +80,7 @@ public sealed partial class OpenAiProxyController
                         await CommitReferenceOutputAsync(convertedPayload, token);
                         startedWriting = true;
                         await SendWebSocketJsonPayloadAsync(webSocket, convertedPayload, token);
+                        _referenceOutputExposed = true;
                     }
                 }
             }
@@ -204,6 +205,7 @@ public sealed partial class OpenAiProxyController
                 await CommitReferenceOutputAsync(wsPayload, token);
                 startedWriting = true;
                 await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
+                _referenceOutputExposed = true;
             }
         }
 
@@ -313,6 +315,7 @@ public sealed partial class OpenAiProxyController
                 await CommitReferenceOutputAsync(responsesChunk, token);
                 startedWriting = true;
                 await Response.WriteAsync(responsesChunk, token);
+                _referenceOutputExposed = true;
                 await Response.Body.FlushAsync(token);
             }
 
@@ -497,6 +500,7 @@ public sealed partial class OpenAiProxyController
             await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
             await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
             await Response.Body.FlushAsync(token);
         }
 
@@ -771,6 +775,7 @@ public sealed partial class OpenAiProxyController
             await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
             await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
             await Response.Body.FlushAsync(token);
         }
 
@@ -918,6 +923,7 @@ public sealed partial class OpenAiProxyController
             await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
             await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
             await Response.Body.FlushAsync(token);
         }
 

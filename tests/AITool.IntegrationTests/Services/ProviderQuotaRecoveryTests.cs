@@ -37,7 +37,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddMemoryCache();
-        services.AddSqlSugar($"Data Source={_path}");
+        services.AddSqlSugar($"Data Source={_path};Pooling=False");
         services.AddScoped<ProxyRequestMetadataCache>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
@@ -264,7 +264,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
         using var start = new ManualResetEventSlim();
         var manual = Task.Run(() =>
         {
-            using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_path}");
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_path};Pooling=False");
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = $"PRAGMA busy_timeout=5000; BEGIN IMMEDIATE; UPDATE {Table(key)} SET IsEnabled=0, ManuallyDisabled=1; UPDATE Sites SET IsEnabled=0; COMMIT;";
@@ -682,7 +682,7 @@ public sealed class ProviderQuotaRecoveryTests : IDisposable
     {
         var target = await SeedAsync(key);
         _db.Client.Ado.ExecuteCommand($"UPDATE {Table(key)} SET DisabledByFeatureToggle=1");
-        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_path}");
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={_path};Pooling=False");
         connection.Open();
         using var command = connection.CreateCommand();
         command.CommandText = $"PRAGMA busy_timeout=5000; BEGIN IMMEDIATE; UPDATE {Table(key)} SET RequiresReauth=1, IsEnabled=0; UPDATE Sites SET IsEnabled=0;";

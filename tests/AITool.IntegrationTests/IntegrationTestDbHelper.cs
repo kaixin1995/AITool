@@ -32,6 +32,9 @@ public static class IntegrationTestDbHelper
             services.Remove(contextDescriptor);
         }
 
+        // 连接池默认开启（速度）；Microsoft.Data.Sqlite 池在「同类内后台线程并发关连接」时有
+        // Close 竞态（SqliteConnection.Close 内部 List 越界，全量下随机轮换失败）——含后台/并行
+        // 写者的测试类须在自己的连接串加 ;Pooling=False（名单见各并发类测试文件），纯 CRUD 类保持池。
         var connectionString = $"Data Source={databasePath}";
         var sqlSugar = new SqlSugarScope(new ConnectionConfig
         {

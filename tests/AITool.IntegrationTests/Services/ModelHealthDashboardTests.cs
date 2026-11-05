@@ -51,10 +51,15 @@ public sealed class ModelHealthDashboardTests
             });
             var now = DateTimeOffset.UtcNow;
             db.ProxyUsageLogs.AddRange(
-                Log("other-request", "upstream-alias", siteId, "success", now.AddHours(-1), 120),
-                Log("other-request", "remote-model", Guid.Empty, "fail", now.AddHours(-2), 200),
+                Log("health-model", "upstream-alias", siteId, "success", now.AddHours(-1), 120),
+                Log("health-model", "remote-model", Guid.Empty, "fail", now.AddHours(-2), 200),
                 Log("health-model", "remote-model", siteId, "fail", now.AddDays(-3), 300),
-                Log("other-request", "unrelated", siteId, "fail", now.AddHours(-1), 400));
+                // Neither an alias nor a remote name identifies the requested model on its own.
+                Log("other-request", "upstream-alias", siteId, "fail", now, 400),
+                Log("other-request", "upstream-alias", Guid.Empty, "fail", now, 400),
+                Log("other-request", "remote-model", siteId, "fail", now, 400),
+                Log("other-request", "remote-model", Guid.Empty, "fail", now, 400),
+                Log("other-request", "unrelated", siteId, "fail", now, 400));
 
             var result = await new ModelHealthApiController(db).GetDashboard("1d", CancellationToken.None);
             var ok = result.Should().BeOfType<OkObjectResult>().Subject;

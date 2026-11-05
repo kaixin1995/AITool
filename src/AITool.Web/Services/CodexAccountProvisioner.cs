@@ -65,7 +65,23 @@ public sealed class CodexAccountProvisioner
         await _provisionGate.WaitAsync(ct);
         try
         {
-            return await ProvisionFromTokensCoreAsync(input, ct, networkOperation, updateNetworkPolicy);
+            // Resolve before taking the account lock, but never hold a database transaction while waiting.
+            using var lookup = _dbContext.Client.CopyNew();
+            var candidate = networkOperation?.Account is { ProviderKey: "codex" } known
+                ? await lookup.Queryable<CodexAccount>().InSingleAsync(known.AccountId)
+                : await FindExistingAsync(lookup, input.AccountId, input.Email, input.IdToken, input.RefreshToken, ct);
+            using var credentialLease = candidate is null ? null
+                : await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", candidate.Id, ct);
+            var current = candidate is null ? null : await lookup.Queryable<CodexAccount>().InSingleAsync(candidate.Id);
+            // An import carrying the old refresh token must not undo a rotation that completed
+            // while it waited for the lock. A distinct login credential remains authoritative.
+            var preserveCredentials = candidate is not null && current is not null
+                && string.Equals(input.RefreshToken, candidate.RefreshToken, StringComparison.Ordinal)
+                && (!string.Equals(candidate.RefreshToken, current.RefreshToken, StringComparison.Ordinal)
+                    || !string.Equals(candidate.AccessToken, current.AccessToken, StringComparison.Ordinal));
+            if (candidate is not null && current is null)
+                throw new InvalidOperationException("Codex account no longer exists.");
+            return await ProvisionFromTokensCoreAsync(input, ct, networkOperation, updateNetworkPolicy, preserveCredentials, candidate?.Id);
         }
         finally
         {
@@ -74,7 +90,7 @@ public sealed class CodexAccountProvisioner
     }
 
     private async Task<CodexAccount> ProvisionFromTokensCoreAsync(CodexProvisionInput input, CancellationToken ct,
-        NetworkOperationContext? networkOperation, bool updateNetworkPolicy)
+        NetworkOperationContext? networkOperation, bool updateNetworkPolicy, bool preserveCredentials, Guid? candidateId)
     {
         // 用 CopyNew 独立连接做所有 DB 操作
         using var client = _dbContext.Client.CopyNew();
@@ -94,6 +110,9 @@ public sealed class CodexAccountProvisioner
 
 
 
+        if (existing?.Id != candidateId)
+            throw new InvalidOperationException("Codex account identity changed while provisioning; retry.");
+
         if (existing != null)
         {
             // 更新 token
@@ -101,11 +120,14 @@ public sealed class CodexAccountProvisioner
             site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId)
                 ?? throw new InvalidOperationException($"Linked site {account.LinkedSiteId} not found for Codex account {account.Id}");
 
-            account.AccessToken = input.AccessToken;
-            account.RefreshToken = input.RefreshToken;
-            account.IdToken = input.IdToken;
-            account.TokenExpiresAt = input.TokenExpiresAt;
-            account.LastRefreshAt = DateTimeOffset.UtcNow;
+            if (!preserveCredentials)
+            {
+                account.AccessToken = input.AccessToken;
+                account.RefreshToken = input.RefreshToken;
+                account.IdToken = input.IdToken;
+                account.TokenExpiresAt = input.TokenExpiresAt;
+                account.LastRefreshAt = DateTimeOffset.UtcNow;
+            }
             if (account.RequiresReauth)
             {
                 account.RequiresReauth = false;
@@ -121,7 +143,7 @@ public sealed class CodexAccountProvisioner
             if (!string.IsNullOrEmpty(input.Email)) account.Email = input.Email;
             if (!string.IsNullOrEmpty(input.PlanType)) account.PlanType = input.PlanType;
 
-            site.ApiKey = input.AccessToken;
+            site.ApiKey = account.AccessToken ?? string.Empty;
             if (!string.IsNullOrWhiteSpace(input.DisplayName))
             {
                 // 用户自定义名：站点名与账号显示名同步更新，避免账号列表与调度/熔断面板名称脱节。
@@ -149,8 +171,7 @@ public sealed class CodexAccountProvisioner
             }
             UpdateSiteExtraHeaders(site, account.AccountId ?? input.AccountId);
 
-            // 列限定写回：供给锁只覆盖供给/改名/删除/模型映射，后台 token 刷新不持该锁——
-            // 整行写回会把刷新刚写入的 token 回滚成锁内读取的旧快照。
+            // 只更新供给负责的列；凭证锁同时保护账号与站点凭证写入。
             await client.Updateable(account).UpdateColumns(a => new
             {
                 a.AccessToken, a.RefreshToken, a.IdToken, a.TokenExpiresAt, a.LastRefreshAt, a.RequiresReauth, a.IsEnabled, a.DisabledByFeatureToggle,

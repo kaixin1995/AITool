@@ -3,12 +3,9 @@ using SqlSugar;
 namespace AITool.Domain.Operations;
 
 /// <summary>
-/// Deployment-local session derivation secret, stored raw in the database (v2): the database
-/// file is the deployment's persistence unit, so the key travels with every redeploy/restore.
-/// This HMAC key encrypts nothing sensitive — OAuth tokens already live in the same database
-/// in plaintext — so wrapping it in a Data Protection key ring outside the database added a
-/// loss-prone dependency instead of protection. Version 1 rows (DP-encrypted ciphertext) are
-/// upgraded in place at startup without rotating the key material.
+/// Deployment-local session derivation secret. The default compatibility mode stores v1
+/// Data Protection ciphertext; opt-in v2 stores raw bytes in the database after a coordinated
+/// cutover. Switching formats preserves key material when the original key ring is available.
 /// </summary>
 [SugarTable("SessionIsolationKeys")]
 public sealed class SessionIsolationKey
