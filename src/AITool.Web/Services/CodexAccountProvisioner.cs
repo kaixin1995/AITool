@@ -275,6 +275,7 @@ public sealed class CodexAccountProvisioner
             }
             if (account.LinkedSiteId != Guid.Empty)
                 await new SiteCascadeDeleter(db).RemoveSitesInGraphMutationAsync([account.LinkedSiteId], ct);
+            await client.Deleteable<CodexQuotaPeriod>().Where(p => p.AccountId == codexAccountId).ExecuteCommandAsync(ct);
             await client.Deleteable<CodexAccount>().Where(a => a.Id == codexAccountId).ExecuteCommandAsync(ct);
             return true;
         }, ct, _metadataCache);

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
+import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, NDatePicker, useMessage } from 'naive-ui'
 import type { SelectRenderLabel } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
@@ -9,6 +9,8 @@ import { ApiError } from '@/api/http'
 import AccountNetworkSelector from '@/components/AccountNetworkSelector.vue'
 import { getAccountNetworkCapabilities, getAccountProxyOptions, getAccountNetworkSummaries, saveAccountNetworkPolicy, batchSaveAccountNetworkPolicies, networkSelectionValid, networkSummaryLabel, type AccountIdentity, type AccountNetworkSelection, type AccountNetworkSummary, type AccountProxyOption } from '@/api/accountNetwork'
 import { syncAllAccountPools } from '@/api/accountPools'
+import { getModelPricing } from '@/api/models'
+import { useCurrency } from '@/composables/useCurrency'
 import {
   importSelectedDeviceModels,
   batchApplyDeviceModels,
@@ -28,6 +30,7 @@ import {
 } from '@/api/deviceOauth'
 import type {
   OAuthAccount,
+  CodexQuotaPeriod,
   OAuthCredentialImportFailure,
   OAuthInspectionAccountResult,
   OAuthInspectionLog,
@@ -55,6 +58,44 @@ type UnifiedAccount = OAuthAccount & {
   creditAmount?: number | null
   requiresReauth?: boolean
   modelImportSupported?: boolean
+}
+
+const quotaPeriods = ref<Record<string, CodexQuotaPeriod[]>>({})
+const quotaPeriodErrors = ref<Record<string, boolean>>({})
+const quotaPeriodAccount = ref<UnifiedAccount | null>(null)
+const quotaPeriodModal = ref(false)
+const { formatTotalCost, setUsdToCny } = useCurrency()
+const quotaHistoryRange = ref<[number, number] | null>(null)
+const quotaHistoryResult = ref<api.CodexQuotaUsage | null>(null)
+const quotaHistoryLoading = ref(false)
+const quotaHistoryError = ref('')
+function currentPeriod(account: UnifiedAccount, windowId: string): CodexQuotaPeriod | undefined {
+  return quotaPeriods.value[account.id]?.find(p => p.windowId === windowId && p.isCurrent)
+}
+function openQuotaPeriods(account: UnifiedAccount): void {
+  quotaPeriodAccount.value = account
+  quotaHistoryRange.value = null
+  quotaHistoryResult.value = null
+  quotaHistoryError.value = ''
+  quotaPeriodModal.value = true
+  void getModelPricing().then(catalog => setUsdToCny(catalog?.usdToCny)).catch(() => undefined)
+}
+async function loadQuotaHistory(): Promise<void> {
+  const account = quotaPeriodAccount.value
+  const range = quotaHistoryRange.value
+  if (!account || !range) return
+  quotaHistoryLoading.value = true
+  quotaHistoryError.value = ''
+  quotaHistoryResult.value = null
+  try {
+    quotaHistoryResult.value = await api.getCodexQuotaUsage(account.id, new Date(range[0]).toISOString(), new Date(range[1]).toISOString())
+  } catch (error) { quotaHistoryError.value = (error as Error).message || '查询失败，请重试' }
+  finally { quotaHistoryLoading.value = false }
+}
+function formatPeriodTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return String(value)
 }
 
 function providerLabelOf(key: string): string {
@@ -748,6 +789,19 @@ async function loadAccountsRequest(showError: boolean): Promise<void> {
       || a.provider.localeCompare(b.provider)
       || a.id.localeCompare(b.id)
   )
+  void Promise.allSettled(codexAccounts.map(async account => {
+    try {
+      const periods = await api.getCodexQuotaPeriods(account.id)
+      if (requestId !== accountsRequestId) return
+      quotaPeriods.value = { ...quotaPeriods.value, [account.id]: periods }
+      quotaPeriodErrors.value = { ...quotaPeriodErrors.value, [account.id]: false }
+    } catch {
+      if (requestId === accountsRequestId) {
+        quotaPeriods.value = { ...quotaPeriods.value, [account.id]: [] }
+        quotaPeriodErrors.value = { ...quotaPeriodErrors.value, [account.id]: true }
+      }
+    }
+  }))
   featureDisabled.value = false
   void loadNetwork()
 }
@@ -1937,7 +1991,10 @@ onUnmounted(() => {
                 />
                 <div class="oauth-card-header">
                   <div class="oauth-card-header-main">
-                    <div class="oauth-account-name" :style="acc.requiresReauth ? { color: '#e5484d' } : undefined">{{ acc.displayName }}</div>
+                    <div class="oauth-account-name">
+                      <span :style="acc.requiresReauth ? { color: '#e5484d' } : undefined">{{ acc.displayName }}</span>
+                      <span v-if="networkReady" class="oauth-network-badge" :class="{ blocked: networkSummary(acc)?.blockReason }" :title="`网络：${networkLabel(acc)}`">网络：{{ networkLabel(acc) }}</span>
+                    </div>
                     <div class="oauth-account-email">
                       {{ acc.email || '' }}
                       <button
@@ -1967,7 +2024,6 @@ onUnmounted(() => {
                         Token：{{ formatDateTime(acc.tokenExpiresAt) }}
                       </span>
                     </div>
-                    <div v-if="networkReady" class="oauth-project-id" :title="networkSummary(acc)?.blockReason ?? undefined">{{ networkLabel(acc) }}</div>
                     <div v-if="acc.projectId" class="oauth-project-id">项目：{{ acc.projectId }}</div>
                   </div>
                 </div>
@@ -1989,10 +2045,15 @@ onUnmounted(() => {
                       <span class="oauth-window-percent oauth-window-no-bar">—</span>
                     </template>
                     <div v-if="w.resetLabel" class="oauth-window-reset">于 {{ w.resetLabel }}</div>
+                    <button v-if="acc.provider === 'codex' && currentPeriod(acc, w.id)" class="oauth-period-trigger" type="button" @click.stop="openQuotaPeriods(acc)">
+                      <span>本周期 Token</span><strong>{{ formatPeriodTokens(currentPeriod(acc, w.id)!.totalTokens) }}</strong><span class="oauth-period-arrow">查看 ›</span>
+                    </button>
+                    <button v-else-if="acc.provider === 'codex' && /^(five-hour|weekly|monthly|window-[12])$/.test(w.id)" class="oauth-period-unavailable" type="button" @click.stop="openQuotaPeriods(acc)">{{ quotaPeriodErrors[acc.id] ? '周期用量加载失败 · 查看' : '周期用量等待额度刷新 · 查看' }}</button>
                   </div>
                 </div>
                 <div v-else class="oauth-window-placeholder">
                   {{ acc.lastQuotaCheckedAt ? '暂无额度数据' : '未刷新额度，点击下方「刷新额度」获取' }}
+                  <button v-if="acc.provider === 'codex'" type="button" class="oauth-empty-history" @click.stop="openQuotaPeriods(acc)">查看历史</button>
                 </div>
 
                 <div v-if="!exportMode" class="oauth-card-meta">
@@ -2236,6 +2297,28 @@ onUnmounted(() => {
         <NAlert v-for="error in networkBatchErrors" :key="error" type="error">{{ error }}</NAlert>
       </NSpace>
       <template #footer><NSpace justify="end"><NButton :disabled="networkBatchLoading" @click="networkBatchModal = false">关闭</NButton><NButton type="primary" :loading="networkBatchLoading" :disabled="!networkBatchAccounts.length || !networkSelectionValid(networkBatchSelection)" @click="handleNetworkBatch">应用网络策略</NButton></NSpace></template>
+    </NModal>
+
+    <NModal v-model:show="quotaPeriodModal" preset="card" style="width: 620px; max-width: calc(100vw - 32px)" :title="`${quotaPeriodAccount?.displayName ?? ''} · 额度周期`">
+      <div class="quota-period-intro">按本系统调用日志统计，包含缓存输入。额度百分比来自上游，两者不能直接换算。</div>
+      <div v-if="quotaPeriodAccount && quotaPeriods[quotaPeriodAccount.id]?.length" class="quota-period-list">
+        <section v-for="period in quotaPeriods[quotaPeriodAccount.id]" :key="period.id" class="quota-period-item">
+          <div class="quota-period-heading"><div><strong>{{ period.label }}</strong><span class="quota-period-state">{{ period.isCurrent ? '当前周期' : period.endAt ? '历史周期' : '等待额度刷新' }}</span></div><strong class="quota-period-total">{{ formatPeriodTokens(period.totalTokens) }} <small>tokens</small></strong></div>
+          <div class="quota-period-date">{{ period.boundaryUncertain ? '边界不确定' : '推算开始' }} {{ formatDateTime(period.startAt) }} · {{ period.endAt ? '结束' : '预计重置' }} {{ formatDateTime(period.endAt ?? period.resetAt) }}</div>
+          <div class="quota-period-metrics"><span>新输入 <b>{{ formatPeriodTokens(period.inputTokens) }}</b></span><span>缓存输入 <b>{{ formatPeriodTokens(period.cachedTokens) }}</b></span><span>输出 <b>{{ formatPeriodTokens(period.outputTokens) }}</b></span></div>
+          <div class="quota-period-cost"><span>参考金额</span><strong>{{ period.estimatedCostUsd == null ? '暂无数据' : formatTotalCost(period.estimatedCostUsd) }}</strong><small v-if="period.unpricedCount">{{ period.unpricedCount }} 次未定价</small><small v-if="period.unknownCount">{{ period.unknownCount }} 次用量未知</small></div>
+          <div class="quota-period-foot">{{ period.requestCount }} 次调用<span v-if="period.unknownCount"> · {{ period.unknownCount }} 次用量未知</span><span v-if="period.usedPercent != null"> · 上次已用 {{ Math.round(period.usedPercent) }}%</span> · 汇总于 {{ formatDateTime(period.aggregatedAt) }}</div>
+          <div v-if="period.models?.length" class="quota-period-models"><span v-for="model in period.models" :key="model.model">{{ model.model }} <b>{{ formatPeriodTokens(model.totalTokens) }}</b> <small>({{ model.requests }} 次)</small></span></div>
+        </section>
+      </div>
+      <NEmpty v-else :description="quotaPeriodAccount && quotaPeriodErrors[quotaPeriodAccount.id] ? '周期记录加载失败，请稍后重试' : '暂无周期记录，等待下次真实额度刷新'" />
+      <div class="quota-history-search">
+        <strong>按时间回查</strong><span>查询仍保留的调用日志，不代表已确认的历史额度周期。</span>
+        <div class="quota-history-controls"><NDatePicker v-model:value="quotaHistoryRange" type="datetimerange" clearable /><NButton secondary :loading="quotaHistoryLoading" :disabled="!quotaHistoryRange" @click="loadQuotaHistory">查询</NButton></div>
+        <div v-if="quotaHistoryError" class="quota-history-error">{{ quotaHistoryError }}</div>
+        <div v-if="quotaHistoryResult" class="quota-history-result"><strong>{{ formatPeriodTokens(quotaHistoryResult.totalTokens) }} tokens</strong><span>{{ quotaHistoryResult.requestCount }} 次调用<span v-if="quotaHistoryResult.unknownCount"> · {{ quotaHistoryResult.unknownCount }} 次用量未知</span></span><div class="quota-period-metrics"><span>新输入 <b>{{ formatPeriodTokens(quotaHistoryResult.inputTokens) }}</b></span><span>缓存输入 <b>{{ formatPeriodTokens(quotaHistoryResult.cachedTokens) }}</b></span><span>输出 <b>{{ formatPeriodTokens(quotaHistoryResult.outputTokens) }}</b></span></div><div class="quota-period-cost"><span>参考金额</span><strong>{{ quotaHistoryResult.estimatedCostUsd == null ? '暂无数据' : formatTotalCost(quotaHistoryResult.estimatedCostUsd) }}</strong><small v-if="quotaHistoryResult.unpricedCount">{{ quotaHistoryResult.unpricedCount }} 次未定价</small><small v-if="quotaHistoryResult.unknownCount">{{ quotaHistoryResult.unknownCount }} 次用量未知</small></div><div class="quota-period-models"><span v-for="model in quotaHistoryResult.models" :key="model.model">{{ model.model }} <b>{{ formatPeriodTokens(model.totalTokens) }}</b> <small>({{ model.requests }} 次)</small></span></div></div>
+      </div>
+      <div class="quota-period-note">参考金额按模型价格表估算，并非 Codex 订阅实际账单；当前周期及时间回查使用当前价格表，历史周期使用最后保存时的价格。日志清理、外部使用或中断请求可能造成缺失。周期开始时间为推算值，不同窗口的用量会重叠，请勿相加。最多展示最近 100 条已观测周期。</div>
     </NModal>
 
     <!-- 编辑账号（重命名）弹窗 -->
@@ -2904,6 +2987,25 @@ onUnmounted(() => {
   word-break: break-all;
 }
 
+.oauth-network-badge {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-color-secondary) 12%, transparent);
+  color: var(--text-color-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oauth-network-badge.blocked {
+  background: color-mix(in srgb, #e5484d 12%, transparent);
+  color: #e5484d;
+}
+
 .oauth-account-email {
   display: flex;
   align-items: center;
@@ -2979,7 +3081,7 @@ onUnmounted(() => {
   /* 上限对齐两行满额度窗口的自然高度（= 原双窗 Codex 卡尺寸 132px）：
      小内容保持卡片原有自然高度不强行垫高，超限的多资源包账号封顶并在容器内滚动。 */
   flex: 1 1 auto;
-  max-height: 132px;
+  max-height: 220px;
   min-height: 60px;
   margin: 16px 0;
   overflow-y: auto;
@@ -3042,6 +3144,60 @@ onUnmounted(() => {
   line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.oauth-period-trigger, .oauth-period-unavailable {
+  grid-column: 2 / 4;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.oauth-period-trigger {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--primary-color, #3b82f6) 14%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--primary-color, #3b82f6) 6%, var(--bg-card));
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.oauth-period-trigger:hover { border-color: var(--primary-color, #3b82f6); }
+.oauth-period-trigger strong { color: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.oauth-period-arrow { margin-left: auto; color: var(--primary-color, #3b82f6); white-space: nowrap; }
+.oauth-period-unavailable { padding: 0; border: 0; background: none; color: var(--text-color-secondary); text-align: left; cursor: pointer; }
+.oauth-empty-history { margin-left: 6px; padding: 0; border: 0; background: none; color: var(--primary-color, #3b82f6); font: inherit; cursor: pointer; }
+.quota-period-intro, .quota-period-note { color: var(--text-color-secondary); font-size: 12px; line-height: 1.7; }
+.quota-period-intro { margin-bottom: 16px; }
+.quota-period-note { margin-top: 16px; }
+.quota-period-list { display: grid; gap: 10px; max-height: min(60vh, 560px); overflow-y: auto; }
+.quota-period-item { padding: 15px; border: 1px solid var(--border-color-global); border-radius: 10px; background: var(--bg-card); }
+.quota-period-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.quota-period-state { margin-left: 8px; padding: 2px 7px; border-radius: 9px; background: color-mix(in srgb, var(--primary-color, #3b82f6) 10%, transparent); color: var(--primary-color, #3b82f6); font-size: 11px; }
+.quota-period-total { color: var(--primary-color, #3b82f6); font-size: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.quota-period-total small { font-size: 11px; font-weight: 400; }
+.quota-period-date, .quota-period-foot { margin-top: 8px; color: var(--text-color-secondary); font-size: 11px; }
+.quota-period-metrics { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 14px; font-size: 12px; color: var(--text-color-secondary); }
+.quota-period-metrics b, .quota-period-models b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.quota-period-cost { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; margin-top: 10px; color: var(--text-color-secondary); font-size: 12px; }
+.quota-period-cost strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.quota-period-cost small { color: var(--status-warning-text); }
+.quota-period-models { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; font-size: 11px; }
+.quota-period-models span { padding: 3px 7px; border-radius: 6px; background: var(--bg-surface-soft); color: var(--text-color-secondary); }
+.quota-history-search { display: grid; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-color-global); }
+.quota-history-search > span, .quota-history-result > span { color: var(--text-color-secondary); font-size: 11px; }
+.quota-history-controls { display: flex; gap: 8px; }
+.quota-history-controls :deep(.n-date-picker) { flex: 1; min-width: 0; }
+.quota-history-error { color: var(--status-danger-text, #e03131); font-size: 12px; }
+.quota-history-result { padding: 12px; border-radius: 8px; background: var(--bg-surface-soft); }
+.quota-history-result > strong { margin-right: 10px; color: var(--primary-color, #3b82f6); }
+@media (max-width: 520px) {
+  .quota-history-controls { flex-wrap: wrap; }
+  .quota-history-controls :deep(.n-date-picker) { flex-basis: 100%; }
+  .quota-history-controls :deep(.n-button) { margin-left: auto; }
+  .quota-period-heading { align-items: flex-start; flex-wrap: wrap; }
 }
 
 .oauth-window-placeholder {

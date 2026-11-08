@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
+using AITool.Application.Pricing;
 using AITool.Application.Common;
 using AITool.Domain.Codex;
 using AITool.Infrastructure.Codex;
@@ -730,6 +731,54 @@ public sealed class CodexApiController : ControllerBase
         return (await _dbContext.CodexAccounts.Where(a => a.Id == id).ToListAsync(ct)).FirstOrDefault();
     }
 
+    /// <summary>额度观测周期；历史为保存的最后一次汇总，当前周期实时读取调用日志。</summary>
+    [HttpGet("accounts/{id:guid}/quota-periods")]
+    public async Task<IActionResult> GetQuotaPeriods(Guid id, [FromServices] IModelPricingService pricing, CancellationToken ct)
+    {
+        var account = await _dbContext.CodexAccounts.Where(x => x.Id == id).FirstAsync(ct);
+        if (account is null) return NotFound();
+        var periods = await _dbContext.CodexQuotaPeriods.Where(x => x.AccountId == id)
+            .OrderBy(x => x.LastObservedAt, SqlSugar.OrderByType.Desc).Take(100).ToListAsync(ct);
+        var now = DateTimeOffset.UtcNow;
+        await pricing.GetCatalogAsync(ct);
+        foreach (var period in periods.Where(x => x.EndAt == null && x.ResetAt > now))
+            await CodexQuotaPeriodService.AggregateAsync(_dbContext.Client, period, now, ct, pricing);
+        return Ok(periods.Select(p => new
+        {
+            p.Id, p.WindowId, p.Label, p.StartAt, p.ResetAt, p.EndAt, p.FirstObservedAt,
+            p.LastObservedAt, p.UsedPercent, p.BoundaryUncertain, p.AggregatedAt,
+            p.InputTokens, p.CachedTokens, p.OutputTokens,
+            totalTokens = p.InputTokens + p.CachedTokens + p.OutputTokens,
+            p.RequestCount, p.UnknownCount,
+            p.EstimatedCostUsd, p.UnpricedCount,
+            models = string.IsNullOrEmpty(p.ModelsJson) ? Array.Empty<object>() : System.Text.Json.JsonSerializer.Deserialize<object[]>(p.ModelsJson),
+            isCurrent = p.EndAt == null && p.ResetAt > now
+        }));
+    }
+
+    /// <summary>按任意时间范围回查尚保留的调用日志，不推断历史额度边界。</summary>
+    [HttpGet("accounts/{id:guid}/quota-usage")]
+    public async Task<IActionResult> GetQuotaUsage(Guid id, [FromQuery] DateTimeOffset start, [FromQuery] DateTimeOffset end, [FromServices] IModelPricingService pricing, CancellationToken ct)
+    {
+        if (start == default || end <= start || end - start > TimeSpan.FromDays(366))
+            return BadRequest(new { message = "请选择不超过 366 天的有效时间范围" });
+        var account = await _dbContext.CodexAccounts.Where(x => x.Id == id).FirstAsync(ct);
+        if (account is null) return NotFound();
+        var now = DateTimeOffset.UtcNow;
+        if (start >= now) return BadRequest(new { message = "开始时间须早于当前时间" });
+        var period = new CodexQuotaPeriod { SiteId = account.LinkedSiteId, StartAt = start, ResetAt = end, EndAt = end < now ? end : now };
+        await pricing.GetCatalogAsync(ct);
+        await CodexQuotaPeriodService.AggregateAsync(_dbContext.Client, period, now, ct, pricing);
+        return Ok(new
+        {
+            period.InputTokens, period.CachedTokens, period.OutputTokens,
+            totalTokens = period.InputTokens + period.CachedTokens + period.OutputTokens,
+            period.RequestCount, period.UnknownCount,
+            period.EstimatedCostUsd, period.UnpricedCount,
+            models = string.IsNullOrEmpty(period.ModelsJson) ? Array.Empty<object>() : JsonSerializer.Deserialize<object[]>(period.ModelsJson)
+        });
+    }
+
     private static object ToSummary(CodexAccount a, string? message = null)
     {
         // 从最近一次额度查询的原始响应解析窗口（供前端画进度条，无需每次单独刷新）
@@ -741,11 +790,13 @@ public sealed class CodexApiController : ControllerBase
         {
             try
             {
-                var (planType, parsedWindows) = CodexUsageParser.Parse(a.LastQuotaRawJson);
+                var (planType, parsedWindows) = CodexUsageParser.Parse(a.LastQuotaRawJson, a.LastQuotaCheckedAt);
+                if (a.LastQuotaCheckedAt is null)
+                    parsedWindows = parsedWindows.Select(w => w with { ResetAtUtc = null, ResetLabel = "-" }).ToList();
                 windows = parsedWindows.Select(w => (object)new
                 {
                     id = w.Id, label = w.Label,
-                    usedPercent = w.UsedPercent, resetLabel = w.ResetLabel,
+                    usedPercent = w.UsedPercent, resetLabel = w.ResetLabel, resetAtUtc = w.ResetAtUtc, limitWindowSeconds = w.LimitWindowSeconds,
                 }).ToList();
                 fiveHour = parsedWindows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
                 weekly = parsedWindows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;

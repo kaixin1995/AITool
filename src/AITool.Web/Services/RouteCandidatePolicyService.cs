@@ -318,7 +318,7 @@ public sealed class RouteCandidatePolicyService
 
                     try
                     {
-                        resets[group.Key] = EarliestAccountResetUtc(provider, group.First().LastQuotaRawJson!, now);
+                        resets[group.Key] = EarliestAccountResetUtc(provider, group.First().LastQuotaRawJson!, group.First().LastQuotaCheckedAt, now);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
@@ -347,9 +347,10 @@ public sealed class RouteCandidatePolicyService
     private static DateTimeOffset? EarliestAccountResetUtc(
         IAccountQuotaProvider provider,
         string rawJson,
+        DateTimeOffset? observedAt,
         DateTimeOffset now)
     {
-        var snapshot = provider.ParseCachedQuota(rawJson);
+        var snapshot = provider.ParseCachedQuota(rawJson, observedAt);
         if (snapshot is not { Success: true })
         {
             return null;

@@ -70,7 +70,7 @@ public interface IAccountQuotaProvider
     /// 路由的配额感知排序与分级冷却按 LinkedSiteId 回退读取账号表的巡检额度缓存
     /// （巡检数据落在账号表而非 SiteKey，OAuth 隐藏站点无 Key 行）。
     /// 默认返回空（未覆写的提供程序不参与回退）；返回目标的 LastQuotaRawJson
-    /// 供调用方经 <see cref="ParseCachedQuota"/> 解析。不过滤启用状态——
+    /// 供调用方经 <see cref="ParseCachedQuota(string)"/> 解析。不过滤启用状态——
     /// 重置时刻对禁用账号同样有效（冷却时长计算用）。
     /// </summary>
     Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
@@ -82,6 +82,9 @@ public interface IAccountQuotaProvider
     /// 从账号持久化的最近一次原始响应恢复额度快照；无法解析时返回 null。
     /// </summary>
     AccountQuotaSnapshot? ParseCachedQuota(string rawJson);
+
+    /// <summary>解析缓存时提供真实观测时间，避免相对倒计时随读取时间漂移。</summary>
+    AccountQuotaSnapshot? ParseCachedQuota(string rawJson, DateTimeOffset? observedAt) => ParseCachedQuota(rawJson);
 
     /// <summary>
     /// 选择用于自动禁用/恢复判定的已用百分比。默认取所有窗口的最大值；

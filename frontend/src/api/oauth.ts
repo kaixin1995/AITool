@@ -9,6 +9,39 @@ export interface OAuthQuotaWindow {
   resetLabel: string | null
 }
 
+export interface CodexQuotaPeriod {
+  id: string
+  windowId: string
+  label: string
+  startAt: string
+  resetAt: string
+  endAt: string | null
+  firstObservedAt: string
+  lastObservedAt: string
+  aggregatedAt: string
+  usedPercent: number | null
+  boundaryUncertain: boolean
+  isCurrent: boolean
+  inputTokens: number
+  cachedTokens: number
+  outputTokens: number
+  totalTokens: number
+  requestCount: number
+  unknownCount: number
+  estimatedCostUsd: number | null
+  unpricedCount: number | null
+  models: { model: string; requests: number; totalTokens: number }[]
+}
+
+export function getCodexQuotaPeriods(id: string): Promise<CodexQuotaPeriod[]> {
+  return httpGet(`/api/admin/oauth/accounts/${encodeURIComponent(id)}/quota-periods`, { skipErrorNotify: true })
+}
+export type CodexQuotaUsage = Pick<CodexQuotaPeriod, 'inputTokens' | 'cachedTokens' | 'outputTokens' | 'totalTokens' | 'requestCount' | 'unknownCount' | 'estimatedCostUsd' | 'unpricedCount' | 'models'>
+export function getCodexQuotaUsage(id: string, start: string, end: string): Promise<CodexQuotaUsage> {
+  const query = new URLSearchParams({ start, end })
+  return httpGet(`/api/admin/oauth/accounts/${encodeURIComponent(id)}/quota-usage?${query}`, { skipErrorNotify: true })
+}
+
 export interface OAuthAccount {
   id: string
   displayName: string

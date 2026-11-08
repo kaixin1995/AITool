@@ -2,6 +2,7 @@ using AITool.Application.Networking;
 using System.Net.Http.Headers;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
+using AITool.Application.Pricing;
 using AITool.Domain.Codex;
 using AITool.Domain.Operations;
 using SqlSugar;
@@ -38,6 +39,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     private readonly ICodexClientVersionResolver _versionResolver;
     private readonly ILogger<CodexQuotaService> _logger;
     private readonly IQuotaRecheckScheduleStore? _scheduleStore;
+    private readonly IModelPricingService? _pricing;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。KeyedAsyncLock 会在账号不再使用时回收锁条目。</summary>
     private static readonly KeyedAsyncLock Locks = new();
@@ -51,9 +53,11 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         ICodexClientVersionResolver versionResolver,
         ILogger<CodexQuotaService> logger,
         IQuotaRecheckScheduleStore? scheduleStore = null,
-        NetworkBoundOAuthClientFactory? networkFactory = null)
+        NetworkBoundOAuthClientFactory? networkFactory = null,
+        IModelPricingService? pricing = null)
     {
         _networkFactory = networkFactory;
+        _pricing = pricing;
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
@@ -93,13 +97,17 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         return accounts.Select(ToQuotaTarget).ToList();
     }
 
-    public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
+    public AccountQuotaSnapshot? ParseCachedQuota(string rawJson) => ParseCachedQuota(rawJson, null);
+
+    public AccountQuotaSnapshot? ParseCachedQuota(string rawJson, DateTimeOffset? observedAt)
     {
         if (string.IsNullOrWhiteSpace(rawJson)) return null;
 
         try
         {
-            var (planType, windows) = CodexUsageParser.Parse(rawJson);
+            var (planType, windows) = CodexUsageParser.Parse(rawJson, observedAt);
+            if (observedAt is null)
+                windows = windows.Select(w => w with { ResetAtUtc = null }).ToList();
             return new AccountQuotaSnapshot
             {
                 Success = windows.Count > 0,
@@ -267,6 +275,14 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                     await writeClient.Updateable(account)
                         .UpdateColumns(x => new { x.LastQuotaRawJson, x.LastQuotaCheckedAt })
                         .ExecuteCommandAsync(cancellationToken);
+                    try
+                    {
+                        await CodexQuotaPeriodService.ObserveAsync(writeClient, account, info, account.LastQuotaCheckedAt.Value, cancellationToken, _pricing);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogWarning(ex, "保存 Codex 额度周期失败：{AccountId}", account.Id);
+                    }
                     // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
                     _metadataCache.InvalidateCodexAccounts();
 

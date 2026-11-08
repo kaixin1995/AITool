@@ -90,6 +90,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<Site> Sites => _client.Queryable<Site>();
     public ISugarQueryable<SiteKey> SiteKeys => _client.Queryable<SiteKey>();
     public ISugarQueryable<CodexAccount> CodexAccounts => _client.Queryable<CodexAccount>();
+    public ISugarQueryable<CodexQuotaPeriod> CodexQuotaPeriods => _client.Queryable<CodexQuotaPeriod>();
     public ISugarQueryable<GoogleAccount> GoogleAccounts => _client.Queryable<GoogleAccount>();
     public ISugarQueryable<KimiAccount> KimiAccounts => _client.Queryable<KimiAccount>();
     public ISugarQueryable<XaiAccount> XaiAccounts => _client.Queryable<XaiAccount>();
@@ -306,6 +307,7 @@ public static class SqlSugarSetup
             typeof(Site),
             typeof(SiteKey),
             typeof(CodexAccount),
+            typeof(CodexQuotaPeriod),
             typeof(GoogleAccount),
             typeof(KimiAccount),
             typeof(XaiAccount),

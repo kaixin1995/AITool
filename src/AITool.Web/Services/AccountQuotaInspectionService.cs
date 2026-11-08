@@ -471,7 +471,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         AccountQuotaSnapshot? cachedSnapshot = null;
         if (!string.IsNullOrWhiteSpace(account.LastQuotaRawJson))
         {
-            cachedSnapshot = provider.ParseCachedQuota(account.LastQuotaRawJson);
+            cachedSnapshot = provider.ParseCachedQuota(account.LastQuotaRawJson, account.LastQuotaCheckedAt);
         }
 
         var usedCache = false;
