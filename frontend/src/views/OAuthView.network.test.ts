@@ -7,6 +7,8 @@ import { ApiError, httpGet } from '@/api/http'
 
 const mocks = vi.hoisted(() => ({ message: { warning: vi.fn(), success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ hash: '', query: {} }), useRouter: () => ({ replace: vi.fn() }) }))
+// useCurrency 模块级读 localStorage，node 测试环境没有该全局，与 setup 测试同款 mock 掉
+vi.mock('@/composables/useCurrency', () => ({ useCurrency: () => ({ formatTotalCost: (value: number) => `$${value}`, setUsdToCny: vi.fn() }) }))
 vi.mock('naive-ui', () => ({
   NAlert: {}, NCard: {}, NButton: {}, NButtonGroup: {}, NDropdown: {}, NSpace: {}, NTag: {}, NEmpty: {}, NSpin: {}, NModal: {}, NInput: {}, NPopconfirm: {}, NProgress: {}, NCheckbox: {}, NTabs: {}, NTabPane: {}, NSelect: {}, NDataTable: {},
   useMessage: () => mocks.message

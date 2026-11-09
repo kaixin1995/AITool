@@ -103,6 +103,45 @@ onMounted(loadStats)
       </NSpin>
     </template>
 
+    <!-- CPA 风格工作台 -->
+    <template v-else-if="skin === 'cpa'">
+      <div class="cpa-dashboard-heading">
+        <div><span class="cpa-eyebrow">AI TOOL / WORKSPACE</span><h1>仪表盘</h1><p>查看资源配置与核心服务状态</p></div>
+        <button class="cpa-heading-action" type="button" @click="go('chat')">开始对话 <span>↗</span></button>
+      </div>
+      <NSpin :show="loading">
+        <div v-if="stats" class="cpa-dashboard">
+          <div class="cpa-section-heading"><div><h2>资源概况</h2><p>当前已配置的资源</p></div><span>OVERVIEW</span></div>
+          <div class="cpa-stat-grid">
+            <button v-for="(card, index) in statCards" :key="card.label" class="cpa-stat" type="button" @click="go(card.route, card.query, card.hash)">
+              <span class="cpa-stat-top"><span class="cpa-stat-index">{{ String(index + 1).padStart(2, '0') }} / {{ card.label }}</span><span aria-hidden="true">↗</span></span>
+              <strong>{{ card.value }}</strong><span class="cpa-stat-desc">{{ card.desc }}</span>
+            </button>
+          </div>
+          <div class="cpa-panel-grid">
+            <section class="cpa-panel">
+              <div class="cpa-section-heading"><div><h2>核心服务</h2><p>网关连接与同步信息</p></div><span>CORE</span></div>
+              <dl class="cpa-core-list">
+                <div><dt>服务地址</dt><dd>{{ stats.coreBaseUrl || '未配置' }}</dd></div>
+                <div><dt>服务状态</dt><dd>{{ stats.coreStatusText || '暂无信息' }}</dd></div>
+                <div><dt>同步状态</dt><dd>{{ stats.coreSyncStatusText || '暂无信息' }}</dd></div>
+                <div><dt>同步详情</dt><dd>{{ stats.coreSyncDetailText || '暂无信息' }}</dd></div>
+              </dl>
+            </section>
+            <section class="cpa-panel">
+              <div class="cpa-section-heading"><div><h2>快捷操作</h2><p>继续配置和管理你的服务</p></div><span>QUICK ACCESS</span></div>
+              <div class="cpa-action-grid">
+                <button v-for="action in quickActions" :key="action.label" class="cpa-action" type="button" @click="go(action.route, action.query, action.hash)">
+                  <span class="cpa-action-symbol">{{ action.icon }}</span><span class="cpa-action-copy"><strong>{{ action.label }}</strong><small>{{ action.desc }}</small></span><span aria-hidden="true">→</span>
+                </button>
+              </div>
+            </section>
+          </div>
+        </div>
+        <NEmpty v-else-if="!loading" :description="error || '暂无数据'" />
+      </NSpin>
+    </template>
+
     <!-- 2. 现代科技皮肤专属布局 (Modern Bento Grid & Hero) -->
     <template v-else>
       <NSpin :show="loading">
@@ -185,6 +224,51 @@ onMounted(loadStats)
 </template>
 
 <style scoped>
+.cpa-dashboard-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; margin: 8px 0 34px; }
+.cpa-eyebrow, .cpa-section-heading > span { color: var(--text-color-secondary); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+.cpa-dashboard-heading h1 { margin: 8px 0 3px; font-size: 30px; line-height: 1.25; letter-spacing: -.04em; }
+.cpa-dashboard-heading p, .cpa-section-heading p { margin: 0; color: var(--text-color-secondary); font-size: 13px; }
+.cpa-heading-action { padding: 10px 14px; border: 1px solid var(--border-color-global); border-radius: 8px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; font-weight: 600; white-space: nowrap; }
+.cpa-heading-action span { margin-left: 15px; }
+.cpa-section-heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 14px; }
+.cpa-section-heading h2 { margin: 0 0 2px; font-size: 16px; }
+.cpa-stat-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.cpa-stat { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; min-height: 142px; padding: 16px; border: 1px solid var(--border-color-global); border-radius: 10px; background: var(--bg-card); color: var(--text-primary); text-align: left; cursor: pointer; transition: border-color .2s, transform .2s; }
+.cpa-stat:hover, .cpa-action:hover, .cpa-heading-action:hover { border-color: var(--cpa-border-hover); }
+.cpa-stat:hover { transform: translateY(-2px); }
+.cpa-stat-top { display: flex; justify-content: space-between; gap: 8px; width: 100%; color: var(--text-color-secondary); }
+.cpa-stat-index { font-size: 12px; font-weight: 600; }
+.cpa-stat strong { margin-top: auto; font-size: 30px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cpa-stat-desc { color: var(--text-color-secondary); font-size: 12px; }
+.cpa-actions-heading { margin-top: 32px; }
+.cpa-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.cpa-action { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 15px; border: 1px solid var(--border-color-global); border-radius: 10px; background: var(--bg-card); color: var(--text-color-secondary); text-align: left; cursor: pointer; }
+.cpa-action-symbol { display: grid; place-items: center; width: 38px; height: 38px; flex-shrink: 0; border-radius: 8px; background: var(--bg-surface-soft); color: var(--text-primary); font-size: 18px; }
+.cpa-action-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.cpa-action-copy strong { color: var(--text-primary); font-size: 13px; }
+.cpa-action-copy small { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.cpa-dashboard-heading { margin-bottom: 26px; }
+.cpa-eyebrow, .cpa-section-heading > span { color: #4383d4; }
+.cpa-heading-action { color: #fff; background: #3b82f6; border-color: #3b82f6; box-shadow: 0 6px 16px rgba(59, 130, 246, .2); }
+.cpa-heading-action:hover { background: #2563eb; border-color: #2563eb; }
+.cpa-stat-grid { gap: 14px; }
+.cpa-stat { min-height: 132px; border-radius: 14px; box-shadow: var(--card-shadow); }
+.cpa-stat-top > span:last-child { color: #3b82f6; }
+.cpa-stat strong { color: #3b82f6; }
+.cpa-panel-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; margin-top: 20px; }
+.cpa-panel { min-width: 0; padding: 20px; border: 1px solid var(--border-color-global); border-radius: 14px; background: var(--bg-card); box-shadow: var(--card-shadow); }
+.cpa-panel .cpa-section-heading { margin-bottom: 18px; }
+.cpa-core-list { margin: 0; }
+.cpa-core-list div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border-color-soft); }
+.cpa-core-list div:last-child { border-bottom: 0; }
+.cpa-core-list dt { flex-shrink: 0; color: var(--text-color-secondary); }
+.cpa-core-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; text-align: right; font-weight: 600; }
+.cpa-action { background: var(--bg-surface-soft); }
+.cpa-action-symbol { background: var(--status-info-bg); color: var(--status-info-text); }
+@media (max-width: 1100px) { .cpa-panel-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1199.98px) { .cpa-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 767.98px) { .cpa-stat-grid, .cpa-action-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .cpa-dashboard-heading { align-items: flex-start; flex-direction: column; } .cpa-stat-grid, .cpa-action-grid { grid-template-columns: 1fr; } .cpa-stat { min-height: 115px; } }
 .dashboard-page {
   min-width: 0;
 }

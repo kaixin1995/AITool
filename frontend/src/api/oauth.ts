@@ -27,6 +27,8 @@ export interface CodexQuotaPeriod {
   outputTokens: number
   totalTokens: number
   requestCount: number
+  successCount: number | null
+  lastUsageAt: string | null
   unknownCount: number
   estimatedCostUsd: number | null
   unpricedCount: number | null
@@ -36,7 +38,7 @@ export interface CodexQuotaPeriod {
 export function getCodexQuotaPeriods(id: string): Promise<CodexQuotaPeriod[]> {
   return httpGet(`/api/admin/oauth/accounts/${encodeURIComponent(id)}/quota-periods`, { skipErrorNotify: true })
 }
-export type CodexQuotaUsage = Pick<CodexQuotaPeriod, 'inputTokens' | 'cachedTokens' | 'outputTokens' | 'totalTokens' | 'requestCount' | 'unknownCount' | 'estimatedCostUsd' | 'unpricedCount' | 'models'>
+export type CodexQuotaUsage = Pick<CodexQuotaPeriod, 'inputTokens' | 'cachedTokens' | 'outputTokens' | 'totalTokens' | 'requestCount' | 'successCount' | 'unknownCount' | 'estimatedCostUsd' | 'unpricedCount' | 'models'>
 export function getCodexQuotaUsage(id: string, start: string, end: string): Promise<CodexQuotaUsage> {
   const query = new URLSearchParams({ start, end })
   return httpGet(`/api/admin/oauth/accounts/${encodeURIComponent(id)}/quota-usage?${query}`, { skipErrorNotify: true })

@@ -66,12 +66,14 @@ public static class CodexQuotaPeriodService
         var end = period.EndAt ?? (period.ResetAt < now ? period.ResetAt : now);
         var rows = await db.Queryable<AITool.Domain.Proxy.ProxyUsageLog>()
             .Where(x => x.TargetSiteId == period.SiteId && x.RequestedAt >= period.StartAt && x.RequestedAt < end)
-            .Select(x => new { x.AttemptedModel, x.RequestedAt, x.InputTokens, x.CachedTokens, x.OutputTokens, x.TotalTokens })
+            .Select(x => new { x.AttemptedModel, x.RequestedAt, x.InputTokens, x.CachedTokens, x.OutputTokens, x.TotalTokens, x.Status })
             .ToListAsync(ct);
         period.InputTokens = rows.Sum(x => (long)x.InputTokens);
         period.CachedTokens = rows.Sum(x => (long)x.CachedTokens);
         period.OutputTokens = rows.Sum(x => (long)x.OutputTokens);
         period.RequestCount = rows.Count;
+        period.SuccessCount = rows.Count(x => x.Status == "success");
+        period.LastUsageAt = rows.Count > 0 ? rows.Max(x => x.RequestedAt) : null;
         period.UnknownCount = rows.Count(x => x.TotalTokens == 0);
         if (pricing is not null)
         {

@@ -24,6 +24,8 @@ public sealed class CodexQuotaPeriod
     public long CachedTokens { get; set; }
     public long OutputTokens { get; set; }
     public int RequestCount { get; set; }
+    [SugarColumn(IsNullable = true)] public int? SuccessCount { get; set; }
+    [SugarColumn(IsNullable = true)] public DateTimeOffset? LastUsageAt { get; set; }
     public int UnknownCount { get; set; }
     [SugarColumn(IsNullable = true)] public decimal? EstimatedCostUsd { get; set; }
     [SugarColumn(IsNullable = true)] public int? UnpricedCount { get; set; }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, NDatePicker, useMessage } from 'naive-ui'
+import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
 import type { SelectRenderLabel } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
@@ -11,6 +11,7 @@ import { getAccountNetworkCapabilities, getAccountProxyOptions, getAccountNetwor
 import { syncAllAccountPools } from '@/api/accountPools'
 import { getModelPricing } from '@/api/models'
 import { useCurrency } from '@/composables/useCurrency'
+import { previousQuotaPeriod, projectQuotaPeriod } from './quotaPeriodDisplay'
 import {
   importSelectedDeviceModels,
   batchApplyDeviceModels,
@@ -65,32 +66,23 @@ const quotaPeriodErrors = ref<Record<string, boolean>>({})
 const quotaPeriodAccount = ref<UnifiedAccount | null>(null)
 const quotaPeriodModal = ref(false)
 const { formatTotalCost, setUsdToCny } = useCurrency()
-const quotaHistoryRange = ref<[number, number] | null>(null)
-const quotaHistoryResult = ref<api.CodexQuotaUsage | null>(null)
-const quotaHistoryLoading = ref(false)
-const quotaHistoryError = ref('')
 function currentPeriod(account: UnifiedAccount, windowId: string): CodexQuotaPeriod | undefined {
   return quotaPeriods.value[account.id]?.find(p => p.windowId === windowId && p.isCurrent)
 }
+const selectedQuotaPeriods = computed(() => quotaPeriodAccount.value ? quotaPeriods.value[quotaPeriodAccount.value.id] ?? [] : [])
+const quotaWindowCards = computed(() => (quotaPeriodAccount.value?.windows ?? [])
+  .filter(w => /^(five-hour|weekly|monthly|window-[12])$/.test(w.id))
+  .map(window => {
+    const period = selectedQuotaPeriods.value.find(p => p.windowId === window.id && p.isCurrent)
+    return { window, period, previous: period ? previousQuotaPeriod(selectedQuotaPeriods.value, period) : undefined, projection: period ? projectQuotaPeriod(period) : null }
+  }))
+function successRate(period: CodexQuotaPeriod | undefined): string {
+  return period?.successCount == null || !period.requestCount ? '—' : `${(period.successCount / period.requestCount * 100).toFixed(2)}%`
+}
 function openQuotaPeriods(account: UnifiedAccount): void {
   quotaPeriodAccount.value = account
-  quotaHistoryRange.value = null
-  quotaHistoryResult.value = null
-  quotaHistoryError.value = ''
   quotaPeriodModal.value = true
   void getModelPricing().then(catalog => setUsdToCny(catalog?.usdToCny)).catch(() => undefined)
-}
-async function loadQuotaHistory(): Promise<void> {
-  const account = quotaPeriodAccount.value
-  const range = quotaHistoryRange.value
-  if (!account || !range) return
-  quotaHistoryLoading.value = true
-  quotaHistoryError.value = ''
-  quotaHistoryResult.value = null
-  try {
-    quotaHistoryResult.value = await api.getCodexQuotaUsage(account.id, new Date(range[0]).toISOString(), new Date(range[1]).toISOString())
-  } catch (error) { quotaHistoryError.value = (error as Error).message || '查询失败，请重试' }
-  finally { quotaHistoryLoading.value = false }
 }
 function formatPeriodTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
@@ -2053,7 +2045,6 @@ onUnmounted(() => {
                 </div>
                 <div v-else class="oauth-window-placeholder">
                   {{ acc.lastQuotaCheckedAt ? '暂无额度数据' : '未刷新额度，点击下方「刷新额度」获取' }}
-                  <button v-if="acc.provider === 'codex'" type="button" class="oauth-empty-history" @click.stop="openQuotaPeriods(acc)">查看历史</button>
                 </div>
 
                 <div v-if="!exportMode" class="oauth-card-meta">
@@ -2300,25 +2291,47 @@ onUnmounted(() => {
     </NModal>
 
     <NModal v-model:show="quotaPeriodModal" preset="card" style="width: 620px; max-width: calc(100vw - 32px)" :title="`${quotaPeriodAccount?.displayName ?? ''} · 额度周期`">
-      <div class="quota-period-intro">按本系统调用日志统计，包含缓存输入。额度百分比来自上游，两者不能直接换算。</div>
-      <div v-if="quotaPeriodAccount && quotaPeriods[quotaPeriodAccount.id]?.length" class="quota-period-list">
-        <section v-for="period in quotaPeriods[quotaPeriodAccount.id]" :key="period.id" class="quota-period-item">
-          <div class="quota-period-heading"><div><strong>{{ period.label }}</strong><span class="quota-period-state">{{ period.isCurrent ? '当前周期' : period.endAt ? '历史周期' : '等待额度刷新' }}</span></div><strong class="quota-period-total">{{ formatPeriodTokens(period.totalTokens) }} <small>tokens</small></strong></div>
-          <div class="quota-period-date">{{ period.boundaryUncertain ? '边界不确定' : '推算开始' }} {{ formatDateTime(period.startAt) }} · {{ period.endAt ? '结束' : '预计重置' }} {{ formatDateTime(period.endAt ?? period.resetAt) }}</div>
-          <div class="quota-period-metrics"><span>新输入 <b>{{ formatPeriodTokens(period.inputTokens) }}</b></span><span>缓存输入 <b>{{ formatPeriodTokens(period.cachedTokens) }}</b></span><span>输出 <b>{{ formatPeriodTokens(period.outputTokens) }}</b></span></div>
-          <div class="quota-period-cost"><span>参考金额</span><strong>{{ period.estimatedCostUsd == null ? '暂无数据' : formatTotalCost(period.estimatedCostUsd) }}</strong><small v-if="period.unpricedCount">{{ period.unpricedCount }} 次未定价</small><small v-if="period.unknownCount">{{ period.unknownCount }} 次用量未知</small></div>
-          <div class="quota-period-foot">{{ period.requestCount }} 次调用<span v-if="period.unknownCount"> · {{ period.unknownCount }} 次用量未知</span><span v-if="period.usedPercent != null"> · 上次已用 {{ Math.round(period.usedPercent) }}%</span> · 汇总于 {{ formatDateTime(period.aggregatedAt) }}</div>
-          <div v-if="period.models?.length" class="quota-period-models"><span v-for="model in period.models" :key="model.model">{{ model.model }} <b>{{ formatPeriodTokens(model.totalTokens) }}</b> <small>({{ model.requests }} 次)</small></span></div>
+      <div v-if="quotaWindowCards.length" class="quota-dashboard-list">
+        <section v-for="card in quotaWindowCards" :key="card.window.id" class="quota-dashboard">
+        <div class="quota-overview">
+          <div class="quota-overview-title"><span class="quota-icon">◷</span><div><strong>{{ card.window.label }}</strong><small>预计重置 {{ card.period ? formatDateTime(card.period.resetAt) : (card.window.resetLabel ?? '—') }}</small></div></div>
+          <div class="quota-remaining"><span>剩余</span><strong>{{ card.window?.usedPercent != null ? `${Math.max(0, 100 - Math.round(card.window.usedPercent))}%` : '—' }}</strong></div>
+        </div>
+        <NProgress v-if="card.window?.usedPercent != null" :percentage="Math.max(0, Math.min(100, 100 - Number(card.window.usedPercent)))" :status="quotaColor(100 - Number(card.window.usedPercent))" :show-indicator="false" :height="6" :border-radius="4" />
+        <div v-if="card.period" class="quota-compare-grid">
+          <section class="quota-compare-card">
+            <strong class="quota-compare-title">上个周期用量</strong>
+            <div class="quota-compare-date">{{ card.previous ? `${formatDateTime(card.previous.startAt)} — ${formatDateTime(card.previous.endAt)}` : '暂无已记录的上个周期' }}</div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon blue">↗</i>请求数</span><b>{{ card.previous?.requestCount ?? '—' }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon teal">◫</i>Token</span><b>{{ card.previous ? formatPeriodTokens(card.previous.totalTokens) : '—' }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon amber">$</i>参考金额</span><b>{{ card.previous?.estimatedCostUsd == null ? '—' : formatTotalCost(card.previous.estimatedCostUsd) }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon green">✓</i>成功率</span><b>{{ successRate(card.previous) }}</b></div>
+            <small v-if="card.previous?.boundaryUncertain || card.previous?.unknownCount || card.previous?.unpricedCount" class="quota-card-warning">{{ card.previous?.boundaryUncertain ? '周期边界不确定 · ' : '' }}{{ card.previous?.unknownCount ? `${card.previous.unknownCount} 次用量未知 · ` : '' }}{{ card.previous?.unpricedCount ? `${card.previous.unpricedCount} 次未定价` : '' }}</small>
+          </section>
+          <section class="quota-compare-card">
+            <strong class="quota-compare-title">当前周期已用</strong>
+            <div class="quota-compare-date">{{ formatDateTime(card.period.startAt) }} — {{ formatDateTime(card.period.resetAt) }}</div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon blue">↗</i>请求数</span><b>{{ card.period.requestCount }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon teal">◫</i>Token</span><b>{{ formatPeriodTokens(card.period.totalTokens) }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon amber">$</i>参考金额</span><b>{{ card.period.estimatedCostUsd == null ? '—' : formatTotalCost(card.period.estimatedCostUsd) }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon green">✓</i>成功率</span><b>{{ successRate(card.period) }}</b></div>
+            <small v-if="card.period.unknownCount || card.period.unpricedCount || card.period.boundaryUncertain" class="quota-card-warning">{{ card.period.boundaryUncertain ? '周期边界不确定 · ' : '' }}{{ card.period.unknownCount ? `${card.period.unknownCount} 次用量未知 · ` : '' }}{{ card.period.unpricedCount ? `${card.period.unpricedCount} 次未定价` : '' }}</small>
+          </section>
+          <section class="quota-compare-card projected">
+            <strong class="quota-compare-title">↗ 当前周期预测</strong>
+            <div class="quota-compare-date">按上游已用额度比例估算</div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon blue">↗</i>预计请求</span><b>{{ card.projection?.requests ?? '—' }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon teal">◫</i>预计 Token</span><b>{{ card.projection ? formatPeriodTokens(card.projection.tokens) : '—' }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon amber">$</i>预计金额</span><b>{{ card.projection?.costUsd == null ? '—' : formatTotalCost(card.projection.costUsd) }}</b></div>
+            <div class="quota-projection-note">{{ card.projection ? '假设后续用量结构不变，仅供参考' : '额度未及时刷新或数据不完整，暂不预测' }}</div>
+          </section>
+        </div>
+        <div v-if="card.period" class="quota-period-foot">额度刷新 {{ formatDateTime(card.period.lastObservedAt) }} · 用量汇总 {{ formatDateTime(card.period.aggregatedAt) }} · 周期起点为推算值</div>
+          <div v-if="!card.period" class="quota-window-empty">{{ quotaPeriodAccount && quotaPeriodErrors[quotaPeriodAccount.id] ? '周期用量加载失败，请稍后重试' : '暂无当前周期记录，等待下次真实额度刷新' }}</div>
         </section>
       </div>
-      <NEmpty v-else :description="quotaPeriodAccount && quotaPeriodErrors[quotaPeriodAccount.id] ? '周期记录加载失败，请稍后重试' : '暂无周期记录，等待下次真实额度刷新'" />
-      <div class="quota-history-search">
-        <strong>按时间回查</strong><span>查询仍保留的调用日志，不代表已确认的历史额度周期。</span>
-        <div class="quota-history-controls"><NDatePicker v-model:value="quotaHistoryRange" type="datetimerange" clearable /><NButton secondary :loading="quotaHistoryLoading" :disabled="!quotaHistoryRange" @click="loadQuotaHistory">查询</NButton></div>
-        <div v-if="quotaHistoryError" class="quota-history-error">{{ quotaHistoryError }}</div>
-        <div v-if="quotaHistoryResult" class="quota-history-result"><strong>{{ formatPeriodTokens(quotaHistoryResult.totalTokens) }} tokens</strong><span>{{ quotaHistoryResult.requestCount }} 次调用<span v-if="quotaHistoryResult.unknownCount"> · {{ quotaHistoryResult.unknownCount }} 次用量未知</span></span><div class="quota-period-metrics"><span>新输入 <b>{{ formatPeriodTokens(quotaHistoryResult.inputTokens) }}</b></span><span>缓存输入 <b>{{ formatPeriodTokens(quotaHistoryResult.cachedTokens) }}</b></span><span>输出 <b>{{ formatPeriodTokens(quotaHistoryResult.outputTokens) }}</b></span></div><div class="quota-period-cost"><span>参考金额</span><strong>{{ quotaHistoryResult.estimatedCostUsd == null ? '暂无数据' : formatTotalCost(quotaHistoryResult.estimatedCostUsd) }}</strong><small v-if="quotaHistoryResult.unpricedCount">{{ quotaHistoryResult.unpricedCount }} 次未定价</small><small v-if="quotaHistoryResult.unknownCount">{{ quotaHistoryResult.unknownCount }} 次用量未知</small></div><div class="quota-period-models"><span v-for="model in quotaHistoryResult.models" :key="model.model">{{ model.model }} <b>{{ formatPeriodTokens(model.totalTokens) }}</b> <small>({{ model.requests }} 次)</small></span></div></div>
-      </div>
-      <div class="quota-period-note">参考金额按模型价格表估算，并非 Codex 订阅实际账单；当前周期及时间回查使用当前价格表，历史周期使用最后保存时的价格。日志清理、外部使用或中断请求可能造成缺失。周期开始时间为推算值，不同窗口的用量会重叠，请勿相加。最多展示最近 100 条已观测周期。</div>
+      <NEmpty v-else description="暂无额度窗口，请先刷新额度" />
+      <div class="quota-period-note">请求数与成功率按上游调用尝试统计。参考金额按模型价格表估算，并非 Codex 订阅实际账单；当前周期使用当前价格表，上个周期使用最后保存时的价格。日志清理、外部使用或中断请求可能造成缺失。周期开始时间为推算值，不同窗口的用量会重叠，请勿相加。</div>
     </NModal>
 
     <!-- 编辑账号（重命名）弹窗 -->
@@ -3168,36 +3181,38 @@ onUnmounted(() => {
 .oauth-period-trigger strong { color: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
 .oauth-period-arrow { margin-left: auto; color: var(--primary-color, #3b82f6); white-space: nowrap; }
 .oauth-period-unavailable { padding: 0; border: 0; background: none; color: var(--text-color-secondary); text-align: left; cursor: pointer; }
-.oauth-empty-history { margin-left: 6px; padding: 0; border: 0; background: none; color: var(--primary-color, #3b82f6); font: inherit; cursor: pointer; }
-.quota-period-intro, .quota-period-note { color: var(--text-color-secondary); font-size: 12px; line-height: 1.7; }
-.quota-period-intro { margin-bottom: 16px; }
+.quota-period-note { color: var(--text-color-secondary); font-size: 12px; line-height: 1.7; }
 .quota-period-note { margin-top: 16px; }
-.quota-period-list { display: grid; gap: 10px; max-height: min(60vh, 560px); overflow-y: auto; }
-.quota-period-item { padding: 15px; border: 1px solid var(--border-color-global); border-radius: 10px; background: var(--bg-card); }
-.quota-period-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.quota-period-state { margin-left: 8px; padding: 2px 7px; border-radius: 9px; background: color-mix(in srgb, var(--primary-color, #3b82f6) 10%, transparent); color: var(--primary-color, #3b82f6); font-size: 11px; }
-.quota-period-total { color: var(--primary-color, #3b82f6); font-size: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.quota-period-total small { font-size: 11px; font-weight: 400; }
-.quota-period-date, .quota-period-foot { margin-top: 8px; color: var(--text-color-secondary); font-size: 11px; }
-.quota-period-metrics { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-top: 14px; font-size: 12px; color: var(--text-color-secondary); }
-.quota-period-metrics b, .quota-period-models b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
-.quota-period-cost { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; margin-top: 10px; color: var(--text-color-secondary); font-size: 12px; }
-.quota-period-cost strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
-.quota-period-cost small { color: var(--status-warning-text); }
-.quota-period-models { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; font-size: 11px; }
-.quota-period-models span { padding: 3px 7px; border-radius: 6px; background: var(--bg-surface-soft); color: var(--text-color-secondary); }
-.quota-history-search { display: grid; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-color-global); }
-.quota-history-search > span, .quota-history-result > span { color: var(--text-color-secondary); font-size: 11px; }
-.quota-history-controls { display: flex; gap: 8px; }
-.quota-history-controls :deep(.n-date-picker) { flex: 1; min-width: 0; }
-.quota-history-error { color: var(--status-danger-text, #e03131); font-size: 12px; }
-.quota-history-result { padding: 12px; border-radius: 8px; background: var(--bg-surface-soft); }
-.quota-history-result > strong { margin-right: 10px; color: var(--primary-color, #3b82f6); }
+.quota-dashboard-list { display: grid; gap: 14px; max-height: min(70vh, 720px); overflow-y: auto; padding: 1px 3px 1px 1px; }
+.quota-dashboard { padding: 14px; border: 1px solid var(--border-color-global); border-radius: 10px; }
+.quota-window-empty { padding: 24px 0 10px; color: var(--text-color-secondary); font-size: 12px; text-align: center; }
+.quota-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.quota-overview-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.quota-overview-title > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.quota-overview-title small { color: var(--text-color-secondary); font-size: 11px; }
+.quota-icon { display: grid; width: 32px; height: 32px; flex: none; place-items: center; border-radius: 9px; background: color-mix(in srgb, var(--primary-color, #3b82f6) 12%, transparent); color: var(--primary-color, #3b82f6); font-size: 21px; }
+.quota-remaining { display: flex; align-items: baseline; gap: 5px; color: var(--primary-color, #3b82f6); white-space: nowrap; }
+.quota-remaining span { font-size: 11px; }
+.quota-remaining strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.quota-compare-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
+.quota-compare-card { min-width: 0; padding: 12px 10px; border: 1px solid var(--border-color-global); border-radius: 9px; background: var(--bg-card); }
+.quota-compare-card.projected { background: color-mix(in srgb, var(--primary-color, #3b82f6) 5%, var(--bg-card)); border-color: color-mix(in srgb, var(--primary-color, #3b82f6) 20%, var(--border-color-global)); }
+.quota-compare-title { display: block; color: var(--text-primary); font-size: 12px; }
+.quota-compare-date { min-height: 33px; margin-top: 5px; color: var(--text-color-secondary); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.quota-compare-row { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 10px; font-size: 11px; }
+.quota-compare-row > span { display: flex; align-items: center; gap: 5px; color: var(--text-color-secondary); white-space: nowrap; }
+.quota-compare-row b { color: var(--text-primary); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+.quota-metric-icon { display: inline-grid; width: 19px; height: 19px; flex: none; place-items: center; border-radius: 50%; font-size: 11px; font-style: normal; }
+.quota-metric-icon.blue { color: #4295f5; background: #4295f522; }
+.quota-metric-icon.teal { color: #12a895; background: #12a89522; }
+.quota-metric-icon.amber { color: #d89a17; background: #d89a1722; }
+.quota-metric-icon.green { color: #10a77b; background: #10a77b22; }
+.quota-card-warning, .quota-projection-note { display: block; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border-color-global); color: var(--text-color-secondary); font-size: 10px; line-height: 1.5; }
+.quota-card-warning { color: var(--status-warning-text); }
+.quota-period-foot { margin-top: 12px; color: var(--text-color-secondary); font-size: 11px; }
 @media (max-width: 520px) {
-  .quota-history-controls { flex-wrap: wrap; }
-  .quota-history-controls :deep(.n-date-picker) { flex-basis: 100%; }
-  .quota-history-controls :deep(.n-button) { margin-left: auto; }
-  .quota-period-heading { align-items: flex-start; flex-wrap: wrap; }
+  .quota-compare-grid { grid-template-columns: 1fr; }
+  .quota-compare-date { min-height: 0; }
 }
 
 .oauth-window-placeholder {

@@ -749,7 +749,7 @@ public sealed class CodexApiController : ControllerBase
             p.LastObservedAt, p.UsedPercent, p.BoundaryUncertain, p.AggregatedAt,
             p.InputTokens, p.CachedTokens, p.OutputTokens,
             totalTokens = p.InputTokens + p.CachedTokens + p.OutputTokens,
-            p.RequestCount, p.UnknownCount,
+            p.RequestCount, p.SuccessCount, p.LastUsageAt, p.UnknownCount,
             p.EstimatedCostUsd, p.UnpricedCount,
             models = string.IsNullOrEmpty(p.ModelsJson) ? Array.Empty<object>() : System.Text.Json.JsonSerializer.Deserialize<object[]>(p.ModelsJson),
             isCurrent = p.EndAt == null && p.ResetAt > now
@@ -773,7 +773,7 @@ public sealed class CodexApiController : ControllerBase
         {
             period.InputTokens, period.CachedTokens, period.OutputTokens,
             totalTokens = period.InputTokens + period.CachedTokens + period.OutputTokens,
-            period.RequestCount, period.UnknownCount,
+            period.RequestCount, period.SuccessCount, period.UnknownCount,
             period.EstimatedCostUsd, period.UnpricedCount,
             models = string.IsNullOrEmpty(period.ModelsJson) ? Array.Empty<object>() : JsonSerializer.Deserialize<object[]>(period.ModelsJson)
         });

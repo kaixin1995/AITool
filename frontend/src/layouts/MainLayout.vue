@@ -13,8 +13,25 @@ const { isDark, skin, toggleTheme, setSkin } = useTheme()
 
 const skinOptions = [
   { label: '✨ 现代科技 (Modern)', key: 'modern' },
-  { label: '🏛️ 经典简约 (Classic)', key: 'classic' }
+  { label: '🏛️ 经典简约 (Classic)', key: 'classic' },
+  { label: '◈ 蓝色工作台 (CPA)', key: 'cpa' }
 ]
+
+const navIconPaths: Record<string, string> = {
+  dashboard: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+  analytics: 'M4 19V5 M4 19h16 M8 15l4-5 3 2 5-6',
+  chat: 'M20 11a7 7 0 0 1-7 7H8l-4 3v-5a7 7 0 1 1 16-5Z',
+  sites: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM3 12h18 M12 3c3 3 3 15 0 18 M12 3c-3 3-3 15 0 18',
+  oauth: 'M12 3 5 6v5c0 5 3 8 7 10 4-2 7-5 7-10V6z M9 12l2 2 4-4',
+  models: 'M12 3 4 7v10l8 4 8-4V7z M4 7l8 4 8-4 M12 11v10',
+  routes: 'M4 6h11 M15 3l3 3-3 3 M20 18H9 M9 15l-3 3 3 3',
+  'access-keys': 'M14 8a4 4 0 1 1 2 3.46L9 18H6v-3l6.54-6.54A4 4 0 0 1 14 8Z M17 7h.01',
+  detection: 'M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12ZM15 15l5 5',
+  'model-health': 'M3 12h4l2-5 4 10 2-5h6',
+  'developer-invocations': 'M8 7 3 12l5 5 M16 7l5 5-5 5 M14 4l-4 16',
+  'usage-logs': 'M6 3h12v18H6z M9 8h6 M9 12h6 M9 16h4',
+  'system-settings': 'M4 6h16 M4 12h16 M4 18h16 M8 4v4 M16 10v4 M10 16v4'
+}
 
 function handleSelectSkin(key: string): void {
   setSkin(key as SkinMode)
@@ -135,7 +152,7 @@ onBeforeUnmount(() => {
             :to="{ name: item.key }"
             @click="mobileSidebarOpen = false"
           >
-            <span class="sidebar-link-icon">{{ item.icon }}</span>{{ item.label }}
+            <span class="sidebar-link-icon"><svg v-if="skin === 'cpa'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="navIconPaths[item.key]" /></svg><template v-else>{{ item.icon }}</template></span>{{ item.label }}
           </RouterLink>
         </div>
       </nav>
@@ -157,14 +174,14 @@ onBeforeUnmount(() => {
         <div class="app-topbar-right">
           <!-- 皮肤切换下拉 -->
           <NDropdown trigger="click" :options="skinOptions" @select="handleSelectSkin">
-            <button class="theme-icon-toggle" type="button" :title="`当前皮肤: ${skin === 'modern' ? '现代科技' : '经典简约'}`">
-              🎨
+            <button class="theme-icon-toggle" type="button" :title="`当前皮肤: ${skin === 'modern' ? '现代科技' : skin === 'classic' ? '经典简约' : '暖灰工作台'}`" aria-label="切换皮肤">
+              <svg v-if="skin === 'cpa'" class="cpa-toolbar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><template v-else>🎨</template>
             </button>
           </NDropdown>
 
           <NTooltip trigger="hover">
             <template #trigger>
-              <button class="theme-icon-toggle" type="button" @click="toggleTheme">{{ isDark ? '☀️' : '🌙' }}</button>
+              <button class="theme-icon-toggle" type="button" :aria-label="isDark ? '切换到亮色模式' : '切换到暗色模式'" @click="toggleTheme"><svg v-if="skin === 'cpa'" class="cpa-toolbar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M19 5l-1.4 1.4M6.4 17.6 5 19"/></svg><template v-else>{{ isDark ? '☀️' : '🌙' }}</template></button>
             </template>
             {{ isDark ? '切换到亮色模式' : '切换到暗夜模式' }}
           </NTooltip>

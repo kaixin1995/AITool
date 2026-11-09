@@ -49,6 +49,8 @@ public sealed class CodexQuotaPeriodTests
             first.CachedTokens.Should().Be(20);
             first.OutputTokens.Should().Be(3);
             first.RequestCount.Should().Be(3);
+            first.SuccessCount.Should().Be(2);
+            first.LastUsageAt.Should().BeCloseTo(now.AddMinutes(-1), TimeSpan.FromSeconds(1));
             first.UnknownCount.Should().Be(1);
             first.EstimatedCostUsd.Should().Be(18m);
             first.UnpricedCount.Should().Be(1);

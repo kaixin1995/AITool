@@ -1,7 +1,7 @@
 import { computed, ref, watch } from 'vue'
 import { darkTheme, type GlobalThemeOverrides } from 'naive-ui'
 
-export type SkinMode = 'classic' | 'modern'
+export type SkinMode = 'classic' | 'modern' | 'cpa'
 
 const THEME_KEY = 'aitool.theme'
 const SKIN_KEY = 'aitool.skin'
@@ -18,7 +18,7 @@ function loadInitialTheme(): boolean {
 
 function loadInitialSkin(): SkinMode {
   const stored = localStorage.getItem(SKIN_KEY)
-  if (stored === 'modern' || stored === 'classic') {
+  if (stored === 'modern' || stored === 'classic' || stored === 'cpa') {
     return stored
   }
   return 'modern'
@@ -132,6 +132,36 @@ const modernThemeOverrides: GlobalThemeOverrides = {
   }
 }
 
+// CPA Manager Plus 风格：蓝白工作区与深蓝灰暗色表面。
+const cpaThemeOverrides: GlobalThemeOverrides = {
+  common: {
+    primaryColor: '#3b82f6', primaryColorHover: '#60a5fa', primaryColorPressed: '#2563eb', primaryColorSuppl: '#3b82f6',
+    infoColor: '#3b82f6', successColor: '#10b981', warningColor: '#e6a23c', errorColor: '#ef4444',
+    borderRadius: '12px', borderRadiusSmall: '8px',
+    bodyColor: '#eff5fc', cardColor: '#ffffff', modalColor: '#ffffff', popoverColor: '#ffffff',
+    inputColor: '#ffffff', textColorBase: '#2c3e50', textColor1: '#2c3e50', textColor2: '#5f6c7b', textColor3: '#8b95a6',
+    borderColor: '#dbe5f0', dividerColor: '#e8eef5'
+  },
+  Card: { borderRadius: '12px', boxShadow: '0 4px 20px rgba(47, 92, 145, 0.05)' },
+  Button: { borderRadiusMedium: '10px', borderRadiusSmall: '8px' }
+}
+
+const cpaDarkOverrides: GlobalThemeOverrides = {
+  common: {
+    ...cpaThemeOverrides.common,
+    primaryColor: '#60a5fa', primaryColorHover: '#93c5fd', primaryColorPressed: '#3b82f6', primaryColorSuppl: '#60a5fa',
+    infoColor: '#60a5fa', successColor: '#34d399', warningColor: '#fbbf24', errorColor: '#f87171',
+    bodyColor: '#0b1324', cardColor: '#181c28', modalColor: '#222a3a', popoverColor: '#222a3a',
+    tableColor: '#181c28', tableHeaderColor: '#202a3b', inputColor: '#202a3b', inputColorDisabled: '#1b2230',
+    actionColor: '#202a3b', hoverColor: '#29364a', borderColor: '#374459', dividerColor: '#2b374a',
+    textColorBase: '#e9f0fa', textColor1: '#e9f0fa', textColor2: '#b0bed0', textColor3: '#8493a8'
+  },
+  Card: { ...cpaThemeOverrides.Card, color: '#181c28', colorModal: '#222a3a', colorPopover: '#222a3a' },
+  Button: cpaThemeOverrides.Button,
+  Checkbox: { border: '1px solid #77869a', borderDisabled: '1px solid #465267' },
+  Radio: { boxShadow: 'inset 0 0 0 1px #77869a', boxShadowDisabled: 'inset 0 0 0 1px #465267', buttonBorderColor: '#77869a' }
+}
+
 // 经典暗色
 const classicDarkOverrides: GlobalThemeOverrides = {
   common: {
@@ -237,6 +267,8 @@ export function useTheme() {
   const naiveTheme = computed(() => (isDark.value ? darkTheme : null))
   const effectiveOverrides = computed(() => {
     switch (skin.value) {
+      case 'cpa':
+        return isDark.value ? cpaDarkOverrides : cpaThemeOverrides
       case 'classic':
         return isDark.value ? { ...classicThemeOverrides, ...classicDarkOverrides } : classicThemeOverrides
       case 'modern':
@@ -254,7 +286,7 @@ export function useTheme() {
   }
 
   function toggleSkin(): void {
-    const skins: SkinMode[] = ['modern', 'classic']
+    const skins: SkinMode[] = ['modern', 'classic', 'cpa']
     const nextIdx = (skins.indexOf(skin.value) + 1) % skins.length
     skin.value = skins[nextIdx]
   }
