@@ -65,6 +65,19 @@ public sealed class CodexProtocolCompatibilityTests
     }
 
     [Fact]
+    public void Chat_deferred_completion_keeps_later_usage_when_finish_chunk_already_contains_usage()
+    {
+        var state = new ChatToResponsesStreamState { DeferChatCompletion = true };
+        ProxyProtocolBridge.ConvertChatStreamChunkToResponses("""{"choices":[{"delta":{"content":"hi"}}]}""", state);
+        var first = ProxyProtocolBridge.ConvertChatStreamChunkToResponses("""{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1}}""", state);
+        first.Should().NotContain("response.completed");
+        var final = ProxyProtocolBridge.ConvertChatStreamChunkToResponses("""{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5}}""", state);
+        var usage = Events(final).Single(e => e["type"]!.ToString() == "response.completed")["response"]!["usage"]!;
+        usage["input_tokens"]!.GetValue<int>().Should().Be(100);
+        usage["output_tokens"]!.GetValue<int>().Should().Be(5);
+    }
+
+    [Fact]
     public void Anthropic_stream_preserves_reasoning_tool_call_and_length_status()
     {
         var state = new ChatToResponsesStreamState();
@@ -78,6 +91,21 @@ public sealed class CodexProtocolCompatibilityTests
         response["incomplete_details"]!["reason"]!.ToString().Should().Be("max_output_tokens");
         response["output"]![0]!["type"]!.ToString().Should().Be("custom_tool_call");
         response["output"]![0]!["input"]!.ToString().Should().Be("hello");
+    }
+
+    [Fact]
+    public void Anthropic_stream_usage_matches_nonstreaming_including_cache_creation()
+    {
+        var state = new ChatToResponsesStreamState();
+        var text = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses("message_start", """{"message":{"usage":{"input_tokens":100,"cache_read_input_tokens":40,"cache_creation_input_tokens":10}}}""", state);
+        text += ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses("content_block_start", """{"index":0,"content_block":{"type":"text"}}""", state);
+        text += ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses("content_block_delta", """{"index":0,"delta":{"type":"text_delta","text":"hi"}}""", state);
+        text += ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses("message_delta", """{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}""", state);
+        text += ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses("message_stop", "{}", state);
+        var usage = Events(text).Single(e => e["type"]!.ToString() == "response.completed")["response"]!["usage"]!;
+        usage["input_tokens"]!.GetValue<int>().Should().Be(150);
+        usage["total_tokens"]!.GetValue<int>().Should().Be(170);
+        usage["input_tokens_details"]!["cached_creation_tokens"]!.GetValue<int>().Should().Be(10);
     }
 
     [Fact]

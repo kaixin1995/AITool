@@ -379,7 +379,7 @@ public sealed partial class OpenAiProxyController
                     else if (string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
                     {
                         // OpenAI Chat Completions 上游：逐个 SSE 块转换为 Responses 事件。
-                        var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
+                        var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName, DeferChatCompletion = true };
                         ProxyProtocolBridge.ConfigureResponsesTools(responsesState, requestBody);
                         streamOutcome = await ForwardOpenAiStreamPassthroughAsync(
                             forwardRequest,
@@ -1089,13 +1089,13 @@ public sealed partial class OpenAiProxyController
                 else if (string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
                 {
                     // OpenAI Chat Completions SSE 逐块转换后再发送 Responses WebSocket 事件。
-                    var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
+                    var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName, DeferChatCompletion = true };
                     ProxyProtocolBridge.ConfigureResponsesTools(responsesState, normalizedRequestBody);
                     streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(
                         webSocket,
                         forwardRequest,
                         cancellationToken,
-                        payload => ProxyProtocolBridge.ConvertChatStreamChunkToResponses(payload, responsesState));
+                        payload => ProxyProtocolBridge.ConvertChatStreamChunkToResponses(payload, responsesState), responsesState);
                 }
                 else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
                 {

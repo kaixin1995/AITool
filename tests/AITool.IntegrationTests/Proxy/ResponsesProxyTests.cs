@@ -279,6 +279,30 @@ public sealed class ResponsesProxyTests
     }
 
     [Fact]
+    public async Task Compact_retry_counts_usage_from_both_upstream_attempts()
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsOpenAiChatOnly = true };
+        fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = true, StatusCode = 200, InputTokens = 30, CachedTokens = 5, OutputTokens = 8,
+            ResponseBody = """{"choices":[{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}]}""" });
+        fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = true, StatusCode = 200, InputTokens = 20, CachedTokens = 3, OutputTokens = 6,
+            ResponseBody = """{"choices":[{"message":{"role":"assistant","content":"summary"},"finish_reason":"stop"}]}""" });
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+        { Content = new StringContent("""{"model":"auto","input":"hello"}""", Encoding.UTF8, "application/json") };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(50);
+        logs[0].CachedTokens.Should().Be(8);
+        logs[0].OutputTokens.Should().Be(14);
+        logs[0].TotalTokens.Should().Be(72);
+    }
+
+    [Fact]
     public async Task Compact_falls_back_locally_after_shape_retry_fails_but_not_on_auth_failure()
     {
         foreach (var auth in new[] { false, true })
@@ -1142,6 +1166,52 @@ public sealed class ResponsesProxyTests
         await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
         fake.Requests.Should().HaveCount(2);
         fake.Requests[1].PreparedRequestBody.Should().Contain("first answer").And.Contain("second").And.Contain("read");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Chat_bridge_delivers_usage_after_finish_and_records_matching_usage(bool websocket)
+    {
+        var fake = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            StreamingLines = ["data: {\"id\":\"chat_1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}", "",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}", "",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":40}}}", "", "data: [DONE]", ""]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        var client = factory.CreateClient();
+        string body;
+        if (websocket)
+        {
+            var wsClient = factory.Server.CreateWebSocketClient();
+            wsClient.ConfigureRequest = r => r.Headers["Authorization"] = "Bearer responses-test-key";
+            using var socket = await wsClient.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+            await SendWebSocketTextAsync(socket, """{"type":"response.create","model":"auto","input":"hi"}""");
+            var messages = await ReceiveWebSocketMessagesUntilAsync(socket, "response.completed");
+            body = messages.Single(m => m.Contains("response.completed"));
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        }
+        else
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+            { Content = new StringContent("""{"model":"auto","stream":true,"input":"hi"}""", Encoding.UTF8, "application/json") };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+            var response = await client.SendAsync(request);
+            var sse = await response.Content.ReadAsStringAsync();
+            body = sse.Split('\n').First(x => x.StartsWith("data: ") && x.Contains("response.completed"))[6..];
+        }
+        var usage = JsonNode.Parse(body)!["response"]!["usage"]!;
+        usage["input_tokens"]!.GetValue<int>().Should().Be(100);
+        usage["output_tokens"]!.GetValue<int>().Should().Be(12);
+        usage["input_tokens_details"]!["cached_tokens"]!.GetValue<int>().Should().Be(40);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(60);
+        logs[0].CachedTokens.Should().Be(40);
+        logs[0].OutputTokens.Should().Be(12);
     }
 
     [Fact]

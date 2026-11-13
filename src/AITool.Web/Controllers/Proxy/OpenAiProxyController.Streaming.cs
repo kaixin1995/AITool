@@ -24,12 +24,14 @@ public sealed partial class OpenAiProxyController
     /// <param name="forwardRequest">已经完成路由选择和请求体准备的上游转发请求。</param>
     /// <param name="cancellationToken">用于中断当前 WebSocket 转发的取消令牌。</param>
     /// <param name="payloadConverter">可选的上游 SSE 数据转换器，用于将 Chat Completions 事件转换为 Responses 事件。</param>
+    /// <param name="responsesState">可选的 Chat 转换状态，用于流结束时输出已等待用量的终态。</param>
     /// <returns>返回本轮 WebSocket 流式转发结果和可用于续传的输出内容。</returns>
     private async Task<StreamForwardOutcome> ForwardOpenAiResponsesAsWebSocketAsync(
         WebSocket webSocket,
         ProxyForwardRequest forwardRequest,
         CancellationToken cancellationToken,
-        Func<string, string>? payloadConverter = null)
+        Func<string, string>? payloadConverter = null,
+        ChatToResponsesStreamState? responsesState = null)
     {
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
@@ -50,9 +52,9 @@ public sealed partial class OpenAiProxyController
 
             if (TryExtractSseDataPayload(pendingSseLines, out var payload))
             {
-                if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase) && payloadConverter is null)
                 {
-                    if (payloadConverter is null) receivedDoneEvent = true;
+                    receivedDoneEvent = true;
                 }
                 else
                 {
@@ -107,6 +109,18 @@ public sealed partial class OpenAiProxyController
         if (pendingSseLines.Count > 0)
         {
             await FlushSseBlockAsync(cancellationToken);
+        }
+
+        if (!result.IsCanceled && (result.Success || result.IsStreamInterrupted) && responsesState?.PendingChatCompletion is not null)
+        {
+            foreach (var payload in ExtractWebSocketJsonPayloadsFromSseText(ProxyProtocolBridge.FlushChatResponsesCompletion(responsesState)))
+            {
+                if (TryExtractResponsesCompletedOutput(payload, out var outputJson)) { completedOutputJson = outputJson; receivedDoneEvent = true; }
+                await CommitReferenceOutputAsync(payload, cancellationToken);
+                await SendWebSocketJsonPayloadAsync(webSocket, payload, cancellationToken);
+                startedWriting = true;
+                _referenceOutputExposed = true;
+            }
         }
 
         result.ResponseBody = responseBuilder.ToString();
@@ -616,6 +630,13 @@ public sealed partial class OpenAiProxyController
             await FlushOpenAiSseBlockAsync(cancellationToken);
         }
 
+        if (!result.IsCanceled && (result.Success || result.IsStreamInterrupted) && responsesState?.PendingChatCompletion is not null)
+        {
+            var finalEvent = ProxyProtocolBridge.FlushChatResponsesCompletion(responsesState);
+            if (!string.IsNullOrEmpty(finalEvent)) await WriteChunkDirectAsync(finalEvent, cancellationToken);
+            receivedDoneEvent = responsesState.Done;
+        }
+
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
@@ -712,8 +733,7 @@ public sealed partial class OpenAiProxyController
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .ToList();
-        if (!TryExtractSseDataPayload(lines, out var payload)
-            || string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+        if (!TryExtractSseDataPayload(lines, out var payload))
         {
             return string.Empty;
         }

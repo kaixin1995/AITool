@@ -67,6 +67,9 @@ public sealed class ResponsesToolCallState
 
 public sealed class ChatToResponsesStreamState
 {
+    public bool DeferChatCompletion { get; set; }
+    public string? PendingChatCompletion { get; set; }
+    public int CacheCreationTokens { get; set; }
     public Dictionary<string, ResponsesToolDefinition> ToolDefinitions { get; } = new(StringComparer.Ordinal);
     public Dictionary<int, ResponsesToolCallState> OutputTools { get; } = [];
     public SortedDictionary<int, JsonObject> CompletedItems { get; } = [];
@@ -836,6 +839,8 @@ public static partial class ProxyProtocolBridge
 
         try
         {
+            if (sseJsonText == "[DONE]")
+                return FlushChatResponsesCompletion(state);
             using var doc = JsonDocument.Parse(sseJsonText);
             var root = doc.RootElement;
 
@@ -853,6 +858,27 @@ public static partial class ProxyProtocolBridge
                 }
 
                 state.Usage = (input, cached, output);
+                if (state.DeferChatCompletion && state.PendingChatCompletion is not null)
+                    return FlushChatResponsesCompletion(state);
+            }
+
+            if (state.DeferChatCompletion && !state.Done && state.PendingChatCompletion is null && root.TryGetProperty("choices", out var pendingChoices)
+                && pendingChoices.ValueKind == JsonValueKind.Array && pendingChoices.GetArrayLength() > 0
+                && pendingChoices[0].TryGetProperty("finish_reason", out var pendingFinish)
+                && pendingFinish.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(pendingFinish.GetString()))
+            {
+                // Keep deltas in a finish chunk, but emit the terminal event only after
+                // the separate usage chunk (or [DONE]) arrives.
+                var pendingRoot = JsonNode.Parse(sseJsonText)!.AsObject();
+                var choiceNode = pendingRoot["choices"]![0]!.AsObject();
+                var finish = choiceNode["finish_reason"]!.ToString();
+                choiceNode["finish_reason"] = null;
+                var partial = ConvertChatStreamChunkToResponses(pendingRoot.ToJsonString(), state);
+                choiceNode["delta"] = new JsonObject();
+                choiceNode["finish_reason"] = finish;
+                pendingRoot.Remove("usage");
+                state.PendingChatCompletion = pendingRoot.ToJsonString();
+                return partial;
             }
 
             // 只有真实输出或完成事件才启动 Responses 响应，避免 role/usage-only 分片制造空响应。
@@ -1159,6 +1185,16 @@ public static partial class ProxyProtocolBridge
         return builder.ToString();
     }
 
+    public static string FlushChatResponsesCompletion(ChatToResponsesStreamState state)
+    {
+        if (state.PendingChatCompletion is not { } pending) return string.Empty;
+        state.PendingChatCompletion = null;
+        var defer = state.DeferChatCompletion;
+        state.DeferChatCompletion = false;
+        try { return ConvertChatStreamChunkToResponses(pending, state); }
+        finally { state.DeferChatCompletion = defer; }
+    }
+
     /// <summary>
     /// 将 Anthropic SSE 事件流实时转换为 Responses API 流式事件。
     /// </summary>
@@ -1243,6 +1279,7 @@ public static partial class ProxyProtocolBridge
                             usageEl.TryGetProperty("cache_read_input_tokens", out var ct) ? ct.GetInt32() : 0,
                             0
                         );
+                        state.CacheCreationTokens = usageEl.TryGetProperty("cache_creation_input_tokens", out var creation) && creation.ValueKind == JsonValueKind.Number ? creation.GetInt32() : 0;
                     }
                 }
             }
@@ -1415,8 +1452,12 @@ public static partial class ProxyProtocolBridge
                     state.StopReason = stop.GetString();
                 if (root.TryGetProperty("usage", out var usageEl))
                 {
-                    var outTokens = usageEl.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
-                    state.Usage = (state.Usage.InputTokens, state.Usage.CachedTokens, outTokens);
+                    var input = usageEl.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number ? it.GetInt32() : state.Usage.InputTokens;
+                    var cached = usageEl.TryGetProperty("cache_read_input_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number ? ct.GetInt32() : state.Usage.CachedTokens;
+                    var outTokens = usageEl.TryGetProperty("output_tokens", out var ot) && ot.ValueKind == JsonValueKind.Number ? ot.GetInt32() : state.Usage.OutputTokens;
+                    if (usageEl.TryGetProperty("cache_creation_input_tokens", out var creation) && creation.ValueKind == JsonValueKind.Number)
+                        state.CacheCreationTokens = creation.GetInt32();
+                    state.Usage = (input, cached, outTokens);
                 }
             }
 
@@ -1492,14 +1533,14 @@ public static partial class ProxyProtocolBridge
                     {
                         ["prompt_tokens"] = inp,
                         ["completion_tokens"] = outp,
-                        ["total_tokens"] = inp + outp,
+                        ["total_tokens"] = inp + cached + state.CacheCreationTokens + outp,
                         ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached },
                         // Responses 协议的 usage 字段名（Codex CLI 等客户端按 input_tokens 读取）。
-                        // Anthropic 方向的 inp 取自 message_start.input_tokens（不含缓存），需加回缓存命中部分。
-                        ["input_tokens"] = inp + cached,
+                        // Anthropic input_tokens 是新输入，Responses 输入需包含缓存读写。
+                        ["input_tokens"] = inp + cached + state.CacheCreationTokens,
                         ["output_tokens"] = outp,
                         ["total_output_tokens"] = outp,
-                        ["input_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
+                        ["input_tokens_details"] = new JsonObject { ["cached_tokens"] = cached, ["cached_creation_tokens"] = state.CacheCreationTokens }
                     }
                 }));
 
