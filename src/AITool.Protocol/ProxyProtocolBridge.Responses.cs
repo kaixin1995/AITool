@@ -852,6 +852,7 @@ public static partial class ProxyProtocolBridge
                 var output = usageEl.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
                 var cached = 0;
                 if (usageEl.TryGetProperty("prompt_tokens_details", out var ptd)
+                    && ptd.ValueKind == JsonValueKind.Object
                     && ptd.TryGetProperty("cached_tokens", out var cachedEl))
                 {
                     cached = cachedEl.GetInt32();
@@ -2618,6 +2619,7 @@ public static partial class ProxyProtocolBridge
             }
 
             var type = itemObj["type"]?.ToString() ?? "";
+            if (type == "additional_tools") continue;
 
             if (type == "reasoning" && keepReasoning)
             {

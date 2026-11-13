@@ -1227,6 +1227,7 @@ public static partial class ProxyProtocolBridge
             }
 
             var type = itemObj["type"]?.GetValue<string>() ?? "";
+            if (type == "additional_tools") continue;
 
             if (type is "function_call" or "custom_tool_call" or "tool_search_call")
             {

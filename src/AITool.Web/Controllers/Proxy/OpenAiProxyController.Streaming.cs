@@ -111,13 +111,15 @@ public sealed partial class OpenAiProxyController
             await FlushSseBlockAsync(cancellationToken);
         }
 
-        if (!result.IsCanceled && (result.Success || result.IsStreamInterrupted) && responsesState?.PendingChatCompletion is not null)
+        if (!result.IsCanceled && !cancellationToken.IsCancellationRequested && responsesState?.ConversionFailed == false
+            && (result.Success || result.IsStreamInterrupted) && responsesState.PendingChatCompletion is not null)
         {
             foreach (var payload in ExtractWebSocketJsonPayloadsFromSseText(ProxyProtocolBridge.FlushChatResponsesCompletion(responsesState)))
             {
                 if (TryExtractResponsesCompletedOutput(payload, out var outputJson)) { completedOutputJson = outputJson; receivedDoneEvent = true; }
                 await CommitReferenceOutputAsync(payload, cancellationToken);
                 await SendWebSocketJsonPayloadAsync(webSocket, payload, cancellationToken);
+                if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) responseBuilder.AppendLine(payload);
                 startedWriting = true;
                 _referenceOutputExposed = true;
             }
@@ -129,6 +131,14 @@ public sealed partial class OpenAiProxyController
         result.InputTokens = inputTokens;
         result.CachedTokens = cachedTokens;
         result.OutputTokens = outputTokens;
+
+        if (responsesState is not null && (responsesState.ConversionFailed || responsesState.StopReason == "error"))
+        {
+            receivedDoneEvent = false;
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage = "The upstream response did not finish successfully.";
+        }
 
         if (result.Success && !receivedDoneEvent)
         {
@@ -630,7 +640,8 @@ public sealed partial class OpenAiProxyController
             await FlushOpenAiSseBlockAsync(cancellationToken);
         }
 
-        if (!result.IsCanceled && (result.Success || result.IsStreamInterrupted) && responsesState?.PendingChatCompletion is not null)
+        if (!result.IsCanceled && !cancellationToken.IsCancellationRequested && responsesState?.ConversionFailed == false
+            && (result.Success || result.IsStreamInterrupted) && responsesState.PendingChatCompletion is not null)
         {
             var finalEvent = ProxyProtocolBridge.FlushChatResponsesCompletion(responsesState);
             if (!string.IsNullOrEmpty(finalEvent)) await WriteChunkDirectAsync(finalEvent, cancellationToken);

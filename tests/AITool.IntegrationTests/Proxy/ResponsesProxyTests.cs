@@ -1215,6 +1215,27 @@ public sealed class ResponsesProxyTests
     }
 
     [Fact]
+    public async Task Chat_websocket_upstream_error_is_logged_as_failure()
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsOpenAiChatOnly = true,
+            StreamingLines = ["data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}", "",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}", "", "data: [DONE]", ""] };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        _ = factory.CreateClient();
+        var client = factory.Server.CreateWebSocketClient();
+        client.ConfigureRequest = r => r.Headers["Authorization"] = "Bearer responses-test-key";
+        using var socket = await client.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(socket, """{"type":"response.create","model":"auto","input":"hello"}""");
+        var messages = await ReceiveWebSocketMessagesUntilAsync(socket, "response.failed");
+        messages.Should().NotContain(m => m.Contains("response.completed"));
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("fail");
+    }
+
+    [Fact]
     public async Task Websocket_compaction_trigger_returns_summary_and_next_turn_replays_it()
     {
         var fake = new ResponsesFakeProxyForwardService

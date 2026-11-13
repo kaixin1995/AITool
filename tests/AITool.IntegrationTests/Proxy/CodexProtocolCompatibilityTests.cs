@@ -8,6 +8,30 @@ namespace AITool.IntegrationTests.Proxy;
 
 public sealed class CodexProtocolCompatibilityTests
 {
+    [Fact]
+    public void Chat_null_usage_details_does_not_break_stream_completion()
+    {
+        var state = new ChatToResponsesStreamState { DeferChatCompletion = true };
+        ProxyProtocolBridge.ConvertChatStreamChunkToResponses("""{"choices":[{"delta":{"content":"hi"}}]}""", state);
+        ProxyProtocolBridge.ConvertChatStreamChunkToResponses("""{"choices":[{"delta":{},"finish_reason":"stop"}]}""", state);
+        var text = ProxyProtocolBridge.ConvertChatStreamChunkToResponses("""{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":null}}""", state);
+        state.ConversionFailed.Should().BeFalse();
+        var usage = Events(text).Single(e => e["type"]!.ToString() == "response.completed")["response"]!["usage"]!;
+        usage["input_tokens"]!.GetValue<int>().Should().Be(10);
+        usage["output_tokens"]!.GetValue<int>().Should().Be(2);
+    }
+
+    [Fact]
+    public void Additional_tools_definitions_do_not_create_empty_history_messages()
+    {
+        const string request = """{"input":[{"type":"additional_tools","id":"at","role":"developer","tools":[{"type":"function","name":"run","parameters":{"type":"object"}}]},{"type":"message","role":"user","content":"hello"}]}""";
+        var chat = JsonNode.Parse(ProxyProtocolBridge.ConvertResponsesRequestToChat(request, "m", false))!;
+        chat["messages"]!.AsArray().Should().HaveCount(1);
+        chat["tools"]!.AsArray().Should().HaveCount(1);
+        var anthropic = JsonNode.Parse(ProxyProtocolBridge.BuildAnthropicRequestFromResponses(JsonNode.Parse(request)!.AsObject(), "m", false))!;
+        anthropic["messages"]!.AsArray().Should().HaveCount(1);
+        anthropic["tools"]!.AsArray().Should().HaveCount(1);
+    }
     private const string Request = """
     {"model":"m","input":[
       {"type":"additional_tools","id":"at_1","role":"developer","tools":[
