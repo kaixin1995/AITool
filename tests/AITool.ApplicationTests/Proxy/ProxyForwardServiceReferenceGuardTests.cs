@@ -11,6 +11,31 @@ namespace AITool.ApplicationTests.Proxy;
 public sealed class ProxyForwardServiceReferenceGuardTests
 {
     [Fact]
+    public async Task Loop_guard_stops_upstream_and_preserves_reported_usage()
+    {
+        var frames = new StringBuilder();
+        frames.AppendLine("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,\"prompt_tokens_details\":{\"cached_tokens\":20}}}").AppendLine();
+        for (var i = 0; i < 300; i++) frames.AppendLine("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Now writing. \"}}]}").AppendLine();
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new StringContent(frames.ToString(), Encoding.UTF8, "text/event-stream") });
+        var service = new ProxyForwardService(new HttpClient(handler), NullLogger<ProxyForwardService>.Instance,
+            streamPolicy: new LoopPolicy());
+        var chunks = 0;
+        var result = await service.ForwardStreamingAsync(CreateStreamingRequest(), (_, _) => { chunks++; return Task.CompletedTask; });
+        result.Success.Should().BeFalse();
+        result.ErrorMessage.Should().StartWith("reply_loop:");
+        result.InputTokens.Should().Be(80);
+        result.CachedTokens.Should().Be(20);
+        result.OutputTokens.Should().Be(10);
+        chunks.Should().BeLessThan(600);
+    }
+
+    private sealed class LoopPolicy : IStreamEnhancementPolicy
+    {
+        public bool LoopDetectionEnabled => true;
+        public int KeepAliveSeconds => 0;
+    }
+    [Fact]
     public async Task Compact_summary_buffers_upstream_sse_even_when_original_client_requested_streaming()
     {
         const string original = """{"model":"m","stream":true,"input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}""";

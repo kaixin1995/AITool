@@ -128,6 +128,8 @@ public sealed partial class OpenAiProxyController
         // 避免正常完成重复发送，同时让中断或完成后取消的客户端不再等待终止符。
         if (startedWriting && !state.Completed)
         {
+            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
+                await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 

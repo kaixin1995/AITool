@@ -30,12 +30,13 @@ public sealed class ProxyForwardService : IProxyForwardService
     private readonly INetworkTransport? _networkTransport;
     private readonly IForwardNetworkPolicyResolver? _networkPolicyResolver;
     private readonly IForwardCredentialResolver? _credentialResolver;
+    private readonly IStreamEnhancementPolicy? _streamPolicy;
 
     // A single public constructor keeps typed HttpClient activation unambiguous while
     // optional dependencies preserve existing source calls using just client and logger.
     public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger,
         INetworkTransport? networkTransport = null, IForwardNetworkPolicyResolver? networkPolicyResolver = null,
-        IForwardCredentialResolver? credentialResolver = null)
+        IForwardCredentialResolver? credentialResolver = null, IStreamEnhancementPolicy? streamPolicy = null)
     {
         httpClient.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         _httpClient = httpClient;
@@ -43,6 +44,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         _networkTransport = networkTransport;
         _networkPolicyResolver = networkPolicyResolver;
         _credentialResolver = credentialResolver;
+        _streamPolicy = streamPolicy;
     }
 
     private async Task<ForwardCredentialLease> ResolveCredentialAsync(ProxyForwardRequest request, string fallbackKey, CancellationToken ct)
@@ -852,6 +854,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         try
         {
+            var loopDetector = _streamPolicy?.LoopDetectionEnabled == true ? new ReplyLoopDetector() : null;
             while (true)
             {
                 string? line;
@@ -918,6 +921,30 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     receivedDoneEvent = true;
                     continue;
+                }
+
+                if (loopDetector?.Observe(jsonText) == true)
+                {
+                    // The tripping frame can carry the final usage snapshot. Preserve it
+                    // before stopping; cancellation of the response then closes upstream.
+                    try
+                    {
+                        using var loopDoc = JsonDocument.Parse(jsonText);
+                        var loopRoot = loopDoc.RootElement;
+                        var loopUsage = loopRoot.TryGetProperty("usage", out var u) && u.ValueKind == JsonValueKind.Object ? u
+                            : loopRoot.TryGetProperty("response", out var r) && r.ValueKind == JsonValueKind.Object
+                                && r.TryGetProperty("usage", out var ru) && ru.ValueKind == JsonValueKind.Object ? ru : default;
+                        if (loopUsage.ValueKind == JsonValueKind.Object)
+                        {
+                            var counts = ExtractUsageFromElement(loopUsage, request.ProtocolType);
+                            inputTokens = counts.InputTokens; cachedTokens = counts.CachedTokens; outputTokens = counts.OutputTokens;
+                        }
+                    }
+                    catch (JsonException) { }
+                    return new ProxyForwardResult { Success = false, StatusCode = 502, ResponseBody = sb.ToString(),
+                        InputTokens = inputTokens, CachedTokens = cachedTokens, OutputTokens = outputTokens,
+                        IsStreaming = true, HasStartedStreaming = hasFirstContent, IsStreamInterrupted = true,
+                        TotalDurationMs = (int)stopwatch.ElapsedMilliseconds, ErrorMessage = "reply_loop: Repeated model output was stopped." };
                 }
 
                 // 首次收到有效内容时记录首字延迟

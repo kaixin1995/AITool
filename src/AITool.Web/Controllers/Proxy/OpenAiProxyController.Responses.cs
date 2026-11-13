@@ -118,6 +118,15 @@ public sealed partial class OpenAiProxyController
                 continue;
             }
 
+            GatewayWebSocketTurn? enhancementTurn;
+            try { enhancementTurn = await GatewayWebSocketTurn.BeginAsync(HttpContext, accessKey.Id, rawRequest, cancellationToken); }
+            catch (InvalidOperationException ex)
+            {
+                await WriteResponsesWebSocketErrorAsync(webSocket, 429, ex.Message, cancellationToken);
+                continue;
+            }
+            await using var enhancementSettlement = enhancementTurn;
+
             try
             {
             // A failed turn invalidates replay state until a new complete transcript is observed.
@@ -1273,7 +1282,7 @@ public sealed partial class OpenAiProxyController
     /// 对可能已断开的 WebSocket 安全发送终态错误帧：发送失败只吞异常，不把
     /// ObjectDisposedException 抛穿整个会话循环（与 SSE 终态写入的防护一致）。
     /// </summary>
-    private static async Task TryWriteResponsesWebSocketErrorAsync(WebSocket webSocket, int statusCode, string message, CancellationToken cancellationToken)
+    private async Task TryWriteResponsesWebSocketErrorAsync(WebSocket webSocket, int statusCode, string message, CancellationToken cancellationToken)
     {
         try
         {

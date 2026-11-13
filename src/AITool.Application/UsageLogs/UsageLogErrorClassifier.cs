@@ -28,6 +28,7 @@ public static class UsageLogErrorClassifier
         {
             return null;
         }
+        if (ContainsAny(errorMessage, "reply_loop:")) return "reply-loop";
 
         if (isStreamInterrupted || ContainsAny(errorMessage, "stream interrupted", "stream-interrupted"))
         {

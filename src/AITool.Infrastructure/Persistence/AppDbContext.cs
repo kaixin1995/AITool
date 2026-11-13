@@ -323,6 +323,7 @@ public static class SqlSugarSetup
             typeof(Domain.Proxy.AccountPoolMember),
             typeof(ProxyAccessKey),
             typeof(ProxyUsageLog),
+            typeof(GatewayRequestMetric),
             typeof(ModelHealthMonitor),
             typeof(SystemRuntimeSettings),
             typeof(CompatibilityProfile),

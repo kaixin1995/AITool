@@ -3,6 +3,8 @@
 > 本文是 [README.md](../README.md) 的代理转发细节篇。描述一次代理请求从进入 `/v1/*` 端点到返回客户端的完整调用链，精确到函数名与文件位置。
 > 协议转换本身的语义（转换矩阵、usage 口径、流式状态机）见 [protocol-bridge.md](protocol-bridge.md)。
 
+可选网关增强通过 `GatewayEnhancementMiddleware` 做 HTTP 预算准入/结算与 SSE 事件边界保活，通过 `GatewayWebSocketTurn` 做 WS 逐轮结算；既有日志增加会话摘要字段，原始 token 计算不变。循环检测位于转发层，亲和使用五分钟活跃窗口。配置、验证及限制见 [gateway-enhancements.md](gateway-enhancements.md)。
+
 ---
 
 ## 1. 入口总览

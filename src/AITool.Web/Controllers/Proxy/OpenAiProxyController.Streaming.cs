@@ -137,7 +137,7 @@ public sealed partial class OpenAiProxyController
             receivedDoneEvent = false;
             result.Success = false;
             result.IsStreamInterrupted = startedWriting;
-            result.ErrorMessage = "The upstream response did not finish successfully.";
+            result.ErrorMessage ??= "The upstream response did not finish successfully.";
         }
 
         if (result.Success && !receivedDoneEvent)
@@ -659,7 +659,7 @@ public sealed partial class OpenAiProxyController
         {
             receivedDoneEvent = false;
             result.Success = false;
-            result.ErrorMessage = "The upstream response did not finish successfully.";
+            result.ErrorMessage ??= "The upstream response did not finish successfully.";
         }
 
         if (result.Success && !receivedDoneEvent)
@@ -711,7 +711,9 @@ public sealed partial class OpenAiProxyController
                 if (responsesState.StopReason != "error")
                     await Response.TryWriteTerminatorAsync(ResponsesStreamFailure(responsesState), cancellationToken);
             }
-            else await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
+            else await Response.TryWriteTerminatorAsync(result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true
+                ? "data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\ndata: [DONE]\n\n"
+                : "data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -928,6 +930,8 @@ public sealed partial class OpenAiProxyController
         // 仅「completed 未到 + 非取消的中断」补终止符防客户端挂起。
         if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent)
         {
+            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
+                await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
@@ -1240,6 +1244,8 @@ public sealed partial class OpenAiProxyController
         // 仅「message_stop 未到 + 非取消的中断」补终止符防客户端挂起。
         if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !state.ReceivedMessageStop)
         {
+            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
+                await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
             await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 

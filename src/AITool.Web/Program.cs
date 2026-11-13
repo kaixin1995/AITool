@@ -399,6 +399,13 @@ builder.Services.AddSingleton<RouteCircuitStateStore>();
 // 路由候选策略（配额感知排序/会话亲和/分级冷却）：全部默认关闭，开启由运行时设置控制。
 builder.Services.AddSingleton<SessionAffinityService>();
 builder.Services.AddSingleton<RouteCandidatePolicyService>();
+builder.Services.AddSingleton<GatewayEnhancementSettings>();
+builder.Services.AddSingleton<GatewayBudgetGate>();
+builder.Services.AddSingleton<AgentConfigurationService>();
+builder.Services.AddScoped<GatewayRequestContext>();
+builder.Services.AddSingleton<IStreamEnhancementPolicy, GatewayStreamPolicy>();
+builder.Services.AddHttpClient("gateway-tools", c => c.Timeout = TimeSpan.FromSeconds(60))
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 
 // 通用轮询式 OAuth 厂商（MiniMax / Qoder / ZCode …共用一个垂直：登录、token 刷新、
 // 额度巡检、自动启停全链路复用；聊天转发按厂商 ChatSiteConfig 决定）。
@@ -675,6 +682,8 @@ app.Use(async (context, next) =>
         errorCode = "unauthenticated"
     });
 });
+
+app.UseMiddleware<GatewayEnhancementMiddleware>();
 
 // 映射健康检查端点，作为集成测试的验证入口。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).WithTags("Health");

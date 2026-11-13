@@ -876,6 +876,8 @@ public sealed class AnthropicProxyController : ControllerBase
         // 流中断但已开始写入时，向客户端补发 Anthropic 终止事件避免挂起
         if (result.IsStreamInterrupted && startedWriting)
         {
+            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
+                await Response.TryWriteTerminatorAsync("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
             await Response.TryWriteTerminatorAsync("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", cancellationToken);
         }
 
@@ -1100,6 +1102,8 @@ public sealed class AnthropicProxyController : ControllerBase
         if (startedWriting)
         {
             result.ResponseBody = responseBuilder.ToString();
+            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
+                await Response.TryWriteTerminatorAsync("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
             var closingChunk = ProxyProtocolBridge.CompleteAnthropicStream(state);
             await WriteChunkAsync(closingChunk, cancellationToken);
             result.ResponseBody = responseBuilder.ToString();
@@ -1471,6 +1475,13 @@ public sealed class AnthropicProxyController : ControllerBase
     {
         try
         {
+            var context = HttpContext.RequestServices.GetService<GatewayRequestContext>();
+            var pricing = HttpContext.RequestServices.GetService<AITool.Application.Pricing.IModelPricingService>();
+            if (context is not null && pricing is not null)
+            {
+                try { context.Record(entry, pricing); }
+                catch (Exception ex) { _logger.LogWarning(ex, "增强统计记录失败，继续写入原有使用日志"); }
+            }
             await _usageLogService.LogAsync(entry, cancellationToken);
         }
         catch (Exception ex)
@@ -1557,7 +1568,8 @@ public sealed class AnthropicProxyController : ControllerBase
         try
         {
             var settings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-            return settings.StreamHeadBufferEnabled ? new AITool.Application.Proxy.SseHeadBuffer() : null;
+            var extended = HttpContext.RequestServices.GetService<GatewayEnhancementSettings>()?.Current.ExtendedHeadBufferEnabled == true;
+            return settings.StreamHeadBufferEnabled || extended ? new AITool.Application.Proxy.SseHeadBuffer(extended) : null;
         }
         catch (Exception ex)
         {

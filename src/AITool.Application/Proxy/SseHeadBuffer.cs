@@ -18,6 +18,8 @@ namespace AITool.Application.Proxy;
 /// </summary>
 public sealed class SseHeadBuffer
 {
+    private readonly bool _extended;
+    public SseHeadBuffer(bool extended = false) => _extended = extended;
     /// <summary>最多扣住的事件块数（超过即强制放行）。</summary>
     public const int MaxHeldBlocks = 4;
 
@@ -42,7 +44,8 @@ public sealed class SseHeadBuffer
             return false;
         }
 
-        if (IsContentBearing(chunk) || _held.Count >= MaxHeldBlocks || _heldChars + chunk.Length > MaxHeldChars)
+        if ((_extended ? IsExtendedContent(chunk) : IsContentBearing(chunk)) || _held.Count >= (_extended ? 256 : MaxHeldBlocks)
+            || _heldChars + chunk.Length > (_extended ? 65536 : MaxHeldChars))
         {
             Release();
             return false;
@@ -51,6 +54,43 @@ public sealed class SseHeadBuffer
         _held.Add(chunk);
         _heldChars += chunk.Length;
         return true;
+    }
+
+    private static bool IsExtendedContent(string chunk)
+    {
+        foreach (var line in chunk.Split('\n'))
+        {
+            if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
+            var payload = line[5..].Trim();
+            if (payload == "[DONE]") return true;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(payload);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("type", out var type))
+                {
+                    var name = type.GetString();
+                    if (name is "response.created" or "response.in_progress" or "ping" or "message_start") continue;
+                    if (name is "error" or "response.failed" or "response.incomplete") return true;
+                    if (name is "response.output_item.added" or "response.output_item.done")
+                    {
+                        if (!root.TryGetProperty("item", out var item) || !item.TryGetProperty("type", out var itemType)) continue;
+                        if (itemType.GetString() is "function_call" or "custom_tool_call" or "tool_search_call") return true;
+                        continue;
+                    }
+                    if (name == "content_block_start")
+                    {
+                        if (root.TryGetProperty("content_block", out var block) && block.TryGetProperty("type", out var blockType)
+                            && blockType.GetString() is "tool_use" or "redacted_thinking") return true;
+                        continue;
+                    }
+                }
+                if (root.TryGetProperty("error", out var error) && error.ValueKind == System.Text.Json.JsonValueKind.Object) return true;
+                if (IsContentBearing(chunk) || chunk.Contains("reasoning_summary_text.delta", StringComparison.Ordinal)) return true;
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException) { }
+        }
+        return false;
     }
 
     /// <summary>强制放行：此后所有块直写。</summary>

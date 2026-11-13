@@ -14,6 +14,8 @@ namespace AITool.Domain.Proxy;
 [SugarIndex("IX_ProxyUsageLogs_AttemptedModel", nameof(AttemptedModel), OrderByType.Asc)]
 public sealed class ProxyUsageLog
 {
+    [SugarColumn(Length = 64, IsNullable = true)] public string? SessionDigest { get; set; }
+    [SugarColumn(Length = 64, IsNullable = true)] public string? ParentSessionDigest { get; set; }
     /// <summary>
     /// 日志唯一标识，用于区分每一条独立的调用记录。
     /// </summary>

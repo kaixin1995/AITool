@@ -691,9 +691,11 @@ public sealed partial class OpenAiProxyController
     /// <param name="payload">准备发送给客户端的 JSON 文本。</param>
     /// <param name="cancellationToken">用于中断发送过程的取消令牌。</param>
     /// <returns>返回 WebSocket 发送操作的异步任务。</returns>
-    private static Task SendWebSocketJsonPayloadAsync(WebSocket webSocket, string payload, CancellationToken cancellationToken)
+    private Task SendWebSocketJsonPayloadAsync(WebSocket webSocket, string payload, CancellationToken cancellationToken)
     {
         var bytes = Encoding.UTF8.GetBytes(payload);
+        var context = HttpContext.RequestServices.GetService<GatewayRequestContext>();
+        if (context?.Enabled == true) context.ResponseBytes += bytes.Length;
         return webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cancellationToken);
     }
 
@@ -705,7 +707,7 @@ public sealed partial class OpenAiProxyController
     /// <param name="message">错误消息文本。</param>
     /// <param name="cancellationToken">用于中断发送过程的取消令牌。</param>
     /// <returns>返回 WebSocket 错误消息发送操作的异步任务。</returns>
-    private static Task WriteResponsesWebSocketErrorAsync(WebSocket webSocket, int statusCode, string message, CancellationToken cancellationToken)
+    private Task WriteResponsesWebSocketErrorAsync(WebSocket webSocket, int statusCode, string message, CancellationToken cancellationToken)
     {
         var payload = new JsonObject
         {
@@ -1294,6 +1296,13 @@ public sealed partial class OpenAiProxyController
     {
         try
         {
+            var context = HttpContext.RequestServices.GetService<GatewayRequestContext>();
+            var pricing = HttpContext.RequestServices.GetService<AITool.Application.Pricing.IModelPricingService>();
+            if (context is not null && pricing is not null)
+            {
+                try { context.Record(entry, pricing); }
+                catch (Exception ex) { _logger.LogWarning(ex, "增强统计记录失败，继续写入原有使用日志"); }
+            }
             await _usageLogService.LogAsync(entry, cancellationToken);
         }
         catch (Exception ex)
@@ -1548,7 +1557,8 @@ public sealed partial class OpenAiProxyController
         try
         {
             var settings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-            return settings.StreamHeadBufferEnabled ? new AITool.Application.Proxy.SseHeadBuffer() : null;
+            var extended = HttpContext.RequestServices.GetService<GatewayEnhancementSettings>()?.Current.ExtendedHeadBufferEnabled == true;
+            return settings.StreamHeadBufferEnabled || extended ? new AITool.Application.Proxy.SseHeadBuffer(extended) : null;
         }
         catch (Exception ex)
         {

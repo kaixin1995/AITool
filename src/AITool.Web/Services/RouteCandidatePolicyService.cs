@@ -608,7 +608,7 @@ public sealed class SessionAffinityService
     private sealed record AffinityEntry(Guid CircuitKey, DateTimeOffset LastUsedUtc);
 
     private const int MaxEntries = 512;
-    private static readonly TimeSpan EntryTtl = TimeSpan.FromHours(24);
+    private static readonly TimeSpan EntryTtl = TimeSpan.FromMinutes(5);
 
     private readonly ConcurrentDictionary<string, AffinityEntry> _map = [];
     private DateTimeOffset _lastPrunedUtc = DateTimeOffset.UtcNow;
@@ -617,7 +617,9 @@ public sealed class SessionAffinityService
     public static string? TryResolveConversationKey(Microsoft.AspNetCore.Http.HttpRequest? request, string? modelName, string? requestBody)
     {
         var headerSession = request?.Headers["X-Session-Id"].FirstOrDefault()
-                            ?? request?.Headers["X-Conversation-Id"].FirstOrDefault();
+                            ?? request?.Headers["X-Conversation-Id"].FirstOrDefault()
+                            ?? request?.Headers["Session-Id"].FirstOrDefault()
+                            ?? request?.Headers["Thread-Id"].FirstOrDefault();
         if (!string.IsNullOrWhiteSpace(headerSession))
         {
             return "h:" + headerSession.Trim();
@@ -758,6 +760,11 @@ public sealed class SessionAffinityService
     {
         if (!_map.TryGetValue(conversationKey, out var entry))
         {
+            return false;
+        }
+        if (DateTimeOffset.UtcNow - entry.LastUsedUtc > EntryTtl)
+        {
+            _map.TryRemove(conversationKey, out _);
             return false;
         }
 
