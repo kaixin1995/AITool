@@ -17,6 +17,24 @@ namespace AITool.Web.Controllers.Proxy;
 /// </summary>
 public sealed partial class OpenAiProxyController
 {
+    private static void IncludeCompactAttempt(ProxyForwardResult result, ProxyForwardResult previous)
+    {
+        result.InputTokens += previous.InputTokens;
+        result.CachedTokens += previous.CachedTokens;
+        result.OutputTokens += previous.OutputTokens;
+        result.TotalDurationMs += previous.TotalDurationMs;
+        result.RateLimitRetryCount += previous.RateLimitRetryCount;
+    }
+
+    private static bool IsCompactShapeFailure(ProxyForwardResult result)
+    {
+        if (result.StatusCode is 404 or 405 or 413 or 501) return true;
+        if (result.StatusCode is not (400 or 422 or 502)) return false;
+        var message = string.IsNullOrWhiteSpace(result.ErrorMessage) ? result.ResponseBody : result.ErrorMessage;
+        return new[] { "unsupported_input", "unsupported input", "unknown item", "item not found", "invalid_request", "upstream request failed",
+            "system messages", "too large", "context length", "content filter", "request too long", "stream was incomplete", "no usable" }
+            .Any(term => message.Contains(term, StringComparison.OrdinalIgnoreCase));
+    }
     /// <summary>
     /// 处理 OpenAI Responses WebSocket 请求，复用现有路由选择、熔断、兼容桥接和日志链路。
     /// </summary>
@@ -173,7 +191,9 @@ public sealed partial class OpenAiProxyController
         var modelName = ProxyProtocolBridge.ExtractResponsesModel(requestBody);
         // 压缩端点不支持流式（CLIProxyAPI 对 stream:true 直接 400）：统一按非流式处理，
         // body 中的 stream 字段在 NormalizeResponsesBody（Codex 目标）中删除。
-        var enableStreaming = !isCompact && ProxyProtocolBridge.ExtractResponsesStream(requestBody);
+        var hasCompactTrigger = ProxyProtocolBridge.HasCompactionTrigger(requestBody);
+        var compactAsStream = hasCompactTrigger && !isCompact && ProxyProtocolBridge.ExtractResponsesStream(requestBody);
+        var enableStreaming = !isCompact && !hasCompactTrigger && ProxyProtocolBridge.ExtractResponsesStream(requestBody);
         var reasoningEffort = ProxyProtocolBridge.ExtractResponsesReasoningEffort(requestBody);
 
         if (string.IsNullOrWhiteSpace(modelName))
@@ -199,6 +219,8 @@ public sealed partial class OpenAiProxyController
             referenceRestriction = await ResolveReferencesAsync(accessKey.Id.ToString("D"), requestBody, cancellationToken);
         }
         catch (UpstreamReferenceException ex) { return ReferenceError(ex); }
+        try { requestBody = ProxyProtocolBridge.ExpandLocalCompactions(requestBody); }
+        catch (FormatException) { return BadRequest(new { error = new { message = "Invalid local compaction content.", type = "invalid_request_error", code = "invalid_compaction" } }); }
         var requestSource = ResolveRequestSource(Request);
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
         var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "Responses", modelName, requestBody);
@@ -228,11 +250,14 @@ public sealed partial class OpenAiProxyController
         var conversationKey = AccountSessionIsolationService.ScopeAffinity(accessKey.Id.ToString("D"),
             ResolveConversationKeySafely(runtimeSettings, Request, modelName, requestBody));
         allRoutes = await PreorderRoutesByPolicyAsync(allRoutes, runtimeSettings, conversationKey, cancellationToken);
-        if (HasPreviousResponseReference(requestBody) && allRoutes.Any(r =>
-            string.Equals(r.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
-            || ProxyProtocolBridge.IsCodexTarget(r.BaseUrl)
-            || !string.Equals(r.ResolveProtocolForClient("Responses"), "Responses", StringComparison.OrdinalIgnoreCase)))
-            return ReferenceError(new UpstreamReferenceException("reference_replay_required", "This upstream does not support previous_response_id; a complete replay is required."));
+        if (HasPreviousResponseReference(requestBody))
+        {
+            allRoutes = allRoutes.Where(r => !string.Equals(r.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
+                && !ProxyProtocolBridge.IsCodexTarget(r.BaseUrl)
+                && string.Equals(r.ResolveProtocolForClient("Responses"), "Responses", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (allRoutes.Count == 0)
+                return ReferenceError(new UpstreamReferenceException("reference_replay_required", "This upstream does not support previous_response_id; a complete replay is required."));
+        }
 
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();
@@ -251,6 +276,13 @@ public sealed partial class OpenAiProxyController
             if (!attemptedRoutes.UsesGroupedFallback) attemptIndex++;
             // Responses 客户端优先选择上游原生 Responses；不支持时再降级为 OpenAI/Anthropic 协议转换。
             var actualProtocolType = route.ResolveProtocolForClient("Responses");
+            if (!string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                && ProxyProtocolBridge.ContainsOpaqueCompaction(requestBody))
+            {
+                lastResult = new ProxyForwardResult { Success = false, StatusCode = 400,
+                    ErrorMessage = "This upstream cannot read an opaque compaction from another provider." };
+                continue;
+            }
 
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
@@ -269,17 +301,18 @@ public sealed partial class OpenAiProxyController
             // 不能把 actualProtocolType=OpenAI 当作 Responses 透传，否则普通 OpenAI Chat 上游会收到
             // 不支持的 /responses 请求，常见表现为 HTTP 406。
             var isPassthrough = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
+            var summarizeCompact = hasCompactTrigger || (isCompact && !isPassthrough);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Responses",
                 actualProtocolType,
-                requestBody,
+                summarizeCompact ? ProxyProtocolBridge.PrepareCompactSummaryRequest(requestBody) : requestBody,
                 route.SiteModelName,
                 enableStreaming,
                 route.OverrideReasoningEffort,
                 route.BaseUrl,
                 route.CompatibilityRules,
                 isPassthrough: isPassthrough,
-                isCompact: isCompact,
+                isCompact: isCompact && !summarizeCompact,
                 geminiProjectId: route.GoogleProjectId);
 
             var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
@@ -292,6 +325,7 @@ public sealed partial class OpenAiProxyController
                 forwardHeaders = isolated.ForwardHeaders;
             }
             await SetReferenceOutputContextAsync(isolationContext.ClientScope, route, actualProtocolType, referenceRestriction, forwardHeaders, cancellationToken);
+            if (summarizeCompact) _nativeReferenceOutput = false;
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, forwardHeaders);
 
             // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
@@ -309,10 +343,10 @@ public sealed partial class OpenAiProxyController
                 ManagedSource = route.ManagedSource,
                 ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,
-                RequestBody = requestBody,
+                RequestBody = isCompact || hasCompactTrigger ? ProxyProtocolBridge.PrepareCompactSummaryRequest(requestBody) : requestBody,
                 PreparedRequestBody = preparedRequestBody,
                 EnableStreaming = enableStreaming,
-                RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+                RequestTimeoutSeconds = summarizeCompact || isCompact ? Math.Min(240, Math.Max(1, runtimeSettings.ProxyRequestTimeoutSeconds)) : runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                     RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
@@ -327,7 +361,7 @@ public sealed partial class OpenAiProxyController
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
                     ? ResolveGeminiTargetPath(enableStreaming)
                     : isPassthrough
-                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, isCompact ? "responses/compact" : "responses")
+                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, isCompact && !summarizeCompact ? "responses/compact" : "responses")
                         : null
             };
 
@@ -346,10 +380,11 @@ public sealed partial class OpenAiProxyController
                     {
                         // OpenAI Chat Completions 上游：逐个 SSE 块转换为 Responses 事件。
                         var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
+                        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, requestBody);
                         streamOutcome = await ForwardOpenAiStreamPassthroughAsync(
                             forwardRequest,
                             cancellationToken,
-                            chunk => ConvertOpenAiChatSseBlockToResponses(chunk, responsesState));
+                            chunk => ConvertOpenAiChatSseBlockToResponses(chunk, responsesState), responsesState);
                     }
                     else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
                     {
@@ -523,6 +558,35 @@ public sealed partial class OpenAiProxyController
             // 非流式：仍按单路由超时控制；但若客户端主动取消，则直接结束，不再继续回退后续候选。
             // 上游可能已消耗部分资源：照常入账 canceled 行，绝不静默丢行。
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+            var compactRequest = isCompact || hasCompactTrigger;
+            var compactCanRetry = compactRequest && referenceRestriction is null
+                && !ProxyProtocolBridge.ContainsOpaqueCompaction(requestBody)
+                && !HasPreviousResponseReference(requestBody)
+                && JsonNode.Parse(requestBody)?["conversation"] is null;
+            var retryShape = IsCompactShapeFailure(result);
+            var compactRetried = false;
+            if (compactCanRetry && !result.IsCanceled && !result.Success && retryShape)
+            {
+                var plainBody = ProxyProtocolBridge.PreparePlainCompactSummaryRequest(requestBody);
+                forwardRequest.PreparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("Responses", actualProtocolType,
+                    plainBody, route.SiteModelName, false, route.OverrideReasoningEffort, route.BaseUrl,
+                    route.CompatibilityRules, isPassthrough: isPassthrough, geminiProjectId: route.GoogleProjectId);
+                if (_sessionIsolation is not null)
+                {
+                    var isolated = await _sessionIsolation.ApplyAsync(isolationContext, route.AccountIdentity, actualProtocolType,
+                        ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl), forwardRequest.PreparedRequestBody, forwardHeaders, cancellationToken);
+                    forwardRequest.PreparedRequestBody = isolated.PreparedRequestBody;
+                    forwardRequest.ForwardHeaders = isolated.ForwardHeaders;
+                }
+                if (isPassthrough) forwardRequest.TargetPath = SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses");
+                var firstAttempt = result;
+                result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+                IncludeCompactAttempt(result, firstAttempt);
+                retryShape = true;
+                compactRetried = true;
+                summarizeCompact = true;
+                _nativeReferenceOutput = false;
+            }
             if (result.IsCanceled)
             {
                 SafeRecordProxyDiagnostic("Responses", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
@@ -572,11 +636,20 @@ public sealed partial class OpenAiProxyController
             // 避免出现"日志已记成功、客户端却收到 502"的口径错位。
             // Anthropic 上游走直转（不经 Chat 中转）；Chat 上游仍是单次转换。
             string? convertedResponseBody = null;
-            if (result.Success && !isPassthrough)
+            if (result.Success && (!isPassthrough || summarizeCompact))
             {
-                convertedResponseBody = string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(result.ResponseBody)
-                    : ProxyProtocolBridge.ConvertChatResponseToResponses(result.ResponseBody);
+                if (isPassthrough) convertedResponseBody = result.ResponseBody;
+                else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+                {
+                    var anthropicBody = ProxyProtocolBridge.BuildAnthropicResponseFromGemini(result.ResponseBody, route.SiteModelName);
+                    convertedResponseBody = anthropicBody is null ? null : ProxyProtocolBridge.ConvertAnthropicResponseToResponses(anthropicBody, requestBody);
+                }
+                else
+                    convertedResponseBody = string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                        ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(result.ResponseBody, requestBody)
+                        : ProxyProtocolBridge.ConvertChatResponseToResponses(result.ResponseBody, requestBody);
+                if (summarizeCompact && !string.IsNullOrEmpty(convertedResponseBody))
+                    convertedResponseBody = ProxyProtocolBridge.BuildCompactResponse(convertedResponseBody);
                 if (string.IsNullOrEmpty(convertedResponseBody))
                 {
                     // 转换失败不能伪装成成功响应，保留 fallback 机会给下一条路由。
@@ -584,6 +657,53 @@ public sealed partial class OpenAiProxyController
                     result.ErrorMessage ??= "upstream response protocol conversion failed";
                 }
             }
+            if (compactCanRetry && summarizeCompact && !result.Success && !result.IsCanceled
+                && !compactRetried && result.StatusCode is >= 200 and < 300)
+            {
+                var plainBody = ProxyProtocolBridge.PreparePlainCompactSummaryRequest(requestBody);
+                forwardRequest.PreparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("Responses", actualProtocolType,
+                    plainBody, route.SiteModelName, false, route.OverrideReasoningEffort, route.BaseUrl,
+                    route.CompatibilityRules, isPassthrough: isPassthrough, geminiProjectId: route.GoogleProjectId);
+                if (_sessionIsolation is not null)
+                {
+                    var isolated = await _sessionIsolation.ApplyAsync(isolationContext, route.AccountIdentity, actualProtocolType,
+                        ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl), forwardRequest.PreparedRequestBody, forwardHeaders, cancellationToken);
+                    forwardRequest.PreparedRequestBody = isolated.PreparedRequestBody;
+                    forwardRequest.ForwardHeaders = isolated.ForwardHeaders;
+                }
+                if (isPassthrough) forwardRequest.TargetPath = SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses");
+                var firstAttempt = result;
+                result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+                IncludeCompactAttempt(result, firstAttempt);
+                retryShape = true;
+                compactRetried = true;
+                if (result.Success)
+                {
+                    var body = isPassthrough ? result.ResponseBody
+                        : string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                            ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(result.ResponseBody, requestBody)
+                            : string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                                ? ProxyProtocolBridge.BuildAnthropicResponseFromGemini(result.ResponseBody, route.SiteModelName) is { } gemini
+                                    ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(gemini, requestBody) : null
+                                : ProxyProtocolBridge.ConvertChatResponseToResponses(result.ResponseBody, requestBody);
+                    convertedResponseBody = string.IsNullOrEmpty(body) ? null : ProxyProtocolBridge.BuildCompactResponse(body);
+                    if (convertedResponseBody is null) { result.Success = false; result.ErrorMessage = "Compaction produced no complete summary."; }
+                }
+            }
+            if (compactCanRetry && !result.Success && !result.IsCanceled && (retryShape || compactRetried && result.StatusCode is >= 200 and < 300)
+                && result.StatusCode is not (401 or 403 or 429))
+            {
+                convertedResponseBody = ProxyProtocolBridge.BuildLocalCompactResponse(requestBody);
+                if (convertedResponseBody is not null)
+                {
+                    result.Success = true;
+                    result.StatusCode = 200;
+                    result.ErrorMessage = null;
+                    summarizeCompact = true;
+                    _nativeReferenceOutput = false;
+                }
+            }
+            if (summarizeCompact && !result.Success && result.StatusCode is >= 200 and < 300) result.StatusCode = 502;
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -620,7 +740,7 @@ public sealed partial class OpenAiProxyController
                 RecordSessionAffinitySafely(conversationKey, route.CircuitKey);
                 var responseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
 
-                if (isPassthrough)
+                if (isPassthrough && !summarizeCompact)
                 {
                     // OpenAI 上游直接透传
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
@@ -652,7 +772,9 @@ public sealed partial class OpenAiProxyController
                     TotalDurationMs = result.TotalDurationMs
                 });
                 await CommitReferenceOutputAsync(convertedResponseBody!, cancellationToken);
-                return Content(convertedResponseBody!, "application/json");
+                return compactAsStream
+                    ? Content(ProxyProtocolBridge.CompactResponseAsSse(convertedResponseBody!), "text/event-stream")
+                    : Content(convertedResponseBody!, "application/json");
             }
 
             SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
@@ -700,7 +822,28 @@ public sealed partial class OpenAiProxyController
         UpstreamReferenceRestriction? referenceRestriction,
         CancellationToken cancellationToken)
     {
+        try { normalizedRequestBody = ProxyProtocolBridge.ExpandLocalCompactions(normalizedRequestBody); }
+        catch (FormatException)
+        {
+            await WriteResponsesWebSocketErrorAsync(webSocket, 400, "Invalid local compaction content.", cancellationToken);
+            return false;
+        }
+        try
+        {
+            // A WebSocket append may inherit native compaction from the previous output;
+            // validate the merged transcript as well as the original wire request.
+            var mergedRestriction = await ResolveReferencesAsync(isolationContext.ClientScope, normalizedRequestBody, cancellationToken);
+            if (referenceRestriction is not null && mergedRestriction is not null && referenceRestriction != mergedRestriction)
+                throw new UpstreamReferenceException("reference_owner_mismatch", "The request references different upstream owners or namespaces.");
+            referenceRestriction ??= mergedRestriction;
+        }
+        catch (UpstreamReferenceException ex)
+        {
+            await WriteResponsesWebSocketErrorAsync(webSocket, ReferenceFailureStatusCode(ex), ex.Code + ": " + ex.Message, cancellationToken);
+            return false;
+        }
         var modelName = ProxyProtocolBridge.ExtractResponsesModel(normalizedRequestBody);
+        var compactTrigger = ProxyProtocolBridge.HasCompactionTrigger(normalizedRequestBody);
         var enableStreaming = ProxyProtocolBridge.ExtractResponsesStream(normalizedRequestBody);
         var reasoningEffort = ProxyProtocolBridge.ExtractResponsesReasoningEffort(normalizedRequestBody);
         if (string.IsNullOrWhiteSpace(modelName))
@@ -764,6 +907,13 @@ public sealed partial class OpenAiProxyController
             if (!attemptedRoutes.UsesGroupedFallback) attemptIndex++;
             // Responses 客户端优先选择上游原生 Responses；不支持时再降级为 OpenAI/Anthropic 协议转换。
             var actualProtocolType = route.ResolveProtocolForClient("Responses");
+            if (!string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                && ProxyProtocolBridge.ContainsOpaqueCompaction(normalizedRequestBody))
+            {
+                lastResult = new ProxyForwardResult { Success = false, StatusCode = 400,
+                    ErrorMessage = "This upstream cannot read an opaque compaction from another provider." };
+                continue;
+            }
 
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
@@ -779,9 +929,9 @@ public sealed partial class OpenAiProxyController
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Responses",
                 actualProtocolType,
-                normalizedRequestBody,
+                compactTrigger ? ProxyProtocolBridge.PrepareCompactSummaryRequest(normalizedRequestBody) : normalizedRequestBody,
                 route.SiteModelName,
-                true,
+                !compactTrigger,
                 route.OverrideReasoningEffort,
                 route.BaseUrl,
                 route.CompatibilityRules,
@@ -798,6 +948,7 @@ public sealed partial class OpenAiProxyController
                 forwardHeaders = isolated.ForwardHeaders;
             }
             await SetReferenceOutputContextAsync(isolationContext.ClientScope, route, actualProtocolType, referenceRestriction, forwardHeaders, cancellationToken);
+            if (compactTrigger) _nativeReferenceOutput = false;
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, forwardHeaders);
 
             // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
@@ -815,10 +966,10 @@ public sealed partial class OpenAiProxyController
                 ManagedSource = route.ManagedSource,
                 ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,
-                RequestBody = rawRequestBody,
+                RequestBody = compactTrigger ? ProxyProtocolBridge.PrepareCompactSummaryRequest(normalizedRequestBody) : normalizedRequestBody,
                 PreparedRequestBody = preparedRequestBody,
-                EnableStreaming = enableStreaming,
-                RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+                EnableStreaming = compactTrigger ? false : enableStreaming,
+                RequestTimeoutSeconds = compactTrigger ? Math.Min(240, Math.Max(1, runtimeSettings.ProxyRequestTimeoutSeconds)) : runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                     RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
@@ -829,7 +980,7 @@ public sealed partial class OpenAiProxyController
                 InvalidateTargetCredentialAsync = CreateCredentialInvalidationCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
-                    ? ResolveGeminiTargetPath(true)
+                    ? ResolveGeminiTargetPath(!compactTrigger)
                     : isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };
 
@@ -837,7 +988,101 @@ public sealed partial class OpenAiProxyController
             AITool.Application.Proxy.UpstreamReferenceException? referenceFault = null;
             try
             {
-                if (isPassthrough)
+                if (compactTrigger)
+                {
+                    var compactResult = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+                    var retryAllowed = referenceRestriction is null && !ProxyProtocolBridge.ContainsOpaqueCompaction(normalizedRequestBody)
+                        && !HasPreviousResponseReference(normalizedRequestBody) && JsonNode.Parse(normalizedRequestBody)?["conversation"] is null;
+                    var retryShape = IsCompactShapeFailure(compactResult);
+                    var compactRetried = false;
+                    if (retryAllowed && !compactResult.Success && !compactResult.IsCanceled && retryShape)
+                    {
+                        var plain = ProxyProtocolBridge.PreparePlainCompactSummaryRequest(normalizedRequestBody);
+                        forwardRequest.PreparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("Responses", actualProtocolType, plain,
+                            route.SiteModelName, false, route.OverrideReasoningEffort, route.BaseUrl, route.CompatibilityRules,
+                            isPassthrough: isPassthrough, geminiProjectId: route.GoogleProjectId);
+                        if (_sessionIsolation is not null)
+                        {
+                            var isolated = await _sessionIsolation.ApplyAsync(isolationContext, route.AccountIdentity, actualProtocolType,
+                                ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl), forwardRequest.PreparedRequestBody, forwardHeaders, cancellationToken);
+                            forwardRequest.PreparedRequestBody = isolated.PreparedRequestBody;
+                            forwardRequest.ForwardHeaders = isolated.ForwardHeaders;
+                        }
+                        var firstAttempt = compactResult;
+                        compactResult = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+                        IncludeCompactAttempt(compactResult, firstAttempt);
+                        retryShape = true;
+                        compactRetried = true;
+                    }
+                    string? compactResponse = null;
+                    if (compactResult.Success)
+                    {
+                        var body = isPassthrough ? compactResult.ResponseBody
+                            : string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                                ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(compactResult.ResponseBody, normalizedRequestBody)
+                                : string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                                    ? ProxyProtocolBridge.BuildAnthropicResponseFromGemini(compactResult.ResponseBody, route.SiteModelName) is { } geminiBody
+                                        ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(geminiBody, normalizedRequestBody) : null
+                                    : ProxyProtocolBridge.ConvertChatResponseToResponses(compactResult.ResponseBody, normalizedRequestBody);
+                        if (!string.IsNullOrEmpty(body)) compactResponse = ProxyProtocolBridge.BuildCompactResponse(body);
+                        if (compactResponse is null) { compactResult.Success = false; compactResult.ErrorMessage = "Compaction produced no complete summary."; }
+                    }
+                    if (compactResponse is null && retryAllowed && !compactResult.IsCanceled && !compactRetried
+                        && compactResult.StatusCode is >= 200 and < 300)
+                    {
+                        var plain = ProxyProtocolBridge.PreparePlainCompactSummaryRequest(normalizedRequestBody);
+                        forwardRequest.PreparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("Responses", actualProtocolType, plain,
+                            route.SiteModelName, false, route.OverrideReasoningEffort, route.BaseUrl, route.CompatibilityRules,
+                            isPassthrough: isPassthrough, geminiProjectId: route.GoogleProjectId);
+                        if (_sessionIsolation is not null)
+                        {
+                            var isolated = await _sessionIsolation.ApplyAsync(isolationContext, route.AccountIdentity, actualProtocolType,
+                                ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl), forwardRequest.PreparedRequestBody, forwardHeaders, cancellationToken);
+                            forwardRequest.PreparedRequestBody = isolated.PreparedRequestBody;
+                            forwardRequest.ForwardHeaders = isolated.ForwardHeaders;
+                        }
+                        var firstAttempt = compactResult;
+                        compactResult = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+                        IncludeCompactAttempt(compactResult, firstAttempt);
+                        retryShape = true;
+                        compactRetried = true;
+                        if (compactResult.Success)
+                        {
+                            var body = isPassthrough ? compactResult.ResponseBody
+                                : string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                                    ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(compactResult.ResponseBody, normalizedRequestBody)
+                                    : string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                                        ? ProxyProtocolBridge.BuildAnthropicResponseFromGemini(compactResult.ResponseBody, route.SiteModelName) is { } gemini
+                                            ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(gemini, normalizedRequestBody) : null
+                                        : ProxyProtocolBridge.ConvertChatResponseToResponses(compactResult.ResponseBody, normalizedRequestBody);
+                            if (!string.IsNullOrEmpty(body)) compactResponse = ProxyProtocolBridge.BuildCompactResponse(body);
+                            if (compactResponse is null) { compactResult.Success = false; compactResult.ErrorMessage = "Compaction produced no complete summary."; }
+                        }
+                    }
+                    if (compactResponse is null && retryAllowed && (retryShape || compactRetried && compactResult.StatusCode is >= 200 and < 300) && !compactResult.IsCanceled
+                        && compactResult.StatusCode is not (401 or 403 or 429))
+                        compactResponse = ProxyProtocolBridge.BuildLocalCompactResponse(normalizedRequestBody);
+                    if (compactResponse is not null)
+                    {
+                        compactResult.Success = true;
+                        compactResult.StatusCode = 200;
+                        compactResult.ErrorMessage = null;
+                        var sse = ProxyProtocolBridge.CompactResponseAsSse(compactResponse);
+                        foreach (var payload in ExtractWebSocketJsonPayloadsFromSseText(sse))
+                        {
+                            await CommitReferenceOutputAsync(payload, cancellationToken);
+                            await SendWebSocketJsonPayloadAsync(webSocket, payload, cancellationToken);
+                            _referenceOutputExposed = true;
+                        }
+                        streamOutcome = new StreamForwardOutcome { Result = compactResult, CompletedOutputJson = JsonNode.Parse(compactResponse)!["output"]!.ToJsonString(), UpstreamCompleted = true };
+                    }
+                    else
+                    {
+                        if (compactResult.StatusCode is >= 200 and < 300) compactResult.StatusCode = 502;
+                        streamOutcome = new StreamForwardOutcome { Result = compactResult, CanFallback = true };
+                    }
+                }
+                else if (isPassthrough)
                 {
                     streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(webSocket, forwardRequest, cancellationToken);
                 }
@@ -845,6 +1090,7 @@ public sealed partial class OpenAiProxyController
                 {
                     // OpenAI Chat Completions SSE 逐块转换后再发送 Responses WebSocket 事件。
                     var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
+                    ProxyProtocolBridge.ConfigureResponsesTools(responsesState, normalizedRequestBody);
                     streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(
                         webSocket,
                         forwardRequest,
@@ -961,7 +1207,13 @@ public sealed partial class OpenAiProxyController
                     : new UpstreamReferenceRestriction((await ReferenceOwnerAsync(route, cancellationToken)).Owner, UpstreamReferenceNamespace.Create(route.BaseUrl, actualProtocolType));
                 sessionState.HasFullTranscript = _observedCompletedResponseId is not null
                     && HasCompleteLocalTranscript(normalizedRequestBody);
-                sessionState.LastRequestJson = normalizedRequestBody;
+                if (compactTrigger)
+                {
+                    var compactedRequest = JsonNode.Parse(normalizedRequestBody)!.AsObject();
+                    compactedRequest["input"] = new JsonArray();
+                    sessionState.LastRequestJson = compactedRequest.ToJsonString();
+                }
+                else sessionState.LastRequestJson = normalizedRequestBody;
                 sessionState.LastResponseOutputJson = string.IsNullOrWhiteSpace(streamOutcome.CompletedOutputJson)
                     ? "[]"
                     : streamOutcome.CompletedOutputJson;

@@ -52,12 +52,14 @@ public sealed partial class OpenAiProxyController
             {
                 if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
-                    receivedDoneEvent = true;
+                    if (payloadConverter is null) receivedDoneEvent = true;
                 }
                 else
                 {
                     UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
                     var responsePayload = payloadConverter is null ? payload : payloadConverter(payload);
+                    if (payloadConverter is not null && responsePayload.Contains("event: response.failed", StringComparison.Ordinal))
+                        receivedDoneEvent = false;
                     if (string.IsNullOrWhiteSpace(responsePayload))
                     {
                         pendingSseLines.Clear();
@@ -162,6 +164,7 @@ public sealed partial class OpenAiProxyController
         {
             Model = forwardRequest.TargetModelName
         };
+        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, forwardRequest.RequestBody);
 
         async Task FlushAnthropicBlockAsync(CancellationToken token)
         {
@@ -291,6 +294,7 @@ public sealed partial class OpenAiProxyController
         {
             Model = forwardRequest.TargetModelName
         };
+        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, forwardRequest.RequestBody);
 
         async Task FlushAnthropicSseBlockAsync(CancellationToken token)
         {
@@ -379,7 +383,7 @@ public sealed partial class OpenAiProxyController
         // 流中断但已开始写入时，向客户端补发终止信号避免挂起
         if (result.IsStreamInterrupted && startedWriting)
         {
-            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
+            await Response.TryWriteTerminatorAsync(ResponsesStreamFailure(responsesState), cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -470,11 +474,13 @@ public sealed partial class OpenAiProxyController
     /// <param name="forwardRequest">已经完成路由选择和协议准备的上游转发请求。</param>
     /// <param name="cancellationToken">用于中断当前流式转发的取消令牌。</param>
     /// <param name="sseBlockConverter">可选的 SSE 块转换器，用于在写入客户端前改写单个数据块。</param>
+    /// <param name="responsesState">Responses 转换状态，用于识别未完成或失败的上游流。</param>
     /// <returns>返回流式转发结果，并标记是否还能继续 fallback 到下一条路由。</returns>
     private async Task<StreamForwardOutcome> ForwardOpenAiStreamPassthroughAsync(
         ProxyForwardRequest forwardRequest,
         CancellationToken cancellationToken,
-        Func<string, string>? sseBlockConverter = null)
+        Func<string, string>? sseBlockConverter = null,
+        ChatToResponsesStreamState? responsesState = null)
     {
         if (!Response.HasStarted)
         {
@@ -524,6 +530,7 @@ public sealed partial class OpenAiProxyController
                 // legacy Completions 复用同一透传链路，只在写出前转换单个 SSE 块。
                 chunk = sseBlockConverter(chunk);
             }
+            if (string.IsNullOrEmpty(chunk)) return;
 
             if (headBuffer is not null)
             {
@@ -616,6 +623,13 @@ public sealed partial class OpenAiProxyController
         result.CachedTokens = cachedTokens;
         result.OutputTokens = outputTokens;
 
+        if (responsesState is not null && (!responsesState.Done || responsesState.ConversionFailed || responsesState.StopReason == "error"))
+        {
+            receivedDoneEvent = false;
+            result.Success = false;
+            result.ErrorMessage = "The upstream response did not finish successfully.";
+        }
+
         if (result.Success && !receivedDoneEvent)
         {
             result.Success = false;
@@ -660,7 +674,12 @@ public sealed partial class OpenAiProxyController
         // IsCanceled（客户端已断开）补发无意义。
         if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent)
         {
-            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
+            if (responsesState is not null)
+            {
+                if (responsesState.StopReason != "error")
+                    await Response.TryWriteTerminatorAsync(ResponsesStreamFailure(responsesState), cancellationToken);
+            }
+            else await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -670,6 +689,16 @@ public sealed partial class OpenAiProxyController
             // 客户端在完成事件后才断开（Codex/DSH 等 CLI 的常态）：上游已按完整输出计费。
             UpstreamCompleted = receivedDoneEvent
         };
+    }
+
+    private static string ResponsesStreamFailure(ChatToResponsesStreamState state)
+    {
+        var failure = new JsonObject { ["type"] = "response.failed", ["response"] = new JsonObject
+        {
+            ["id"] = state.ResponseId, ["object"] = "response", ["status"] = "failed",
+            ["error"] = new JsonObject { ["code"] = "upstream_stream_interrupted", ["message"] = "The upstream stream ended before completion." }
+        } };
+        return $"event: response.failed\ndata: {failure.ToJsonString()}\n\n";
     }
 
     /// <summary>

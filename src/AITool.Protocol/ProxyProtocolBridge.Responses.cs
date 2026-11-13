@@ -67,6 +67,10 @@ public sealed class ResponsesToolCallState
 
 public sealed class ChatToResponsesStreamState
 {
+    public Dictionary<string, ResponsesToolDefinition> ToolDefinitions { get; } = new(StringComparer.Ordinal);
+    public Dictionary<int, ResponsesToolCallState> OutputTools { get; } = [];
+    public SortedDictionary<int, JsonObject> CompletedItems { get; } = [];
+    public string? StopReason { get; set; }
     /// <summary>
     /// 是否已发送 response.created 事件。
     /// </summary>
@@ -197,7 +201,7 @@ public static partial class ProxyProtocolBridge
     /// 将 Responses API 请求体转换为 Chat Completions 请求体。
     /// 透传场景下（上游是 OpenAI）调用方可直接转发原始请求体，无需调用此方法。
     /// </summary>
-    public static string ConvertResponsesRequestToChat(string requestBody, string targetModelName, bool enableStreaming)
+    public static string ConvertResponsesRequestToChat(string requestBody, string targetModelName, bool enableStreaming, bool keepReasoning = false)
     {
         var root = JsonNode.Parse(requestBody) as JsonObject;
         if (root is null)
@@ -224,7 +228,7 @@ public static partial class ProxyProtocolBridge
         // input → 消息列表
         if (root.TryGetPropertyValue("input", out var inputNode) && inputNode is not null)
         {
-            ParseResponsesInputToMessages(inputNode, messages);
+            ParseResponsesInputToMessages(inputNode, messages, keepReasoning);
         }
 
         var payload = new JsonObject
@@ -274,25 +278,23 @@ public static partial class ProxyProtocolBridge
 
         // tools → 转换扁平结构为 Chat Completions 嵌套结构。
         // Responses 的内置工具由 Responses 上游执行，普通 Chat 上游无法实现，不能原样转发。
-        if (root.TryGetPropertyValue("tools", out var toolsNode) && toolsNode is JsonArray toolsArray)
+        var responsesTools = ResponsesTools(root).ToList();
+        if (responsesTools.Count > 0)
         {
             var chatTools = new JsonArray();
-            foreach (var tool in toolsArray)
+            foreach (var (toolObj, toolNamespace) in responsesTools)
             {
-                if (tool is not JsonObject toolObj)
-                {
-                    continue;
-                }
-
                 var toolType = toolObj["type"]?.ToString() ?? "function";
-                if (string.Equals(toolType, "function", StringComparison.OrdinalIgnoreCase))
+                if (toolType == "tool_search" && toolObj["execution"]?.ToString() == "server") continue;
+                if (toolType is "function" or "custom" or "tool_search")
                 {
                     var chatTool = new JsonObject { ["type"] = "function" };
                     var function = new JsonObject();
                     if (toolObj.TryGetPropertyValue("name", out var name))
                     {
-                        function["name"] = name?.DeepClone();
+                        function["name"] = FlatToolName(toolNamespace, name?.ToString() ?? "");
                     }
+                    if (toolType == "tool_search") function["name"] = "tool_search";
 
                     if (toolObj.TryGetPropertyValue("description", out var desc))
                     {
@@ -303,14 +305,10 @@ public static partial class ProxyProtocolBridge
                     {
                         function["parameters"] = parameters?.DeepClone();
                     }
+                    if (toolType == "custom") function["parameters"] = CustomToolSchema();
 
                     chatTool["function"] = function;
                     chatTools.Add(chatTool);
-                }
-                else if (string.Equals(toolType, "custom", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Chat Completions 新版允许 custom 工具，保留其原始结构。
-                    chatTools.Add(toolObj.DeepClone());
                 }
                 // web_search、file_search、computer_use 等 Responses 内置工具直接丢弃，
                 // 避免发送 Chat 上游不认识的 tools[].type 导致整次请求失败。
@@ -555,7 +553,7 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 将 Chat Completions 非流式响应转换为 Responses API 非流式响应。
     /// </summary>
-    public static string ConvertChatResponseToResponses(string chatResponseBody)
+    public static string ConvertChatResponseToResponses(string chatResponseBody, string? requestBody = null)
     {
         try
         {
@@ -573,6 +571,8 @@ public static partial class ProxyProtocolBridge
             }
 
             var outputs = new JsonArray();
+            var toolState = new ChatToResponsesStreamState();
+            if (requestBody is not null) ConfigureResponsesTools(toolState, requestBody);
 
             // reasoning 必须作为 Responses 顶层 reasoning 输出项，不能混入 message.content。
             var reasoningText = ExtractChatReasoningText(message);
@@ -630,7 +630,9 @@ public static partial class ProxyProtocolBridge
                 {
                     if (toolCall is JsonObject toolCallObject)
                     {
-                        outputs.Add(BuildResponsesFunctionCall(toolCallObject));
+                        var call = BuildResponsesFunctionCall(toolCallObject);
+                        outputs.Add(ResponsesCall(call["id"]!.ToString(), call["call_id"]!.ToString(),
+                            call["name"]!.ToString(), call["arguments"]!.ToString(), toolState.ToolDefinitions));
                     }
                 }
             }
@@ -664,12 +666,16 @@ public static partial class ProxyProtocolBridge
             var responseId = chatId.StartsWith("resp_", StringComparison.OrdinalIgnoreCase)
                 ? chatId
                 : $"resp_{chatId}";
+            var finishReason = choice?["finish_reason"]?.ToString();
+            if (finishReason == "error") return string.Empty;
+            var isIncomplete = finishReason == "length";
             return new JsonObject
             {
                 ["id"] = responseId,
                 ["object"] = "response",
                 ["created_at"] = created,
-                ["status"] = "completed",
+                ["status"] = isIncomplete ? "incomplete" : "completed",
+                ["incomplete_details"] = isIncomplete ? new JsonObject { ["reason"] = "max_output_tokens" } : null,
                 ["model"] = model,
                 ["output"] = outputs,
                 ["usage"] = responsesUsage
@@ -816,9 +822,9 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 将 Anthropic 非流式响应转换为 Responses API 非流式响应（直转，不经 Chat 中转）。
     /// </summary>
-    public static string ConvertAnthropicResponseToResponses(string anthropicBody)
+    public static string ConvertAnthropicResponseToResponses(string anthropicBody, string? requestBody = null)
     {
-        return BuildResponsesResponseFromAnthropic(anthropicBody);
+        return BuildResponsesResponseFromAnthropic(anthropicBody, requestBody);
     }
 
     /// <summary>
@@ -938,9 +944,9 @@ public static partial class ProxyProtocolBridge
             if (delta.ValueKind != JsonValueKind.Undefined && delta.TryGetProperty("role", out var roleEl)
                 && roleEl.GetString() == "assistant" && !state.MessageAdded)
             {
+                state.MessageOutputIndex = NextResponsesOutputIndex(state);
                 state.MessageAdded = true;
                 state.MessageId = $"msg_{Guid.NewGuid():N}";
-                state.MessageOutputIndex = state.ReservedOutputIndexes;
 
                 builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
                 {
@@ -966,9 +972,10 @@ public static partial class ProxyProtocolBridge
                 var deltaText = contentEl.GetString() ?? string.Empty;
                 if (!string.IsNullOrEmpty(deltaText))
                 {
+                    CloseReasoningItemIfNeeded(state, builder);
                     EnsureMessageStarted(state, builder);
                     builder.Append(BuildResponsesEvent("response.output_text.delta",
-                        deltaText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
+                        deltaText, outputIndex: state.MessageOutputIndex, contentIndex: 0, itemId: state.MessageId));
                     state.AppendOutputText(deltaText);
                 }
             }
@@ -979,7 +986,17 @@ public static partial class ProxyProtocolBridge
                 var reasoningText = ExtractReasoningFromElement(delta);
                 if (!string.IsNullOrEmpty(reasoningText))
                 {
-                    builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", reasoningText));
+                    if (state.ReasoningItemClosed)
+                    {
+                        state.ReasoningItemAdded = false;
+                        state.ReasoningItemClosed = false;
+                        state.ReasoningText.Clear();
+                        state.ReasoningSignature = string.Empty;
+                    }
+                    EnsureReasoningItemStarted(state, builder);
+                    state.ReasoningText.Append(reasoningText);
+                    builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", reasoningText,
+                        outputIndex: state.ReasoningItemOutputIndex, itemId: state.ReasoningItemId));
                 }
             }
 
@@ -988,6 +1005,7 @@ public static partial class ProxyProtocolBridge
                 && delta.TryGetProperty("tool_calls", out var toolCallsEl)
                 && toolCallsEl.ValueKind == JsonValueKind.Array)
             {
+                CloseReasoningItemIfNeeded(state, builder);
                 foreach (var tc in toolCallsEl.EnumerateArray())
                 {
                     var callId = tc.TryGetProperty("id", out var tcIdEl) ? tcIdEl.GetString() ?? "" : "";
@@ -1001,7 +1019,7 @@ public static partial class ProxyProtocolBridge
 
                     if (!state.ChatToolCallOutputIndices.TryGetValue(idx, out var outputIndex))
                     {
-                        outputIndex = state.ReservedOutputIndexes + state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
+                        outputIndex = NextResponsesOutputIndex(state);
                         state.ChatToolCallOutputIndices[idx] = outputIndex;
                     }
 
@@ -1020,21 +1038,20 @@ public static partial class ProxyProtocolBridge
                         itemId = $"fc_{Guid.NewGuid():N}";
                         state.ChatToolCallOutputIds[idx] = itemId;
                         state.ChatToolCallIds[idx] = callId;
+                        state.OutputTools[idx] = new ResponsesToolCallState { Id = callId, Name = funcName };
                         state.SentToolCallIds.Add(callId);
                         state.ToolCallIndex = Math.Max(state.ToolCallIndex, idx + 1);
 
-                        builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
-                        {
-                            ["type"] = "function_call",
-                            ["id"] = itemId,
-                            ["status"] = "in_progress",
-                            ["call_id"] = callId,
-                            ["name"] = funcName,
-                            ["arguments"] = ""
-                        }, outputIndex: outputIndex));
+                        var added = ResponsesCall(itemId, callId, funcName, "", state.ToolDefinitions);
+                        added["status"] = "in_progress";
+                        builder.Append(BuildResponsesEvent("response.output_item.added", added, outputIndex: outputIndex));
                     }
 
-                    if (!string.IsNullOrEmpty(funcArgs))
+                    var toolState = state.OutputTools[idx];
+                    if (!string.IsNullOrEmpty(funcName)) toolState.Name = funcName;
+                    if (!string.IsNullOrEmpty(funcArgs)) toolState.Arguments.Append(funcArgs);
+
+                    if (!string.IsNullOrEmpty(funcArgs) && !(state.ToolDefinitions.TryGetValue(toolState.Name, out var definition) && (definition.Custom || definition.Search)))
                     {
                         builder.Append(BuildResponsesEvent("response.function_call_arguments.delta",
                             funcArgs, outputIndex: outputIndex, itemId: itemId));
@@ -1053,13 +1070,15 @@ public static partial class ProxyProtocolBridge
                     return builder.ToString();
                 }
 
+                CloseReasoningItemIfNeeded(state, builder);
+
                 // 关闭 message 输出项
                 if (state.MessageAdded)
                 {
                     // 只取一次最终文本，避免 StringBuilder 支撑的属性多次 ToString 重复分配。
                     var outputText = state.OutputText;
                     builder.Append(BuildResponsesEvent("response.output_text.done",
-                        outputText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
+                        outputText, outputIndex: state.MessageOutputIndex, contentIndex: 0, itemId: state.MessageId));
 
                     builder.Append(BuildResponsesEvent("response.content_part.done", new JsonObject
                     {
@@ -1067,7 +1086,7 @@ public static partial class ProxyProtocolBridge
                         ["text"] = outputText
                     }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
-                    builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
+                    var messageItem = new JsonObject
                     {
                         ["type"] = "message",
                         ["id"] = state.MessageId,
@@ -1077,7 +1096,9 @@ public static partial class ProxyProtocolBridge
                         {
                             new JsonObject { ["type"] = "output_text", ["text"] = outputText }
                         }
-                    }, outputIndex: state.MessageOutputIndex));
+                    };
+                    state.CompletedItems[state.MessageOutputIndex] = (JsonObject)messageItem.DeepClone();
+                    builder.Append(BuildResponsesEvent("response.output_item.done", messageItem, outputIndex: state.MessageOutputIndex));
                 }
 
                 // 关闭工具调用输出项，保持 Chat tool index 与输出索引的一致映射。
@@ -1088,24 +1109,30 @@ public static partial class ProxyProtocolBridge
                     var callId = state.ChatToolCallIds.TryGetValue(chatIndex, out var mappedCallId)
                         ? mappedCallId
                         : string.Empty;
-                    builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
-                    {
-                        ["type"] = "function_call",
-                        ["status"] = "completed",
-                        ["call_id"] = callId
-                    }, outputIndex: outputIndex));
+                    var tool = state.OutputTools[chatIndex];
+                    var item = ResponsesCall(state.ChatToolCallOutputIds[chatIndex], callId, tool.Name,
+                        tool.Arguments.Length == 0 ? "{}" : tool.Arguments.ToString(), state.ToolDefinitions);
+                    builder.Append(BuildToolArgumentsDone(item, outputIndex));
+                    state.CompletedItems[outputIndex] = (JsonObject)item.DeepClone();
+                    builder.Append(BuildResponsesEvent("response.output_item.done", item, outputIndex: outputIndex));
                 }
 
                 // 完成
                 var (inp, cached, outp) = state.Usage;
-                builder.Append(BuildResponsesEvent("response.completed", new JsonObject
+                var reason = finishEl.GetString();
+                state.StopReason = reason;
+                var incomplete = reason == "length";
+                var failed = reason == "error";
+                builder.Append(BuildResponsesEvent(failed ? "response.failed" : incomplete ? "response.incomplete" : "response.completed", new JsonObject
                 {
                     ["id"] = state.ResponseId,
                     ["object"] = "response",
                     ["created_at"] = state.CreatedAt,
-                    ["status"] = "completed",
+                    ["status"] = failed ? "failed" : incomplete ? "incomplete" : "completed",
+                    ["incomplete_details"] = incomplete ? new JsonObject { ["reason"] = "max_output_tokens" } : null,
+                    ["error"] = failed ? new JsonObject { ["code"] = "upstream_error", ["message"] = "The upstream reported an error." } : null,
                     ["model"] = state.Model,
-                    ["output"] = new JsonArray(),
+                    ["output"] = new JsonArray(state.CompletedItems.Values.Select(x => x.DeepClone()).ToArray()),
                     ["usage"] = new JsonObject
                     {
                         ["prompt_tokens"] = inp,
@@ -1227,10 +1254,22 @@ public static partial class ProxyProtocolBridge
                 {
                     var blockType = block.TryGetProperty("type", out var bt) ? bt.GetString() : null;
 
-                    if (blockType == "text" || blockType == "tool_use" || blockType == "thinking")
+                    if (blockType is "text" or "tool_use" or "thinking" or "redacted_thinking")
                     {
                         state.SawMeaningfulEvent = true;
                         EnsureResponseStarted();
+                    }
+
+                    if (blockType == "redacted_thinking")
+                    {
+                        CloseReasoningItemIfNeeded(state, builder);
+                        var index = NextResponsesOutputIndex(state);
+                        var item = new JsonObject { ["type"] = "reasoning", ["id"] = $"rs_{Guid.NewGuid():N}",
+                            ["status"] = "completed", ["summary"] = new JsonArray(),
+                            ["encrypted_content"] = EncodeAnthropicRedactedThinking(JsonNode.Parse(block.GetRawText())!.AsObject()) };
+                        state.CompletedItems[index] = (JsonObject)item.DeepClone();
+                        builder.Append(BuildResponsesEvent("response.output_item.added", (JsonObject)item.DeepClone(), outputIndex: index));
+                        builder.Append(BuildResponsesEvent("response.output_item.done", item, outputIndex: index));
                     }
 
                     // thinking 块 → reasoning 输出项；分段思考（上一项已关闭）时开新项。
@@ -1252,9 +1291,9 @@ public static partial class ProxyProtocolBridge
                     if (blockType == "text" && !state.MessageAdded)
                     {
                         CloseReasoningItemIfNeeded(state, builder);
+                        state.MessageOutputIndex = NextResponsesOutputIndex(state);
                         state.MessageAdded = true;
                         state.MessageId = $"msg_{Guid.NewGuid():N}";
-                        state.MessageOutputIndex = state.ReservedOutputIndexes;
 
                         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
                         {
@@ -1282,7 +1321,7 @@ public static partial class ProxyProtocolBridge
                             : state.ToolCallOutputIndices.Count;
                         var callId = block.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
                         var name = block.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "";
-                        var outputIndex = state.ReservedOutputIndexes + state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
+                        var outputIndex = NextResponsesOutputIndex(state);
                         var itemId = $"fc_{Guid.NewGuid():N}";
 
                         if (string.IsNullOrEmpty(callId))
@@ -1294,16 +1333,11 @@ public static partial class ProxyProtocolBridge
                         state.ToolCallOutputIndices[blockIndex] = outputIndex;
                         state.ToolCallOutputIds[blockIndex] = itemId;
                         state.ToolCallCallIds[blockIndex] = callId;
+                        state.OutputTools[blockIndex] = new ResponsesToolCallState { Id = callId, Name = name };
 
-                        builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
-                        {
-                            ["type"] = "function_call",
-                            ["id"] = itemId,
-                            ["status"] = "in_progress",
-                            ["call_id"] = callId,
-                            ["name"] = name,
-                            ["arguments"] = ""
-                        }, outputIndex: outputIndex));
+                        var added = ResponsesCall(itemId, callId, name, "", state.ToolDefinitions);
+                        added["status"] = "in_progress";
+                        builder.Append(BuildResponsesEvent("response.output_item.added", added, outputIndex: outputIndex));
                     }
                 }
             }
@@ -1340,14 +1374,15 @@ public static partial class ProxyProtocolBridge
                         CloseReasoningItemIfNeeded(state, builder);
                         EnsureMessageStarted(state, builder);
                         builder.Append(BuildResponsesEvent("response.output_text.delta",
-                            deltaText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
+                            deltaText, outputIndex: state.MessageOutputIndex, contentIndex: 0, itemId: state.MessageId));
                         state.AppendOutputText(deltaText);
                     }
                     else if (deltaType == "thinking_delta" && !string.IsNullOrEmpty(effectiveThinkingText))
                     {
                         EnsureReasoningItemStarted(state, builder);
                         state.ReasoningText.Append(effectiveThinkingText);
-                        builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", effectiveThinkingText));
+                        builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", effectiveThinkingText,
+                            outputIndex: state.ReasoningItemOutputIndex, itemId: state.ReasoningItemId));
                     }
                     else if (deltaType == "signature_delta" && !string.IsNullOrEmpty(signatureText))
                     {
@@ -1362,8 +1397,11 @@ public static partial class ProxyProtocolBridge
                         if (blockIndex >= 0 && state.ToolCallOutputIndices.TryGetValue(blockIndex, out var outputIndex))
                         {
                             state.ToolCallOutputIds.TryGetValue(blockIndex, out var itemId);
-                            builder.Append(BuildResponsesEvent("response.function_call_arguments.delta",
-                                partialJson, outputIndex: outputIndex, itemId: itemId));
+                            var tool = state.OutputTools[blockIndex];
+                            tool.Arguments.Append(partialJson);
+                            if (!(state.ToolDefinitions.TryGetValue(tool.Name, out var definition) && (definition.Custom || definition.Search)))
+                                builder.Append(BuildResponsesEvent("response.function_call_arguments.delta",
+                                    partialJson, outputIndex: outputIndex, itemId: itemId));
                         }
                     }
                 }
@@ -1372,6 +1410,9 @@ public static partial class ProxyProtocolBridge
             // message_delta → 提取用量和停止原因
             if (isMessageDelta)
             {
+                if (root.TryGetProperty("delta", out var messageDelta) && messageDelta.ValueKind == JsonValueKind.Object
+                    && messageDelta.TryGetProperty("stop_reason", out var stop) && stop.ValueKind == JsonValueKind.String)
+                    state.StopReason = stop.GetString();
                 if (root.TryGetProperty("usage", out var usageEl))
                 {
                     var outTokens = usageEl.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
@@ -1398,7 +1439,7 @@ public static partial class ProxyProtocolBridge
                     // 只取一次最终文本，避免 StringBuilder 支撑的属性多次 ToString 重复分配。
                     var outputText = state.OutputText;
                     builder.Append(BuildResponsesEvent("response.output_text.done",
-                        outputText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
+                        outputText, outputIndex: state.MessageOutputIndex, contentIndex: 0, itemId: state.MessageId));
 
                     builder.Append(BuildResponsesEvent("response.content_part.done", new JsonObject
                     {
@@ -1406,7 +1447,7 @@ public static partial class ProxyProtocolBridge
                         ["text"] = outputText
                     }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
-                    builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
+                    var messageItem = new JsonObject
                     {
                         ["type"] = "message",
                         ["id"] = state.MessageId,
@@ -1416,7 +1457,9 @@ public static partial class ProxyProtocolBridge
                         {
                             new JsonObject { ["type"] = "output_text", ["text"] = outputText }
                         }
-                    }, outputIndex: state.MessageOutputIndex));
+                    };
+                    state.CompletedItems[state.MessageOutputIndex] = (JsonObject)messageItem.DeepClone();
+                    builder.Append(BuildResponsesEvent("response.output_item.done", messageItem, outputIndex: state.MessageOutputIndex));
                 }
 
                 foreach (var toolCall in state.ToolCallOutputIndices.OrderBy(pair => pair.Value))
@@ -1426,23 +1469,25 @@ public static partial class ProxyProtocolBridge
                     var callId = state.ToolCallCallIds.TryGetValue(blockIndex, out var mappedCallId)
                         ? mappedCallId
                         : state.SentToolCallIds.ElementAtOrDefault(outputIndex - (state.MessageAdded ? 1 : 0)) ?? string.Empty;
-                    builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
-                    {
-                        ["type"] = "function_call",
-                        ["status"] = "completed",
-                        ["call_id"] = callId
-                    }, outputIndex: outputIndex));
+                    var tool = state.OutputTools[blockIndex];
+                    var item = ResponsesCall(state.ToolCallOutputIds[blockIndex], callId, tool.Name,
+                        tool.Arguments.Length == 0 ? "{}" : tool.Arguments.ToString(), state.ToolDefinitions);
+                    builder.Append(BuildToolArgumentsDone(item, outputIndex));
+                    state.CompletedItems[outputIndex] = (JsonObject)item.DeepClone();
+                    builder.Append(BuildResponsesEvent("response.output_item.done", item, outputIndex: outputIndex));
                 }
 
                 var (inp, cached, outp) = state.Usage;
-                builder.Append(BuildResponsesEvent("response.completed", new JsonObject
+                var incomplete = state.StopReason == "max_tokens";
+                builder.Append(BuildResponsesEvent(incomplete ? "response.incomplete" : "response.completed", new JsonObject
                 {
                     ["id"] = state.ResponseId,
                     ["object"] = "response",
                     ["created_at"] = state.CreatedAt,
-                    ["status"] = "completed",
+                    ["status"] = incomplete ? "incomplete" : "completed",
+                    ["incomplete_details"] = incomplete ? new JsonObject { ["reason"] = "max_output_tokens" } : null,
                     ["model"] = state.Model,
-                    ["output"] = new JsonArray(),
+                    ["output"] = new JsonArray(state.CompletedItems.Values.Select(x => x.DeepClone()).ToArray()),
                     ["usage"] = new JsonObject
                     {
                         ["prompt_tokens"] = inp,
@@ -2506,7 +2551,7 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 解析 Responses 的 input 字段为 Chat Completions 的 messages 数组。
     /// </summary>
-    private static void ParseResponsesInputToMessages(JsonNode inputNode, JsonArray messages)
+    private static void ParseResponsesInputToMessages(JsonNode inputNode, JsonArray messages, bool keepReasoning)
     {
         // 纯字符串 → 单条 user 消息
         if (inputNode is JsonValue jsonValue && jsonValue.TryGetValue(out string? strValue))
@@ -2522,6 +2567,7 @@ public static partial class ProxyProtocolBridge
         }
 
         JsonObject? lastAssistant = null;
+        var pendingReasoning = new StringBuilder();
 
         foreach (var item in inputArray)
         {
@@ -2532,25 +2578,33 @@ public static partial class ProxyProtocolBridge
 
             var type = itemObj["type"]?.ToString() ?? "";
 
+            if (type == "reasoning" && keepReasoning)
+            {
+                if (itemObj["summary"] is JsonArray summary)
+                    foreach (var part in summary.OfType<JsonObject>()) pendingReasoning.Append(part["text"]?.ToString());
+                continue;
+            }
+
             // function_call_output → tool 消息
-            if (type == "function_call_output")
+            if (type is "function_call_output" or "custom_tool_call_output" or "tool_search_output")
             {
                 messages.Add(new JsonObject
                 {
                     ["role"] = "tool",
                     ["tool_call_id"] = itemObj["call_id"]?.DeepClone() ?? "",
-                    ["content"] = itemObj["output"]?.DeepClone() ?? ""
+                    ["content"] = itemObj["output"]?.DeepClone() ?? itemObj["tools"]?.ToJsonString() ?? ""
                 });
                 lastAssistant = null;
                 continue;
             }
 
             // function_call → 合并到 assistant 消息的 tool_calls
-            if (type == "function_call")
+            if (type is "function_call" or "custom_tool_call" or "tool_search_call")
             {
                 if (lastAssistant is null)
                 {
                     lastAssistant = new JsonObject { ["role"] = "assistant", ["content"] = "" };
+                    if (pendingReasoning.Length > 0) { lastAssistant["reasoning_content"] = pendingReasoning.ToString(); pendingReasoning.Clear(); }
                     messages.Add(lastAssistant);
                 }
 
@@ -2565,8 +2619,10 @@ public static partial class ProxyProtocolBridge
                     ["type"] = "function",
                     ["function"] = new JsonObject
                     {
-                        ["name"] = itemObj["name"]?.DeepClone() ?? "",
-                        ["arguments"] = itemObj["arguments"]?.DeepClone() ?? "{}"
+                        ["name"] = type == "tool_search_call" ? "tool_search" : FlatToolName(itemObj["namespace"]?.ToString(), itemObj["name"]?.ToString() ?? ""),
+                        ["arguments"] = type == "custom_tool_call"
+                            ? new JsonObject { ["input"] = itemObj["input"]?.ToString() ?? "" }.ToJsonString()
+                            : itemObj["arguments"] is JsonValue av ? av.ToString() : itemObj["arguments"]?.ToJsonString() ?? "{}"
                     }
                 });
                 continue;
@@ -2578,6 +2634,12 @@ public static partial class ProxyProtocolBridge
             {
                 var content = ConvertResponsesContentToChat(itemObj["content"], role);
                 var msg = new JsonObject { ["role"] = role, ["content"] = content };
+                if (role == "assistant" && pendingReasoning.Length > 0)
+                {
+                    msg["reasoning_content"] = pendingReasoning.ToString();
+                    pendingReasoning.Clear();
+                }
+                else if (role != "assistant") pendingReasoning.Clear();
                 messages.Add(msg);
                 lastAssistant = role == "assistant" ? msg : null;
             }
@@ -2660,10 +2722,10 @@ public static partial class ProxyProtocolBridge
         if (toolChoice is JsonObject obj)
         {
             var typeVal = obj["type"]?.ToString() ?? string.Empty;
-            if (string.Equals(typeVal, "function", StringComparison.OrdinalIgnoreCase)
+            if (typeVal is "function" or "custom"
                 && obj.ContainsKey("name"))
             {
-                var functionName = obj["name"]?.ToString() ?? string.Empty;
+                var functionName = FlatToolName(obj["namespace"]?.ToString(), obj["name"]?.ToString() ?? string.Empty);
                 var functionExists = availableTools is null
                     || availableTools
                         .OfType<JsonObject>()
@@ -2679,14 +2741,9 @@ public static partial class ProxyProtocolBridge
                     ? new JsonObject
                     {
                         ["type"] = "function",
-                        ["function"] = new JsonObject { ["name"] = obj["name"]?.DeepClone() }
+                        ["function"] = new JsonObject { ["name"] = functionName }
                     }
                     : "none";
-            }
-
-            if (string.Equals(typeVal, "custom", StringComparison.OrdinalIgnoreCase))
-            {
-                return toolChoice.DeepClone();
             }
 
             // Responses 内置工具的 tool_choice 在 Chat 上游没有对应能力。
@@ -2707,9 +2764,10 @@ public static partial class ProxyProtocolBridge
             return;
         }
 
+        state.ReasoningItemOutputIndex = NextResponsesOutputIndex(state);
         state.ReasoningItemAdded = true;
         state.ReasoningItemId = $"rs_{Guid.NewGuid():N}";
-        state.ReasoningItemOutputIndex = state.ReservedOutputIndexes++;
+        state.ReservedOutputIndexes = Math.Max(state.ReservedOutputIndexes, state.ReasoningItemOutputIndex + 1);
 
         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
         {
@@ -2718,6 +2776,10 @@ public static partial class ProxyProtocolBridge
             ["status"] = "in_progress",
             ["summary"] = new JsonArray()
         }, outputIndex: state.ReasoningItemOutputIndex));
+        var part = new JsonObject { ["type"] = "response.reasoning_summary_part.added", ["item_id"] = state.ReasoningItemId,
+            ["output_index"] = state.ReasoningItemOutputIndex, ["summary_index"] = 0,
+            ["part"] = new JsonObject { ["type"] = "summary_text", ["text"] = "" } };
+        builder.Append($"event: response.reasoning_summary_part.added\ndata: {part.ToJsonString()}\n\n");
     }
 
     /// <summary>
@@ -2750,6 +2812,14 @@ public static partial class ProxyProtocolBridge
             item["encrypted_content"] = EncodeAnthropicThinkingBridge(reasoningText, state.ReasoningSignature);
         }
 
+        builder.Append(BuildResponsesEvent("response.reasoning_summary_text.done", reasoningText,
+            outputIndex: state.ReasoningItemOutputIndex, itemId: state.ReasoningItemId));
+        var partDone = new JsonObject { ["type"] = "response.reasoning_summary_part.done", ["item_id"] = state.ReasoningItemId,
+            ["output_index"] = state.ReasoningItemOutputIndex, ["summary_index"] = 0,
+            ["part"] = new JsonObject { ["type"] = "summary_text", ["text"] = reasoningText } };
+        builder.Append($"event: response.reasoning_summary_part.done\ndata: {partDone.ToJsonString()}\n\n");
+
+        state.CompletedItems[state.ReasoningItemOutputIndex] = (JsonObject)item.DeepClone();
         builder.Append(BuildResponsesEvent("response.output_item.done", item, outputIndex: state.ReasoningItemOutputIndex));
     }
 
@@ -2763,9 +2833,9 @@ public static partial class ProxyProtocolBridge
             return;
         }
 
+        state.MessageOutputIndex = NextResponsesOutputIndex(state);
         state.MessageAdded = true;
         state.MessageId = $"msg_{Guid.NewGuid():N}";
-        state.MessageOutputIndex = state.ReservedOutputIndexes;
 
         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
         {
@@ -2805,7 +2875,9 @@ public static partial class ProxyProtocolBridge
         // 把 data 中的字段合并到事件对象
         if (string.Equals(eventType, "response.created", StringComparison.OrdinalIgnoreCase)
             || string.Equals(eventType, "response.in_progress", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(eventType, "response.completed", StringComparison.OrdinalIgnoreCase))
+            || string.Equals(eventType, "response.completed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(eventType, "response.incomplete", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(eventType, "response.failed", StringComparison.OrdinalIgnoreCase))
         {
             evt["response"] = data;
         }
@@ -2833,7 +2905,8 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string BuildResponsesEvent(string eventType, string deltaText, int outputIndex = -1, int contentIndex = -1, string? itemId = null)
     {
-        var evt = new JsonObject { ["type"] = eventType, ["delta"] = deltaText };
+        var evt = new JsonObject { ["type"] = eventType,
+            [eventType.EndsWith(".done", StringComparison.Ordinal) ? "text" : "delta"] = deltaText };
         if (outputIndex >= 0)
         {
             evt["output_index"] = outputIndex;
@@ -2846,6 +2919,7 @@ public static partial class ProxyProtocolBridge
         {
             evt["item_id"] = itemId;
         }
+        if (eventType.StartsWith("response.reasoning_summary_text.", StringComparison.Ordinal)) evt["summary_index"] = 0;
 
         return $"event: {eventType}\ndata: {evt.ToJsonString()}\n\n";
     }

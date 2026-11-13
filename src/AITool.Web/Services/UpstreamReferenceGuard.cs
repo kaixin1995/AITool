@@ -54,6 +54,7 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
                     {
                         if (hasId && (!hasType || type.ValueKind != JsonValueKind.String
                             || !IsExplicitInlineItem(item, type.GetString()))) throw Invalid();
+                        CollectCompaction(item, references);
                         RejectNestedReferences(item);
                     }
                 }
@@ -74,7 +75,7 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
         if (root.TryGetProperty("response", out var response))
         {
             if (response.ValueKind != JsonValueKind.Object) throw Invalid();
-            CollectResponse(response, references);
+            CollectResponse(response, references, native);
         }
         else
         {
@@ -87,11 +88,12 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
                 || (root.TryGetProperty("object", out var obj) && obj.ValueKind == JsonValueKind.String && obj.GetString() == "response"))
                 // Legacy flat lifecycle events carry the response itself at the root. Only
                 // these known lifecycle shapes qualify; delta/event correlation ids do not.
-                CollectResponse(root, references);
+                CollectResponse(root, references, native);
             else if (eventType is "response.output_item.added" or "response.output_item.done")
             {
                 if (!root.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object) throw Invalid();
                 if (item.TryGetProperty("id", out var id)) Add(references, UpstreamReferenceKind.Item, id);
+                if (native && eventType == "response.output_item.done") CollectCompaction(item, references);
             }
             if (eventType is not null && root.TryGetProperty("conversation", out var conversation)
                 && conversation.ValueKind != JsonValueKind.Null)
@@ -100,7 +102,7 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
         await store.CommitAsync(context, references.ToArray(), native, ct);
     }
 
-    private static void CollectResponse(JsonElement response, HashSet<UpstreamReferenceLookup> references)
+    private static void CollectResponse(JsonElement response, HashSet<UpstreamReferenceLookup> references, bool native)
     {
         if (response.TryGetProperty("id", out var id)) Add(references, UpstreamReferenceKind.Response, id);
         if (response.TryGetProperty("conversation", out var conversation) && conversation.ValueKind != JsonValueKind.Null)
@@ -112,8 +114,20 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
             {
                 if (item.ValueKind != JsonValueKind.Object) throw Invalid();
                 if (item.TryGetProperty("id", out var itemId)) Add(references, UpstreamReferenceKind.Item, itemId);
+                if (native) CollectCompaction(item, references);
             }
         }
+    }
+
+    private static void CollectCompaction(JsonElement item, HashSet<UpstreamReferenceLookup> references)
+    {
+        if (!item.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String
+            || type.GetString() is not ("compaction" or "compaction_summary")) return;
+        if (!item.TryGetProperty("encrypted_content", out var encrypted) || encrypted.ValueKind != JsonValueKind.String) throw Invalid();
+        var value = encrypted.GetString()!;
+        if (value.StartsWith("aitool-compact-v1:", StringComparison.Ordinal)
+            || value.StartsWith("magpie1:", StringComparison.Ordinal)) return;
+        Add(references, UpstreamReferenceKind.Compaction, encrypted);
     }
 
     private static void AddConversation(HashSet<UpstreamReferenceLookup> references, JsonElement conversation)
@@ -130,13 +144,14 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
     {
         if (value.ValueKind != JsonValueKind.String) throw Invalid();
         var id = value.GetString()!;
-        if (string.IsNullOrWhiteSpace(id) || id.Length > MaxIdentifierBytes) throw Invalid();
+        var limit = kind == UpstreamReferenceKind.Compaction ? 16 * 1024 * 1024 : MaxIdentifierBytes;
+        if (string.IsNullOrWhiteSpace(id) || id.Length > limit) throw Invalid();
         byte[] bytes;
         try { bytes = ExactUtf8.GetBytes(id); }
         catch (EncoderFallbackException) { throw Invalid(); }
         try
         {
-            if (bytes.Length > MaxIdentifierBytes) throw Invalid();
+            if (bytes.Length > limit) throw Invalid();
             references.Add(new(kind, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()));
             if (references.Count > UpstreamReferenceOwnerStore.MaxReferences) throw Invalid();
         }
@@ -155,12 +170,12 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
                 && item.GetProperty("role").GetString() is "user" or "assistant" or "system" or "developer"
                 && HasTextOrContent(item, "content")
                 && OptionalString(item, "phase"),
-            "function_call" => HasOnly(item, "type", "id", "call_id", "name", "arguments", "status")
-                && HasString(item, "call_id") && HasString(item, "name") && HasString(item, "arguments", allowEmpty: true),
+            "function_call" => HasOnly(item, "type", "id", "call_id", "name", "namespace", "arguments", "status")
+                && OptionalString(item, "namespace") && HasString(item, "call_id") && HasString(item, "name") && HasString(item, "arguments", allowEmpty: true),
             "function_call_output" => HasOnly(item, "type", "id", "call_id", "output", "status")
                 && HasString(item, "call_id") && HasTextOrContent(item, "output"),
-            "custom_tool_call" => HasOnly(item, "type", "id", "call_id", "name", "input", "status")
-                && HasString(item, "call_id") && HasString(item, "name") && HasString(item, "input", allowEmpty: true),
+            "custom_tool_call" => HasOnly(item, "type", "id", "call_id", "name", "namespace", "input", "status")
+                && OptionalString(item, "namespace") && HasString(item, "call_id") && HasString(item, "name") && HasString(item, "input", allowEmpty: true),
             "custom_tool_call_output" => HasOnly(item, "type", "id", "call_id", "output", "status")
                 && HasString(item, "call_id") && HasTextOrContent(item, "output"),
             "reasoning" => HasOnly(item, "type", "id", "summary", "content", "encrypted_content", "status")
@@ -168,8 +183,20 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
                 && OptionalTypedTextArray(item, "summary", "summary_text")
                 && OptionalTypedTextArray(item, "content", "reasoning_text")
                 && OptionalString(item, "encrypted_content", nullable: true),
-            "compaction" => HasOnly(item, "type", "id", "encrypted_content", "status")
+            "compaction" or "compaction_summary" => HasOnly(item, "type", "id", "encrypted_content", "status")
                 && HasString(item, "encrypted_content"),
+            "web_search_call" => HasOnly(item, "type", "id", "status", "action")
+                && item.TryGetProperty("action", out var action) && action.ValueKind == JsonValueKind.Object
+                && HasString(action, "type"),
+            "additional_tools" => HasOnly(item, "type", "id", "role", "tools")
+                && HasString(item, "role") && item.TryGetProperty("tools", out var tools)
+                && tools.ValueKind == JsonValueKind.Array,
+            "tool_search_call" => HasOnly(item, "type", "id", "call_id", "execution", "arguments", "status")
+                && HasString(item, "call_id") && item.TryGetProperty("arguments", out var args)
+                && args.ValueKind is JsonValueKind.Object or JsonValueKind.String,
+            "tool_search_output" => HasOnly(item, "type", "id", "call_id", "execution", "tools", "status")
+                && HasString(item, "call_id") && item.TryGetProperty("tools", out var found)
+                && found.ValueKind == JsonValueKind.Array,
             _ => false
         };
     }

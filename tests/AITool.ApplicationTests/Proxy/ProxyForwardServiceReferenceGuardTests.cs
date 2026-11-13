@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using AITool.Application.Proxy;
 using AITool.Infrastructure.Proxy;
+using AITool.Protocol;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -9,6 +10,22 @@ namespace AITool.ApplicationTests.Proxy;
 
 public sealed class ProxyForwardServiceReferenceGuardTests
 {
+    [Fact]
+    public async Task Compact_summary_buffers_upstream_sse_even_when_original_client_requested_streaming()
+    {
+        const string original = """{"model":"m","stream":true,"input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}""";
+        var summaryRequest = ProxyProtocolBridge.PrepareCompactSummaryRequest(original);
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("data: {\"type\":\"response.output_text.delta\",\"delta\":\"summary\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n", Encoding.UTF8, "text/event-stream")
+        });
+        var result = await service.ForwardAsync(new ProxyForwardRequest { TargetBaseUrl = "https://example.com/v1/responses", AllowNonSiteTarget = true,
+            ProtocolType = "Responses", TargetModelName = "m", RequestBody = summaryRequest, PreparedRequestBody = summaryRequest,
+            EnableStreaming = false, RequestTimeoutSeconds = 30 });
+        result.Success.Should().BeTrue(result.ErrorMessage);
+        result.IsStreaming.Should().BeFalse();
+        result.ResponseBody.Should().Contain("summary");
+    }
     private const string UpstreamSseWithUsage = """
         data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":2}}}
 

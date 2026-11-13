@@ -484,6 +484,8 @@ public sealed partial class OpenAiProxyController
             root["stream"] = true;
             root["model"] ??= lastRoot["model"]?.DeepClone();
             root["instructions"] ??= lastRoot["instructions"]?.DeepClone();
+            root["tools"] ??= lastRoot["tools"]?.DeepClone();
+            root["tool_choice"] ??= lastRoot["tool_choice"]?.DeepClone();
 
             if (!hasPreviousResponse && ShouldReplaceResponsesWebSocketTranscript(root, nextInput))
             {
@@ -661,7 +663,7 @@ public sealed partial class OpenAiProxyController
             using var doc = JsonDocument.Parse(payload);
             var root = doc.RootElement;
             if (!root.TryGetProperty("type", out var typeElement)
-                || !string.Equals(typeElement.GetString(), "response.completed", StringComparison.OrdinalIgnoreCase))
+                || typeElement.GetString() is not ("response.completed" or "response.incomplete"))
             {
                 return false;
             }

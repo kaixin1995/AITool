@@ -92,10 +92,21 @@ public sealed class UpstreamReferenceOwnerTests : IDisposable
     [InlineData("{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[]}")]
     [InlineData("{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"hmm\"}],\"encrypted_content\":\"opaque-content\"}")]
     [InlineData("{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"opaque-content\"}")]
-    [InlineData("{\"type\":\"compaction\",\"id\":\"cmp_1\",\"encrypted_content\":\"opaque-content\"}")]
-    public async Task Complete_reasoning_and_compaction_items_are_inline_even_when_ids_are_unknown(string item)
+    [InlineData("{\"type\":\"compaction\",\"id\":\"cmp_1\",\"encrypted_content\":\"aitool-compact-v1:dGVzdA==\"}")]
+    public async Task Complete_reasoning_and_local_compaction_items_are_inline_even_when_ids_are_unknown(string item)
     {
         (await Guard().ResolveRequestAsync("client-a", "{\"input\":[" + item + "]}")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Native_compaction_is_bound_to_its_owner_by_sealed_content()
+    {
+        const string sealedItem = """{"type":"compaction","id":"cmp_1","encrypted_content":"opaque-native-content"}""";
+        await Fails(() => Guard().ResolveRequestAsync("client-a", "{\"input\":[" + sealedItem + "]}"), "unknown_reference");
+        await Guard().CommitOutputAsync(_context, "{\"output\":[" + sealedItem + "]}", true);
+        (await Guard().ResolveRequestAsync("client-a", "{\"input\":[" + sealedItem + "]}"))!.Should().Be(new UpstreamReferenceRestriction(_context.Owner, _context.UpstreamNamespace));
+        await Fails(() => Guard().ResolveRequestAsync("client-b", "{\"input\":[" + sealedItem + "]}"), "unknown_reference");
+        await Fails(() => Guard().ResolveRequestAsync("client-a", "{\"input\":[" + sealedItem.Replace("opaque-native-content", "altered") + "]}"), "unknown_reference");
     }
 
     [Theory]

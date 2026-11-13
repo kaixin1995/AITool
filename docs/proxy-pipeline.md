@@ -16,7 +16,7 @@
 | `/v1/embeddings` | POST | `Embeddings`（`:435`） | 禁流式，仅 OpenAI 协议路由（`routeEligibility` 过滤） |
 | `/v1/responses` | POST | `Responses`（`OpenAiProxyController.Responses.cs:94`） | Responses 主入口（透传/降级/双重转换） |
 | `/v1/responses` | GET(WS) | `ResponsesWebSocket`（`OpenAiProxyController.Responses.cs:24`） | WebSocket 会话模式 |
-| `/v1/responses/compact` | POST | `ResponsesCompact`（`OpenAiProxyController.cs:479`） | Codex 远程压缩：走 ResponsesCore(isCompact)，上游端点 responses/compact，非流式 |
+| `/v1/responses/compact` | POST | `ResponsesCompact` | Codex 远程压缩：原生 Responses 转发至 responses/compact；跨协议请求摘要并封装为可回放的 compaction，非流式 |
 | `/v1/models` | GET | `Models`（`OpenAiProxyController.cs:171`） | 按 `x-api-key`/`anthropic-version` 头自动切 OpenAI/Anthropic 展示格式；按 AccessKey 路由限定过滤 |
 | `/v1/models/{modelId}` | GET | `ModelDetail`（`:249`） | 不存在 → 403 `model_not_found`；无权限 → 403 `route_forbidden` |
 | `/v1/messages` | POST | `AnthropicProxyController.Messages`（`AnthropicProxyController.cs:140`） | Anthropic 主入口 |

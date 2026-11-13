@@ -10,7 +10,7 @@
 - 独立类库项目，**零 NuGet 依赖**（只用 BCL `System.Text.Json`），唯一项目引用是 `AITool.Domain`（为了 `CompatibilityRule` DTO）
 - 被消费方：`Infrastructure/Proxy/ProxyForwardService`（仅 `ExtractUsageFromElement`）、`Infrastructure/Health/ModelHealthRequestService`、`Web/Controllers/Proxy/*`（全部转换入口）、`Web/Controllers/Admin/ChatApiController` 与 `DeveloperInvocationsApiController`（离线诊断）
 
-整个项目 = 一个巨型 `static partial class ProxyProtocolBridge`（7 个文件）+ 流式状态类：
+整个项目 = 一个 `static partial class ProxyProtocolBridge` 和流式状态类：
 
 | 文件 | 内容 |
 |------|------|
@@ -20,6 +20,7 @@
 | `ProxyProtocolBridge.StreamToAnthropic.cs` | OpenAI 流式分片 → Anthropic 事件流（增量状态机） |
 | `ProxyProtocolBridge.Responses.cs` | Responses 协议全家桶（请求/响应/双向流式）；顶层 `ResponsesToChatStreamState`、`ResponsesToolCallState`、`ChatToResponsesStreamState` |
 | `ProxyProtocolBridge.BridgeAnthropicResponses.cs` | **Anthropic ↔ Responses 直转**（不经 Chat 中转）：请求双向、非流式响应双向、聚合流式双向、`ConvertResponsesSseEventToAnthropic` 逐事件状态机、thinking 签名桥接载体（`aitool-anthropic-thinking-v1:`） |
+| `ProxyProtocolBridge.CodexTools.cs` | Codex 命名空间、自定义工具与客户端工具搜索映射，以及本地压缩摘要的编码和回放 |
 | `ProxyProtocolBridge.Helpers.cs` | 全部共享私有辅助（内容块解析、usage 提取、SSE 写入、映射表）+ 公开辅助 `ExtractUsageFromElement` / `TryExtractSseFieldPayload`（SSE 行解析，兼容无空格 `data:`） |
 
 ### 流式状态类（均 `public sealed`，由调用方持有）
@@ -34,6 +35,10 @@
 | `ProxyProtocolBridge.ResponsesToAnthropicStreamState` / `ResponsesOutputItemState` | BridgeAnthropicResponses.cs | Responses 流 → Anthropic 事件流直转状态：内嵌 `AnthropicOpenAiStreamState`（块管理复用）+ `Items`（output_index → 内容块映射）+ `Completed/Failed` 终态标记 |
 
 **失败约定**：非流式转换失败返回 `string.Empty`（调用层据此保留路由 fallback）；流式状态机解析失败置 `state.ConversionFailed = true`，尚未写出首字节时仍可 fallback。
+
+Codex 的 `additional_tools`、命名空间工具和 custom tool 被展开成 Chat/Anthropic 可用的函数；custom 输入作为 `{ "input": "..." }` 传给上游，输出时根据原请求还原成 `custom_tool_call`。客户端 `tool_search` 和已加载工具同样参与映射。Responses 流终态包含已完成的文本、推理和工具项目；长度截断使用 `response.incomplete`。WebSocket 追加请求继承工具定义和上一轮完成输出。
+
+非原生 Responses 上游处理 `/responses/compact`，以及 HTTP/WS 的 `compaction_trigger` 时，使用模型生成摘要并封装为带 `aitool-compact-v1:` 标记的 compaction 项；后续请求在转发前还原摘要文本，也能读取 `magpie1:` 摘要。工具和触发项不会放进摘要请求。上游明确拒绝历史结构、长度或端点时，在无外部引用的前提下按文本重试一次；重试失败且不是鉴权、权限或限流错误时，使用带截断标记的本地摘录兜底。空摘要和截断摘要不会当作模型摘要使用。该内容只是 Base64 封装，并非加密；原生上游的不透明 compaction 无法跨协议解码，会拒绝转发而非静默丢失。
 
 ---
 

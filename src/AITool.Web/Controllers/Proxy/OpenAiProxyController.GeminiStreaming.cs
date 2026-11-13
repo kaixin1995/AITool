@@ -165,6 +165,7 @@ public sealed partial class OpenAiProxyController
         {
             Model = forwardRequest.TargetModelName
         };
+        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, forwardRequest.RequestBody);
 
         async Task WriteChunkAsync(string chunk, CancellationToken token)
         {
@@ -287,7 +288,7 @@ public sealed partial class OpenAiProxyController
 
         if (result.IsStreamInterrupted && startedWriting)
         {
-            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
+            await Response.TryWriteTerminatorAsync(ResponsesStreamFailure(responsesState), cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -316,6 +317,7 @@ public sealed partial class OpenAiProxyController
         {
             Model = forwardRequest.TargetModelName
         };
+        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, forwardRequest.RequestBody);
 
         async Task WriteAnthropicEventsAsResponsesAsync(string anthropicSse, CancellationToken token)
         {

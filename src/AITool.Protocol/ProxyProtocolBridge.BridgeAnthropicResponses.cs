@@ -109,6 +109,22 @@ public static partial class ProxyProtocolBridge
                             ["text"] = text
                         });
                     }
+                    else if (type == "thinking")
+                    {
+                        FlushPendingMessageItem(input, ref pendingParts, role);
+                        var thinking = blockObj["thinking"]?.ToString() ?? string.Empty;
+                        var signature = blockObj["signature"]?.ToString();
+                        var item = new JsonObject { ["type"] = "reasoning", ["id"] = $"rs_{Guid.NewGuid():N}",
+                            ["summary"] = new JsonArray(new JsonObject { ["type"] = "summary_text", ["text"] = thinking }) };
+                        if (!string.IsNullOrEmpty(signature)) item["encrypted_content"] = EncodeAnthropicThinkingBridge(thinking, signature);
+                        input.Add(item);
+                    }
+                    else if (type == "redacted_thinking")
+                    {
+                        FlushPendingMessageItem(input, ref pendingParts, role);
+                        input.Add(new JsonObject { ["type"] = "reasoning", ["id"] = $"rs_{Guid.NewGuid():N}",
+                            ["summary"] = new JsonArray(), ["encrypted_content"] = EncodeAnthropicRedactedThinking(blockObj) });
+                    }
                     else if (type == "image" && blockObj["source"] is JsonObject imgSrc)
                     {
                         var mediaType = imgSrc["media_type"]?.GetValue<string>() ?? "image/png";
@@ -262,10 +278,8 @@ public static partial class ProxyProtocolBridge
         };
 
         var maxOutputTokens = rootNode["max_output_tokens"]?.GetValue<uint>() ?? 0;
-        if (maxOutputTokens > 0)
-        {
-            payload["max_tokens"] = maxOutputTokens;
-        }
+        // Anthropic Messages requires max_tokens; Codex Responses commonly omits it.
+        payload["max_tokens"] = maxOutputTokens > 0 ? maxOutputTokens : 8192;
 
         if (systemParts.Count > 0)
         {
@@ -300,6 +314,10 @@ public static partial class ProxyProtocolBridge
                     _ => 4096
                 }
             };
+            var budget = payload["thinking"]!["budget_tokens"]!.GetValue<int>();
+            var limit = payload["max_tokens"]!.GetValue<uint>();
+            if (limit <= 1024) payload.Remove("thinking");
+            else if (budget >= limit) payload["thinking"]!["budget_tokens"] = (int)limit - 1;
         }
 
         return payload.ToJsonString();
@@ -309,7 +327,7 @@ public static partial class ProxyProtocolBridge
     /// 将 Anthropic 非流式响应直接转换为 Responses API 非流式响应。
     /// thinking block 会带上签名桥接载体（encrypted_content），供下一轮请求方向还原。
     /// </summary>
-    public static string BuildResponsesResponseFromAnthropic(string anthropicBody)
+    public static string BuildResponsesResponseFromAnthropic(string anthropicBody, string? requestBody = null)
     {
         try
         {
@@ -320,6 +338,8 @@ public static partial class ProxyProtocolBridge
             }
 
             var outputs = new JsonArray();
+            var toolState = new ChatToResponsesStreamState();
+            if (requestBody is not null) ConfigureResponsesTools(toolState, requestBody);
             foreach (var blockNode in content)
             {
                 if (blockNode is not JsonObject block)
@@ -349,7 +369,8 @@ public static partial class ProxyProtocolBridge
                 else if (type == "thinking")
                 {
                     var thinkingText = block["thinking"]?.GetValue<string>() ?? string.Empty;
-                    if (string.IsNullOrWhiteSpace(thinkingText))
+                    var signature = block["signature"]?.GetValue<string>();
+                    if (string.IsNullOrWhiteSpace(thinkingText) && string.IsNullOrWhiteSpace(signature))
                     {
                         continue;
                     }
@@ -364,7 +385,6 @@ public static partial class ProxyProtocolBridge
                             new JsonObject { ["type"] = "summary_text", ["text"] = thinkingText }
                         }
                     };
-                    var signature = block["signature"]?.GetValue<string>();
                     if (!string.IsNullOrWhiteSpace(signature))
                     {
                         reasoningItem["encrypted_content"] = EncodeAnthropicThinkingBridge(thinkingText, signature);
@@ -372,17 +392,16 @@ public static partial class ProxyProtocolBridge
 
                     outputs.Add(reasoningItem);
                 }
+                else if (type == "redacted_thinking")
+                {
+                    outputs.Add(new JsonObject { ["type"] = "reasoning", ["id"] = $"rs_{Guid.NewGuid():N}",
+                        ["status"] = "completed", ["summary"] = new JsonArray(),
+                        ["encrypted_content"] = EncodeAnthropicRedactedThinking(block) });
+                }
                 else if (type == "tool_use")
                 {
-                    outputs.Add(new JsonObject
-                    {
-                        ["type"] = "function_call",
-                        ["id"] = $"fc_{Guid.NewGuid():N}",
-                        ["status"] = "completed",
-                        ["call_id"] = block["id"]?.DeepClone() ?? $"call_{Guid.NewGuid():N}",
-                        ["name"] = block["name"]?.DeepClone() ?? string.Empty,
-                        ["arguments"] = block["input"] is null ? "{}" : block["input"]!.ToJsonString()
-                    });
+                    outputs.Add(ResponsesCall($"fc_{Guid.NewGuid():N}", block["id"]?.ToString() ?? $"call_{Guid.NewGuid():N}",
+                        block["name"]?.ToString() ?? string.Empty, block["input"]?.ToJsonString() ?? "{}", toolState.ToolDefinitions));
                 }
             }
 
@@ -502,6 +521,17 @@ public static partial class ProxyProtocolBridge
                 }
                 else if (type == "reasoning")
                 {
+                    var encoded = item["encrypted_content"]?.ToString();
+                    if (TryDecodeAnthropicRedactedThinking(encoded, out var redacted))
+                    {
+                        content.Add(redacted);
+                        continue;
+                    }
+                    if (TryDecodeAnthropicThinkingBridge(encoded, out var thinking, out var signature))
+                    {
+                        content.Add(new JsonObject { ["type"] = "thinking", ["thinking"] = thinking, ["signature"] = signature });
+                        continue;
+                    }
                     // Responses 的 reasoning 输出项 → thinking block（无签名，仅客户端展示；
                     // 客户端回传时请求方向按无桥接容器处理直接丢弃，不会构造非法签名块）。
                     var summary = item["summary"] as JsonArray;
@@ -1198,7 +1228,7 @@ public static partial class ProxyProtocolBridge
 
             var type = itemObj["type"]?.GetValue<string>() ?? "";
 
-            if (type == "function_call")
+            if (type is "function_call" or "custom_tool_call" or "tool_search_call")
             {
                 if (currentAssistant is null)
                 {
@@ -1207,7 +1237,9 @@ public static partial class ProxyProtocolBridge
                 }
 
                 JsonNode? toolInput;
-                var arguments = itemObj["arguments"]?.GetValue<string>() ?? "{}";
+                var arguments = type == "custom_tool_call"
+                    ? new JsonObject { ["input"] = itemObj["input"]?.ToString() ?? "" }.ToJsonString()
+                    : itemObj["arguments"] is JsonValue argValue ? argValue.ToString() : itemObj["arguments"]?.ToJsonString() ?? "{}";
                 try
                 {
                     toolInput = JsonNode.Parse(arguments);
@@ -1221,14 +1253,14 @@ public static partial class ProxyProtocolBridge
                 {
                     ["type"] = "tool_use",
                     ["id"] = itemObj["call_id"]?.DeepClone() ?? itemObj["id"]?.DeepClone() ?? $"toolu_{Guid.NewGuid():N}",
-                    ["name"] = itemObj["name"]?.DeepClone() ?? string.Empty,
+                    ["name"] = type == "tool_search_call" ? "tool_search" : FlatToolName(itemObj["namespace"]?.ToString(), itemObj["name"]?.ToString() ?? ""),
                     ["input"] = toolInput
                 });
                 currentUser = null;
                 continue;
             }
 
-            if (type == "function_call_output")
+            if (type is "function_call_output" or "custom_tool_call_output" or "tool_search_output")
             {
                 if (currentUser is null)
                 {
@@ -1242,7 +1274,7 @@ public static partial class ProxyProtocolBridge
                     ["tool_use_id"] = itemObj["call_id"]?.DeepClone() ?? string.Empty,
                     ["content"] = itemObj["output"] is JsonValue outputValue && outputValue.TryGetValue<string>(out var outputText)
                         ? outputText
-                        : itemObj["output"]?.ToJsonString() ?? string.Empty
+                        : itemObj["output"]?.ToJsonString() ?? itemObj["tools"]?.ToJsonString() ?? string.Empty
                 });
                 currentAssistant = null;
                 continue;
@@ -1252,6 +1284,16 @@ public static partial class ProxyProtocolBridge
             {
                 // 仅还原本桥接层生成的签名载体；上游原生 reasoning 无法构造合法签名，丢弃。
                 var encrypted = itemObj["encrypted_content"]?.GetValue<string>();
+                if (TryDecodeAnthropicRedactedThinking(encrypted, out var redacted))
+                {
+                    if (currentAssistant is null)
+                    {
+                        currentAssistant = new JsonObject { ["role"] = "assistant", ["content"] = new JsonArray() };
+                        messages.Add(currentAssistant);
+                    }
+                    ((JsonArray)currentAssistant["content"]!).Insert(0, redacted);
+                    continue;
+                }
                 if (TryDecodeAnthropicThinkingBridge(encrypted, out var thinkingText, out var signature))
                 {
                     if (currentAssistant is null)
@@ -1564,20 +1606,11 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static void ConvertResponsesToolsToAnthropic(JsonObject rootNode, JsonObject payload)
     {
-        if (rootNode["tools"] is not JsonArray tools)
-        {
-            return;
-        }
-
         var claudeTools = new JsonArray();
-        foreach (var tool in tools)
+        foreach (var (toolObj, toolNamespace) in ResponsesTools(rootNode))
         {
-            if (tool is not JsonObject toolObj)
-            {
-                continue;
-            }
-
             var type = toolObj["type"]?.GetValue<string>() ?? "function";
+            if (type == "tool_search" && toolObj["execution"]?.ToString() == "server") continue;
 
             if (string.Equals(type, "web_search", StringComparison.OrdinalIgnoreCase))
             {
@@ -1589,13 +1622,13 @@ public static partial class ProxyProtocolBridge
                 continue;
             }
 
-            if (!string.Equals(type, "function", StringComparison.OrdinalIgnoreCase))
+            if (type is not ("function" or "custom" or "tool_search"))
             {
                 // file_search / computer_use 等 Responses 内置工具在 Anthropic 上游没有对应物，丢弃。
                 continue;
             }
 
-            var name = toolObj["name"]?.GetValue<string>();
+            var name = type == "tool_search" ? "tool_search" : toolObj["name"]?.GetValue<string>();
             if (string.IsNullOrWhiteSpace(name))
             {
                 continue;
@@ -1603,9 +1636,9 @@ public static partial class ProxyProtocolBridge
 
             claudeTools.Add(new JsonObject
             {
-                ["name"] = name,
+                ["name"] = FlatToolName(toolNamespace, name),
                 ["description"] = toolObj["description"]?.DeepClone(),
-                ["input_schema"] = toolObj["parameters"]?.DeepClone() ?? new JsonObject { ["type"] = "object" }
+                ["input_schema"] = type == "custom" ? CustomToolSchema() : toolObj["parameters"]?.DeepClone() ?? new JsonObject { ["type"] = "object" }
             });
         }
 
@@ -1652,12 +1685,12 @@ public static partial class ProxyProtocolBridge
         else if (tc is JsonObject tcObj)
         {
             var type = tcObj["type"]?.GetValue<string>();
-            if (string.Equals(type, "function", StringComparison.OrdinalIgnoreCase) && tcObj["name"] is not null)
+            if (type is "function" or "custom" && tcObj["name"] is not null)
             {
                 claudeTc = new JsonObject
                 {
                     ["type"] = "tool",
-                    ["name"] = tcObj["name"]!.DeepClone()
+                    ["name"] = FlatToolName(tcObj["namespace"]?.ToString(), tcObj["name"]!.ToString())
                 };
             }
         }

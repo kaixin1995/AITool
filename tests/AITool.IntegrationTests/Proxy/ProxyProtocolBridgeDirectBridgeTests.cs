@@ -154,7 +154,7 @@ public sealed class ProxyProtocolBridgeDirectBridgeTests
         tools[0]!["input_schema"]!["type"]!.GetValue<string>().Should().Be("object");
 
         root["tool_choice"]!["type"]!.GetValue<string>().Should().Be("any");
-        root["thinking"]!["budget_tokens"]!.GetValue<int>().Should().Be(4096, "reasoning.effort=high 应映射为 thinking.budget_tokens");
+        root["thinking"]!["budget_tokens"]!.GetValue<int>().Should().Be(2047, "thinking 预算必须低于 max_tokens");
         root["output_config"]!["effort"]!.GetValue<string>().Should().Be("high");
     }
 

@@ -68,6 +68,7 @@ handler 创建后不改共享状态；关闭自动 Cookie 容器，不共享可�
 `UpstreamReferenceGuard` 在 normalization/桥接可能删除字段前读取原始 `previous_response_id`、conversation、item_reference。`UpstreamReferenceOwners` 保存标识摘要、客户端域、owner、origin+protocol namespace、native/synthetic、暴露准备状态、时间/冲突标记，不保存 transcript 或原始 handle。
 
 - 已知归属在原授权路由集合内硬过滤至相同 owner 和 namespace；无合格路由返回错误，不向其他账号逐个探测。普通站点 owner 是保守的 SiteKeyId/站点身份，不宣称识别自然人账号。
+- 原生 compaction 的不透明内容按摘要单独记录归属，后续重放按其内容摘要锁定同一 owner 和 namespace；未知、过期或跨客户端的原生压缩项会拒绝。AI-Tool 与 Magpie 的本地文本摘要标记可解码并作为完整历史回放，不依赖原生上游归属。
 - 未知、过期、冲突、多 owner/namespace、unsupported reference shape 明确拒绝。原生 handle 不伪造；合成 ID 不伪装成上游 native handle。不通过偷偷删引用或把 `store=false` 改为 true 来“续接”。
 - 默认 TTL 24 小时，从首次记录起算；读取和同 owner 写入不延长，查询严格检查到期，清理有界。此本地窗口不保证上游仍有历史。
 - HTTP JSON、SSE/桥接 chunk、下游 WS 输出前调用归属提交；先提交再可能暴露 ID。该提交与实际网络交付无法做原子事务，取消/部分写失败可能留下客户端没收到的归属，必须保守保留，不能因此允许跨账号回退。

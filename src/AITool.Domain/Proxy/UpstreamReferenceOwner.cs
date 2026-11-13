@@ -6,7 +6,8 @@ public enum UpstreamReferenceKind
 {
     Response = 0,
     Conversation = 1,
-    Item = 2
+    Item = 2,
+    Compaction = 3
 }
 
 public enum UpstreamReferenceExposureStatus
