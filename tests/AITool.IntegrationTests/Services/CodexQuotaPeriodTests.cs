@@ -7,11 +7,64 @@ using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using SqlSugar;
+using AITool.IntegrationTests.Proxy;
+using System.Text.Json.Nodes;
+using System.Net.Http.Json;
+using System.Net;
 
 namespace AITool.IntegrationTests.Services;
 
 public sealed class CodexQuotaPeriodTests
 {
+    [Fact]
+    public async Task Quota_api_uses_each_windows_current_observation_without_modifying_saved_history()
+    {
+        await using var factory = new ResponsesWebApplicationFactory(new ResponsesFakeProxyForwardService(), configureServices: services =>
+        {
+            // Match the production SQLite date conversion instead of the generic test fixture's raw provider.
+            var descriptor = services.Single(x => x.ServiceType == typeof(ISqlSugarClient));
+            var connection = ((ISqlSugarClient)descriptor.ImplementationInstance!).CurrentConnectionConfig.ConnectionString;
+            services.Remove(descriptor);
+            services.AddSqlSugar(connection);
+        });
+        using var client = factory.CreateClient();
+        var now = DateTimeOffset.UtcNow;
+        var site = Guid.NewGuid();
+        var account = new CodexAccount { Id = Guid.NewGuid(), LinkedSiteId = site };
+        var weekly = new CodexQuotaPeriod { AccountId = account.Id, SiteId = site, WindowId = "weekly", StartAt = now.AddDays(-2), ResetAt = now.AddDays(5), LastObservedAt = now.AddMinutes(-5), FirstObservedAt = now.AddDays(-2), UsedPercent = 20, RequestCount = 777, BoundaryUncertain = true };
+        var shortWindow = new CodexQuotaPeriod { AccountId = account.Id, SiteId = site, WindowId = "five-hour", StartAt = now.AddHours(-2), ResetAt = now.AddHours(3), LastObservedAt = now.AddMinutes(-10), FirstObservedAt = now.AddHours(-2), UsedPercent = 50, RequestCount = 888 };
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await db.Client.Insertable(account).ExecuteCommandAsync();
+            await db.Client.Updateable<AITool.Domain.Operations.SystemRuntimeSettings>()
+                .SetColumns(x => x.OAuthFeaturesEnabled == true).Where(x => x.Id == 1).ExecuteCommandAsync();
+            scope.ServiceProvider.GetRequiredService<AITool.Web.Services.ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+            await db.Client.Insertable(new[] { weekly, shortWindow }).ExecuteCommandAsync();
+            await db.Client.Insertable(new[]
+            {
+                new ProxyUsageLog { TargetSiteId = site, RequestedAt = now.AddMinutes(-30), InputTokens = 100, TotalTokens = 100, Status = "success", AttemptedModel = "terra" },
+                new ProxyUsageLog { TargetSiteId = site, RequestedAt = now.AddMinutes(-7), InputTokens = 50, TotalTokens = 50, Status = "success", AttemptedModel = "terra" },
+                new ProxyUsageLog { TargetSiteId = site, RequestedAt = now.AddMinutes(-1), InputTokens = 200, TotalTokens = 200, Status = "success", AttemptedModel = "terra" }
+            }).ExecuteCommandAsync();
+        }
+        using var response = await client.GetAsync($"/api/admin/oauth/accounts/{account.Id}/quota-periods");
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        var rows = (await response.Content.ReadFromJsonAsync<JsonArray>())!;
+        var w = rows.Single(x => x!["windowId"]!.GetValue<string>() == "weekly")!;
+        var s = rows.Single(x => x!["windowId"]!.GetValue<string>() == "five-hour")!;
+        w["requestCount"]!.GetValue<int>().Should().Be(3);
+        w["projectionBasis"]!["requestCount"]!.GetValue<int>().Should().Be(2);
+        w["projectionBasis"]!["totalTokens"]!.GetValue<long>().Should().Be(150);
+        w["usedPercent"]!.GetValue<double>().Should().Be(20);
+        s["projectionBasis"]!["requestCount"]!.GetValue<int>().Should().Be(1);
+        s["usedPercent"]!.GetValue<double>().Should().Be(50);
+        await using var verify = factory.Services.CreateAsyncScope();
+        var saved = verify.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await saved.CodexQuotaPeriods.InSingleAsync(weekly.Id)).RequestCount.Should().Be(777);
+        (await saved.CodexQuotaPeriods.InSingleAsync(shortWindow.Id)).RequestCount.Should().Be(888);
+    }
+
     [Fact]
     public async Task Projection_basis_uses_only_current_site_calls_recorded_before_the_quota_observation()
     {

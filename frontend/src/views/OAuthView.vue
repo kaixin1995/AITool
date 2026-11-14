@@ -70,12 +70,18 @@ function currentPeriod(account: UnifiedAccount, windowId: string): CodexQuotaPer
   return quotaPeriods.value[account.id]?.find(p => p.windowId === windowId && p.isCurrent)
 }
 const selectedQuotaPeriods = computed(() => quotaPeriodAccount.value ? quotaPeriods.value[quotaPeriodAccount.value.id] ?? [] : [])
-const quotaWindowCards = computed(() => (quotaPeriodAccount.value?.windows ?? [])
+const quotaWindowCards = computed(() => {
+  const selected = quotaPeriodAccount.value
+  const account = selected ? accounts.value.find(a => a.id === selected.id && a.provider === selected.provider) ?? selected : null
+  return (account?.windows ?? [])
   .filter(w => /^(five-hour|weekly|monthly|window-[12])$/.test(w.id))
   .map(window => {
     const period = selectedQuotaPeriods.value.find(p => p.windowId === window.id && p.isCurrent)
-    return { window, period, previous: period ? previousQuotaPeriod(selectedQuotaPeriods.value, period) : undefined, projection: period ? projectQuotaPeriod(period) : null }
-  }))
+    // 周期百分比和预测取自同一次额度观测，避免账户列表与周期接口更新先后不同导致显示不一致。
+    const usedPercent = period ? period.usedPercent : window.usedPercent
+    return { window, period, usedPercent, previous: period ? previousQuotaPeriod(selectedQuotaPeriods.value, period) : undefined, projection: period ? projectQuotaPeriod(period) : null }
+  })
+})
 function successRate(period: CodexQuotaPeriod | undefined): string {
   return period?.successCount == null || !period.requestCount ? '—' : `${(period.successCount / period.requestCount * 100).toFixed(2)}%`
 }
@@ -2295,9 +2301,9 @@ onUnmounted(() => {
         <section v-for="card in quotaWindowCards" :key="card.window.id" class="quota-dashboard">
         <div class="quota-overview">
           <div class="quota-overview-title"><span class="quota-icon">◷</span><div><strong>{{ card.window.label }}</strong><small>预计重置 {{ card.period ? formatDateTime(card.period.resetAt) : (card.window.resetLabel ?? '—') }}</small></div></div>
-          <div class="quota-remaining"><span>剩余</span><strong>{{ card.window?.usedPercent != null ? `${Math.max(0, 100 - Math.round(card.window.usedPercent))}%` : '—' }}</strong></div>
+          <div class="quota-remaining"><span>剩余</span><strong>{{ card.usedPercent != null ? `${Math.max(0, Math.min(100, 100 - Math.round(card.usedPercent)))}%` : '—' }}</strong></div>
         </div>
-        <NProgress v-if="card.window?.usedPercent != null" :percentage="Math.max(0, Math.min(100, 100 - Number(card.window.usedPercent)))" :status="quotaColor(100 - Number(card.window.usedPercent))" :show-indicator="false" :height="6" :border-radius="4" />
+        <NProgress v-if="card.usedPercent != null" :percentage="Math.max(0, Math.min(100, 100 - Number(card.usedPercent)))" :status="quotaColor(100 - Number(card.usedPercent))" :show-indicator="false" :height="6" :border-radius="4" />
         <div v-if="card.period" class="quota-compare-grid">
           <section class="quota-compare-card">
             <strong class="quota-compare-title">上个周期用量</strong>
