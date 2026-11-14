@@ -690,8 +690,10 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" })).WithTags("Health"
 // 映射 API 控制器路由，用于代理转发端点 + 后台管理 API。
 app.MapControllers();
 
-// SPA fallback：非 /api、/v1、/health 的请求全部返回 index.html，
-// 交给前端 Vue Router 处理（history 模式）。MapFallbackToFile 会自动排除已映射的端点。
+// 已移除的页面直接返回 404，不进入 SPA 的未知地址兜底。
+app.MapGet("/gateway-enhancements", () => Results.NotFound());
+
+// SPA fallback：交给前端 Vue Router 处理未知地址（history 模式）。
 if (!app.Environment.IsEnvironment("Testing"))
 {
     // index.html 必须协商缓存（no-cache）：入口文件引用带内容哈希的 js/css，

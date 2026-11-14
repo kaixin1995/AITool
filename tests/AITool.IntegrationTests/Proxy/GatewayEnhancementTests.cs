@@ -15,6 +15,18 @@ namespace AITool.IntegrationTests.Proxy;
 
 public sealed class GatewayEnhancementTests
 {
+    [Theory]
+    [InlineData("/gateway-enhancements")]
+    [InlineData("/GATEWAY-ENHANCEMENTS/")]
+    public async Task Removed_gateway_page_returns_404_without_redirect(string path)
+    {
+        await using var factory = new ResponsesWebApplicationFactory(new ResponsesFakeProxyForwardService());
+        using var client = factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        using var response = await client.GetAsync(path);
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        response.Headers.Location.Should().BeNull();
+    }
+
     [Fact]
     public async Task Settings_reject_stale_revision_and_never_return_secrets_from_admin_list()
     {

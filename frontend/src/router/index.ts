@@ -57,7 +57,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'models', name: 'models', component: () => import('@/views/ModelsView.vue'), meta: { title: '模型库' } },
       { path: 'routes', name: 'routes', component: () => import('@/views/RouteManagementView.vue'), meta: { title: '路由管理' } },
       { path: 'access-keys', name: 'access-keys', component: () => import('@/views/AccessKeysView.vue'), meta: { title: '访问密钥' } },
-      { path: 'gateway-enhancements', redirect: { name: 'system-settings' } },
+      { path: 'gateway-enhancements', name: 'removed-gateway-enhancements', component: () => import('@/views/NotFoundView.vue'), meta: { title: '页面不存在' } },
       {
         path: 'route-fallback',
         name: 'route-fallback',
