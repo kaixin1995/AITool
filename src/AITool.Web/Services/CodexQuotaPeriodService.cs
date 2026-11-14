@@ -24,13 +24,25 @@ public static class CodexQuotaPeriodService
                 .OrderBy(x => x.LastObservedAt, OrderByType.Desc).ToListAsync(ct);
             var current = periods.FirstOrDefault();
             var uncertainStart = false;
+            // 未开始消耗的窗口可能返回“查询时间 + 完整窗口”，首次使用时才固定截止时间。
+            // 这种空闲倒计时前移不是额度重置；保留已知起点和日志区间，直至窗口真正到期。
+            var idleResetDrift = current is not null && current.ResetAt > observedAt
+                && Math.Abs(current.DurationSeconds - duration) <= 1
+                && current.UsedPercent == 0 && window.UsedPercent is >= 0
+                && reset > current.ResetAt
+                && Math.Abs((reset.AddSeconds(-duration) - observedAt).TotalSeconds) <= 120;
+            if (idleResetDrift)
+            {
+                current!.ResetAt = reset;
+                current.BoundaryUncertain = true;
+            }
             // 相对倒计时可能有数秒抖动；提前重置或周期长度变化则保留不确定边界。
             var percentReset = current?.UsedPercent is double previous && window.UsedPercent is double next && previous - next >= 5;
             if (current is not null && (Math.Abs((current.ResetAt - reset).TotalSeconds) > 120 || Math.Abs(current.DurationSeconds - duration) > 1 || percentReset))
             {
                 current.EndAt = current.ResetAt <= observedAt ? current.ResetAt : observedAt;
-                current.BoundaryUncertain = current.ResetAt > observedAt || Math.Abs((reset.AddSeconds(-duration) - current.EndAt.Value).TotalSeconds) > 120;
-                uncertainStart = current.BoundaryUncertain;
+                uncertainStart = current.ResetAt > observedAt || Math.Abs((reset.AddSeconds(-duration) - current.EndAt.Value).TotalSeconds) > 120;
+                current.BoundaryUncertain |= uncertainStart;
                 await AggregateAsync(db, current, observedAt, ct, pricing);
                 await db.Updateable(current).ExecuteCommandAsync(ct);
                 current = null;

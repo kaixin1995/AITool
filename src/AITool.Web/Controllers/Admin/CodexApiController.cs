@@ -743,6 +743,7 @@ public sealed class CodexApiController : ControllerBase
         await pricing.GetCatalogAsync(ct);
         foreach (var period in periods.Where(x => x.EndAt == null && x.ResetAt > now))
             await CodexQuotaPeriodService.AggregateAsync(_dbContext.Client, period, now, ct, pricing);
+        var previousPeriodLinks = CodexQuotaPeriodHistory.PreviousPeriodLinks(periods);
         return Ok(periods.Select(p => new
         {
             p.Id, p.WindowId, p.Label, p.StartAt, p.ResetAt, p.EndAt, p.FirstObservedAt,
@@ -751,6 +752,8 @@ public sealed class CodexApiController : ControllerBase
             totalTokens = p.InputTokens + p.CachedTokens + p.OutputTokens,
             p.RequestCount, p.SuccessCount, p.LastUsageAt, p.UnknownCount,
             p.EstimatedCostUsd, p.UnpricedCount,
+            historyNormalized = previousPeriodLinks.ContainsKey(p.Id),
+            previousPeriodId = previousPeriodLinks.TryGetValue(p.Id, out var previousId) ? (Guid?)previousId : null,
             models = string.IsNullOrEmpty(p.ModelsJson) ? Array.Empty<object>() : System.Text.Json.JsonSerializer.Deserialize<object[]>(p.ModelsJson),
             isCurrent = p.EndAt == null && p.ResetAt > now
         }));

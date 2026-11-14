@@ -22,6 +22,8 @@ export interface CodexQuotaPeriod {
   usedPercent: number | null
   boundaryUncertain: boolean
   isCurrent: boolean
+  previousPeriodId?: string | null
+  historyNormalized?: boolean
   inputTokens: number
   cachedTokens: number
   outputTokens: number

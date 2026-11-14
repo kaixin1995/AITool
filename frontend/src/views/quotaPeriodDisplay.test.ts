@@ -15,6 +15,14 @@ describe('quota period comparison', () => {
     expect(previousQuotaPeriod([other, previous, current], current)?.id).toBe('previous')
     expect(previousQuotaPeriod([period({ id: 'gap', isCurrent: false, endAt: '2026-11-01T00:00:00Z' })], current)).toBeUndefined()
   })
+  it('uses a server-verified historical link across an idle gap', () => {
+    const current = period({ historyNormalized: true, previousPeriodId: 'previous' })
+    const previous = period({ id: 'previous', isCurrent: false, endAt: '2026-11-05T00:00:00Z' })
+    const fragment = period({ id: 'fragment', isCurrent: false, endAt: current.startAt })
+    expect(previousQuotaPeriod([fragment, previous, current], current)?.id).toBe('previous')
+    expect(previousQuotaPeriod([fragment, current], current)).toBeUndefined()
+    expect(previousQuotaPeriod([fragment, previous, { ...current, historyNormalized: false }], { ...current, historyNormalized: false })?.id).toBe('fragment')
+  })
   it('projects from consumed percentage only when the inputs are usable', () => {
     expect(projectQuotaPeriod(period(), now)).toEqual({ requests: 40, tokens: 400, costUsd: 8 })
     expect(projectQuotaPeriod(period({ unknownCount: 1 }), now)).toBeNull()

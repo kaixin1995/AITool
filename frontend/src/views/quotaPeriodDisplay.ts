@@ -1,6 +1,9 @@
 import type { CodexQuotaPeriod } from '@/api/oauth'
 
 export function previousQuotaPeriod(periods: CodexQuotaPeriod[], current: CodexQuotaPeriod): CodexQuotaPeriod | undefined {
+  if (current.historyNormalized && current.previousPeriodId) {
+    return periods.find(p => p.id === current.previousPeriodId && p.windowId === current.windowId && !!p.endAt)
+  }
   return periods.filter(p => p.id !== current.id && p.windowId === current.windowId && p.endAt && Math.abs(Date.parse(p.endAt) - Date.parse(current.startAt)) <= 120_000)
     .sort((a, b) => Date.parse(b.endAt!) - Date.parse(a.endAt!))[0]
 }

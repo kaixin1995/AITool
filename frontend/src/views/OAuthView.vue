@@ -2327,6 +2327,7 @@ onUnmounted(() => {
           </section>
         </div>
         <div v-if="card.period" class="quota-period-foot">额度刷新 {{ formatDateTime(card.period.lastObservedAt) }} · 用量汇总 {{ formatDateTime(card.period.aggregatedAt) }} · 周期起点为推算值</div>
+        <div v-if="card.period?.historyNormalized" class="quota-period-foot quota-card-warning">已根据记录的重置边界关联上期；两个周期之间的调用可在调用日志中按时间查看。</div>
           <div v-if="!card.period" class="quota-window-empty">{{ quotaPeriodAccount && quotaPeriodErrors[quotaPeriodAccount.id] ? '周期用量加载失败，请稍后重试' : '暂无当前周期记录，等待下次真实额度刷新' }}</div>
         </section>
       </div>
