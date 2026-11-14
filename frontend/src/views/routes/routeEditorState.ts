@@ -63,6 +63,7 @@ export function getReferenceUnavailableReason(rule: RouteRuleItem): string | nul
     case 'valid':
     case 'available': return null
     case 'missing': return '目标入口已删除或不存在'
+    case 'disabled': return '目标入口已禁用'
     case 'nested': return '目标入口含有路由引用，不支持嵌套引用'
     case 'empty': return '目标入口没有可用候选'
     case 'invalid': return '路由引用配置无效'

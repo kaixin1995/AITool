@@ -20,7 +20,7 @@ vi.mock('@/api/routes', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/api/routes')>(),
   getRouteEntries: vi.fn(), getRouteRules: vi.fn(), getRouteSiteInstances: vi.fn(),
   getRouteReferenceTargets: vi.fn(), saveRouteRules: vi.fn(), savePoolQueue: vi.fn(), createRouteEntry: vi.fn(),
-  deleteRouteEntry: vi.fn()
+  deleteRouteEntry: vi.fn(), setRouteEntryEnabled: vi.fn()
 }))
 
 interface EditorSetup {
@@ -50,6 +50,8 @@ interface EditorSetup {
   loadSelectedEntry(name: string): Promise<void>
   createEntry(): void
   deleteCurrentEntry(confirmReferenced?: boolean, expectedEntryName?: string | null): Promise<void>
+  toggleCurrentEntry(): Promise<void>
+  selectedEntry: Ref<{ entryName: string; isDisabled?: boolean } | null>
 }
 
 // Execute the actual SFC setup inside a Vue component instance without a DOM,
@@ -107,9 +109,21 @@ beforeEach(() => {
   })))
   vi.mocked(api.saveRouteRules).mockResolvedValue({ message: 'saved' })
   vi.mocked(api.deleteRouteEntry).mockResolvedValue()
+  vi.mocked(api.setRouteEntryEnabled).mockResolvedValue()
 })
 
 describe('RoutesView availability draft protection', () => {
+  it('disables and re-enables the selected entry without discarding its draft', async () => {
+    const editor = await mountEditor()
+    openDirtyDraft(editor)
+    await editor.toggleCurrentEntry()
+    expect(api.setRouteEntryEnabled).toHaveBeenCalledWith('auto', false)
+    expect(editor.selectedEntry.value?.isDisabled).toBe(true)
+    expect(editor.availabilityDirty.value).toBe(true)
+    await editor.toggleCurrentEntry()
+    expect(api.setRouteEntryEnabled).toHaveBeenLastCalledWith('auto', true)
+    expect(editor.selectedEntry.value?.isDisabled).toBe(false)
+  })
   it('does not toggle, move, add, remove, save or reload over an unconfirmed time draft', async () => {
     const editor = await mountEditor()
     openDirtyDraft(editor)

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
@@ -18,6 +19,36 @@ namespace AITool.IntegrationTests.Proxy;
 
 public sealed class RouteReferenceExecutionTests
 {
+    [Theory]
+    [InlineData("/v1/chat/completions")]
+    [InlineData("/v1/messages")]
+    [InlineData("/v1/responses")]
+    public async Task Disabling_pool_entry_blocks_new_direct_and_referenced_requests_until_reenabled(string endpoint)
+    {
+        var fake = Forwarder("remote-e");
+        await using var factory = new ProxyFallbackWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        await SeedAsync(factory);
+        using var warm = await client.SendAsync(Request(endpoint, Parent));
+        warm.StatusCode.Should().Be(HttpStatusCode.OK);
+        fake.Requests.Clear();
+
+        using var disable = await client.PostAsJsonAsync("/api/admin/route-rules/entries/enabled", new { entryName = Source, isEnabled = false });
+        disable.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var direct = await client.SendAsync(Request(endpoint, Source));
+        direct.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        fake.Requests.Should().BeEmpty();
+        using var parent = await client.SendAsync(Request(endpoint, Parent));
+        parent.StatusCode.Should().Be(HttpStatusCode.OK);
+        fake.Requests.Select(r => r.TargetModelName).Should().Equal("remote-a", "remote-e");
+        fake.Requests.Clear();
+
+        using var enable = await client.PostAsJsonAsync("/api/admin/route-rules/entries/enabled", new { entryName = Source, isEnabled = true });
+        enable.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var restored = await client.SendAsync(Request(endpoint, Parent));
+        restored.StatusCode.Should().Be(HttpStatusCode.OK);
+        fake.Requests.Select(r => r.TargetModelName).Should().Equal("remote-a", "remote-b", "remote-c", "remote-e");
+    }
     private const string Parent = "reference-parent";
     private const string Source = "reference-source";
     private const string AllDayRange = "[{\"start\":\"00:00\",\"end\":\"23:59\"}]";

@@ -647,6 +647,7 @@ public sealed class ProxyRequestMetadataCache
                             EntryName = entryName,
                             EntryId = entriesByName.GetValueOrDefault(entryName)?.Id,
                             ManagedByPoolId = entriesByName.GetValueOrDefault(entryName)?.ManagedByPoolId,
+                            IsDisabled = entriesByName.GetValueOrDefault(entryName)?.IsDisabled ?? false,
                             HasRouteReferences = allRules.Any(r => r.ExternalModelName == entryName && IsRouteEntryReference(r)),
                             DisplayName = displayNameByEntry.GetValueOrDefault(entryName),
                             CandidateCount = countsByName.GetValueOrDefault(entryName, 0)
@@ -1537,6 +1538,7 @@ public sealed class ProxyRequestMetadataCache
 
                     var routes = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
                     var routeEntries = (await dbContext.ProxyRouteEntries.ToListAsync(cancellationToken)).ToDictionary(x => x.Id);
+                    var disabledEntries = routeEntries.Values.Where(x => x.IsDisabled).Select(x => x.EntryName).ToHashSet(StringComparer.Ordinal);
                     var sites = await dbContext.Sites.ToListAsync(cancellationToken);
                     var models = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
                     var mappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
@@ -1656,6 +1658,7 @@ public sealed class ProxyRequestMetadataCache
                     var effective = new List<CachedProxyRouteTarget>();
                     foreach (var root in routes.GroupBy(x => x.ExternalModelName, StringComparer.Ordinal))
                     {
+                        if (disabledEntries.Contains(root.Key)) continue;
                         var grouped = root.Any(IsRouteEntryReference);
                         var outerOrder = 0;
                         foreach (var rule in root.OrderBy(x => x.Priority))
@@ -1724,6 +1727,7 @@ public sealed class ProxyRequestMetadataCache
     {
         if (!IsRouteEntryReference(rule)) return IsSiteTarget(rule) ? null : "Invalid";
         if (rule.TargetRouteEntryId is not Guid id || !entries.TryGetValue(id, out var source)) return "Missing";
+        if (source.IsDisabled) return "Disabled";
         if (source.EntryName == rule.ExternalModelName) return "Invalid";
         if (rules.Any(x => x.ExternalModelName == source.EntryName && !IsSiteTarget(x))) return "Nested";
         return "Valid";

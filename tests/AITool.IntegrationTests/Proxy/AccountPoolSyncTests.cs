@@ -36,6 +36,37 @@ public sealed class AccountPoolSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Upgrade_keeps_existing_entries_enabled_and_preserves_later_disabled_state()
+    {
+        var db = _services.GetRequiredService<SqlSugar.ISqlSugarClient>();
+        var entry = new ProxyRouteEntry { EntryName = "legacy-model" };
+        await db.Insertable(entry).ExecuteCommandAsync();
+        db.Ado.ExecuteCommand("ALTER TABLE ProxyRouteEntries DROP COLUMN IsDisabled");
+        SqlSugarSetup.InitializeDatabase(db);
+        (await db.Queryable<ProxyRouteEntry>().InSingleAsync(entry.Id)).IsDisabled.Should().BeFalse();
+        await db.Updateable<ProxyRouteEntry>().SetColumns(x => x.IsDisabled == true).Where(x => x.Id == entry.Id).ExecuteCommandAsync();
+        SqlSugarSetup.InitializeDatabase(db);
+        (await db.Queryable<ProxyRouteEntry>().InSingleAsync(entry.Id)).IsDisabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Pool_sync_preserves_disabled_entry_state()
+    {
+        var (provisioner, sync, db) = CreateServices();
+        var account = await provisioner.ProvisionFromTokensAsync(Input("disabled-entry", "disabled@example.test", "team", "token"), default);
+        await provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId, [("m1", "m1")], default);
+        var pool = new AccountPool { Name = "disabled-entry-pool", VendorKey = "codex", ExposedModelsJson = "[\"m1\"]" };
+        await sync.CreatePoolAsync(pool, [account.Id], default);
+        var entry = await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == "m1");
+        entry.IsDisabled = true;
+        await db.Client.Updateable(entry).UpdateColumns(x => x.IsDisabled).ExecuteCommandAsync();
+
+        await sync.SyncPoolAsync(pool.Id, default);
+
+        (await db.ProxyRouteEntries.InSingleAsync(entry.Id)).IsDisabled.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Pool_exposes_each_model_as_managed_entry_with_member_fanout()
     {
         var (provisioner, sync, db) = CreateServices();

@@ -47,6 +47,7 @@ const referenceTargets = ref<RouteReferenceTarget[]>([])
 const selectedReferenceId = ref<string | null>(null)
 const referenceTargetsError = ref('')
 const deletingEntry = ref(false)
+const togglingEntry = ref(false)
 const candidateModeOptions = [
   { label: '站点模型', value: 'Site' },
   { label: '路由入口引用', value: 'RouteEntry' }
@@ -94,7 +95,7 @@ const selectedSiteInstance = computed(() => filteredInstances.value.find(
 const isPoolManaged = computed(() => Boolean(selectedEntry.value?.managedByPoolId))
 const canEdit = computed(
   () => Boolean(selectedEntryName.value) && loadedRulesEntryName.value === selectedEntryName.value
-    && !loading.value && !saving.value && !creatingEntry.value && !deletingEntry.value
+    && !loading.value && !saving.value && !creatingEntry.value && !deletingEntry.value && !togglingEntry.value
 )
 const availabilityDirty = computed(() => {
   const draft = availabilityDraft.value
@@ -301,10 +302,10 @@ async function loadSelectedEntry(entryName: string | null): Promise<void> {
 }
 
 function changeEntry(entryName: string | null): void {
-  if (saving.value || creatingEntry.value || deletingEntry.value || entryName === selectedEntryName.value) return
+  if (saving.value || creatingEntry.value || deletingEntry.value || togglingEntry.value || entryName === selectedEntryName.value) return
 
   const proceed = (): void => {
-    if (saving.value || creatingEntry.value || deletingEntry.value) return
+    if (saving.value || creatingEntry.value || deletingEntry.value || togglingEntry.value) return
     cancelAvailability()
     selectedEntryName.value = entryName
     void loadSelectedEntry(entryName)
@@ -395,6 +396,20 @@ async function deleteCurrentEntry(confirmReferenced = false, expectedEntryName =
   } finally {
     deletingEntry.value = false
   }
+}
+
+async function toggleCurrentEntry(): Promise<void> {
+  const entry = selectedEntry.value
+  if (!entry || togglingEntry.value || !canEdit.value) return
+  const isEnabled = Boolean(entry.isDisabled)
+  togglingEntry.value = true
+  try {
+    await api.setRouteEntryEnabled(entry.entryName, isEnabled)
+    entries.value = entries.value.map(item => item.entryName === entry.entryName ? { ...item, isDisabled: !isEnabled } : item)
+    message.success(isEnabled ? '主入口已启用' : '主入口已禁用')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '操作失败，请重试')
+  } finally { togglingEntry.value = false }
 }
 
 function addCandidate(instance: SiteInstanceItem): void {
@@ -619,7 +634,7 @@ onMounted(() => {
             @click="changeEntry(entry.entryName)"
           >
             <span class="entry-name">{{ entry.displayName || entry.entryName }}</span>
-            <span class="entry-count">{{ entry.candidateCount }} 个候选</span>
+            <span class="entry-count">{{ entry.isDisabled ? '已禁用 · ' : '' }}{{ entry.candidateCount }} 个候选</span>
           </button>
         </div>
       </section>
@@ -633,17 +648,22 @@ onMounted(() => {
               <template v-else>请选择或创建一个主入口</template>
             </div>
           </div>
-          <NPopconfirm
-            v-if="selectedEntryName"
-            positive-text="删除"
-            negative-text="取消"
-            @positive-click="() => deleteCurrentEntry()"
-          >
-            <template #trigger>
-              <NButton size="small" type="error" secondary :disabled="!canEdit || isPoolManaged || creatingEntry">删除当前主入口</NButton>
-            </template>
-            {{ getDeleteEntryConfirmation(hasUnsavedChanges) }}
-          </NPopconfirm>
+          <div v-if="selectedEntryName" class="route-entry-actions">
+            <NPopconfirm @positive-click="toggleCurrentEntry">
+              <template #trigger><NButton size="small" :type="selectedEntry?.isDisabled ? 'primary' : 'warning'" secondary :loading="togglingEntry" :disabled="!canEdit">{{ selectedEntry?.isDisabled ? '启用当前主入口' : '禁用当前主入口' }}</NButton></template>
+              {{ selectedEntry?.isDisabled ? '启用后可通过此入口发起新请求。' : '禁用后新请求及其他入口对此入口的引用将不可用；已开始的请求不受影响。其他入口若直接映射同一上游模型，仍可调用。' }}
+            </NPopconfirm>
+            <NPopconfirm
+              positive-text="删除"
+              negative-text="取消"
+              @positive-click="() => deleteCurrentEntry()"
+            >
+              <template #trigger>
+                <NButton size="small" type="error" secondary :disabled="!canEdit || isPoolManaged || creatingEntry">删除当前主入口</NButton>
+              </template>
+              {{ getDeleteEntryConfirmation(hasUnsavedChanges) }}
+            </NPopconfirm>
+          </div>
         </div>
 
         <div v-if="!selectedEntryName" class="route-empty-state">请选择或创建一个主入口</div>
@@ -827,6 +847,8 @@ onMounted(() => {
 .route-panel-header-stack {
   align-items: flex-start;
 }
+
+.route-entry-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .route-panel-title {
   margin: 0;

@@ -32,6 +32,7 @@ export interface RouteEntry {
   entryId?: string | null
   managedByPoolId?: string | null
   hasRouteReferences?: boolean
+  isDisabled?: boolean
   entryName: string
   displayName?: string | null
   candidateCount: number
@@ -87,6 +88,9 @@ export async function deleteRouteEntry(entryName: string, confirmReferenced?: bo
     entryName,
     ...(confirmReferenced === true ? { confirmReferenced: true } : {})
   }, { skipErrorNotify: true })
+}
+export async function setRouteEntryEnabled(entryName: string, isEnabled: boolean): Promise<void> {
+  await httpPost('/api/admin/route-rules/entries/enabled', { entryName, isEnabled }, { skipErrorNotify: true })
 }
 export async function getRouteReferenceTargets(parentEntryName: string): Promise<RouteReferenceTarget[]> {
   return httpGet<RouteReferenceTarget[]>(`/api/admin/route-rules/reference-targets?parentEntryName=${encodeURIComponent(parentEntryName)}`)

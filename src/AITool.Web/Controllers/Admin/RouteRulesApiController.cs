@@ -39,6 +39,7 @@ public sealed class RouteEntryListItem
 {
     public Guid? EntryId { get; set; }
     public Guid? ManagedByPoolId { get; set; }
+    public bool IsDisabled { get; set; }
     public bool HasRouteReferences { get; set; }
     /// <summary>
     /// 主入口名称。
@@ -63,6 +64,12 @@ public sealed class CreateRouteEntryRequest
     /// 主入口名称。
     /// </summary>
     public string EntryName { get; set; } = string.Empty;
+}
+
+public sealed class SetRouteEntryEnabledRequest
+{
+    public string EntryName { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; }
 }
 
 /// <summary>
@@ -337,6 +344,26 @@ public sealed class RouteRulesApiController : ControllerBase
         }, cancellationToken);
     }
 
+    /// <summary>启用或禁用主入口；已发出的请求不受影响。</summary>
+    [HttpPost("entries/enabled")]
+    public async Task<IActionResult> SetEntryEnabled([FromBody] SetRouteEntryEnabledRequest request, CancellationToken cancellationToken)
+    {
+        var entryName = (request.EntryName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(entryName)) return BadRequest(new { message = "主入口名称不能为空" });
+        return await ExecuteGraphMutationAsync(async db =>
+        {
+            var entry = await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == entryName, cancellationToken);
+            if (entry is null) return NotFound(new { message = "主入口不存在" });
+            entry.IsDisabled = !request.IsEnabled;
+            await db.Client.Updateable(entry).UpdateColumns(x => x.IsDisabled).ExecuteCommandAsync(cancellationToken);
+            return Ok(new { entryName, isEnabled = request.IsEnabled });
+        }, cancellationToken, () =>
+        {
+            _metadataCache.InvalidateDeletedRouteEntry(entryName);
+            return Task.CompletedTask;
+        });
+    }
+
     /// <summary>
     /// 删除主入口。
     /// </summary>
@@ -576,7 +603,8 @@ public sealed class RouteRulesApiController : ControllerBase
             {
                 ExternalModelName = parentName, TargetKind = "RouteEntry", TargetRouteEntryId = target.Id
             }).ToList();
-            var reason = parent.ManagedByPoolId is not null ? "号池托管入口不能手工修改"
+            var reason = target.IsDisabled ? "目标入口已禁用"
+                : parent.ManagedByPoolId is not null ? "号池托管入口不能手工修改"
                 : ValidateGraph(parent, entries, proposed);
             return new { entryId = target.Id, entryName = target.EntryName, managedByPoolId = target.ManagedByPoolId,
                 candidateCount = counts.GetValueOrDefault(target.EntryName), canSelect = reason is null, reason };

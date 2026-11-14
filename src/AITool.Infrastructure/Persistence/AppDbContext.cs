@@ -338,6 +338,7 @@ public static class SqlSugarSetup
         // CodeFirst does not reliably add new indexes to existing SQLite tables.
         db.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS IX_ProxyRouteEntries_ManagedByPoolId ON ProxyRouteEntries (ManagedByPoolId);");
         db.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS IX_ProxyRouteRules_ManagedByPoolId ON ProxyRouteRules (ManagedByPoolId);");
+        db.Ado.ExecuteCommand("UPDATE ProxyRouteEntries SET IsDisabled = 0 WHERE IsDisabled IS NULL;");
 
         // SQLite CodeFirst may add boolean columns as NULL on populated legacy tables.
         foreach (var table in new[] { "CodexAccounts", "GoogleAccounts", "KimiAccounts" })
