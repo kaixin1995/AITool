@@ -690,9 +690,6 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" })).WithTags("Health"
 // 映射 API 控制器路由，用于代理转发端点 + 后台管理 API。
 app.MapControllers();
 
-// 已移除的页面直接返回 404，不进入 SPA 的未知地址兜底。
-app.MapGet("/gateway-enhancements", () => Results.NotFound());
-
 // SPA fallback：交给前端 Vue Router 处理未知地址（history 模式）。
 if (!app.Environment.IsEnvironment("Testing"))
 {
