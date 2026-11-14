@@ -37,10 +37,24 @@ public sealed class GatewayEnhancementsApiController(GatewayEnhancementSettings 
                 if (original is null) return BadRequest(new { message = "修改 MCP 服务名称后请重新填写密钥。" });
                 server.ApiKey = original.ApiKey;
             }
-        var ids = await db.ProxyAccessKeys.Select(k => k.Id).ToListAsync(ct);
-        if (options.ToolAllowedKeyIds.Any(id => !ids.Contains(id)) || options.Budgets.Any(b => !ids.Contains(b.KeyId)) || options.McpServers.Any(s => s.AllowedKeyIds.Any(id => !ids.Contains(id))))
+        var ids = (await db.ProxyAccessKeys.Select(k => k.Id).ToListAsync(ct)).ToHashSet();
+        // Deleted keys can remain in the saved snapshot. Remove only inherited stale
+        // references; a new invalid ID (including one moved into another allowlist) is still an error.
+        if (options.ToolAllowedKeyIds.Any(id => !ids.Contains(id) && !previous.ToolAllowedKeyIds.Contains(id))
+            || options.Budgets.Any(b => !ids.Contains(b.KeyId) && !previous.Budgets.Any(p => p.KeyId == b.KeyId))
+            || options.McpServers.Any(s => s.AllowedKeyIds.Any(id => !ids.Contains(id)
+                && !previous.McpServers.Any(p => p.Name == s.Name && p.AllowedKeyIds.Contains(id)))))
             return BadRequest(new { message = "配置引用了不存在的访问密钥。" });
-        try { await settings.SaveAsync(options, ct, options.Revision); return Ok(new { saved = true }); }
+        options.ToolAllowedKeyIds.RemoveAll(id => !ids.Contains(id));
+        options.Budgets.RemoveAll(b => !ids.Contains(b.KeyId));
+        foreach (var server in options.McpServers) server.AllowedKeyIds.RemoveAll(id => !ids.Contains(id));
+        try
+        {
+            var saved = await settings.SaveAsync(options, ct, options.Revision);
+            saved.SearchApiKey = saved.SearchApiKey.Length > 0 ? "********" : "";
+            foreach (var server in saved.McpServers) server.ApiKey = server.ApiKey.Length > 0 ? "********" : "";
+            return Ok(new { saved = true, revision = saved.Revision, configuration = saved });
+        }
         catch (ArgumentException ex) { return BadRequest(new { message = ex.Message }); }
         catch (InvalidOperationException ex) { return Conflict(new { message = ex.Message }); }
     }

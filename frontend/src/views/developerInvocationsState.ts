@@ -1,6 +1,6 @@
 import type { CompatibilityRuleForm } from './compatibilityState'
 
-export type DeveloperToolTab = 'invocations' | 'diagnostic-dumps' | 'simulator' | 'protocol-diagnostics' | 'header-presets' | 'proxy-profiles' | 'sql-migrations'
+export type DeveloperToolTab = 'invocations' | 'diagnostic-dumps' | 'simulator' | 'protocol-diagnostics' | 'header-presets' | 'proxy-profiles' | 'sql-migrations' | 'session-usage' | 'search-tools' | 'shared-mcp'
 
 // ────────────────────────────────────────────────
 // 调用记录 → 协议诊断台 联动：详情面板把某条请求/响应体一键载入诊断表单。
@@ -47,6 +47,9 @@ const hashToTab: Record<string, DeveloperToolTab> = {
   '#developerHeaderPresetsPane': 'header-presets',
   '#developerProxyProfilesPane': 'proxy-profiles',
   '#developerSqlMigrationsPane': 'sql-migrations',
+  '#session-usage': 'session-usage',
+  '#search-tools': 'search-tools',
+  '#shared-mcp': 'shared-mcp',
   '#diagnostic-dumps': 'diagnostic-dumps',
   '#protocol-diagnostics': 'protocol-diagnostics',
   '#header-presets': 'header-presets',
@@ -63,7 +66,10 @@ const tabToHash: Record<DeveloperToolTab, string> = {
   'protocol-diagnostics': '#developerProtocolDiagnosticsPane',
   'header-presets': '#developerHeaderPresetsPane',
   'proxy-profiles': '#developerProxyProfilesPane',
-  'sql-migrations': '#developerSqlMigrationsPane'
+  'sql-migrations': '#developerSqlMigrationsPane',
+  'session-usage': '#session-usage',
+  'search-tools': '#search-tools',
+  'shared-mcp': '#shared-mcp'
 }
 
 export function developerTabFromHash(hash: string): DeveloperToolTab {

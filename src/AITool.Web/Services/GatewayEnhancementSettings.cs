@@ -80,7 +80,7 @@ public sealed class GatewayEnhancementSettings
         foreach (var address in options.McpServers.Select(s => s.Url).Append(options.SearchEndpoint).Where(s => s.Length > 0))
             if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || uri.UserInfo.Length > 0 || uri.Fragment.Length > 0) throw new ArgumentException("服务地址必须是 HTTP 或 HTTPS，不能携带用户信息或片段。");
     }
-    public async Task SaveAsync(GatewayEnhancementOptions options, CancellationToken ct, string? expectedRevision = null)
+    public async Task<GatewayEnhancementOptions> SaveAsync(GatewayEnhancementOptions options, CancellationToken ct, string? expectedRevision = null)
     {
         Validate(options);
         await _gate.WaitAsync(ct);
@@ -94,6 +94,8 @@ public sealed class GatewayEnhancementSettings
             File.Move(_path + ".tmp", _path, true);
             _current = JsonSerializer.Deserialize<GatewayEnhancementOptions>(snapshot)!;
             LoadError = null;
+            // Return this operation's snapshot while holding the lock, independently of later saves.
+            return JsonSerializer.Deserialize<GatewayEnhancementOptions>(snapshot)!;
         }
         finally { _gate.Release(); }
     }

@@ -33,6 +33,12 @@ describe('Developer Invocations 页签深链接', () => {
     expect(developerHashForTab('sql-migrations')).toBe('#developerSqlMigrationsPane')
   })
 
+  it('支持迁入的会话统计和共享工具深链接', () => {
+    for (const tab of ['session-usage', 'search-tools', 'shared-mcp'] as const) {
+      expect(developerTabFromHash(developerHashForTab(tab))).toBe(tab)
+    }
+  })
+
   it('兼容旧页面的 Responses 原生能力推断', () => {
     expect(supportsResponsesNatively({ supportsResponses: true })).toBe(true)
     expect(supportsResponsesNatively({

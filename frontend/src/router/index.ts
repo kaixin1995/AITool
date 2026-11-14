@@ -57,7 +57,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'models', name: 'models', component: () => import('@/views/ModelsView.vue'), meta: { title: '模型库' } },
       { path: 'routes', name: 'routes', component: () => import('@/views/RouteManagementView.vue'), meta: { title: '路由管理' } },
       { path: 'access-keys', name: 'access-keys', component: () => import('@/views/AccessKeysView.vue'), meta: { title: '访问密钥' } },
-      { path: 'gateway-enhancements', name: 'gateway-enhancements', component: () => import('@/views/GatewayEnhancementsView.vue'), meta: { title: '网关增强' } },
+      { path: 'gateway-enhancements', redirect: { name: 'system-settings' } },
       {
         path: 'route-fallback',
         name: 'route-fallback',
@@ -75,7 +75,7 @@ const routes: RouteRecordRaw[] = [
         redirect: to => ({ name: 'detection', query: to.query, hash: '#tasks' })
       },
       { path: 'model-health', name: 'model-health', component: () => import('@/views/ModelHealthManagementView.vue'), meta: { title: '模型健康' } },
-      { path: 'developer/invocations', name: 'developer-invocations', component: () => import('@/views/DeveloperInvocationsView.vue'), meta: { title: '调试工具', requiresDeveloper: true } },
+      { path: 'developer/invocations', name: 'developer-invocations', component: () => import('@/views/DeveloperInvocationsView.vue'), meta: { title: '调试工具' } },
       { path: 'usage-logs', name: 'usage-logs', component: () => import('@/views/UsageLogsView.vue'), meta: { title: '使用日志' } },
       { path: 'system/settings', name: 'system-settings', component: () => import('@/views/SystemSettingsView.vue'), meta: { title: '系统设置' } }
     ]

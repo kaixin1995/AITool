@@ -270,33 +270,6 @@ public sealed class GatewayEnhancementTests
     }
 
     [Fact]
-    public async Task Agent_configuration_restores_original_and_refuses_external_edits()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "aitool-agent-" + Guid.NewGuid().ToString("N"));
-        var folder = Path.Combine(root, ".codex"); Directory.CreateDirectory(folder);
-        var path = Path.Combine(folder, "config.toml");
-        const string original = "model = \"old\"\nfeatures = [\"a\", \"b\"]\n[custom]\nx = true\n";
-        await File.WriteAllTextAsync(path, original);
-        var service = new AgentConfigurationService(root);
-        string Hash() => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(File.ReadAllText(path))));
-        var request = new AgentConfigurationRequest { Agent = "codex", Model = "new", BaseUrl = "http://localhost:1234/v1", ExpectedHash = Hash() };
-        var preview = service.Preview(request);
-        preview.Should().Contain("features = [\"a\", \"b\"]").And.Contain("[custom]").And.NotContain("/v1/v1");
-        await service.ApplyAsync(request, false, CancellationToken.None);
-        var appliedHash = Hash();
-        await File.AppendAllTextAsync(path, "\n# user change\n");
-        request.ExpectedHash = Hash();
-        var restore = () => service.ApplyAsync(request, true, CancellationToken.None);
-        await restore.Should().ThrowAsync<InvalidOperationException>();
-        await File.WriteAllTextAsync(path, preview);
-        request.ExpectedHash = appliedHash;
-        await service.ApplyAsync(request, true, CancellationToken.None);
-        (await File.ReadAllTextAsync(path)).Should().Be(original);
-        // Test-owned files only; preserve the directory if a failed assertion needs inspection.
-        File.Delete(path); Directory.Delete(folder); Directory.Delete(root);
-    }
-
-    [Fact]
     public async Task Configured_token_budget_rejects_before_upstream_send()
     {
         var fake = new ResponsesFakeProxyForwardService();

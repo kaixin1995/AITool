@@ -401,7 +401,6 @@ builder.Services.AddSingleton<SessionAffinityService>();
 builder.Services.AddSingleton<RouteCandidatePolicyService>();
 builder.Services.AddSingleton<GatewayEnhancementSettings>();
 builder.Services.AddSingleton<GatewayBudgetGate>();
-builder.Services.AddSingleton<AgentConfigurationService>();
 builder.Services.AddScoped<GatewayRequestContext>();
 builder.Services.AddSingleton<IStreamEnhancementPolicy, GatewayStreamPolicy>();
 builder.Services.AddHttpClient("gateway-tools", c => c.Timeout = TimeSpan.FromSeconds(60))

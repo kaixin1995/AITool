@@ -71,8 +71,7 @@ const navGroups = computed<NavGroup[]>(() => {
       title: '代理配置',
       items: [
         { label: '路由管理', key: 'routes', icon: '🔀' },
-        { label: '访问密钥', key: 'access-keys', icon: '🔑' },
-        { label: '网关增强', key: 'gateway-enhancements', icon: '🧩' }
+        { label: '访问密钥', key: 'access-keys', icon: '🔑' }
       ]
     },
     {
@@ -80,7 +79,7 @@ const navGroups = computed<NavGroup[]>(() => {
       items: [
         { label: '模型检测', key: 'detection', icon: '🔍' },
         { label: '模型健康', key: 'model-health', icon: '💊' },
-        ...(features?.developerEnabled ? [{ label: '调试工具', key: 'developer-invocations', icon: '🛠️' }] : []),
+        { label: '调试工具', key: 'developer-invocations', icon: '🛠️' },
         { label: '使用日志', key: 'usage-logs', icon: '📋' },
         { label: '系统设置', key: 'system-settings', icon: '⚙️' }
       ]
