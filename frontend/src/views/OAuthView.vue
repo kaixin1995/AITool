@@ -2319,11 +2319,11 @@ onUnmounted(() => {
           </section>
           <section class="quota-compare-card projected">
             <strong class="quota-compare-title">↗ 当前周期预测</strong>
-            <div class="quota-compare-date">按上游已用额度比例估算</div>
+            <div class="quota-compare-date">额度用尽时本周期的估算总量</div>
             <div class="quota-compare-row"><span><i class="quota-metric-icon blue">↗</i>预计请求</span><b>{{ card.projection?.requests ?? '—' }}</b></div>
             <div class="quota-compare-row"><span><i class="quota-metric-icon teal">◫</i>预计 Token</span><b>{{ card.projection ? formatPeriodTokens(card.projection.tokens) : '—' }}</b></div>
             <div class="quota-compare-row"><span><i class="quota-metric-icon amber">$</i>预计金额</span><b>{{ card.projection?.costUsd == null ? '—' : formatTotalCost(card.projection.costUsd) }}</b></div>
-            <div class="quota-projection-note">{{ card.projection ? '假设后续用量结构不变，仅供参考' : '额度未及时刷新或数据不完整，暂不预测' }}</div>
+            <div class="quota-projection-note">{{ card.projection ? card.projection.warnings.join('；') + '。' : '缺少当前周期同一时刻的有效额度比例或调用用量，暂无法估算。' }}</div>
           </section>
         </div>
         <div v-if="card.period" class="quota-period-foot">额度刷新 {{ formatDateTime(card.period.lastObservedAt) }} · 用量汇总 {{ formatDateTime(card.period.aggregatedAt) }} · 周期起点为推算值</div>

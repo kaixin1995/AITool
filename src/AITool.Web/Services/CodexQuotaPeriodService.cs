@@ -106,4 +106,17 @@ public static class CodexQuotaPeriodService
         }).OrderByDescending(x => x.totalTokens));
         period.AggregatedAt = now;
     }
+    /// <summary>按额度观测时刻截取同一周期的调用日志，供比例估算使用，不改变保存的周期快照。</summary>
+    public static async Task<CodexQuotaPeriod?> AggregateAtObservationAsync(ISqlSugarClient db, CodexQuotaPeriod period, DateTimeOffset now, CancellationToken ct, IModelPricingService? pricing = null)
+    {
+        if (period.EndAt is not null || period.LastObservedAt <= period.StartAt
+            || period.LastObservedAt > now || period.LastObservedAt >= period.ResetAt) return null;
+        var snapshot = new CodexQuotaPeriod
+        {
+            SiteId = period.SiteId, StartAt = period.StartAt, ResetAt = period.ResetAt,
+            EndAt = period.LastObservedAt
+        };
+        await AggregateAsync(db, snapshot, now, ct, pricing);
+        return snapshot;
+    }
 }

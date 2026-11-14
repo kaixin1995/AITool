@@ -741,8 +741,13 @@ public sealed class CodexApiController : ControllerBase
             .OrderBy(x => x.LastObservedAt, SqlSugar.OrderByType.Desc).Take(100).ToListAsync(ct);
         var now = DateTimeOffset.UtcNow;
         await pricing.GetCatalogAsync(ct);
+        var projectionBases = new Dictionary<Guid, CodexQuotaPeriod>();
         foreach (var period in periods.Where(x => x.EndAt == null && x.ResetAt > now))
+        {
             await CodexQuotaPeriodService.AggregateAsync(_dbContext.Client, period, now, ct, pricing);
+            var snapshot = await CodexQuotaPeriodService.AggregateAtObservationAsync(_dbContext.Client, period, now, ct, pricing);
+            if (snapshot is not null) projectionBases[period.Id] = snapshot;
+        }
         var previousPeriodLinks = CodexQuotaPeriodHistory.PreviousPeriodLinks(periods);
         return Ok(periods.Select(p => new
         {
@@ -752,6 +757,12 @@ public sealed class CodexApiController : ControllerBase
             totalTokens = p.InputTokens + p.CachedTokens + p.OutputTokens,
             p.RequestCount, p.SuccessCount, p.LastUsageAt, p.UnknownCount,
             p.EstimatedCostUsd, p.UnpricedCount,
+            projectionBasis = projectionBases.TryGetValue(p.Id, out var basis) ? new
+            {
+                observedAt = p.LastObservedAt, basis.RequestCount,
+                totalTokens = basis.InputTokens + basis.CachedTokens + basis.OutputTokens,
+                basis.UnknownCount, basis.EstimatedCostUsd, basis.UnpricedCount
+            } : null,
             historyNormalized = previousPeriodLinks.ContainsKey(p.Id),
             previousPeriodId = previousPeriodLinks.TryGetValue(p.Id, out var previousId) ? (Guid?)previousId : null,
             models = string.IsNullOrEmpty(p.ModelsJson) ? Array.Empty<object>() : System.Text.Json.JsonSerializer.Deserialize<object[]>(p.ModelsJson),

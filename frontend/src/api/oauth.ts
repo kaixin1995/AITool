@@ -22,6 +22,14 @@ export interface CodexQuotaPeriod {
   usedPercent: number | null
   boundaryUncertain: boolean
   isCurrent: boolean
+  projectionBasis?: {
+    observedAt: string
+    requestCount: number
+    totalTokens: number
+    unknownCount: number
+    estimatedCostUsd: number | null
+    unpricedCount: number | null
+  } | null
   previousPeriodId?: string | null
   historyNormalized?: boolean
   inputTokens: number

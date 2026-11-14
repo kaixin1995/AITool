@@ -23,14 +23,19 @@ describe('quota period comparison', () => {
     expect(previousQuotaPeriod([fragment, current], current)).toBeUndefined()
     expect(previousQuotaPeriod([fragment, previous, { ...current, historyNormalized: false }], { ...current, historyNormalized: false })?.id).toBe('fragment')
   })
-  it('projects from consumed percentage only when the inputs are usable', () => {
-    expect(projectQuotaPeriod(period(), now)).toEqual({ requests: 40, tokens: 400, costUsd: 8 })
-    expect(projectQuotaPeriod(period({ unknownCount: 1 }), now)).toBeNull()
-    expect(projectQuotaPeriod(period({ boundaryUncertain: true }), now)).toBeNull()
-    expect(projectQuotaPeriod(period({ usedPercent: 2 }), now)).toBeNull()
-    expect(projectQuotaPeriod(period({ requestCount: 0, totalTokens: 0 }), now)).toBeNull()
-    expect(projectQuotaPeriod(period({ lastObservedAt: '2026-11-08T11:00:00Z' }), now)).toBeNull()
-    expect(projectQuotaPeriod(period({ lastUsageAt: '2026-11-08T11:59:30Z' }), now)).toBeNull()
-    expect(projectQuotaPeriod(period({ unpricedCount: 1 }), now)?.costUsd).toBeNull()
+  it('projects from the current period usage at the quota observation, with transparent warnings', () => {
+    const basis = { observedAt: '2026-11-08T11:59:00Z', requestCount: 10, totalTokens: 100, unknownCount: 1, estimatedCostUsd: 2, unpricedCount: 0 }
+    const current = period({ projectionBasis: basis, boundaryUncertain: true, requestCount: 20, totalTokens: 900, lastUsageAt: '2026-11-08T11:59:30Z' })
+    const result = projectQuotaPeriod(current, now)!
+    expect(result).toMatchObject({ requests: 40, tokens: 400, costUsd: 8 })
+    expect(result.warnings.join(' ')).toContain('周期边界不确定')
+    expect(result.warnings.join(' ')).toContain('1 次用量未知')
+    expect(projectQuotaPeriod({ ...current, usedPercent: 2 }, now)?.warnings.join(' ')).toContain('比例较低')
+    expect(projectQuotaPeriod({ ...current, projectionBasis: { ...basis, unpricedCount: 1 } }, now)?.costUsd).toBeNull()
+    expect(projectQuotaPeriod({ ...current, projectionBasis: null }, now)).toBeNull()
+    expect(projectQuotaPeriod({ ...current, usedPercent: 0 }, now)).toBeNull()
+    expect(projectQuotaPeriod({ ...current, lastObservedAt: '2026-11-08T11:00:00Z' }, now)).toBeNull()
+    expect(projectQuotaPeriod({ ...current, projectionBasis: { ...basis, requestCount: 0 } }, now)).toBeNull()
+    expect(projectQuotaPeriod(current, now + 60 * 60_000)?.warnings.join(' ')).toContain('已过时')
   })
 })

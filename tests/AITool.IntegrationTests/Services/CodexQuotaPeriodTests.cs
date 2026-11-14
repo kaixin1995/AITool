@@ -12,6 +12,32 @@ namespace AITool.IntegrationTests.Services;
 
 public sealed class CodexQuotaPeriodTests
 {
+    [Fact]
+    public async Task Projection_basis_uses_only_current_site_calls_recorded_before_the_quota_observation()
+    {
+        await WithDatabase(async db =>
+        {
+            var observed = new DateTimeOffset(2026, 11, 14, 6, 0, 0, TimeSpan.Zero);
+            var site = Guid.NewGuid();
+            var period = new CodexQuotaPeriod { SiteId = site, StartAt = observed.AddHours(-1), ResetAt = observed.AddDays(6), LastObservedAt = observed };
+            await db.Insertable(new[]
+            {
+                new ProxyUsageLog { TargetSiteId = site, RequestedAt = observed.AddMinutes(-10), TotalDurationMs = 1000, InputTokens = 100, TotalTokens = 100, Status = "success" },
+                new ProxyUsageLog { TargetSiteId = site, RequestedAt = observed.AddSeconds(-10), TotalDurationMs = 20000, InputTokens = 200, TotalTokens = 200, Status = "success" },
+                new ProxyUsageLog { TargetSiteId = site, RequestedAt = observed.AddSeconds(1), InputTokens = 300, TotalTokens = 300, Status = "success" },
+                new ProxyUsageLog { TargetSiteId = Guid.NewGuid(), RequestedAt = observed.AddMinutes(-1), InputTokens = 400, TotalTokens = 400, Status = "success" }
+            }).ExecuteCommandAsync();
+            await CodexQuotaPeriodService.AggregateAsync(db, period, observed.AddMinutes(1), default);
+            period.RequestCount.Should().Be(3);
+            var basis = await CodexQuotaPeriodService.AggregateAtObservationAsync(db, period, observed.AddMinutes(1), default);
+            basis.Should().NotBeNull();
+            basis!.RequestCount.Should().Be(2);
+            basis.InputTokens.Should().Be(300);
+            period.RequestCount.Should().Be(3, "the projection must not change the live or saved period summary");
+            (await CodexQuotaPeriodService.AggregateAtObservationAsync(db, period, observed.AddSeconds(-1), default)).Should().BeNull();
+        });
+    }
+
     private sealed class TestPricing : IModelPricingService
     {
         public Task<ModelPricingCatalog> GetCatalogAsync(CancellationToken cancellationToken = default) => Task.FromResult(new ModelPricingCatalog());
