@@ -1754,6 +1754,25 @@ public sealed class ProxyForwardService : IProxyForwardService
         // 累积 response.output_text.delta 的文本片段，用于在 response.completed.output 为空时重建 message。
         // Codex 上游的 response.completed.response.output 始终为 []，内容只在 delta 事件里。
         var deltaBuilder = new StringBuilder();
+        var completedItems = new SortedDictionary<int, JsonObject>();
+
+        void CaptureCompletedItem(JsonElement root)
+        {
+            if (!root.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("output_index", out var index) || index.ValueKind != JsonValueKind.Number || !index.TryGetInt32(out var order) || order < 0
+                || !item.TryGetProperty("type", out var kind) || kind.ValueKind != JsonValueKind.String) return;
+            var type = kind.GetString();
+            // Only restore complete, forwardable items. A partial tool invocation must never be fabricated.
+            var valid = type == "message" && item.TryGetProperty("content", out var content)
+                && content.ValueKind == JsonValueKind.Array && content.EnumerateArray().Any(part =>
+                    part.ValueKind == JsonValueKind.Object && part.TryGetProperty("type", out var contentType)
+                    && contentType.ValueKind == JsonValueKind.String && contentType.GetString() is "output_text" or "text" or "refusal");
+            if (type == "function_call")
+                valid = item.TryGetProperty("call_id", out var callId) && callId.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(callId.GetString())
+                    && item.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(name.GetString())
+                    && item.TryGetProperty("arguments", out var arguments) && arguments.ValueKind == JsonValueKind.String;
+            if (valid && JsonNode.Parse(item.GetRawText()) is JsonObject completed) completedItems[order] = completed;
+        }
 
         string? TryParsePayload(string payload)
         {
@@ -1769,6 +1788,12 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                 var eventType = typeEl.GetString();
 
+                if (string.Equals(eventType, "response.output_item.done", StringComparison.OrdinalIgnoreCase))
+                {
+                    CaptureCompletedItem(root);
+                    return null;
+                }
+
                 if (!string.Equals(eventType, "response.completed", StringComparison.OrdinalIgnoreCase)
                     || !root.TryGetProperty("response", out var response)
                     || response.ValueKind != JsonValueKind.Object)
@@ -1780,11 +1805,6 @@ public sealed class ProxyForwardService : IProxyForwardService
                 // 若 output 为空但有 delta 文本，从 delta 重建 message 项塞进 output，
                 // 否则上层 HasUsableResponse 会判为空响应（"no usable choices"）。
                 var responseText = response.GetRawText();
-                if (deltaBuilder.Length == 0)
-                {
-                    return responseText;
-                }
-
                 var hasOutput = response.TryGetProperty("output", out var outputEl)
                     && outputEl.ValueKind == JsonValueKind.Array
                     && outputEl.GetArrayLength() > 0;
@@ -1792,6 +1812,16 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     return responseText;
                 }
+
+                if (completedItems.Count > 0 && JsonNode.Parse(responseText) is JsonObject completedResponse)
+                {
+                    var items = new JsonArray();
+                    foreach (var item in completedItems.Values) items.Add(item.DeepClone());
+                    completedResponse["output"] = items;
+                    return completedResponse.ToJsonString();
+                }
+
+                if (deltaBuilder.Length == 0) return responseText;
 
                 return RebuildResponseWithDeltaMessage(responseText, deltaBuilder.ToString());
             }

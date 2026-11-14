@@ -416,4 +416,33 @@ public sealed class ProxyForwardServiceResponseTests
         // 核心断言：delta 只累积一次，不能重复成 "9595"
         message.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("95");
     }
+
+    [Fact]
+    public void TryExtractResponsesCompletion_RecoversCompletedToolAndTextItemsInOrder()
+    {
+        var sse = string.Concat(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"lookup\",\"arguments\":\"{}\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":12,\"output_tokens\":5}}}\n\n");
+        using var json = JsonDocument.Parse(TryExtractResponsesCompletionCore(sse)!);
+        var output = json.RootElement.GetProperty("output");
+        output.GetArrayLength().Should().Be(2);
+        output[0].GetProperty("content")[0].GetProperty("text").GetString().Should().Be("hello");
+        output[1].GetProperty("call_id").GetString().Should().Be("call_1");
+        json.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32().Should().Be(5);
+    }
+
+    [Fact]
+    public void TryExtractResponsesCompletion_DoesNotInventIncompleteToolCall()
+    {
+        var sse = """
+            data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","name":"lookup"}}
+
+            data: {"type":"response.completed","response":{"status":"completed","output":[]}}
+
+            """;
+        var result = TryExtractResponsesCompletionCore(sse)!;
+        ProxyForwardService.HasUsableResponse(result, "Responses").Should().BeFalse();
+    }
 }
