@@ -33,6 +33,7 @@ interface SessionDetail {
 }
 const loading = ref(false), detailLoading = ref(false), error = ref(''), detailError = ref('')
 const metricsEnabled = ref<boolean | null>(null)
+const coverage = ref<{ totalRequests: number; unidentifiedRequests: number } | null>(null)
 const sessions = ref<SessionUsage[]>([])
 const details = ref<SessionDetail[]>([])
 const selectedSession = ref('')
@@ -63,12 +64,14 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [rows, settings] = await Promise.all([
+    const [rows, settings, coverageResult] = await Promise.all([
       httpGet<SessionUsage[]>('/api/admin/gateway-enhancements/sessions', { skipErrorNotify: true }),
-      httpGet<{ sessionMetricsEnabled: boolean }>('/api/admin/gateway-enhancements', { skipErrorNotify: true })
+      httpGet<{ sessionMetricsEnabled: boolean }>('/api/admin/gateway-enhancements', { skipErrorNotify: true }),
+      httpGet<{ totalRequests: number; unidentifiedRequests: number }>('/api/admin/gateway-enhancements/sessions/coverage', { skipErrorNotify: true })
     ])
     sessions.value = rows
     metricsEnabled.value = settings.sessionMetricsEnabled
+    coverage.value = coverageResult
   } catch (e) { error.value = gatewayError(e) } finally { loading.value = false }
 }
 let detailVersion = 0
@@ -88,8 +91,9 @@ onMounted(load)
 
 <template>
   <NSpace vertical :size="16">
-    <NAlert type="info">汇总最近 7 天带会话标识的请求与重试。开启“系统设置 → 网关稳定性 → 会话与流量统计”后开始记录；请求需携带 Session-Id、Thread-Id、X-Session-Id 或 X-Conversation-Id，只保存标识摘要，不保存对话正文。</NAlert>
+    <NAlert type="info">汇总最近 7 天带明确会话标识的请求与重试。开启“系统设置 → 稳定性与会话统计”后开始记录；支持常见会话请求头和 Codex / Claude 请求体中的会话标识，只保存标识摘要，不保存对话正文。没有标识的请求仍可在使用日志中查看，不会被猜测合并。</NAlert>
     <NAlert v-if="metricsEnabled === false" type="warning">会话与流量统计当前已关闭，可在系统设置中开启。已有记录仍可查看。</NAlert>
+    <NAlert v-if="coverage && coverage.unidentifiedRequests > 0" type="warning">最近 7 天记录了 {{ coverage.totalRequests }} 次请求，其中 {{ coverage.unidentifiedRequests }} 次未识别到会话标识，无法归入下方会话。历史请求不会自动补录。</NAlert>
     <NAlert v-if="error" type="error">{{ error }}</NAlert>
     <NSpace justify="space-between" align="center"><span>请求数为客户端请求，尝试数包括失败重试；参考金额按模型价格表估算。</span><NButton :loading="loading" @click="load">刷新会话用量</NButton></NSpace>
     <NDataTable v-if="sessions.length || loading" :columns="columns" :data="sessions" :loading="loading" :row-key="row => row.session" :scroll-x="1080" :pagination="{ pageSize: 20 }" />

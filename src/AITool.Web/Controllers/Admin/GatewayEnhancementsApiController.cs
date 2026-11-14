@@ -100,6 +100,17 @@ public sealed class GatewayEnhancementsApiController(GatewayEnhancementSettings 
         return Ok(result);
     }
 
+    /// <summary>未携带可识别会话标识的请求仍记入普通使用日志，不将它们猜测合并为会话。</summary>
+    [HttpGet("sessions/coverage")]
+    public async Task<IActionResult> SessionCoverage(int days = 7, CancellationToken ct = default)
+    {
+        var after = DateTimeOffset.UtcNow.AddDays(-Math.Clamp(days, 1, 90)).UtcTicks;
+        var metrics = db.Client.Queryable<GatewayRequestMetric>().Where(m => m.StartedUtcTicks >= after);
+        var total = await metrics.Clone().CountAsync();
+        var unidentified = await metrics.Clone().Where(m => m.SessionDigest == null || m.SessionDigest == "").CountAsync();
+        return Ok(new { totalRequests = total, unidentifiedRequests = unidentified });
+    }
+
     [HttpGet("sessions/{digest}")]
     public async Task<IActionResult> Session(string digest, CancellationToken ct)
     {

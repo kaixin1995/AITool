@@ -35,11 +35,10 @@ public sealed class GatewayWebSocketTurn : IAsyncDisposable
             if (budgets.Count > 0 && gate.HasUnsettled(keyId)) throw new InvalidOperationException("先前请求预算结算失败，请检查数据库后重启服务。");
             if (budgets.Count > 0 && await GatewayBudgetGate.CheckAsync(db, keyId, budgets, ct) is { } error) throw new InvalidOperationException(error);
             var context = http.RequestServices.GetRequiredService<GatewayRequestContext>();
+            var previousSession = context.SessionDigest;
             context.Reset(); context.Enabled = true;
-            var session = new[] { "Session-Id", "Thread-Id", "X-Session-Id", "X-Conversation-Id" }
-                .Select(h => http.Request.Headers[h].FirstOrDefault()).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
-            context.SessionDigest = GatewayRequestContext.Digest(keyId, session);
-            context.ParentSessionDigest = GatewayRequestContext.Digest(keyId, http.Request.Headers["X-Parent-Session-Id"].FirstOrDefault());
+            // A later turn can omit the identifier supplied on this same WebSocket connection.
+            context.CaptureSession(keyId, http.Request.Headers, raw, previousSession);
             return new(admission, context, db, gate, new GatewayRequestMetric { AccessKeyId = keyId,
                 SessionDigest = context.SessionDigest, ParentSessionDigest = context.ParentSessionDigest,
                 StartedUtcTicks = DateTimeOffset.UtcNow.UtcTicks, RequestBytes = Encoding.UTF8.GetByteCount(raw) }, budgets.Count > 0, http.RequestAborted,

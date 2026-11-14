@@ -221,6 +221,7 @@ public sealed partial class OpenAiProxyController
             return Unauthorized(new { error = new { message = "访问密钥无效或缺失，请在请求头中携带有效的 Authorization Bearer 令牌", type = "authentication_error", code = "invalid_access_key" } });
         }
 
+        HttpContext.RequestServices.GetService<GatewayRequestContext>()?.CaptureSession(accessKey.Id, Request.Headers, requestBody);
         var isolationContext = AccountSessionIsolationService.Capture(accessKey.Id.ToString("D"), Request.Headers, requestBody);
         UpstreamReferenceRestriction? referenceRestriction;
         try

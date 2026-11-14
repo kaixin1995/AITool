@@ -42,11 +42,8 @@ public sealed class GatewayEnhancementMiddleware(RequestDelegate next)
             await http.Response.WriteAsJsonAsync(new { error = new { code = "budget_exceeded", message = error } });
             return;
         }
-        var session = new[] { "Session-Id", "Thread-Id", "X-Session-Id", "X-Conversation-Id" }
-            .Select(h => http.Request.Headers[h].FirstOrDefault()).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
-        context.SessionDigest = GatewayRequestContext.Digest(key.Id, session);
         context.Enabled = options.SessionMetricsEnabled || budgets.Count > 0;
-        context.ParentSessionDigest = GatewayRequestContext.Digest(key.Id, http.Request.Headers["X-Parent-Session-Id"].FirstOrDefault());
+        context.CaptureSession(key.Id, http.Request.Headers, null);
         var started = DateTimeOffset.UtcNow;
         var watch = Stopwatch.StartNew();
         var original = http.Response.Body;
