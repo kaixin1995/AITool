@@ -228,6 +228,8 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                 reset = snapshot is { Success: true } && account.LastQuotaCheckedAt is { } checkedAt
                     && checkedAt <= now && provider.SelectDisablePercent(snapshot) is double selectedPercent && selectedPercent >= threshold
                     ? snapshot.Windows.Where(w => w.UsedPercent >= threshold && w.ResetAtUtc.HasValue
+                        && provider.SelectDisablePercent(new AccountQuotaSnapshot { Success = true, PlanType = snapshot.PlanType, Windows = [w] }) is double eligiblePercent
+                        && eligiblePercent >= threshold
                         && w.ResetAtUtc.Value > checkedAt && w.ResetAtUtc.Value <= now.AddYears(1))
                         .Select(w => w.ResetAtUtc).Min()
                     : null;

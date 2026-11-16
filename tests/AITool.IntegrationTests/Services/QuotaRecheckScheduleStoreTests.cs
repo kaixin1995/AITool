@@ -180,6 +180,25 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Forced_check_before_reset_preserves_future_reset_after_completion()
+    {
+        await Ensure(_clock.GetUtcNow());
+        var schedule = (await Reconcile(Target(_clock.GetUtcNow()))).Single();
+        var reset = _clock.GetUtcNow().AddMinutes(10);
+        (await _store.ScheduleResetAsync("p", _id, reset, schedule.Generation, default)).Should().BeTrue();
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        var lease = (await _store.TryAcquireAsync("p", _id, default, force: true))!;
+        await _store.CompleteAsync(lease, true, default);
+        var saved = await Row();
+        saved.NextCheckAtUtcTicks.Should().Be(reset.UtcTicks);
+        _clock.Advance(reset - _clock.GetUtcNow());
+        var resetLease = await _store.TryAcquireAsync("p", _id, default);
+        resetLease.Should().NotBeNull();
+        await _store.CompleteAsync(resetLease!, true, default);
+        (await Row()).NextCheckAtUtcTicks.Should().Be(_clock.GetUtcNow().AddMinutes(50).UtcTicks);
+    }
+
+    [Fact]
     public void Legacy_schedule_rows_are_upgraded_without_losing_existing_due_time()
     {
         using var scope = _provider.CreateScope();

@@ -176,6 +176,14 @@ public sealed class QuotaRecheckScheduleStore(
         var now = timeProvider.GetUtcNow().UtcTicks;
         var generation = Guid.NewGuid().ToString("D");
         var next = now + intervals.NextInterval().Ticks;
+        // A manual force-check before the scheduled reset must not erase that
+        // wake-up. Preserve it only while still in the future; an already elapsed
+        // boundary has been attempted and must fall back to the random interval.
+        var current = await client.Queryable<QuotaRecheckSchedule>()
+            .Where(s => s.ProviderKey == lease.ProviderKey && s.AccountId == lease.AccountId && s.LeaseToken == token)
+            .FirstAsync(cancellationToken);
+        if (current?.LastResetCheckAtUtcTicks is { } reset && reset > now && reset < next)
+            next = reset;
         // An expired worker no longer owns the work, even if a new worker has not claimed it yet.
         if (!keepScheduled)
         {

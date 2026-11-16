@@ -119,6 +119,21 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
     }
 
     [Fact]
+    public async Task Reset_of_a_provider_excluded_window_does_not_trigger_a_recheck()
+    {
+        var disabled = _provider.Add(enabled: false);
+        _provider.OnlySelectedWindow = true;
+        _provider.CachedUsedPercent = 100;
+        _provider.CachedResetAt = _clock.GetUtcNow().AddMinutes(30);
+        _provider.ExcludedResetAt = _clock.GetUtcNow().AddMinutes(5);
+        await Tick();
+        Schedule(disabled).NextCheckAtUtcTicks.Should().Be(_provider.CachedResetAt.Value.UtcTicks);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await Tick();
+        _provider.Queries.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Reset_check_still_requires_a_fresh_healthy_response()
     {
         var disabled = _provider.Add(enabled: false);
@@ -694,6 +709,8 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
         public bool QueryFails { get; set; }
         public double UsedPercent { get; set; } = 92;
         public double CachedUsedPercent { get; set; } = 92;
+        public bool OnlySelectedWindow { get; set; }
+        public DateTimeOffset? ExcludedResetAt { get; set; }
         public bool EmptyWindows { get; set; }
         public Action<Account>? QueryCallback { get; set; }
         public Func<Task<AccountQuotaSnapshot>>? QueryOverride { get; set; }
@@ -740,8 +757,14 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
         public AccountQuotaSnapshot? ParseCachedQuota(string rawJson) => new()
         {
             Success = true, CheckedAt = clock.GetUtcNow(),
-            Windows = [new AccountQuotaWindow { UsedPercent = CachedUsedPercent, ResetAtUtc = CachedResetAt ?? clock.GetUtcNow().AddDays(2) }]
+            Windows = ExcludedResetAt is { } excluded
+                ? [new AccountQuotaWindow { Id = "selected", UsedPercent = CachedUsedPercent, ResetAtUtc = CachedResetAt ?? clock.GetUtcNow().AddDays(2) },
+                   new AccountQuotaWindow { Id = "excluded", UsedPercent = 100, ResetAtUtc = excluded }]
+                : [new AccountQuotaWindow { Id = "selected", UsedPercent = CachedUsedPercent, ResetAtUtc = CachedResetAt ?? clock.GetUtcNow().AddDays(2) }]
         };
+        public double? SelectDisablePercent(AccountQuotaSnapshot snapshot) => OnlySelectedWindow
+            ? snapshot.Windows.FirstOrDefault(w => w.Id == "selected")?.UsedPercent
+            : snapshot.Windows.Count == 0 ? null : snapshot.Windows.Max(w => w.UsedPercent);
         public DateTimeOffset? CachedResetAt { get; set; }
         public Task<AccountQuotaSnapshot> QueryAsync(AccountQuotaTarget target, bool forceRefresh, CancellationToken cancellationToken)
         {
