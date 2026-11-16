@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
+import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NPopover, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
 import type { SelectRenderLabel } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
@@ -2329,7 +2329,12 @@ onUnmounted(() => {
             <div class="quota-compare-row"><span><i class="quota-metric-icon blue">↗</i>预计请求</span><b>{{ card.projection?.requests ?? '—' }}</b></div>
             <div class="quota-compare-row"><span><i class="quota-metric-icon teal">◫</i>预计 Token</span><b>{{ card.projection ? formatPeriodTokens(card.projection.tokens) : '—' }}</b></div>
             <div class="quota-compare-row"><span><i class="quota-metric-icon amber">$</i>预计金额</span><b>{{ card.projection?.costUsd == null ? '—' : formatTotalCost(card.projection.costUsd) }}</b></div>
-            <div class="quota-projection-note">{{ card.projection ? card.projection.warnings.join('；') + '。' : '缺少当前周期同一时刻的有效额度比例或调用用量，暂无法估算。' }}</div>
+            <div class="quota-projection-note">
+              <NPopover trigger="click" :style="{ maxWidth: '280px' }">
+                <template #trigger><button type="button" class="quota-projection-info">{{ card.projection ? '估算仅供参考 ⓘ' : '暂无预测 ⓘ' }}</button></template>
+                {{ card.projection ? card.projection.warnings.join('；') + '。' : '缺少当前周期同一时刻的有效额度比例或调用用量，暂无法估算。' }}
+              </NPopover>
+            </div>
           </section>
         </div>
         <div v-if="card.period" class="quota-period-foot">额度刷新 {{ formatDateTime(card.period.lastObservedAt) }} · 用量汇总 {{ formatDateTime(card.period.aggregatedAt) }} · 周期起点为推算值</div>
@@ -3215,6 +3220,8 @@ onUnmounted(() => {
 .quota-metric-icon.amber { color: #d89a17; background: #d89a1722; }
 .quota-metric-icon.green { color: #10a77b; background: #10a77b22; }
 .quota-card-warning, .quota-projection-note { display: block; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border-color-global); color: var(--text-color-secondary); font-size: 10px; line-height: 1.5; }
+.quota-projection-info { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.quota-projection-info:hover, .quota-projection-info:focus-visible { color: var(--primary-color, #3b82f6); }
 .quota-card-warning { color: var(--status-warning-text); }
 .quota-period-foot { margin-top: 12px; color: var(--text-color-secondary); font-size: 11px; }
 @media (max-width: 520px) {
