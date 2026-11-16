@@ -2343,7 +2343,12 @@ onUnmounted(() => {
         </section>
       </div>
       <NEmpty v-else description="暂无额度窗口，请先刷新额度" />
-      <div class="quota-period-note">请求数与成功率按上游调用尝试统计。参考金额按模型价格表估算，并非 Codex 订阅实际账单；当前周期使用当前价格表，上个周期使用最后保存时的价格。日志清理、外部使用或中断请求可能造成缺失。周期开始时间为推算值，不同窗口的用量会重叠，请勿相加。</div>
+      <div class="quota-period-note">
+        <NPopover trigger="click" :style="{ maxWidth: '320px' }">
+          <template #trigger><button type="button" class="quota-projection-info">统计说明 ⓘ</button></template>
+          请求数与成功率按上游调用尝试统计。参考金额按模型价格表估算，并非 Codex 订阅实际账单；当前周期使用当前价格表，上个周期使用最后保存时的价格。日志清理、外部使用或中断请求可能造成缺失。周期开始时间为推算值，不同窗口的用量会重叠，请勿相加。
+        </NPopover>
+      </div>
     </NModal>
 
     <!-- 编辑账号（重命名）弹窗 -->
