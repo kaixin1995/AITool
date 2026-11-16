@@ -134,6 +134,66 @@ public sealed class QuotaRecheckScheduleStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Reset_boundary_never_steals_a_lease_or_overwrites_a_newer_disable()
+    {
+        await Ensure(_clock.GetUtcNow());
+        var old = (await Reconcile(Target(_clock.GetUtcNow()))).Single();
+        await Ensure(_clock.GetUtcNow());
+        var reset = _clock.GetUtcNow().AddMinutes(10);
+        (await _store.ScheduleResetAsync("p", _id, reset, old.Generation, default)).Should().BeFalse();
+        var fresh = (await Reconcile(Target(_clock.GetUtcNow()))).Single();
+        var lease = await _store.TryAcquireAsync("p", _id, default, force: true);
+        (await _store.ScheduleResetAsync("p", _id, reset, fresh.Generation, default)).Should().BeFalse();
+        (await Row()).LeaseToken.Should().Be(lease!.Token.ToString("D"));
+        await _store.CompleteAsync(lease, true, default);
+        var completed = (await Reconcile(Target(_clock.GetUtcNow()))).Single();
+        (await _store.ScheduleResetAsync("p", _id, reset, completed.Generation, default)).Should().BeTrue();
+        (await Row()).NextCheckAtUtcTicks.Should().Be(reset.UtcTicks);
+    }
+
+    [Fact]
+    public async Task Reset_boundary_never_postpones_an_earlier_random_check()
+    {
+        await Ensure(_clock.GetUtcNow());
+        var row = (await Reconcile(Target(_clock.GetUtcNow()))).Single();
+        (await _store.ScheduleResetAsync("p", _id, _clock.GetUtcNow().AddHours(2), row.Generation, default)).Should().BeFalse();
+        (await Row()).NextCheckAtUtcTicks.Should().Be(row.NextCheckAt.UtcTicks);
+    }
+
+    [Fact]
+    public async Task Reset_boundary_survives_restart_without_repeating_after_a_failed_check()
+    {
+        await Ensure(_clock.GetUtcNow());
+        var schedule = (await Reconcile(Target(_clock.GetUtcNow()))).Single();
+        var reset = _clock.GetUtcNow().AddMinutes(5);
+        (await _store.ScheduleResetAsync("p", _id, reset, schedule.Generation, default)).Should().BeTrue();
+        var restarted = Store(CreateProvider());
+        var persisted = (await restarted.ReconcileAsync("p", [Target(_clock.GetUtcNow())], default)).Single();
+        persisted.NextCheckAt.Should().Be(reset);
+        persisted.LastResetCheckAt.Should().Be(reset);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        var lease = (await restarted.TryAcquireAsync("p", _id, default))!;
+        await restarted.CompleteAsync(lease, true, default);
+        var afterFailure = (await restarted.ReconcileAsync("p", [Target(_clock.GetUtcNow())], default)).Single();
+        (await restarted.ScheduleResetAsync("p", _id, reset, afterFailure.Generation, default)).Should().BeFalse();
+        afterFailure.NextCheckAt.Should().Be(_clock.GetUtcNow().AddMinutes(50));
+    }
+
+    [Fact]
+    public void Legacy_schedule_rows_are_upgraded_without_losing_existing_due_time()
+    {
+        using var scope = _provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISqlSugarClient>();
+        var row = new QuotaRecheckSchedule { ProviderKey = "legacy", AccountId = Guid.NewGuid(), Generation = Guid.NewGuid().ToString("D"), NextCheckAtUtcTicks = _clock.GetUtcNow().AddMinutes(17).UtcTicks };
+        db.Insertable(row).ExecuteCommand();
+        db.Ado.ExecuteCommand("ALTER TABLE QuotaRecheckSchedules DROP COLUMN LastResetCheckAtUtcTicks");
+        SqlSugarSetup.InitializeDatabase(db);
+        var restored = db.Queryable<QuotaRecheckSchedule>().First(x => x.ProviderKey == "legacy");
+        restored.NextCheckAtUtcTicks.Should().Be(row.NextCheckAtUtcTicks);
+        restored.LastResetCheckAtUtcTicks.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Forced_claim_bypasses_due_but_never_active_lease()
     {
         await Ensure();

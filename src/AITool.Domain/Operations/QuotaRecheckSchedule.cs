@@ -23,6 +23,11 @@ public sealed class QuotaRecheckSchedule
     public long CreatedAtUtcTicks { get; set; }
     public long UpdatedAtUtcTicks { get; set; }
 
+    // The last reset boundary scheduled for a check. Prevents an unchanged stale
+    // upstream reset time from creating a tight retry loop after a failed check.
+    [SugarColumn(IsNullable = true)]
+    public long? LastResetCheckAtUtcTicks { get; set; }
+
     [SugarColumn(IsNullable = true, Length = 36)]
     public string? LeaseToken { get; set; }
 

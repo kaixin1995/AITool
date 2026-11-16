@@ -69,6 +69,93 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
     }
 
     [Fact]
+    public async Task Exhausted_window_reset_triggers_fresh_recovery_before_random_fallback()
+    {
+        var disabled = _provider.Add(enabled: false);
+        _provider.CachedUsedPercent = 100;
+        _provider.CachedResetAt = _clock.GetUtcNow().AddMinutes(10);
+        _provider.UsedPercent = 20;
+        await Tick();
+        Schedule(disabled).NextCheckAtUtcTicks.Should().Be(_provider.CachedResetAt.Value.UtcTicks);
+        _clock.Advance(TimeSpan.FromMinutes(9));
+        await Tick();
+        _provider.Queries.Should().BeEmpty();
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await Tick();
+        _provider.Queries.Should().ContainSingle().Which.Force.Should().BeTrue();
+        disabled.Enabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Already_reset_snapshot_triggers_once_and_failed_query_keeps_random_backoff()
+    {
+        var disabled = _provider.Add(enabled: false);
+        disabled.CheckedAt = _clock.GetUtcNow().AddMinutes(-20);
+        _provider.CachedUsedPercent = 100;
+        _provider.CachedResetAt = _clock.GetUtcNow().AddMinutes(-5);
+        _provider.QueryFails = true;
+        await Tick();
+        _provider.Queries.Should().ContainSingle();
+        disabled.Enabled.Should().BeFalse();
+        var next = Schedule(disabled).NextCheckAtUtcTicks;
+        next.Should().Be(_clock.GetUtcNow().AddMinutes(50).UtcTicks);
+        _clock.Advance(TimeSpan.FromSeconds(10));
+        await Tick();
+        _provider.Queries.Should().ContainSingle("a stale reset timestamp must not cause a retry loop");
+        Schedule(disabled).NextCheckAtUtcTicks.Should().Be(next);
+    }
+
+    [Fact]
+    public async Task Healthy_window_does_not_replace_random_recovery_schedule()
+    {
+        var disabled = _provider.Add(enabled: false);
+        _provider.CachedUsedPercent = 20;
+        _provider.CachedResetAt = _clock.GetUtcNow().AddMinutes(5);
+        await Tick();
+        Schedule(disabled).NextCheckAtUtcTicks.Should().Be(_clock.GetUtcNow().AddMinutes(50).UtcTicks);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await Tick();
+        _provider.Queries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Reset_check_still_requires_a_fresh_healthy_response()
+    {
+        var disabled = _provider.Add(enabled: false);
+        _provider.CachedUsedPercent = 100;
+        _provider.CachedResetAt = _clock.GetUtcNow().AddMinutes(1);
+        _provider.UsedPercent = 100;
+        await Tick();
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await Tick();
+        _provider.Queries.Should().ContainSingle().Which.Force.Should().BeTrue();
+        disabled.Enabled.Should().BeFalse();
+        Schedule(disabled).NextCheckAtUtcTicks.Should().Be(_clock.GetUtcNow().AddMinutes(50).UtcTicks);
+    }
+
+    [Fact]
+    public async Task New_future_reset_from_a_later_snapshot_can_schedule_another_early_check()
+    {
+        var disabled = _provider.Add(enabled: false);
+        _provider.CachedUsedPercent = 100;
+        _provider.CachedResetAt = _clock.GetUtcNow().AddMinutes(1);
+        _provider.QueryFails = true;
+        await Tick();
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        await Tick();
+        _provider.QueryFails = false;
+        _provider.UsedPercent = 10;
+        disabled.CheckedAt = _clock.GetUtcNow();
+        _provider.CachedResetAt = _clock.GetUtcNow().AddMinutes(5);
+        await Tick();
+        Schedule(disabled).NextCheckAtUtcTicks.Should().Be(_provider.CachedResetAt.Value.UtcTicks);
+        _clock.Advance(TimeSpan.FromMinutes(5));
+        await Tick();
+        _provider.Queries.Should().HaveCount(2);
+        disabled.Enabled.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Many_accounts_use_constant_full_listings_and_refresh_each_target()
     {
         for (var i = 0; i < 20; i++) _provider.Add(enabled: true);
@@ -646,14 +733,16 @@ public sealed class AccountQuotaInspectionScheduleTests : IDisposable
                 DisplayName = account.Id.ToString(), IsEnabled = account.Enabled,
                 ManuallyDisabled = account.Manual, DisabledByFeatureToggle = account.Feature,
                 DisabledByUpstream = account.Upstream, IsQuotaCooling = account.Cooling,
-                LastQuotaCheckedAt = account.CheckedAt, TokenExpiresAt = account.TokenExpiresAt
+                LastQuotaCheckedAt = account.CheckedAt, TokenExpiresAt = account.TokenExpiresAt,
+                LastQuotaRawJson = account.Enabled ? null : "cached"
             };
         }
         public AccountQuotaSnapshot? ParseCachedQuota(string rawJson) => new()
         {
             Success = true, CheckedAt = clock.GetUtcNow(),
-            Windows = [new AccountQuotaWindow { UsedPercent = CachedUsedPercent, ResetAtUtc = clock.GetUtcNow().AddDays(2) }]
+            Windows = [new AccountQuotaWindow { UsedPercent = CachedUsedPercent, ResetAtUtc = CachedResetAt ?? clock.GetUtcNow().AddDays(2) }]
         };
+        public DateTimeOffset? CachedResetAt { get; set; }
         public Task<AccountQuotaSnapshot> QueryAsync(AccountQuotaTarget target, bool forceRefresh, CancellationToken cancellationToken)
         {
             Queries.Add((target.AccountId, forceRefresh));

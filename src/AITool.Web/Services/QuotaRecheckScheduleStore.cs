@@ -72,8 +72,7 @@ public sealed class QuotaRecheckScheduleStore(
             && existingById.TryGetValue(s.Key, out var row) && row.Generation == s.Value
             && (row.LeaseToken == null || row.LeaseExpiresAtUtcTicks <= snapshotNow)).ToArray();
         if (missing.Length == 0 && removals.Length == 0)
-            return existing.Select(s => new QuotaRecheckScheduleInfo(s.ProviderKey, s.AccountId,
-                new DateTimeOffset(s.NextCheckAtUtcTicks, TimeSpan.Zero))).ToArray();
+            return existing.Select(ToInfo).ToArray();
 
         client.Ado.BeginTran();
         try
@@ -104,14 +103,40 @@ public sealed class QuotaRecheckScheduleStore(
                 .Where(s => s.ProviderKey == providerKey).ToListAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             client.Ado.CommitTran();
-            return result.Select(s => new QuotaRecheckScheduleInfo(s.ProviderKey, s.AccountId,
-                new DateTimeOffset(s.NextCheckAtUtcTicks, TimeSpan.Zero))).ToArray();
+            return result.Select(ToInfo).ToArray();
         }
         catch
         {
             client.Ado.RollbackTran();
             throw;
         }
+    }
+
+    private QuotaRecheckScheduleInfo ToInfo(QuotaRecheckSchedule s) => new(s.ProviderKey, s.AccountId,
+        new DateTimeOffset(s.NextCheckAtUtcTicks, TimeSpan.Zero), s.Generation,
+        s.LastResetCheckAtUtcTicks is { } ticks ? new DateTimeOffset(ticks, TimeSpan.Zero) : null,
+        s.LeaseToken is not null && s.LeaseExpiresAtUtcTicks > timeProvider.GetUtcNow().UtcTicks);
+
+    public async Task<bool> ScheduleResetAsync(string providerKey, Guid accountId, DateTimeOffset resetAt,
+        string observedGeneration, CancellationToken cancellationToken)
+    {
+        ValidateProvider(providerKey);
+        if (string.IsNullOrEmpty(observedGeneration)) return false;
+        using var scope = scopeFactory.CreateScope();
+        using var client = OpenClient(scope);
+        var now = timeProvider.GetUtcNow().UtcTicks;
+        var boundary = resetAt.UtcTicks;
+        var due = Math.Max(now, boundary);
+        var newGeneration = Guid.NewGuid().ToString("D");
+        var updated = await client.Updateable<QuotaRecheckSchedule>()
+            .SetColumns(s => new QuotaRecheckSchedule { NextCheckAtUtcTicks = due, LastResetCheckAtUtcTicks = boundary,
+                Generation = newGeneration, UpdatedAtUtcTicks = now })
+            .Where(s => s.ProviderKey == providerKey && s.AccountId == accountId && s.Generation == observedGeneration
+                && (s.LeaseToken == null || s.LeaseExpiresAtUtcTicks <= now)
+                && s.NextCheckAtUtcTicks > due
+                && (s.LastResetCheckAtUtcTicks == null || s.LastResetCheckAtUtcTicks < boundary))
+            .ExecuteCommandAsync(cancellationToken);
+        return updated == 1;
     }
 
     public async Task<QuotaRecheckLease?> TryAcquireAsync(string providerKey, Guid accountId,

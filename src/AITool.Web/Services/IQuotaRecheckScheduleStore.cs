@@ -30,13 +30,18 @@ public interface IQuotaRecheckScheduleStore
     /// <summary>原子领取并预置故障恢复期限；force 仅跳过到期判断，不能抢占有效认领。</summary>
     Task<QuotaRecheckLease?> TryAcquireAsync(string providerKey, Guid accountId, CancellationToken cancellationToken, bool force = false);
 
+    /// <summary>仅将可信的额度重置边界提前到现有日程；不抢占有效认领或重复处理同一边界。</summary>
+    Task<bool> ScheduleResetAsync(string providerKey, Guid accountId, DateTimeOffset resetAt,
+        string observedGeneration, CancellationToken cancellationToken) => Task.FromResult(false);
+
     /// <summary>仅持有当前认领令牌的执行者能续排或移除日程；失败也从完成时重新随机计时。</summary>
     Task CompleteAsync(QuotaRecheckLease lease, bool keepScheduled, CancellationToken cancellationToken);
 }
 
 public sealed record QuotaRecheckObservation(string ProviderKey, IReadOnlyDictionary<Guid, string> Generations);
 
-public sealed record QuotaRecheckScheduleInfo(string ProviderKey, Guid AccountId, DateTimeOffset NextCheckAt);
+public sealed record QuotaRecheckScheduleInfo(string ProviderKey, Guid AccountId, DateTimeOffset NextCheckAt,
+    string Generation = "", DateTimeOffset? LastResetCheckAt = null, bool IsLeased = false);
 
 public sealed record QuotaRecheckLease(string ProviderKey, Guid AccountId, Guid Token);
 

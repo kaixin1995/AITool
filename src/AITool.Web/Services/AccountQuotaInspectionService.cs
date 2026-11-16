@@ -202,13 +202,47 @@ public sealed class AccountQuotaInspectionService : BackgroundService
 
     private sealed record ProviderListing(IReadOnlyList<AccountQuotaTarget> Accounts, QuotaRecheckObservation? Observation);
 
-    private async Task ReconcileAsync(IAccountQuotaProvider provider, ProviderListing listing, CancellationToken cancellationToken)
+    private async Task ReconcileAsync(IAccountQuotaProvider provider, ProviderListing listing, int autoDisableThresholdPercent, CancellationToken cancellationToken)
     {
         if (_scheduleStore is null) return;
         var eligible = listing.Accounts.Where(IsRecoveryEligible).ToList();
         var schedules = listing.Observation is null
             ? await _scheduleStore.ReconcileAsync(provider.ProviderKey, eligible, cancellationToken)
             : await _scheduleStore.ReconcileAsync(provider.ProviderKey, eligible, listing.Observation, cancellationToken);
+        // A reset boundary is an additional wake-up, never a replacement for the
+        // 40–60 minute fallback. Re-read after successful changes for due selection.
+        var byId = eligible.ToDictionary(a => a.AccountId);
+        var changed = false;
+        foreach (var schedule in schedules)
+        {
+            if (schedule.IsLeased || !byId.TryGetValue(schedule.AccountId, out var account)
+                || string.IsNullOrWhiteSpace(account.LastQuotaRawJson)) continue;
+            DateTimeOffset? reset;
+            try
+            {
+                var snapshot = provider.ParseCachedQuota(account.LastQuotaRawJson, account.LastQuotaCheckedAt);
+                var now = _timeProvider.GetUtcNow();
+                var threshold = Math.Max(1, autoDisableThresholdPercent - ReenableHysteresisPercent);
+                // Ignore unrelated healthy/sliding windows and the provider's own
+                // excluded buckets (e.g. non-Gemini windows for Google accounts).
+                reset = snapshot is { Success: true } && account.LastQuotaCheckedAt is { } checkedAt
+                    && checkedAt <= now && provider.SelectDisablePercent(snapshot) is double selectedPercent && selectedPercent >= threshold
+                    ? snapshot.Windows.Where(w => w.UsedPercent >= threshold && w.ResetAtUtc.HasValue
+                        && w.ResetAtUtc.Value > checkedAt && w.ResetAtUtc.Value <= now.AddYears(1))
+                        .Select(w => w.ResetAtUtc).Min()
+                    : null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to parse cached reset boundary for {ProviderKey}/{AccountId}", provider.ProviderKey, account.AccountId);
+                continue;
+            }
+            if (reset.HasValue && (schedule.LastResetCheckAt is null || reset > schedule.LastResetCheckAt)
+                && await _scheduleStore.ScheduleResetAsync(provider.ProviderKey, account.AccountId, reset.Value, schedule.Generation, cancellationToken))
+                changed = true;
+        }
+        if (changed)
+            schedules = await _scheduleStore.ReconcileAsync(provider.ProviderKey, eligible, cancellationToken);
         foreach (var key in _recheckTimes.Keys.Where(key => key.Provider == provider.ProviderKey).ToList())
             _recheckTimes.Remove(key);
         foreach (var schedule in schedules)
@@ -238,7 +272,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         {
             var accounts = await ListAccountsAsync(provider, cancellationToken);
             if (accounts is null) continue; // Failed listings must not delete persistent schedules.
-            await ReconcileAsync(provider, accounts, cancellationToken);
+            await ReconcileAsync(provider, accounts, autoDisableThresholdPercent, cancellationToken);
             listed.AddRange(accounts.Accounts.Select(account => (provider, account)));
         }
 
@@ -339,7 +373,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
             foreach (var provider in work.Select(item => item.Provider).Distinct())
             {
                 var fresh = await ListAccountsAsync(provider, cancellationToken);
-                if (fresh is not null) await ReconcileAsync(provider, fresh, cancellationToken);
+                if (fresh is not null) await ReconcileAsync(provider, fresh, autoDisableThresholdPercent, cancellationToken);
             }
         }
 
