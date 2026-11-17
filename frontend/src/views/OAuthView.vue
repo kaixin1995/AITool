@@ -1977,7 +1977,7 @@ onUnmounted(() => {
                 v-for="acc in filteredAccounts"
                 :key="acc.id"
                 class="oauth-card"
-                :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id) }"
+                :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id), 'oauth-card-codex': acc.provider === 'codex' }"
                 @click="exportMode && (acc.provider === 'codex' || acc.provider === 'kimi') && toggleExportAccount(acc.id, !selectedExportAccountIds.includes(acc.id))"
               >
                 <NCheckbox
@@ -2337,6 +2337,16 @@ onUnmounted(() => {
             </div>
           </section>
         </div>
+        <div v-if="card.period?.models?.length" class="quota-model-breakdown">
+          <div class="quota-model-heading"><div><strong>模型用量明细</strong><small>当前周期 · 按实际上游模型统计</small></div><span>{{ card.period.models.length }} 个模型</span></div>
+          <div class="quota-model-list">
+            <div v-for="model in card.period.models" :key="model.model" class="quota-model-row">
+              <div class="quota-model-name"><strong :title="model.model">{{ model.model || '未知模型' }}</strong><span>{{ model.requests }} 次调用<span v-if="model.unknownCount"> · {{ model.unknownCount }} 次用量未知</span></span></div>
+              <div class="quota-model-value"><strong>{{ formatPeriodTokens(model.totalTokens) }}</strong><span>Token</span></div>
+              <div class="quota-model-value amount"><strong>{{ model.estimatedCostUsd == null ? '—' : formatTotalCost(model.estimatedCostUsd) }}</strong><span>{{ model.unpricedCount ? `${model.unpricedCount} 次未定价` : model.estimatedCostUsd == null ? '暂无价格' : '参考金额' }}</span></div>
+            </div>
+          </div>
+        </div>
         <div v-if="card.period" class="quota-period-foot">额度刷新 {{ formatDateTime(card.period.lastObservedAt) }} · 用量汇总 {{ formatDateTime(card.period.aggregatedAt) }} · 周期起点为推算值</div>
         <div v-if="card.period?.historyNormalized" class="quota-period-foot quota-card-warning">已根据记录的重置边界关联上期；两个周期之间的调用可在调用日志中按时间查看。</div>
           <div v-if="!card.period" class="quota-window-empty">{{ quotaPeriodAccount && quotaPeriodErrors[quotaPeriodAccount.id] ? '周期用量加载失败，请稍后重试' : '暂无当前周期记录，等待下次真实额度刷新' }}</div>
@@ -2346,7 +2356,7 @@ onUnmounted(() => {
       <div class="quota-period-note">
         <NPopover trigger="click" :style="{ maxWidth: '320px' }">
           <template #trigger><button type="button" class="quota-projection-info">统计说明 ⓘ</button></template>
-          请求数与成功率按上游调用尝试统计。参考金额按模型价格表估算，并非 Codex 订阅实际账单；当前周期使用当前价格表，上个周期使用最后保存时的价格。日志清理、外部使用或中断请求可能造成缺失。周期开始时间为推算值，不同窗口的用量会重叠，请勿相加。
+          模型明细按实际调用汇总；上游没有提供各模型独立的额度扣减比例。请求数与成功率按上游调用尝试统计。参考金额按模型价格表估算，并非 Codex 订阅实际账单；当前周期使用当前价格表，上个周期使用最后保存时的价格。日志清理、外部使用或中断请求可能造成缺失。周期开始时间为推算值，不同窗口的用量会重叠，请勿相加。
         </NPopover>
       </div>
     </NModal>
@@ -2952,7 +2962,8 @@ onUnmounted(() => {
   position: relative;
   flex-direction: column;
   min-width: 0;
-  align-self: stretch;
+  height: auto;
+  min-height: 440px;
   box-sizing: border-box;
   padding: 20px;
   border: 1px solid var(--border-color-global);
@@ -2990,6 +3001,7 @@ onUnmounted(() => {
 
 .oauth-card-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
@@ -3108,8 +3120,7 @@ onUnmounted(() => {
 :global([data-theme='dark']) .oauth-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
 .oauth-windows-container {
-  /* 上限对齐两行满额度窗口的自然高度（= 原双窗 Codex 卡尺寸 132px）：
-     小内容保持卡片原有自然高度不强行垫高，超限的多资源包账号封顶并在容器内滚动。 */
+  /* 额度内容占用卡片中间的剩余空间，超出时只在此区域滚动。 */
   flex: 1 1 auto;
   max-height: 220px;
   min-height: 60px;
@@ -3125,6 +3136,12 @@ onUnmounted(() => {
   grid-template-columns: fit-content(180px) 1fr 44px;
   column-gap: 8px;
   align-content: start;
+}
+
+/* Codex 的额度窗口完整展开；仅其他厂商的多资源包内容在中间区域滚动。 */
+.oauth-card-codex .oauth-windows-container {
+  max-height: none;
+  overflow: visible;
 }
 
 .oauth-window {
@@ -3228,6 +3245,19 @@ onUnmounted(() => {
 .quota-projection-info { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
 .quota-projection-info:hover, .quota-projection-info:focus-visible { color: var(--primary-color, #3b82f6); }
 .quota-card-warning { color: var(--status-warning-text); }
+.quota-model-breakdown { margin-top: 15px; border-top: 1px solid var(--border-color-global); padding-top: 13px; }
+.quota-model-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.quota-model-heading > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.quota-model-heading strong { color: var(--text-primary); font-size: 12px; }
+.quota-model-heading small, .quota-model-heading > span { color: var(--text-color-secondary); font-size: 10px; }
+.quota-model-list { display: grid; gap: 5px; max-height: 220px; overflow-y: auto; margin-top: 9px; scrollbar-width: thin; }
+.quota-model-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, auto) minmax(72px, auto); align-items: center; gap: 10px; padding: 8px 9px; border-radius: 7px; background: var(--bg-surface-soft); }
+.quota-model-name, .quota-model-value { display: grid; min-width: 0; gap: 2px; }
+.quota-model-name strong { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.quota-model-name span, .quota-model-value span { color: var(--text-color-secondary); font-size: 10px; }
+.quota-model-value { text-align: right; }
+.quota-model-value strong { color: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.quota-model-value.amount strong { color: var(--primary-color, #3b82f6); }
 .quota-period-foot { margin-top: 12px; color: var(--text-color-secondary); font-size: 11px; }
 @media (max-width: 520px) {
   .quota-compare-grid { grid-template-columns: 1fr; }
@@ -3251,6 +3281,7 @@ onUnmounted(() => {
 }
 
 .oauth-card-meta {
+  flex: 0 0 auto;
   margin-top: auto;
   padding-top: 16px;
   border-top: 1px solid var(--border-color-global);
@@ -3330,11 +3361,6 @@ onUnmounted(() => {
   .inspection-summary-grid,
   .inspection-log-row {
     grid-template-columns: 1fr;
-  }
-
-  /* 窄屏单列无跨卡片对齐约束且行高更松，上限放宽回原值避免频繁滚动 */
-  .oauth-windows-container {
-    max-height: 320px;
   }
 
   .oauth-card-header,

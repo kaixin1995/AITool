@@ -9,6 +9,18 @@ export interface OAuthQuotaWindow {
   resetLabel: string | null
 }
 
+export interface CodexQuotaModelUsage {
+  model: string
+  requests: number
+  totalTokens: number
+  inputTokens?: number
+  cachedTokens?: number
+  outputTokens?: number
+  estimatedCostUsd?: number | null
+  unpricedCount?: number | null
+  unknownCount?: number
+}
+
 export interface CodexQuotaPeriod {
   id: string
   windowId: string
@@ -42,7 +54,7 @@ export interface CodexQuotaPeriod {
   unknownCount: number
   estimatedCostUsd: number | null
   unpricedCount: number | null
-  models: { model: string; requests: number; totalTokens: number }[]
+  models: CodexQuotaModelUsage[]
 }
 
 export function getCodexQuotaPeriods(id: string): Promise<CodexQuotaPeriod[]> {

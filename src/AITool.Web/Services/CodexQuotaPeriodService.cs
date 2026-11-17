@@ -87,25 +87,32 @@ public static class CodexQuotaPeriodService
         period.SuccessCount = rows.Count(x => x.Status == "success");
         period.LastUsageAt = rows.Count > 0 ? rows.Max(x => x.RequestedAt) : null;
         period.UnknownCount = rows.Count(x => x.TotalTokens == 0);
+        var pricedRows = rows.Select(row => new
+        {
+            row.AttemptedModel, row.TotalTokens, row.InputTokens, row.CachedTokens, row.OutputTokens,
+            Cost = pricing is not null && row.TotalTokens != 0
+                ? pricing.CalculateCostUsd(row.AttemptedModel, row.RequestedAt, row.InputTokens, row.CachedTokens, row.OutputTokens).CostUsd
+                : null
+        }).ToList();
         if (pricing is not null)
         {
-            var total = 0m;
-            var unpriced = 0;
-            foreach (var row in rows.Where(x => x.TotalTokens != 0))
-            {
-                var cost = pricing.CalculateCostUsd(row.AttemptedModel, row.RequestedAt, row.InputTokens, row.CachedTokens, row.OutputTokens).CostUsd;
-                if (cost.HasValue) total += cost.Value;
-                else unpriced++;
-            }
-            period.EstimatedCostUsd = unpriced > 0 && unpriced == rows.Count(x => x.TotalTokens != 0) ? null : total;
+            var known = pricedRows.Where(x => x.TotalTokens != 0).ToList();
+            var unpriced = known.Count(x => !x.Cost.HasValue);
+            period.EstimatedCostUsd = unpriced > 0 && unpriced == known.Count ? null : known.Sum(x => x.Cost ?? 0m);
             period.UnpricedCount = unpriced;
         }
-        period.ModelsJson = System.Text.Json.JsonSerializer.Serialize(rows.GroupBy(x => x.AttemptedModel).Select(g => new
+        period.ModelsJson = System.Text.Json.JsonSerializer.Serialize(pricedRows.GroupBy(x => x.AttemptedModel).Select(g => new
         {
-            model = g.Key, requests = g.Count(), totalTokens = g.Sum(x => (long)x.TotalTokens)
+            model = g.Key, requests = g.Count(), totalTokens = g.Sum(x => (long)x.TotalTokens),
+            inputTokens = g.Sum(x => (long)x.InputTokens), cachedTokens = g.Sum(x => (long)x.CachedTokens), outputTokens = g.Sum(x => (long)x.OutputTokens),
+            unknownCount = g.Count(x => x.TotalTokens == 0),
+            unpricedCount = pricing is null ? (int?)null : g.Count(x => x.TotalTokens != 0 && !x.Cost.HasValue),
+            estimatedCostUsd = pricing is null || !g.Any(x => x.Cost.HasValue)
+                ? (decimal?)null : g.Sum(x => x.Cost ?? 0m)
         }).OrderByDescending(x => x.totalTokens));
         period.AggregatedAt = now;
     }
+
     /// <summary>按额度观测时刻截取同一周期的调用日志，供比例估算使用，不改变保存的周期快照。</summary>
     public static async Task<CodexQuotaPeriod?> AggregateAtObservationAsync(ISqlSugarClient db, CodexQuotaPeriod period, DateTimeOffset now, CancellationToken ct, IModelPricingService? pricing = null)
     {

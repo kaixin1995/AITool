@@ -6,11 +6,11 @@ using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
-using SqlSugar;
-using AITool.IntegrationTests.Proxy;
-using System.Text.Json.Nodes;
-using System.Net.Http.Json;
 using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json.Nodes;
+using AITool.IntegrationTests.Proxy;
+using SqlSugar;
 
 namespace AITool.IntegrationTests.Services;
 
@@ -133,6 +133,16 @@ public sealed class CodexQuotaPeriodTests
             first.UnknownCount.Should().Be(1);
             first.EstimatedCostUsd.Should().Be(18m);
             first.UnpricedCount.Should().Be(1);
+            using (var models = System.Text.Json.JsonDocument.Parse(first.ModelsJson!))
+            {
+                var terra = models.RootElement.EnumerateArray().Single(x => x.GetProperty("model").GetString() == "terra");
+                terra.GetProperty("totalTokens").GetInt64().Should().Be(33);
+                terra.GetProperty("estimatedCostUsd").GetDecimal().Should().Be(18m);
+                terra.GetProperty("cachedTokens").GetInt64().Should().Be(20);
+                var unpriced = models.RootElement.EnumerateArray().Single(x => x.GetProperty("model").GetString() == "unpriced");
+                unpriced.GetProperty("estimatedCostUsd").ValueKind.Should().Be(System.Text.Json.JsonValueKind.Null);
+                unpriced.GetProperty("unpricedCount").GetInt32().Should().Be(1);
+            }
             (await db.Queryable<CodexQuotaPeriod>().CountAsync()).Should().Be(1);
             await CodexQuotaPeriodService.ObserveAsync(db, account, Snapshot(now.AddDays(7)), now.AddMinutes(2), default, pricing);
             var periods = await db.Queryable<CodexQuotaPeriod>().OrderBy(x => x.FirstObservedAt).ToListAsync();
@@ -152,6 +162,7 @@ public sealed class CodexQuotaPeriodTests
             foreach (var file in new[] { path, path + "-wal", path + "-shm" }) if (File.Exists(file)) File.Delete(file);
         }
     }
+
     [Theory]
     [InlineData("weekly", 604800)]
     [InlineData("five-hour", 18000)]

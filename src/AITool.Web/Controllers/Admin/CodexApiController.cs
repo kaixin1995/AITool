@@ -371,6 +371,7 @@ public sealed class CodexApiController : ControllerBase
                         return BadRequest(new { message = "账号没有 refresh_token" });
                     using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "manual-token-refresh");
                     var tokens = await (network?.CodexOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken, ct);
+                    var hasNewAccessToken = !string.IsNullOrWhiteSpace(tokens.AccessToken);
                     // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token。
                     if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
                     {
@@ -387,9 +388,14 @@ public sealed class CodexApiController : ControllerBase
                     // 写库用独立超时令牌：刷新已发出即轮换旧 token，管理员中途关页不得丢新凭证。
                     persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                     var pct = persistCts.Token;
-                    await CodexCredentialPersistence.SaveAsync(_dbContext, account, pct);
+                    var synchronized = await CodexCredentialPersistence.SaveAsync(_dbContext, account, pct, _logger, recoverReauth: hasNewAccessToken);
                     _metadataCache.InvalidateRouteTargets();
                     _metadataCache.InvalidateCodexAccounts();
+                    if (!hasNewAccessToken || !synchronized)
+                    {
+                        var latest = await _dbContext.CodexAccounts.InSingleAsync(id) ?? account;
+                        return Ok(ToSummary(latest, !hasNewAccessToken ? "上游未返回有效 access_token，登录状态尚未恢复" : "凭证已保存，但账号状态或站点同步未完成，请重试刷新"));
+                    }
                 }
                 catch (OperationCanceledException) when (persistCts?.IsCancellationRequested == true)
                 {
@@ -443,6 +449,7 @@ public sealed class CodexApiController : ControllerBase
                         return BadRequest(new { message = "账号没有 refresh_token" });
                     using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "manual-token-refresh");
                     var tokens = await (network?.CodexOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken, ct);
+            var hasNewAccessToken = !string.IsNullOrWhiteSpace(tokens.AccessToken);
             // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token 导致永久无法刷新。
             if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
             {
@@ -459,10 +466,13 @@ public sealed class CodexApiController : ControllerBase
             // 写库用独立超时令牌：刷新已发出即轮换旧 token，管理员中途关页不得丢新凭证。
             persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var pct = persistCts.Token;
-            await CodexCredentialPersistence.SaveAsync(_dbContext, account, pct);
+            var synchronized = await CodexCredentialPersistence.SaveAsync(_dbContext, account, pct, _logger, recoverReauth: hasNewAccessToken);
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
-            return Ok(ToSummary(account));
+            var updated = await _dbContext.CodexAccounts.InSingleAsync(id) ?? account;
+            if (!hasNewAccessToken || !synchronized)
+                return BadRequest(new { message = !hasNewAccessToken ? "上游未返回有效 access_token，登录状态尚未恢复" : "凭证已保存，但账号状态或站点同步未完成，请重试刷新" });
+            return Ok(ToSummary(updated));
         }
         catch (OperationCanceledException) when (persistCts?.IsCancellationRequested == true)
         {
