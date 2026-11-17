@@ -337,7 +337,8 @@ public sealed class AccountPoolSyncTests : IDisposable
         using var transaction = external.BeginTransaction();
         using var command = external.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "INSERT INTO ProxyRouteEntries (Id, EntryName, CreatedAt) VALUES ($id, $name, $created)";
+        // IsDisabled 为 NOT NULL 无默认值（路由入口启停功能），裸 INSERT 必须显式给值。
+        command.CommandText = "INSERT INTO ProxyRouteEntries (Id, EntryName, CreatedAt, IsDisabled) VALUES ($id, $name, $created, 0)";
         command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString());
         command.Parameters.AddWithValue("$name", "external-model");
         command.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow);
