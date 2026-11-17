@@ -90,21 +90,28 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<Site> Sites => _client.Queryable<Site>();
     public ISugarQueryable<SiteKey> SiteKeys => _client.Queryable<SiteKey>();
     public ISugarQueryable<CodexAccount> CodexAccounts => _client.Queryable<CodexAccount>();
+    public ISugarQueryable<CodexQuotaPeriod> CodexQuotaPeriods => _client.Queryable<CodexQuotaPeriod>();
     public ISugarQueryable<GoogleAccount> GoogleAccounts => _client.Queryable<GoogleAccount>();
     public ISugarQueryable<KimiAccount> KimiAccounts => _client.Queryable<KimiAccount>();
     public ISugarQueryable<XaiAccount> XaiAccounts => _client.Queryable<XaiAccount>();
+    public ISugarQueryable<Domain.OAuth.DeviceOAuthAccount> DeviceOAuthAccounts => _client.Queryable<Domain.OAuth.DeviceOAuthAccount>();
     public ISugarQueryable<ModelLibraryItem> ModelLibraryItems => _client.Queryable<ModelLibraryItem>();
     public ISugarQueryable<SiteModelMapping> SiteModelMappings => _client.Queryable<SiteModelMapping>();
     public ISugarQueryable<DetectionTask> DetectionTasks => _client.Queryable<DetectionTask>();
     public ISugarQueryable<DetectionTaskExecution> DetectionTaskExecutions => _client.Queryable<DetectionTaskExecution>();
     public ISugarQueryable<ProxyRouteEntry> ProxyRouteEntries => _client.Queryable<ProxyRouteEntry>();
     public ISugarQueryable<ProxyRouteRule> ProxyRouteRules => _client.Queryable<ProxyRouteRule>();
+    public ISugarQueryable<Domain.Proxy.AccountPool> AccountPools => _client.Queryable<Domain.Proxy.AccountPool>();
+    public ISugarQueryable<Domain.Proxy.AccountPoolMember> AccountPoolMembers => _client.Queryable<Domain.Proxy.AccountPoolMember>();
     public ISugarQueryable<ProxyAccessKey> ProxyAccessKeys => _client.Queryable<ProxyAccessKey>();
     public ISugarQueryable<ProxyUsageLog> ProxyUsageLogs => _client.Queryable<ProxyUsageLog>();
     public ISugarQueryable<ModelHealthMonitor> ModelHealthMonitors => _client.Queryable<ModelHealthMonitor>();
     public ISugarQueryable<SystemRuntimeSettings> SystemRuntimeSettings => _client.Queryable<SystemRuntimeSettings>();
     public ISugarQueryable<CompatibilityProfile> CompatibilityProfiles => _client.Queryable<CompatibilityProfile>();
     public ISugarQueryable<SqlMigrationExecution> SqlMigrationExecutions => _client.Queryable<SqlMigrationExecution>();
+    public ISugarQueryable<QuotaRecheckSchedule> QuotaRecheckSchedules => _client.Queryable<QuotaRecheckSchedule>();
+    public ISugarQueryable<AccountNetworkPolicy> AccountNetworkPolicies => _client.Queryable<AccountNetworkPolicy>();
+    public ISugarQueryable<SessionIsolationKey> SessionIsolationKeys => _client.Queryable<SessionIsolationKey>();
     public ISugarQueryable<ProxyProfile> ProxyProfiles => _client.Queryable<ProxyProfile>();
 
     /// <summary>
@@ -287,27 +294,79 @@ public static class SqlSugarSetup
         }
 
         // CodeFirst 建表（表已存在时只增不删，自动补齐缺失列）。
+        // 旧设备账号无法区分默认名与用户改名；加列时原子地以 1 回填，保护存量名称。
+        // 已有该列的库不再改写，以保留新账号的非自定义标记。
+        var needsDeviceNameFlag = db.Ado.GetInt("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'DeviceOAuthAccounts' COLLATE NOCASE AND NOT EXISTS (SELECT 1 FROM pragma_table_info('DeviceOAuthAccounts') WHERE name = 'IsDisplayNameCustom' COLLATE NOCASE);") > 0;
+        if (needsDeviceNameFlag)
+        {
+            try
+            {
+                db.Ado.ExecuteCommand("ALTER TABLE DeviceOAuthAccounts ADD COLUMN IsDisplayNameCustom INTEGER NOT NULL DEFAULT 1;");
+            }
+            catch
+            {
+                // 另一个进程可能已加列；其他失败必须阻止启动，不能让 CodeFirst 用默认 false 加列。
+                if (db.Ado.GetInt("SELECT COUNT(*) FROM pragma_table_info('DeviceOAuthAccounts') WHERE name = 'IsDisplayNameCustom' COLLATE NOCASE;") == 0)
+                    throw;
+            }
+        }
+
+        // 未加标记的旧 Codex 名称来源不明，保守回填为自定义；已有标记的库不改写。
+        var needsCodexNameFlag = db.Ado.GetInt("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'CodexAccounts' COLLATE NOCASE AND NOT EXISTS (SELECT 1 FROM pragma_table_info('CodexAccounts') WHERE name = 'IsDisplayNameCustom' COLLATE NOCASE);") > 0;
+        if (needsCodexNameFlag)
+        {
+            try
+            {
+                db.Ado.ExecuteCommand("ALTER TABLE CodexAccounts ADD COLUMN IsDisplayNameCustom INTEGER NOT NULL DEFAULT 1;");
+            }
+            catch
+            {
+                // 并发启动可能已加列；列仍缺失时必须阻止 CodeFirst 以 false 建列。
+                if (db.Ado.GetInt("SELECT COUNT(*) FROM pragma_table_info('CodexAccounts') WHERE name = 'IsDisplayNameCustom' COLLATE NOCASE;") == 0)
+                    throw;
+            }
+        }
+
         db.CodeFirst.InitTables(
             typeof(Site),
             typeof(SiteKey),
             typeof(CodexAccount),
+            typeof(CodexQuotaPeriod),
             typeof(GoogleAccount),
             typeof(KimiAccount),
             typeof(XaiAccount),
+            typeof(Domain.OAuth.DeviceOAuthAccount),
             typeof(ModelLibraryItem),
             typeof(SiteModelMapping),
             typeof(DetectionTask),
             typeof(DetectionTaskExecution),
             typeof(ProxyRouteEntry),
             typeof(ProxyRouteRule),
+            typeof(UpstreamReferenceOwner),
+            typeof(Domain.Proxy.AccountPool),
+            typeof(Domain.Proxy.AccountPoolMember),
             typeof(ProxyAccessKey),
             typeof(ProxyUsageLog),
+            typeof(GatewayRequestMetric),
             typeof(ModelHealthMonitor),
             typeof(SystemRuntimeSettings),
             typeof(CompatibilityProfile),
             typeof(SqlMigrationExecution),
+            typeof(QuotaRecheckSchedule),
+            typeof(AccountNetworkPolicy),
+            typeof(SessionIsolationKey),
+            typeof(SessionIsolationKeyMetadata),
             typeof(ProxyProfile),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
+
+        // CodeFirst does not reliably add new indexes to existing SQLite tables.
+        db.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS IX_ProxyRouteEntries_ManagedByPoolId ON ProxyRouteEntries (ManagedByPoolId);");
+        db.Ado.ExecuteCommand("CREATE INDEX IF NOT EXISTS IX_ProxyRouteRules_ManagedByPoolId ON ProxyRouteRules (ManagedByPoolId);");
+        db.Ado.ExecuteCommand("UPDATE ProxyRouteEntries SET IsDisabled = 0 WHERE IsDisabled IS NULL;");
+
+        // SQLite CodeFirst may add boolean columns as NULL on populated legacy tables.
+        foreach (var table in new[] { "CodexAccounts", "GoogleAccounts", "KimiAccounts" })
+            db.Ado.ExecuteCommand($"UPDATE {table} SET RequiresReauth = 0 WHERE RequiresReauth IS NULL;");
 
         // 统一模型名称：将历史库中可能残留的 DisplayName 同步对齐为 ModelName。
         try
@@ -317,6 +376,18 @@ public static class SqlSugarSetup
         catch (Exception ex)
         {
             logger?.LogWarning(ex, "Failed to align ModelLibraryItems DisplayName with ModelName");
+        }
+
+        // CodeFirst supplies the Site default when adding the discriminator to populated legacy tables.
+        // Normalize pre-release/null values too, then give legacy rule-only names a stable identity once.
+        db.Ado.ExecuteCommand("UPDATE ProxyRouteRules SET TargetKind = 'Site' WHERE TargetKind IS NULL OR trim(TargetKind) = '';");
+        var existingNames = db.Queryable<ProxyRouteEntry>().ToList()
+            .Select(x => x.EntryName).ToHashSet(StringComparer.Ordinal);
+        var legacyNames = db.Queryable<ProxyRouteRule>().Select(x => x.ExternalModelName).ToList();
+        foreach (var name in legacyNames.Distinct(StringComparer.Ordinal))
+        {
+            if (!string.IsNullOrWhiteSpace(name) && existingNames.Add(name))
+                db.Insertable(new ProxyRouteEntry { EntryName = name }).ExecuteCommand();
         }
 
         SanitizeAccountQuotaTimestamps(db, logger);

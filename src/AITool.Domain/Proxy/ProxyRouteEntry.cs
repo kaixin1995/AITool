@@ -7,6 +7,7 @@ namespace AITool.Domain.Proxy;
 /// </summary>
 [SugarTable("ProxyRouteEntries")]
 [SugarIndex("UX_ProxyRouteEntries_EntryName", nameof(EntryName), OrderByType.Asc, true)]
+[SugarIndex("IX_ProxyRouteEntries_ManagedByPoolId", nameof(ManagedByPoolId), OrderByType.Asc, false)]
 public sealed class ProxyRouteEntry
 {
     /// <summary>
@@ -20,6 +21,16 @@ public sealed class ProxyRouteEntry
     /// </summary>
     [SugarColumn(Length = 200, IsNullable = false)]
     public string EntryName { get; set; } = string.Empty;
+
+    /// <summary>禁用时禁止通过该入口发起新请求，包括作为其他入口的引用。</summary>
+    public bool IsDisabled { get; set; }
+
+    /// <summary>
+    /// 号池托管标记：由 <see cref="AccountPool"/> 生成并维护规则的路由入口。
+    /// null = 手工路由（号池同步绝不触碰）；池删除/同步移除时物理删除托管入口，外部引用保持失效。
+    /// </summary>
+    [SugarColumn(IsNullable = true)]
+    public Guid? ManagedByPoolId { get; set; }
 
     /// <summary>
     /// 主入口创建时间，用于记录该入口配置的建立时间。

@@ -33,6 +33,13 @@ public sealed class CodexAccount
     public string DisplayName { get; set; } = string.Empty;
 
     /// <summary>
+    /// 显示名是否受自定义保护：供给器仅在未标记且精确匹配历史默认名时允许升级重命名。
+    /// 尚未加列的旧库因名称来源不明，迁移时保守标记为 true；已有标记的库保留原值。
+    /// </summary>
+    [SugarColumn(IsNullable = false)]
+    public bool IsDisplayNameCustom { get; set; }
+
+    /// <summary>
     /// 从 id_token JWT 解析的邮箱，用于展示与去重兜底。
     /// </summary>
     [SugarColumn(Length = 200, IsNullable = true)]
@@ -91,6 +98,10 @@ public sealed class CodexAccount
     /// </summary>
     [SugarColumn(IsNullable = false)]
     public bool IsEnabled { get; set; } = true;
+
+    /// <summary>转发凭证被上游拒绝，需要重新登录。</summary>
+    [SugarColumn(IsNullable = false)]
+    public bool RequiresReauth { get; set; }
 
     /// <summary>
     /// 标记该账号是否因「Codex 功能总开关」被关闭而禁用（区别于额度耗尽/手动禁用）。

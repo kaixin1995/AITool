@@ -98,4 +98,12 @@ public sealed class Site
     /// </summary>
     [SugarColumn(Length = 300, IsNullable = true)]
     public string? EgressProxyUrl { get; set; }
+
+    /// <summary>
+    /// 自定义余额查询配置（JSON 块：{"url":"...","method":"GET|POST","expression":"$.data.quota/500000","currency":"USD"}）。
+    /// 配置后站点页「额度查询」改走该中转面板的余额接口（new-api/sub2api 系），密钥以 Bearer 携带。
+    /// 为空则按 base_url 匹配内置供应商（智谱/DeepSeek）。
+    /// </summary>
+    [SugarColumn(ColumnDataType = "text", IsNullable = true)]
+    public string? QuotaBalanceJson { get; set; }
 }

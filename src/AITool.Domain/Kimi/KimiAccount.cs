@@ -98,6 +98,10 @@ public sealed class KimiAccount
     [SugarColumn(IsNullable = false)]
     public bool IsEnabled { get; set; } = true;
 
+    /// <summary>转发凭证被上游拒绝，需要重新登录。</summary>
+    [SugarColumn(IsNullable = false)]
+    public bool RequiresReauth { get; set; }
+
     /// <summary>
     /// 用户在 OAuth 页手动禁用（区别于额度巡检/总开关禁用，巡检不会自动恢复手动禁用的账号）。
     /// </summary>
