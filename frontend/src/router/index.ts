@@ -74,7 +74,7 @@ const routes: RouteRecordRaw[] = [
         redirect: to => ({ name: 'detection', query: to.query, hash: '#tasks' })
       },
       { path: 'model-health', name: 'model-health', component: () => import('@/views/ModelHealthManagementView.vue'), meta: { title: '模型健康' } },
-      { path: 'developer/invocations', name: 'developer-invocations', component: () => import('@/views/DeveloperInvocationsView.vue'), meta: { title: '调试工具', requiresDeveloper: true } },
+      { path: 'developer/invocations', name: 'developer-invocations', component: () => import('@/views/DeveloperInvocationsView.vue'), meta: { title: '调试工具' } },
       { path: 'usage-logs', name: 'usage-logs', component: () => import('@/views/UsageLogsView.vue'), meta: { title: '使用日志' } },
       { path: 'system/settings', name: 'system-settings', component: () => import('@/views/SystemSettingsView.vue'), meta: { title: '系统设置' } }
     ]

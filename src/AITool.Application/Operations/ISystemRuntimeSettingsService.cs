@@ -125,11 +125,6 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool? DeveloperProxyProfilesEnabled { get; set; }
 
     /// <summary>
-    /// 控制对话记录页面及记录写入功能是否启用（split 分支）。
-    /// </summary>
-    public bool ConversationLogEnabled { get; set; }
-
-    /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>
     public int ConcurrencyMode { get; set; }
@@ -138,6 +133,36 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     /// 并发排队等待的最大时间（秒），仅在 WaitForSlot 模式下生效。
     /// </summary>
     public int ConcurrencyQueueTimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// 对话记录功能开关（split 分支）：控制对话记录页面显示与写入。可空语义：null 保持现值。
+    /// </summary>
+    public bool? ConversationLogEnabled { get; set; }
+
+    /// <summary>
+    /// 配额感知路由排序开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? RouteQuotaOrderingEnabled { get; set; }
+
+    /// <summary>
+    /// 会话亲和开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? SessionAffinityEnabled { get; set; }
+
+    /// <summary>
+    /// 路由分级冷却开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? TieredRouteCooldownEnabled { get; set; }
+
+    /// <summary>
+    /// 客户端错误严格回退开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? StrictClientErrorFallbackEnabled { get; set; }
+
+    /// <summary>
+    /// 流式首包蓄流开关（默认关闭）。可空语义：null 保持现值。
+    /// </summary>
+    public bool? StreamHeadBufferEnabled { get; set; }
 
     /// <summary>
     /// OAuth 账号功能总开关（含 OAuth 登录账号、凭证导入和额度巡检）。

@@ -6,6 +6,8 @@ using AITool.Application.Sites;
 using AITool.Application.Networking;
 using AITool.Application.OAuth;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
+using Microsoft.Extensions.Options;
 using AITool.Infrastructure.Xai;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
@@ -426,7 +428,30 @@ builder.Services.AddScoped<DeviceOAuthQuotaService>();
 builder.Services.AddScoped<DeviceOAuthCredentialRefreshService>();
 builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<DeviceOAuthQuotaService>());
 builder.Services.AddHostedService<DeviceOAuthTokenRefreshService>();
-// 账号网络策略管理 API 支撑（策略存取 + 代理方案密文脱敏）。
+
+// —— 会话隔离钥匙圈 v2（裸存 SQLite + 自愈派生）——
+// Raw v2 is an explicit, irreversible-for-old-binaries deployment phase. Keep the
+// default v1-compatible during rolling upgrades and staged rollbacks.
+builder.Services.AddSingleton<IConfigureOptions<KeyManagementOptions>, NetworkKeyRingConfiguration>();
+builder.Services.AddSingleton(sp => new SessionIsolationKeyStore(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(),
+    sp.GetRequiredService<ILogger<SessionIsolationKeyStore>>(),
+    builder.Configuration.GetValue<bool>("SessionIsolation:EnableRawV2")));
+builder.Services.AddSingleton<SessionIsolationDeriver>();
+builder.Services.AddSingleton<AccountSessionIsolationService>();
+builder.Services.AddSingleton<AITool.Application.Proxy.IAuxiliarySessionPreparation, AuxiliarySessionPreparation>();
+builder.Services.AddSingleton<AITool.Application.Proxy.IUpstreamReferenceOwnerStore, UpstreamReferenceOwnerStore>();
+builder.Services.AddSingleton<AITool.Application.Proxy.IUpstreamReferenceGuard, UpstreamReferenceGuard>();
+
+// —— 号池（生成式路由：池成员展开成路由规则，托管标记挂路由条目）——
+builder.Services.AddScoped<AccountPoolSyncService>();
+builder.Services.AddSingleton<AccountPoolReconciliationService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AccountPoolReconciliationService>());
+
+// —— 路由候选策略（配额感知排序/会话亲和/分级冷却；开关默认全关）——
+builder.Services.AddSingleton<SessionAffinityService>();
+builder.Services.AddSingleton<RouteCandidatePolicyService>();
 
 // AI 助手：请求头模板查最新版本、模型价格 AI 查价等后台功能的统一 AI 调用通道。
 builder.Services.AddScoped<AiAssistantService>();

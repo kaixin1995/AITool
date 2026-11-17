@@ -1,7 +1,7 @@
-using AITool.Application.Common;
 using AITool.Application.Operations;
-using AITool.Admin.Services;
 using AITool.Infrastructure.Proxy;
+using AITool.Application.Common;
+using AITool.Admin.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Admin.Controllers.Admin;
@@ -77,6 +77,11 @@ public sealed class SystemSettingsApiController : ControllerBase
             developerProxyProfilesEnabled = settings.DeveloperProxyProfilesEnabled,
             concurrencyMode = settings.ConcurrencyMode,
             concurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
+            routeQuotaOrderingEnabled = settings.RouteQuotaOrderingEnabled,
+            sessionAffinityEnabled = settings.SessionAffinityEnabled,
+            tieredRouteCooldownEnabled = settings.TieredRouteCooldownEnabled,
+            strictClientErrorFallbackEnabled = settings.StrictClientErrorFallbackEnabled,
+            streamHeadBufferEnabled = settings.StreamHeadBufferEnabled,
             oauthFeaturesEnabled = settings.OAuthFeaturesEnabled,
             oauthInspectionEnabled = settings.OAuthInspectionEnabled,
             oauthInspectionIntervalSeconds = settings.OAuthInspectionIntervalSeconds,

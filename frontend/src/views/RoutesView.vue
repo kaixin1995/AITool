@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ApiError } from '@/api/http'
 import {
   NButton,
   NInput,
@@ -14,11 +16,16 @@ import * as api from '@/api/routes'
 import type {
   RouteAvailabilityMode,
   RouteEntry,
+  RouteReferenceTarget,
   RouteRuleItem,
+  RouteTargetKind,
   SiteInstanceItem
 } from '@/api/routes'
 import {
   appendCandidate,
+  appendReferenceCandidate,
+  getReferenceUnavailableReason,
+  isRouteReference,
   buildSaveRules,
   chooseSelectedEntryAfterReload,
   createRuleKeyResolver,
@@ -34,6 +41,17 @@ interface TimeRange {
 }
 
 const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+const router = useRouter()
+const candidateMode = ref<RouteTargetKind>('Site')
+const referenceTargets = ref<RouteReferenceTarget[]>([])
+const selectedReferenceId = ref<string | null>(null)
+const referenceTargetsError = ref('')
+const deletingEntry = ref(false)
+const togglingEntry = ref(false)
+const candidateModeOptions = [
+  { label: '站点模型', value: 'Site' },
+  { label: '路由入口引用', value: 'RouteEntry' }
+]
 const dialog = useDialog()
 const message = useMessage()
 const entries = ref<RouteEntry[]>([])
@@ -44,18 +62,21 @@ const entryNameInput = ref('')
 const candidateSearch = ref('')
 const selectedSiteInstanceKey = ref<string | null>(null)
 const loading = ref(false)
+const loadedRulesEntryName = ref<string | null>(null)
 const refreshingPool = ref(false)
 const creatingEntry = ref(false)
 const saving = ref(false)
 const dirty = ref(false)
-// 时间规则编辑草稿：模式与时间段只改草稿，点「确定」才写回规则并保存，点「取消」或再次点击按钮丢弃。
+// 时间规则编辑草稿：点「确定」才写回并保存；有修改时须明确确定/取消，避免其他自动保存覆盖草稿。
 const availabilityDraft = ref<{ key: string; mode: RouteAvailabilityMode; ranges: TimeRange[] } | null>(null)
 const openAvailabilityKey = ref<string | null>(null)
 const draggingRuleIndex = ref<number | null>(null)
 const dragOverRuleIndex = ref<number | null>(null)
 const resolveRuleKey = createRuleKeyResolver()
 let latestLoadToken = 0
+let latestReferenceLoadToken = 0
 let pendingSaveAfterCurrent = false
+let poolBaseline = new Map<string, RouteRuleItem>()
 
 const availabilityOptions = api.routeAvailabilityOptions
 const selectedEntry = computed(
@@ -71,9 +92,31 @@ const siteInstanceOptions = computed(() => filteredInstances.value.map((instance
 const selectedSiteInstance = computed(() => filteredInstances.value.find(
   (instance) => `${instance.siteId}::${instance.siteModelName}` === selectedSiteInstanceKey.value
 ) ?? null)
+const isPoolManaged = computed(() => Boolean(selectedEntry.value?.managedByPoolId))
 const canEdit = computed(
-  () => Boolean(selectedEntryName.value) && !loading.value && !saving.value
+  () => Boolean(selectedEntryName.value) && loadedRulesEntryName.value === selectedEntryName.value
+    && !loading.value && !saving.value && !creatingEntry.value && !deletingEntry.value && !togglingEntry.value
 )
+const availabilityDirty = computed(() => {
+  const draft = availabilityDraft.value
+  if (!draft) return false
+  const rule = rules.value.find((item) => resolveRuleKey(item) === draft.key)
+  return !rule || draft.mode !== rule.availabilityMode
+    || serializeTimeRanges(draft.ranges) !== serializeTimeRanges(parseTimeRanges(rule.timeRangesJson))
+})
+const canModifyQueue = computed(() => canEdit.value && !availabilityDirty.value)
+const hasUnsavedChanges = computed(() => dirty.value || availabilityDirty.value)
+const referenceTargetOptions = computed(() => referenceTargets.value
+  .filter((target) => target.entryName.toLowerCase().includes(candidateSearch.value.trim().toLowerCase()))
+  .map((target) => ({
+    label: `${target.entryName}${target.managedByPoolId ? '（号池）' : ''} · ${target.candidateCount} 个候选${!target.canSelect ? ` · ${target.reason || '不可引用'}` : ''}`,
+    value: target.entryId,
+    disabled: !target.canSelect
+  })))
+
+function openPoolManagement(): void {
+  void router.push({ name: 'routes', hash: '#pools' })
+}
 
 function parseTimeRanges(json: string): TimeRange[] {
   if (!json) return [{ start: '00:00', end: '23:59' }]
@@ -111,6 +154,11 @@ function isAvailabilityOpen(rule: RouteRuleItem): boolean {
 }
 
 function toggleAvailabilityEditor(rule: RouteRuleItem): void {
+  if (!canEdit.value || isPoolManaged.value) return
+  if (availabilityDirty.value) {
+    message.warning('请先确定或取消当前时间规则修改')
+    return
+  }
   const key = resolveRuleKey(rule)
   if (openAvailabilityKey.value === key) {
     // 再次点击同一行：丢弃草稿并折叠
@@ -133,6 +181,7 @@ function saveAfterChange(): void {
 }
 
 function handleAvailabilityChange(mode: RouteAvailabilityMode): void {
+  if (!canEdit.value) return
   // 只改草稿，不保存；由「确定」统一写回
   if (availabilityDraft.value) {
     availabilityDraft.value.mode = mode
@@ -140,16 +189,17 @@ function handleAvailabilityChange(mode: RouteAvailabilityMode): void {
 }
 
 function confirmAvailability(): void {
+  if (!canEdit.value) return
   const draft = availabilityDraft.value
   if (!draft) return
   const rule = rules.value.find((item) => resolveRuleKey(item) === draft.key)
   if (rule) {
     rule.availabilityMode = draft.mode
     rule.timeRangesJson = draft.mode === 'AllDay' ? '' : serializeTimeRanges(draft.ranges)
-    saveAfterChange()
   }
   availabilityDraft.value = null
   openAvailabilityKey.value = null
+  if (rule) saveAfterChange()
 }
 
 function cancelAvailability(): void {
@@ -189,8 +239,40 @@ async function refreshSiteInstances(): Promise<void> {
   }
 }
 
+async function refreshReferenceTargets(entryName = selectedEntryName.value): Promise<void> {
+  const token = ++latestReferenceLoadToken
+  referenceTargetsError.value = ''
+  if (!entryName) {
+    referenceTargets.value = []
+    return
+  }
+  try {
+    const targets = await api.getRouteReferenceTargets(entryName)
+    if (!isLatestRouteLoad(token, latestReferenceLoadToken) || entryName !== selectedEntryName.value) return
+    referenceTargets.value = targets
+    if (!targets.some((target) => target.entryId === selectedReferenceId.value && target.canSelect)) {
+      selectedReferenceId.value = null
+    }
+  } catch {
+    if (!isLatestRouteLoad(token, latestReferenceLoadToken) || entryName !== selectedEntryName.value) return
+    referenceTargets.value = []
+    referenceTargetsError.value = '无法加载可引用入口，请刷新后重试'
+  }
+}
+
+async function refreshCandidates(): Promise<void> {
+  await Promise.all([refreshSiteInstances(), refreshReferenceTargets()])
+}
+
 async function loadSelectedEntry(entryName: string | null): Promise<void> {
+  // Autosave/refresh must never replace an unconfirmed availability draft.
+  // Entry changes clear it only after the explicit discard confirmation.
+  if (availabilityDirty.value) return
   const token = ++latestLoadToken
+  loadedRulesEntryName.value = null
+  referenceTargets.value = []
+  selectedReferenceId.value = null
+  void refreshReferenceTargets(entryName)
 
   if (!entryName) {
     rules.value = []
@@ -205,7 +287,9 @@ async function loadSelectedEntry(entryName: string | null): Promise<void> {
     const loadedRules = await api.getRouteRules(entryName)
     if (!isLatestRouteLoad(token, latestLoadToken)) return
 
+    poolBaseline = new Map(loadedRules.map(rule => [rule.ruleId, { ...rule }]))
     rules.value = loadedRules
+    loadedRulesEntryName.value = entryName
     // 规则重载后旧的编辑草稿/展开状态失效，一并清理
     availabilityDraft.value = null
     openAvailabilityKey.value = null
@@ -218,21 +302,23 @@ async function loadSelectedEntry(entryName: string | null): Promise<void> {
 }
 
 function changeEntry(entryName: string | null): void {
-  if (saving.value || creatingEntry.value || entryName === selectedEntryName.value) return
+  if (saving.value || creatingEntry.value || deletingEntry.value || togglingEntry.value || entryName === selectedEntryName.value) return
 
   const proceed = (): void => {
+    if (saving.value || creatingEntry.value || deletingEntry.value || togglingEntry.value) return
+    cancelAvailability()
     selectedEntryName.value = entryName
     void loadSelectedEntry(entryName)
   }
 
-  if (!dirty.value) {
+  if (!hasUnsavedChanges.value) {
     proceed()
     return
   }
 
   dialog.warning({
     title: '放弃未保存修改？',
-    content: '切换主入口会放弃当前候选队列的未保存修改。',
+    content: '切换主入口会放弃当前候选队列和时间规则草稿的未保存修改。',
     positiveText: '放弃并切换',
     negativeText: '继续编辑',
     onPositiveClick: proceed
@@ -253,6 +339,7 @@ async function createEntryNow(entryName: string): Promise<void> {
 }
 
 function createEntry(): void {
+  if (saving.value || creatingEntry.value || deletingEntry.value) return
   const entryName = entryNameInput.value.trim()
   if (!entryName) {
     message.warning('请输入主入口名称')
@@ -260,35 +347,69 @@ function createEntry(): void {
   }
 
   const proceed = (): void => {
+    if (saving.value || creatingEntry.value || deletingEntry.value) return
+    cancelAvailability()
     void createEntryNow(entryName)
   }
 
-  if (!dirty.value) {
+  if (!hasUnsavedChanges.value) {
     proceed()
     return
   }
 
   dialog.warning({
     title: '放弃未保存修改？',
-    content: '创建并切换到新主入口会放弃当前候选队列的未保存修改。',
+    content: '创建并切换到新主入口会放弃当前候选队列和时间规则草稿的未保存修改。',
     positiveText: '放弃并创建',
     negativeText: '继续编辑',
     onPositiveClick: proceed
   })
 }
 
-async function deleteCurrentEntry(): Promise<void> {
+async function deleteCurrentEntry(confirmReferenced = false, expectedEntryName = selectedEntryName.value): Promise<void> {
   const entryName = selectedEntryName.value
-  if (!entryName) return
+  if (!canEdit.value || isPoolManaged.value || !entryName || entryName !== expectedEntryName) return
 
-  await api.deleteRouteEntry(entryName)
-  rules.value = []
-  availabilityDraft.value = null
-  openAvailabilityKey.value = null
-  dirty.value = false
-  await loadEntries()
-  await loadSelectedEntry(selectedEntryName.value)
-  message.success('主入口已删除')
+  deletingEntry.value = true
+  try {
+    await api.deleteRouteEntry(entryName, confirmReferenced)
+    // 删除失败或引用冲突二次确认取消时必须保留草稿，仅在服务端确认删除成功后才清空草稿与状态
+    rules.value = []
+    availabilityDraft.value = null
+    openAvailabilityKey.value = null
+    dirty.value = false
+    await loadEntries()
+    await loadSelectedEntry(selectedEntryName.value)
+    message.success('主入口已删除')
+  } catch (error) {
+    if (!confirmReferenced && error instanceof ApiError && error.status === 409) {
+      dialog.warning({
+        title: '该入口正被其他路由引用',
+        content: `删除「${entryName}」后，其他路由中的引用将不可用。${error.message} 是否仍要删除？`,
+        positiveText: '仍然删除被引用入口',
+        negativeText: '取消',
+        onPositiveClick: () => deleteCurrentEntry(true, entryName)
+      })
+    } else {
+      message.error(error instanceof Error ? error.message : '删除失败')
+    }
+  } finally {
+    deletingEntry.value = false
+  }
+}
+
+async function toggleCurrentEntry(): Promise<void> {
+  const entry = selectedEntry.value
+  if (!entry || togglingEntry.value || !canEdit.value) return
+  const isEnabled = Boolean(entry.isDisabled)
+  togglingEntry.value = true
+  try {
+    await api.setRouteEntryEnabled(entry.entryName, isEnabled)
+    entries.value = entries.value.map(item => item.entryName === entry.entryName ? { ...item, isDisabled: !isEnabled } : item)
+    message.success(isEnabled ? '主入口已启用' : '主入口已禁用')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '操作失败，请重试')
+  } finally { togglingEntry.value = false }
 }
 
 function addCandidate(instance: SiteInstanceItem): void {
@@ -297,6 +418,18 @@ function addCandidate(instance: SiteInstanceItem): void {
 }
 
 function addSelectedCandidate(): void {
+  if (!canModifyQueue.value || isPoolManaged.value) return
+  if (candidateMode.value === 'RouteEntry') {
+    const target = referenceTargets.value.find((item) => item.entryId === selectedReferenceId.value)
+    if (!target?.canSelect) {
+      message.warning(target?.reason || '请选择可引用的路由入口')
+      return
+    }
+    rules.value = appendReferenceCandidate(rules.value, target)
+    selectedReferenceId.value = null
+    saveAfterChange()
+    return
+  }
   if (!selectedSiteInstance.value) {
     message.warning('请选择站点实例')
     return
@@ -307,7 +440,7 @@ function addSelectedCandidate(): void {
 }
 
 function handleRuleDragStart(index: number, event: DragEvent): void {
-  if (!canEdit.value) {
+  if (!canModifyQueue.value) {
     event.preventDefault()
     return
   }
@@ -352,6 +485,10 @@ function handleRuleDragEnter(index: number, event: DragEvent): void {
 
 function handleRuleDrop(targetIndex: number, event: DragEvent): void {
   event.preventDefault()
+  if (!canModifyQueue.value) {
+    handleRuleDragEnd()
+    return
+  }
   const from = draggingRuleIndex.value
   if (from !== null && from !== targetIndex && from >= 0 && from < rules.value.length) {
     const nextRules = [...rules.value]
@@ -370,7 +507,7 @@ function handleRuleDragEnd(): void {
 }
 
 function handleMoveRule(index: number, direction: -1 | 1): void {
-  if (!canEdit.value) return
+  if (!canModifyQueue.value) return
   const next = moveCandidate(rules.value, index, direction)
   if (next !== rules.value) {
     rules.value = next
@@ -378,7 +515,14 @@ function handleMoveRule(index: number, direction: -1 | 1): void {
   }
 }
 
+function toggleRule(rule: RouteRuleItem): void {
+  if (!canModifyQueue.value || !rules.value.includes(rule)) return
+  rule.isEnabled = !rule.isEnabled
+  saveAfterChange()
+}
+
 function removeRule(index: number): void {
+  if (!canModifyQueue.value || isPoolManaged.value) return
   rules.value = rules.value.filter((_, ruleIndex) => ruleIndex !== index)
   availabilityDraft.value = null
   openAvailabilityKey.value = null
@@ -387,16 +531,27 @@ function removeRule(index: number): void {
 
 async function handleSave(): Promise<void> {
   const entryName = selectedEntryName.value
-  if (!entryName || !dirty.value) return
+  if (!entryName || loadedRulesEntryName.value !== entryName || loading.value || availabilityDirty.value || deletingEntry.value || !dirty.value) return
   if (saving.value) {
     pendingSaveAfterCurrent = true
     return
   }
 
+  const savingPool = isPoolManaged.value
   saving.value = true
   pendingSaveAfterCurrent = false
   try {
-    const response = await api.saveRouteRules(entryName, buildSaveRules(rules.value))
+    const response = savingPool
+      ? await api.savePoolQueue(selectedEntry.value?.entryId ?? '', rules.value.map(rule => {
+          const original = poolBaseline.get(rule.ruleId)
+          if (!original) throw new Error('候选队列已变更，请刷新后重试')
+          return {
+            ruleId: rule.ruleId, expectedPriority: original.priority,
+            expectedModelPriority: original.modelPriority, expectedInstancePriority: original.instancePriority,
+            expectedIsEnabled: original.isEnabled, isEnabled: rule.isEnabled
+          }
+        }))
+      : await api.saveRouteRules(entryName, buildSaveRules(rules.value))
     await Promise.all([
       loadEntries(entryName),
       refreshSiteInstances()
@@ -405,6 +560,15 @@ async function handleSave(): Promise<void> {
       await loadSelectedEntry(entryName)
     }
     message.success(response.message || '路由规则已保存')
+  } catch (error) {
+    if (savingPool) {
+      message.error(error instanceof Error ? error.message : '保存失败，请刷新后重试')
+      pendingSaveAfterCurrent = false
+      await loadEntries(entryName)
+      await loadSelectedEntry(selectedEntryName.value)
+    } else {
+      throw error
+    }
   } finally {
     saving.value = false
     if (pendingSaveAfterCurrent) {
@@ -452,10 +616,10 @@ onMounted(() => {
               id="route-entry-name"
               v-model:value="entryNameInput"
               placeholder="例如 auto"
-              :disabled="creatingEntry || saving"
+              :disabled="creatingEntry || saving || deletingEntry"
               @keyup.enter="createEntry"
             />
-            <NButton type="primary" :loading="creatingEntry" :disabled="saving" @click="createEntry">创建</NButton>
+            <NButton type="primary" :loading="creatingEntry" :disabled="saving || deletingEntry" @click="createEntry">创建</NButton>
           </div>
         </div>
 
@@ -470,7 +634,7 @@ onMounted(() => {
             @click="changeEntry(entry.entryName)"
           >
             <span class="entry-name">{{ entry.displayName || entry.entryName }}</span>
-            <span class="entry-count">{{ entry.candidateCount }} 个候选</span>
+            <span class="entry-count">{{ entry.isDisabled ? '已禁用 · ' : '' }}{{ entry.candidateCount }} 个候选</span>
           </button>
         </div>
       </section>
@@ -484,45 +648,71 @@ onMounted(() => {
               <template v-else>请选择或创建一个主入口</template>
             </div>
           </div>
-          <NPopconfirm
-            v-if="selectedEntryName"
-            positive-text="删除"
-            negative-text="取消"
-            @positive-click="deleteCurrentEntry"
-          >
-            <template #trigger>
-              <NButton size="small" type="error" secondary :disabled="saving || creatingEntry">删除当前主入口</NButton>
-            </template>
-            {{ getDeleteEntryConfirmation(dirty) }}
-          </NPopconfirm>
+          <div v-if="selectedEntryName" class="route-entry-actions">
+            <NPopconfirm @positive-click="toggleCurrentEntry">
+              <template #trigger><NButton size="small" :type="selectedEntry?.isDisabled ? 'primary' : 'warning'" secondary :loading="togglingEntry" :disabled="!canEdit">{{ selectedEntry?.isDisabled ? '启用当前主入口' : '禁用当前主入口' }}</NButton></template>
+              {{ selectedEntry?.isDisabled ? '启用后可通过此入口发起新请求。' : '禁用后新请求及其他入口对此入口的引用将不可用；已开始的请求不受影响。其他入口若直接映射同一上游模型，仍可调用。' }}
+            </NPopconfirm>
+            <NPopconfirm
+              positive-text="删除"
+              negative-text="取消"
+              @positive-click="() => deleteCurrentEntry()"
+            >
+              <template #trigger>
+                <NButton size="small" type="error" secondary :disabled="!canEdit || isPoolManaged || creatingEntry">删除当前主入口</NButton>
+              </template>
+              {{ getDeleteEntryConfirmation(hasUnsavedChanges) }}
+            </NPopconfirm>
+          </div>
         </div>
 
         <div v-if="!selectedEntryName" class="route-empty-state">请选择或创建一个主入口</div>
         <template v-else>
-          <div class="route-add-box">
-            <label class="route-add-field">
-              <span class="route-field-label">搜索候选实例</span>
-              <NInput v-model:value="candidateSearch" clearable placeholder="搜索站点或模型" :disabled="saving" />
+          <div v-if="isPoolManaged" class="pool-readonly-notice">
+            <span>号池生成的候选可在此排序和启停；成员及模型范围在号池管理。配额排序或会话亲和开启时，实际调用顺序可能不同。</span>
+            <NButton size="small" secondary @click="openPoolManagement">前往号池管理</NButton>
+          </div>
+          <div v-if="!isPoolManaged" class="route-add-box">
+            <label class="route-add-field candidate-mode-field">
+              <span class="route-field-label">候选类型</span>
+              <NSelect v-model:value="candidateMode" :options="candidateModeOptions" :disabled="!canModifyQueue" />
             </label>
             <label class="route-add-field">
-              <span class="route-field-label">添加候选实例</span>
+              <span class="route-field-label">搜索候选</span>
+              <NInput v-model:value="candidateSearch" clearable :placeholder="candidateMode === 'Site' ? '搜索站点或模型' : '搜索路由入口'" :disabled="!canModifyQueue" />
+            </label>
+            <label class="route-add-field">
+              <span class="route-field-label">{{ candidateMode === 'Site' ? '添加站点模型' : '添加路由引用（整体候选组）' }}</span>
               <NSelect
+                v-if="candidateMode === 'Site'"
                 v-model:value="selectedSiteInstanceKey"
                 :options="siteInstanceOptions"
                 filterable
                 clearable
                 placeholder="-- 请选择站点实例 --"
-                :disabled="saving"
+                :disabled="!canModifyQueue"
+              />
+              <NSelect
+                v-else
+                v-model:value="selectedReferenceId"
+                :options="referenceTargetOptions"
+                filterable
+                clearable
+                placeholder="-- 请选择路由入口 --"
+                :disabled="!canModifyQueue"
               />
             </label>
-            <NButton type="primary" secondary :disabled="!canEdit" @click="addSelectedCandidate">追加到队列末尾</NButton>
-            <NButton secondary :loading="refreshingPool" :disabled="saving" @click="refreshSiteInstances">刷新实例池</NButton>
+            <NButton type="primary" secondary :disabled="!canModifyQueue" @click="addSelectedCandidate">追加到队列末尾</NButton>
+            <NButton secondary :loading="refreshingPool" :disabled="saving || loading || deletingEntry" @click="refreshCandidates">刷新候选池</NButton>
+          </div>
+          <div v-if="!isPoolManaged && candidateMode === 'RouteEntry'" class="reference-hint">
+            {{ referenceTargetsError || '引用入口作为一个候选组，按目标入口当前队列依次尝试；不支持自身引用或嵌套引用。不可选原因显示在选项中。' }}
           </div>
 
           <div class="queue-card">
-            <div class="queue-card-header">拖拽调整顺序，修改后立即保存生效</div>
+            <div class="queue-card-header">{{ availabilityDirty ? '时间规则尚未确定：请先点击「确定」保存或「取消」放弃，再修改候选队列。' : '拖拽调整顺序，修改后立即保存生效' }}</div>
             <div class="queue-card-body">
-              <div v-if="!loading && rules.length === 0" class="route-empty-state">当前主入口暂无候选实例，请先添加</div>
+              <div v-if="!loading && rules.length === 0" class="route-empty-state">当前主入口暂无候选实例</div>
               <div v-else class="route-sort-list">
                 <div
                   v-for="(rule, index) in rules"
@@ -532,7 +722,7 @@ onMounted(() => {
                     dragging: draggingRuleIndex === index,
                     'drop-target-active': dragOverRuleIndex === index && draggingRuleIndex !== null && draggingRuleIndex !== index
                   }"
-                  :draggable="canEdit"
+                  :draggable="canModifyQueue"
                   @dragstart="handleRuleDragStart(index, $event)"
                   @dragover="handleRuleDragOver(index, $event)"
                   @dragenter="handleRuleDragEnter(index, $event)"
@@ -543,19 +733,23 @@ onMounted(() => {
                   <span class="priority-num">{{ index + 1 }}</span>
                   <div class="site-info">
                     <div class="site-name-row">
-                      <span class="site-name" :class="{ 'site-disabled': !rule.siteEnabled }">{{ rule.siteName }}</span>
-                      <span v-if="!rule.siteEnabled" class="route-badge badge-disabled">站点已禁用</span>
+                      <span v-if="isRouteReference(rule)" class="site-name">{{ rule.targetRouteEntryName || '未知入口' }}</span>
+                      <span v-else class="site-name" :class="{ 'site-disabled': !rule.siteEnabled }">{{ rule.siteName }}</span>
+                      <span v-if="isRouteReference(rule)" class="route-badge">路由引用 · 候选组</span>
+                      <span v-if="isRouteReference(rule) && getReferenceUnavailableReason(rule)" class="route-badge route-badge-warning">{{ getReferenceUnavailableReason(rule) }}</span>
+                      <span v-if="!isRouteReference(rule) && !rule.siteEnabled" class="route-badge badge-disabled">站点已禁用</span>
                       <span :class="['route-badge', getAvailabilitySummary(rule).className]">{{ getAvailabilitySummary(rule).text }}</span>
                       <span v-if="!rule.isEnabled" class="route-badge route-badge-muted">规则已禁用</span>
                     </div>
                     <!-- 上游模型优先显示对外名（显示名称），未匹配模型库时回退站点名 -->
-                    <div class="remote-name">上游模型：{{ rule.modelDisplayName || rule.upstreamModelName }} · 站点实例：{{ rule.siteModelName }}</div>
+                    <div v-if="isRouteReference(rule)" class="remote-name">引用目标队列的实时内容；此行的顺序、启用状态与时间规则作用于整个候选组。</div>
+                    <div v-else class="remote-name">上游模型：{{ rule.modelDisplayName || rule.upstreamModelName }} · 站点实例：{{ rule.siteModelName }}</div>
                   </div>
                   <div class="order-actions">
                     <NButton
                       size="tiny"
                       quaternary
-                      :disabled="!canEdit || index === 0"
+                      :disabled="!canModifyQueue || index === 0"
                       title="上移"
                       @click.stop="handleMoveRule(index, -1)"
                     >
@@ -564,18 +758,19 @@ onMounted(() => {
                     <NButton
                       size="tiny"
                       quaternary
-                      :disabled="!canEdit || index === rules.length - 1"
+                      :disabled="!canModifyQueue || index === rules.length - 1"
                       title="下移"
                       @click.stop="handleMoveRule(index, 1)"
                     >
                       ▼
                     </NButton>
                   </div>
-                  <NButton size="small" secondary class="availability-trigger" :disabled="!canEdit" @click.stop="toggleAvailabilityEditor(rule)">时间规则</NButton>
+                  <NButton v-if="!isPoolManaged" size="small" secondary class="availability-trigger" :disabled="!canModifyQueue" @click.stop="toggleAvailabilityEditor(rule)">时间规则</NButton>
                   <div class="route-actions">
-                    <NPopconfirm @positive-click="removeRule(index)">
+                    <NButton size="small" secondary :disabled="!canModifyQueue" @click.stop="toggleRule(rule)">{{ rule.isEnabled ? '停用' : '启用' }}</NButton>
+                    <NPopconfirm v-if="!isPoolManaged" @positive-click="removeRule(index)">
                       <template #trigger>
-                        <NButton size="small" secondary type="error" :disabled="!canEdit">移除</NButton>
+                        <NButton size="small" secondary type="error" :disabled="!canModifyQueue">移除</NButton>
                       </template>
                       从候选队列移除此规则？
                     </NPopconfirm>
@@ -653,6 +848,8 @@ onMounted(() => {
   align-items: flex-start;
 }
 
+.route-entry-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
 .route-panel-title {
   margin: 0;
   color: var(--text-primary);
@@ -687,9 +884,14 @@ onMounted(() => {
 
 .route-add-box {
   display: grid;
-  grid-template-columns: minmax(180px, 4fr) minmax(220px, 4fr) auto auto;
+  grid-template-columns: minmax(140px, 2fr) minmax(180px, 3fr) auto auto;
   align-items: end;
   gap: 8px;
+}
+
+.candidate-mode-field {
+  grid-column: 1 / -1;
+  max-width: 220px;
 }
 
 .entry-create-row :deep(.n-input) {
@@ -751,6 +953,25 @@ onMounted(() => {
 
 .route-add-field {
   min-width: 0;
+}
+
+.pool-readonly-notice,
+.reference-hint {
+  padding: 12px 18px;
+  color: var(--text-color-secondary);
+  font-size: 13px;
+}
+
+.pool-readonly-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: var(--status-info-bg);
+}
+
+.route-item[draggable='false'] {
+  cursor: default;
 }
 
 

@@ -1,0 +1,148 @@
+using System.Buffers.Binary;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using AITool.Domain.Operations;
+
+namespace AITool.Admin.Services;
+
+public sealed record SessionIsolationDerivation(string Value, string KeyGeneration);
+
+/// <summary>
+/// Versioned HMAC session identifiers, scoped by client and provider/account identity.
+/// No token, route, circuit, workspace, or request state participates in derivation.
+/// This is a foundation only; it does not rewrite or isolate any forwarded request.
+/// </summary>
+public sealed class SessionIsolationDeriver(SessionIsolationKeyStore keyStore)
+{
+    // Bound work and memory for hostile inputs, without truncation/normalization collisions.
+    public const int MaxFieldUtf8Bytes = 1024 * 1024;
+    /// <summary>
+    /// Derivation wire-protocol version (the first HMAC field). Independent of the key's
+    /// storage format version: bumping storage v1→v2 changed no field encoding, so every
+    /// derived identifier must stay byte-identical across that migration.
+    /// </summary>
+    public const int DerivationProtocolVersion = 1;
+    private static readonly UTF8Encoding ExactUtf8 = new(false, true);
+
+    /// <summary>Returns a fixed 64-character lowercase hexadecimal HMAC-SHA256.</summary>
+    public async Task<string> DeriveAsync(string clientScope, string providerKey, Guid accountId,
+        string fieldDomain, string seed, CancellationToken ct = default)
+    {
+        var (digest, _) = await DeriveCoreAsync(clientScope, providerKey, accountId, fieldDomain, seed, ct);
+        try
+        {
+            return Convert.ToHexString(digest).ToLowerInvariant();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(digest);
+        }
+    }
+
+    /// <summary>Google-compatible invariant decimal in [1, Int64.MaxValue], at most 19 digits.</summary>
+    public async Task<string> DerivePositiveInt63Async(string clientScope, string providerKey, Guid accountId,
+        string fieldDomain, string seed, CancellationToken ct = default)
+    {
+        var (digest, _) = await DeriveCoreAsync(clientScope, providerKey, accountId, fieldDomain, seed, ct);
+        try
+        {
+            return FormatPositiveInt63(digest);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(digest);
+        }
+    }
+
+    public async Task<SessionIsolationDerivation> DeriveWithGenerationAsync(string clientScope, string providerKey,
+        Guid accountId, string fieldDomain, string seed, CancellationToken ct = default)
+    {
+        var (digest, generation) = await DeriveCoreAsync(clientScope, providerKey, accountId, fieldDomain, seed, ct);
+        try
+        {
+            return new SessionIsolationDerivation(Convert.ToHexString(digest).ToLowerInvariant(), generation);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(digest);
+        }
+    }
+
+    private async Task<(byte[] Digest, string KeyGeneration)> DeriveCoreAsync(string clientScope, string providerKey, Guid accountId,
+        string fieldDomain, string seed, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientScope);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldDomain);
+        ArgumentNullException.ThrowIfNull(seed);
+        if (accountId == Guid.Empty)
+            throw new ArgumentException("A concrete account identity is required.", nameof(accountId));
+
+        // v1 wire encoding: six ordered fields, each a 4-byte unsigned big-endian byte
+        // length followed by exact strict UTF-8. Version is decimal invariant; GUID is D.
+        // Strings are NOT trimmed, case-folded, normalized, truncated, or concatenated.
+        // The derivation protocol version is decoupled from the key's storage format
+        // version (SessionIsolationKey.Version): a storage migration (v1 ciphertext →
+        // v2 raw) must not change any derived identifier.
+        string[] fields = [DerivationProtocolVersion.ToString(CultureInfo.InvariantCulture),
+            clientScope, providerKey, accountId.ToString("D"), fieldDomain, seed];
+        // Six fields: version, clientScope, accountProvider, accountGuid, fieldDomain, originalSeed.
+        foreach (var field in fields)
+        {
+            if (field.Length > MaxFieldUtf8Bytes || ExactUtf8.GetByteCount(field) > MaxFieldUtf8Bytes)
+                throw new ArgumentException("A session isolation field exceeds the UTF-8 size limit.");
+        }
+
+        var key = await keyStore.ReadKeyAsync(ct);
+        try
+        {
+            var generation = SessionIsolationKeyStore.ComputeGeneration(key);
+            var digest = ComputeDigest(key, fields, ct);
+            return (digest, generation);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
+    }
+
+    private static byte[] ComputeDigest(byte[] key, string[] fields, CancellationToken ct)
+    {
+        using var hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.SHA256, key);
+        Span<byte> length = stackalloc byte[4];
+        Span<byte> buffer = stackalloc byte[4096];
+        try
+        {
+            foreach (var field in fields)
+            {
+                ct.ThrowIfCancellationRequested();
+                BinaryPrimitives.WriteUInt32BigEndian(length, (uint)ExactUtf8.GetByteCount(field));
+                hmac.AppendData(length);
+                var encoder = ExactUtf8.GetEncoder();
+                var remaining = field.AsSpan();
+                bool completed;
+                do
+                {
+                    ct.ThrowIfCancellationRequested();
+                    encoder.Convert(remaining, buffer, true, out var charsUsed, out var bytesUsed, out completed);
+                    hmac.AppendData(buffer[..bytesUsed]);
+                    remaining = remaining[charsUsed..];
+                } while (!completed);
+            }
+            ct.ThrowIfCancellationRequested();
+            return hmac.GetHashAndReset();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(buffer);
+        }
+    }
+
+    private static string FormatPositiveInt63(byte[] digest)
+    {
+        var value = BinaryPrimitives.ReadUInt64BigEndian(digest) & 0x7fff_ffff_ffff_ffffUL;
+        return (value == 0 ? 1UL : value).ToString(CultureInfo.InvariantCulture);
+    }
+}

@@ -86,9 +86,14 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.DeveloperProtocolDiagnosticsEnabled = request.DeveloperProtocolDiagnosticsEnabled ?? settings.DeveloperProtocolDiagnosticsEnabled;
         settings.DeveloperSqlMigrationsEnabled = request.DeveloperSqlMigrationsEnabled ?? settings.DeveloperSqlMigrationsEnabled;
         settings.DeveloperProxyProfilesEnabled = request.DeveloperProxyProfilesEnabled ?? settings.DeveloperProxyProfilesEnabled;
-        settings.ConversationLogEnabled = request.ConversationLogEnabled;
+        settings.ConversationLogEnabled = request.ConversationLogEnabled ?? settings.ConversationLogEnabled;
         settings.ConcurrencyMode = Math.Max(0, Math.Min(1, request.ConcurrencyMode));
         settings.ConcurrencyQueueTimeoutSeconds = Math.Max(1, request.ConcurrencyQueueTimeoutSeconds);
+        settings.RouteQuotaOrderingEnabled = request.RouteQuotaOrderingEnabled ?? settings.RouteQuotaOrderingEnabled;
+        settings.SessionAffinityEnabled = request.SessionAffinityEnabled ?? settings.SessionAffinityEnabled;
+        settings.TieredRouteCooldownEnabled = request.TieredRouteCooldownEnabled ?? settings.TieredRouteCooldownEnabled;
+        settings.StrictClientErrorFallbackEnabled = request.StrictClientErrorFallbackEnabled ?? settings.StrictClientErrorFallbackEnabled;
+        settings.StreamHeadBufferEnabled = request.StreamHeadBufferEnabled ?? settings.StreamHeadBufferEnabled;
 
         // OAuth 账号设置：边界保护 + 总开关联动禁用
         var wasOAuthEnabled = settings.OAuthFeaturesEnabled;
