@@ -1,7 +1,7 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Microsoft.Extensions.Hosting;
 
 namespace AITool.Admin.Services;
 
@@ -14,7 +14,6 @@ public sealed class ModelVendorCatalog
     /// 厂商定义列表。
     /// </summary>
     public List<ModelVendorDefinition> Vendors { get; set; } = [];
-
     /// <summary>
     /// 匹配规则列表。
     /// </summary>
@@ -30,17 +29,14 @@ public sealed class ModelVendorDefinition
     /// 厂商名称。
     /// </summary>
     public string VendorName { get; set; } = string.Empty;
-
     /// <summary>
     /// 图标 SVG 内容。
     /// </summary>
     public string IconSvgBody { get; set; } = string.Empty;
-
     /// <summary>
     /// 头部背景色。
     /// </summary>
     public string HeaderBackground { get; set; } = string.Empty;
-
     /// <summary>
     /// 排序顺序。
     /// </summary>
@@ -56,17 +52,14 @@ public sealed class ModelVendorRuleDefinition
     /// 厂商名称。
     /// </summary>
     public string VendorName { get; set; } = string.Empty;
-
     /// <summary>
     /// 匹配类型。
     /// </summary>
     public string MatchType { get; set; } = "wildcard";
-
     /// <summary>
     /// 匹配模式。
     /// </summary>
     public string Pattern { get; set; } = string.Empty;
-
     /// <summary>
     /// 优先级。
     /// </summary>
@@ -74,8 +67,7 @@ public sealed class ModelVendorRuleDefinition
 }
 
 /// <summary>
-/// 模型厂商目录服务，管理厂商定义与匹配规则的持久化和查询。
-/// 此服务仅被 Admin 宿主使用，负责模型管理页面的厂商分组展示。
+/// 模型厂商目录服务。
 /// </summary>
 public sealed class ModelVendorCatalogService
 {
@@ -83,12 +75,10 @@ public sealed class ModelVendorCatalogService
     /// 厂商目录文件名。
     /// </summary>
     private const string CatalogFileName = "model-vendor-catalog.json";
-
     /// <summary>
     /// 未分类厂商名称。
     /// </summary>
     private const string UncategorizedVendorName = "未分类";
-
     /// <summary>
     /// JSON 序列化选项。
     /// </summary>
@@ -102,7 +92,6 @@ public sealed class ModelVendorCatalogService
     /// 运行时厂商目录文件路径。
     /// </summary>
     private readonly string _catalogPath;
-
     /// <summary>
     /// 模板厂商目录文件路径。
     /// </summary>
@@ -111,7 +100,7 @@ public sealed class ModelVendorCatalogService
     /// <summary>
     /// 初始化模型厂商目录服务。
     /// </summary>
-    public ModelVendorCatalogService(IHostEnvironment environment)
+    public ModelVendorCatalogService(IWebHostEnvironment environment)
     {
         // 厂商配置以软件运行目录中的文件为准，源码目录中的文件只作为首次生成模板。
         _catalogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, CatalogFileName);
@@ -143,43 +132,6 @@ public sealed class ModelVendorCatalogService
     }
 
     /// <summary>
-    /// 保存厂商目录。
-    /// </summary>
-    public async Task<ModelVendorCatalog> SaveAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken = default)
-    {
-        var normalized = NormalizeCatalog(catalog, validateRuleReferences: true);
-        await WriteCatalogAsync(normalized, cancellationToken);
-        return normalized;
-    }
-
-    /// <summary>
-    /// 根据模型名称解析厂商。
-    /// </summary>
-    public static ModelVendorDefinition ResolveVendor(ModelVendorCatalog catalog, string modelName)
-    {
-        var normalizedName = modelName?.Trim() ?? string.Empty;
-        var vendors = catalog.Vendors
-            .ToDictionary(x => x.VendorName, x => x, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var rule in catalog.Rules.OrderBy(x => x.Priority).ThenBy(x => x.Pattern, StringComparer.OrdinalIgnoreCase))
-        {
-            if (!vendors.ContainsKey(rule.VendorName))
-            {
-                continue;
-            }
-
-            if (IsMatch(normalizedName, rule))
-            {
-                return vendors[rule.VendorName];
-            }
-        }
-
-        return vendors.TryGetValue(UncategorizedVendorName, out var uncategorized)
-            ? uncategorized
-            : CreateFallbackVendor();
-    }
-
-    /// <summary>
     /// 初始化厂商目录。
     /// </summary>
     private async Task<ModelVendorCatalog> InitializeCatalogAsync(CancellationToken cancellationToken)
@@ -198,6 +150,62 @@ public sealed class ModelVendorCatalogService
         }
 
         return NormalizeCatalog(new ModelVendorCatalog());
+    }
+
+    /// <summary>
+    /// 保存厂商目录。
+    /// </summary>
+    public async Task<ModelVendorCatalog> SaveAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken = default)
+    {
+        var normalized = NormalizeCatalog(catalog, validateRuleReferences: true);
+        await WriteCatalogAsync(normalized, cancellationToken);
+        return normalized;
+    }
+
+    /// <summary>
+    /// 解析上下文缓存：厂商字典 + 按 Priority 排序的规则列表对同一 catalog 实例只构建一次。
+    /// GetPricing（~150 条价格逐条解析）与模型列表（逐条分组）原先每条都重建字典 + OrderBy，
+    /// 是 O(N×M log M) 的重复分配；ConditionalWeakTable 按 catalog 引用弱缓存，catalog 被替换时自动释放。
+    /// </summary>
+    private static readonly ConditionalWeakTable<ModelVendorCatalog, VendorResolutionContext> ResolutionContexts = new();
+
+    private sealed class VendorResolutionContext
+    {
+        public required IReadOnlyDictionary<string, ModelVendorDefinition> Vendors { get; init; }
+        public required IReadOnlyList<ModelVendorRuleDefinition> OrderedRules { get; init; }
+    }
+
+    /// <summary>
+    /// 根据模型名称解析厂商。
+    /// </summary>
+    public static ModelVendorDefinition ResolveVendor(ModelVendorCatalog catalog, string modelName)
+    {
+        var normalizedName = modelName?.Trim() ?? string.Empty;
+        var context = ResolutionContexts.GetValue(catalog, static c => new VendorResolutionContext
+        {
+            Vendors = c.Vendors.ToDictionary(x => x.VendorName, x => x, StringComparer.OrdinalIgnoreCase),
+            OrderedRules = c.Rules
+                .OrderBy(x => x.Priority)
+                .ThenBy(x => x.Pattern, StringComparer.OrdinalIgnoreCase)
+                .ToList()
+        });
+
+        foreach (var rule in context.OrderedRules)
+        {
+            if (!context.Vendors.ContainsKey(rule.VendorName))
+            {
+                continue;
+            }
+
+            if (IsMatch(normalizedName, rule))
+            {
+                return context.Vendors[rule.VendorName];
+            }
+        }
+
+        return context.Vendors.TryGetValue(UncategorizedVendorName, out var uncategorized)
+            ? uncategorized
+            : CreateFallbackVendor();
     }
 
     /// <summary>
@@ -237,30 +245,39 @@ public sealed class ModelVendorCatalogService
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var normalizedRules = catalog.Rules
-            .Where(x => !string.IsNullOrWhiteSpace(x.VendorName) && !string.IsNullOrWhiteSpace(x.Pattern))
+            .Where(x => !string.IsNullOrWhiteSpace(x.Pattern))
             .Select(x => new ModelVendorRuleDefinition
             {
-                VendorName = x.VendorName.Trim(),
+                VendorName = x.VendorName?.Trim() ?? string.Empty,
                 MatchType = NormalizeMatchType(x.MatchType),
                 Pattern = x.Pattern.Trim(),
                 Priority = x.Priority
             })
-            .Where(x => !validateRuleReferences || vendorNames.Contains(x.VendorName))
             .OrderBy(x => x.Priority)
             .ThenBy(x => x.Pattern, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         if (validateRuleReferences)
         {
-            var invalidRules = catalog.Rules
-                .Where(x => !string.IsNullOrWhiteSpace(x.VendorName) && !string.IsNullOrWhiteSpace(x.Pattern))
-                .Select(x => x.VendorName.Trim())
-                .Where(x => !vendorNames.Contains(x))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (invalidRules.Count > 0)
+            var invalidVendor = normalizedRules.FirstOrDefault(x => !vendorNames.Contains(x.VendorName));
+            if (invalidVendor is not null)
             {
-                throw new InvalidOperationException($"以下匹配规则引用了不存在的厂商：{string.Join('、', invalidRules)}");
+                throw new InvalidOperationException($"匹配规则引用了不存在的厂商：{invalidVendor.VendorName}");
+            }
+
+            foreach (var rule in normalizedRules.Where(x => string.Equals(x.MatchType, "regex", StringComparison.OrdinalIgnoreCase)))
+            {
+                foreach (var pattern in SplitPatterns(rule.Pattern))
+                {
+                    try
+                    {
+                        _ = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException($"正则规则无效：{pattern}，原因：{ex.Message}");
+                    }
+                }
             }
         }
 
@@ -272,36 +289,16 @@ public sealed class ModelVendorCatalogService
     }
 
     /// <summary>
-    /// 写入厂商目录文件。
+    /// 创建未分类厂商。
     /// </summary>
-    private async Task WriteCatalogAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken)
+    private static ModelVendorDefinition CreateFallbackVendor()
     {
-        var json = JsonSerializer.Serialize(catalog, JsonOptions);
-        await File.WriteAllTextAsync(_catalogPath, json, Encoding.UTF8, cancellationToken);
-    }
-
-    /// <summary>
-    /// 规范化匹配类型。
-    /// </summary>
-    private static string NormalizeMatchType(string? matchType)
-    {
-        var normalized = matchType?.Trim().ToLowerInvariant();
-        return normalized switch
+        return new ModelVendorDefinition
         {
-            "regex" => "regex",
-            "contains" => "contains",
-            _ => "wildcard"
+            VendorName = UncategorizedVendorName,
+            HeaderBackground = "#f8fafc",
+            SortOrder = 999
         };
-    }
-
-    /// <summary>
-    /// 规范化图标 SVG 内容。
-    /// </summary>
-    private static string NormalizeIconSvgBody(string? iconSvgBody)
-    {
-        return string.IsNullOrWhiteSpace(iconSvgBody)
-            ? string.Empty
-            : iconSvgBody.Trim();
     }
 
     /// <summary>
@@ -314,36 +311,84 @@ public sealed class ModelVendorCatalogService
             return false;
         }
 
-        return rule.MatchType switch
+        foreach (var pattern in SplitPatterns(rule.Pattern))
         {
-            "regex" => Regex.IsMatch(modelName, rule.Pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
-            "contains" => modelName.Contains(rule.Pattern, StringComparison.OrdinalIgnoreCase),
-            _ => WildcardMatch(modelName, rule.Pattern)
+            var matched = NormalizeMatchType(rule.MatchType) switch
+            {
+                "exact" => string.Equals(modelName, pattern, StringComparison.OrdinalIgnoreCase),
+                "regex" => Regex.IsMatch(modelName, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant),
+                _ => Regex.IsMatch(modelName, "^" + Regex.Escape(pattern).Replace("\\*", ".*") + "$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            };
+
+            if (matched)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 拆分多条匹配模式。
+    /// </summary>
+    private static IEnumerable<string> SplitPatterns(string pattern)
+    {
+        return pattern
+            .Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => !string.IsNullOrWhiteSpace(x));
+    }
+
+    /// <summary>
+    /// 规范化图标 SVG 内容。
+    /// </summary>
+    private static string NormalizeIconSvgBody(string? iconSvgBody)
+    {
+        var normalized = iconSvgBody?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var svgMatch = Regex.Match(normalized, "^<svg\\b(?<attrs>[^>]*)>(?<body>[\\s\\S]*)</svg>$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!svgMatch.Success)
+        {
+            return normalized;
+        }
+
+        var body = svgMatch.Groups["body"].Value.Trim();
+        var attrs = svgMatch.Groups["attrs"].Value;
+        var viewBoxMatch = Regex.Match(attrs, "\\bviewBox\\s*=\\s*(['\"])(?<viewBox>.*?)\\1", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!viewBoxMatch.Success)
+        {
+            return body;
+        }
+
+        var viewBox = viewBoxMatch.Groups["viewBox"].Value.Trim();
+        return string.IsNullOrWhiteSpace(viewBox)
+            ? body
+            : $"<svg viewBox=\"{viewBox}\">{body}</svg>";
+    }
+
+    /// <summary>
+    /// 规范化匹配类型。
+    /// </summary>
+    private static string NormalizeMatchType(string? matchType)
+    {
+        return matchType?.Trim().ToLowerInvariant() switch
+        {
+            "exact" => "exact",
+            "regex" => "regex",
+            _ => "wildcard"
         };
     }
 
     /// <summary>
-    /// 执行通配符匹配。
+    /// 写入厂商目录文件。
     /// </summary>
-    private static bool WildcardMatch(string input, string pattern)
+    private async Task WriteCatalogAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken)
     {
-        var regexPattern = "^" + Regex.Escape(pattern)
-            .Replace("\\*", ".*")
-            .Replace("\\?", ".") + "$";
-        return Regex.IsMatch(input, regexPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    }
-
-    /// <summary>
-    /// 创建兜底未分类厂商定义。
-    /// </summary>
-    private static ModelVendorDefinition CreateFallbackVendor()
-    {
-        return new ModelVendorDefinition
-        {
-            VendorName = UncategorizedVendorName,
-            IconSvgBody = string.Empty,
-            HeaderBackground = "#f8fafc",
-            SortOrder = int.MaxValue
-        };
+        var json = JsonSerializer.Serialize(catalog, JsonOptions);
+        await File.WriteAllTextAsync(_catalogPath, json, Encoding.UTF8, cancellationToken);
     }
 }

@@ -1,11 +1,37 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NAlert, NCard, NButton, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, useMessage } from 'naive-ui'
+import { NAlert, NCard, NButton, NButtonGroup, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NPopover, NProgress, NCheckbox, NTabs, NTabPane, NSelect, NDataTable, useMessage } from 'naive-ui'
+import type { SelectRenderLabel } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
+import { ApiError } from '@/api/http'
+import AccountNetworkSelector from '@/components/AccountNetworkSelector.vue'
+import { getAccountNetworkCapabilities, getAccountProxyOptions, getAccountNetworkSummaries, saveAccountNetworkPolicy, batchSaveAccountNetworkPolicies, networkSelectionValid, networkSummaryLabel, type AccountIdentity, type AccountNetworkSelection, type AccountNetworkSummary, type AccountProxyOption } from '@/api/accountNetwork'
+import { syncAllAccountPools } from '@/api/accountPools'
+import { getModelPricing } from '@/api/models'
+import { useCurrency } from '@/composables/useCurrency'
+import { previousQuotaPeriod, projectQuotaPeriod } from './quotaPeriodDisplay'
+import {
+  importSelectedDeviceModels,
+  batchApplyDeviceModels,
+  supportsOAuthModelFetch,
+  supportsOAuthModelImport,
+  usesPublicModelCatalog,
+  fetchDeviceOAuthModels,
+  deleteDeviceOAuthAccount,
+  updateDeviceOAuthAccount,
+  fetchDeviceOAuthAccounts,
+  fetchDeviceOAuthVendors,
+  pollDeviceOAuthSignIn,
+  refreshDeviceOAuthQuota,
+  startDeviceOAuthSignIn,
+  toggleDeviceOAuthAccount,
+  type DeviceOAuthVendor
+} from '@/api/deviceOauth'
 import type {
   OAuthAccount,
+  CodexQuotaPeriod,
   OAuthCredentialImportFailure,
   OAuthInspectionAccountResult,
   OAuthInspectionLog,
@@ -23,7 +49,7 @@ import {
 } from './accountInspectionState'
 
 // 统一账号视图：Codex、Google（Antigravity）、Kimi (Moonshot AI) 与 xAI (Grok) 账号合入同一列表，用 provider 区分厂商。
-type ProviderKind = 'codex' | 'antigravity' | 'kimi' | 'xai'
+type ProviderKind = 'codex' | 'antigravity' | 'kimi' | 'xai' | (string & {})
 type ProviderFilter = 'all' | ProviderKind
 type AccountStatusFilter = 'enabled' | 'disabled' | 'all'
 type UnifiedAccount = OAuthAccount & {
@@ -31,6 +57,47 @@ type UnifiedAccount = OAuthAccount & {
   accountKind?: string | null
   projectId?: string | null
   creditAmount?: number | null
+  requiresReauth?: boolean
+  modelImportSupported?: boolean
+}
+
+const quotaPeriods = ref<Record<string, CodexQuotaPeriod[]>>({})
+const quotaPeriodErrors = ref<Record<string, boolean>>({})
+const quotaPeriodAccount = ref<UnifiedAccount | null>(null)
+const quotaPeriodModal = ref(false)
+const { formatTotalCost, setUsdToCny } = useCurrency()
+function currentPeriod(account: UnifiedAccount, windowId: string): CodexQuotaPeriod | undefined {
+  return quotaPeriods.value[account.id]?.find(p => p.windowId === windowId && p.isCurrent)
+}
+const selectedQuotaPeriods = computed(() => quotaPeriodAccount.value ? quotaPeriods.value[quotaPeriodAccount.value.id] ?? [] : [])
+const quotaWindowCards = computed(() => {
+  const selected = quotaPeriodAccount.value
+  const account = selected ? accounts.value.find(a => a.id === selected.id && a.provider === selected.provider) ?? selected : null
+  return (account?.windows ?? [])
+  .filter(w => /^(five-hour|weekly|monthly|window-[12])$/.test(w.id))
+  .map(window => {
+    const period = selectedQuotaPeriods.value.find(p => p.windowId === window.id && p.isCurrent)
+    // 周期百分比和预测取自同一次额度观测，避免账户列表与周期接口更新先后不同导致显示不一致。
+    const usedPercent = period ? period.usedPercent : window.usedPercent
+    return { window, period, usedPercent, previous: period ? previousQuotaPeriod(selectedQuotaPeriods.value, period) : undefined, projection: period ? projectQuotaPeriod(period) : null }
+  })
+})
+function successRate(period: CodexQuotaPeriod | undefined): string {
+  return period?.successCount == null || !period.requestCount ? '—' : `${(period.successCount / period.requestCount * 100).toFixed(2)}%`
+}
+function openQuotaPeriods(account: UnifiedAccount): void {
+  quotaPeriodAccount.value = account
+  quotaPeriodModal.value = true
+  void getModelPricing().then(catalog => setUsdToCny(catalog?.usdToCny)).catch(() => undefined)
+}
+function formatPeriodTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return String(value)
+}
+
+function providerLabelOf(key: string): string {
+  return PROVIDER_LABELS[key as keyof typeof PROVIDER_LABELS] ?? deviceVendorLabel(key)
 }
 
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
@@ -48,6 +115,17 @@ const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
   { key: 'xai', label: PROVIDER_LABELS.xai }
 ]
 
+// 通用（设备码/授权链接）厂商：登录入口动态并入「+ OAuth 登录」，账号并入统一卡片。
+const deviceVendors = ref<DeviceOAuthVendor[]>([])
+const vendorsLoading = ref(false)
+const vendorsLoaded = ref(false)
+const vendorsError = ref('')
+const canUseVendorCatalog = computed(() => vendorsLoaded.value && !vendorsLoading.value && !vendorsError.value && deviceVendors.value.length > 0)
+let vendorsRequest: Promise<void> | null = null
+const deviceVendorOf = (key?: string): DeviceOAuthVendor | undefined =>
+  deviceVendors.value.find(v => v.vendorKey === key)
+const deviceVendorLabel = (key: string): string => deviceVendorOf(key)?.label ?? key
+
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
   { key: 'antigravity', label: 'Antigravity' },
@@ -58,6 +136,7 @@ const PROVIDER_LOGIN_OPTIONS = [
 const PROVIDER_IMPORT_OPTIONS = PROVIDER_LOGIN_OPTIONS
 
 // Google 账号摘要映射为统一卡片结构（planType 复用订阅等级槽位）。
+// 历史 GeminiCli 接入已下线，存量账号一并按 Antigravity 展示与操作。
 function toUnifiedGoogleAccount(acc: GoogleAccountSummary): UnifiedAccount {
   return {
     ...acc,
@@ -103,7 +182,7 @@ function toUnifiedXaiAccount(acc: api.XaiAccountSummary): UnifiedAccount {
 }
 
 function providerLabel(acc: UnifiedAccount): string {
-  return PROVIDER_LABELS[acc.provider] ?? acc.provider
+  return PROVIDER_LABELS[acc.provider as keyof typeof PROVIDER_LABELS] ?? deviceVendorLabel(acc.provider)
 }
 
 function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' | 'error' {
@@ -116,6 +195,13 @@ function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' | 
 // 导出凭证支持的账号数量（Codex 与 Kimi）。
 const exportableAccountCount = computed(() => accounts.value.filter(acc => acc.provider === 'codex' || acc.provider === 'kimi').length)
 const codexAccountCount = exportableAccountCount
+type AccountViewMode = 'card' | 'table'
+const accountViewMode = ref<AccountViewMode>(
+  (localStorage.getItem('oauth:viewMode') as AccountViewMode) || 'card'
+)
+watch(accountViewMode, mode => localStorage.setItem('oauth:viewMode', mode))
+
+// 默认只看已启用账号：进页面先聚焦可用账号，禁用/全部由用户显式切换。
 const accountStatusFilter = ref<AccountStatusFilter>('enabled')
 const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFilter }> = [
   { label: '已启用', value: 'enabled' },
@@ -123,22 +209,264 @@ const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFil
   { label: '全部', value: 'all' }
 ]
 const providerFilter = ref<ProviderFilter>('all')
+function setProviderFilter(value: ProviderFilter): void {
+  if (!canUseVendorCatalog.value) return
+  // 空厂商不在下拉里，程序化设置同样拒绝，避免残留一个看不见的失效选项。
+  if (value !== 'all' && !providerFilterOptions.value.some(option => option.key === value)) return
+  providerFilter.value = value
+}
 const statusFilteredAccounts = computed(() => {
   if (accountStatusFilter.value === 'all') return accounts.value
   const enabled = accountStatusFilter.value === 'enabled'
   return accounts.value.filter(acc => acc.isEnabled === enabled)
 })
-const providerFilterOptions = computed(() => PROVIDER_FILTER_OPTIONS.map(option => ({
-  ...option,
-  count: option.key === 'all'
-    ? statusFilteredAccounts.value.length
-    : statusFilteredAccounts.value.filter(acc => acc.provider === option.key).length
+const providerFilterOptions = computed(() => {
+  // 静态五家 + 通用厂商动态追加：登录下拉加了谁，筛选就能按谁过滤（含账号计数）。
+  const staticOptions = PROVIDER_FILTER_OPTIONS.map(option => ({
+    ...option,
+    count: option.key === 'all'
+      ? statusFilteredAccounts.value.length
+      : statusFilteredAccounts.value.filter(acc => acc.provider === option.key).length
+  }))
+  const deviceOptions = deviceVendors.value.map(v => ({
+    key: v.vendorKey as ProviderFilter,
+    label: v.label,
+    count: statusFilteredAccounts.value.filter(acc => acc.provider === v.vendorKey).length
+  }))
+  // 当前状态筛选下一个账号都没有的厂商不进下拉，避免在长列表里翻找空厂商。
+  return [...staticOptions, ...deviceOptions].filter(option => option.key === 'all' || option.count > 0)
+})
+// 表格视图行（复用卡片同源数据与操作；窗口合并为一列文本便于扫读）。
+interface AccountTableWindow {
+  label: string
+  shortLabel: string
+  usedPercent: number | null
+}
+
+interface AccountTableRow {
+  id: string
+  name: string
+  providerLabel: string
+  providerTag: 'info' | 'success' | 'warning' | 'error'
+  statusLabel: string
+  statusTag: 'success' | 'warning' | 'default' | 'error'
+  plan: string
+  email: string
+  windows: AccountTableWindow[]
+  tokenExpiry: string
+  createdAt: string
+  isEnabled: boolean
+  canFetchModels: boolean
+  raw: UnifiedAccount
+}
+
+
+function canOperateAccount(provider: string): boolean {
+  return Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, provider) || (canUseVendorCatalog.value && !!deviceVendorOf(provider))
+}
+
+function canFetchModelsProvider(provider: string): boolean {
+  return canOperateAccount(provider) && supportsOAuthModelFetch(provider, deviceVendors.value)
+}
+
+// 窗口短名：去掉「窗口/额度」及特定提示后缀，只留「5 小时/每周/MCP 月度」等核心词；保留业务数值括号（如资源包积分）。
+function windowShortLabel(label: string): string {
+  return label
+    .replace('（不参与调度）', '')
+    .replace('(不参与调度)', '')
+    .replace('窗口', '')
+    .replace('额度', '')
+    .replace('区间', '')
+    .trim() || label
+}
+
+// 表格额度列：积分资源包逐行列出太浪费，折叠成一条「资源包 ×N（共 X 积分）」汇总（卡片视图不受影响，仍是滚动收纳）。
+const PACKAGE_CREDIT_RE = /剩余\s*([\d.]+)\s*积分/
+function collapsePackageWindows(windows: AccountTableRow['windows']): AccountTableRow['windows'] {
+  const progress = windows.filter(w => w.usedPercent != null)
+  const packages = windows.filter(w => w.usedPercent == null && w.label.startsWith('资源包'))
+  const others = windows.filter(w => w.usedPercent == null && !w.label.startsWith('资源包'))
+  let credits = 0
+  let parsed = 0
+  for (const w of packages) {
+    const matched = w.label.match(PACKAGE_CREDIT_RE)
+    if (matched) {
+      credits += Number.parseFloat(matched[1])
+      parsed++
+    }
+  }
+  const summaryLabel = packages.length === 0
+    ? null
+    : parsed === packages.length
+      ? `资源包 ×${packages.length}（共 ${Number(credits.toFixed(2))} 积分）`
+      : `资源包 ×${packages.length}`
+  return [
+    ...progress,
+    ...others,
+    ...(summaryLabel ? [{ label: summaryLabel, shortLabel: '资源包', usedPercent: null }] : [])
+  ]
+}
+
+const accountTableRows = computed<AccountTableRow[]>(() => filteredAccounts.value.map(acc => ({
+  id: acc.id,
+  name: acc.displayName,
+  providerLabel: providerLabel(acc),
+  providerTag: providerTagType(acc),
+  statusLabel: accountStatusLabel(acc),
+  statusTag: accountStatusType(acc),
+  plan: [acc.planType, acc.creditAmount != null ? '积分 ' + acc.creditAmount : null].filter(Boolean).join(' · '),
+  email: acc.email ?? '',
+  windows: (acc.windows ?? []).map(w => ({
+    label: w.label,
+    shortLabel: windowShortLabel(w.label),
+    usedPercent: w.usedPercent
+  })),
+  tokenExpiry: acc.tokenExpiresAt ? formatTokenExpiryShort(acc.tokenExpiresAt) : '',
+  createdAt: acc.createdAt ? formatBeijingTime(acc.createdAt) : '',
+  isEnabled: acc.isEnabled,
+  canFetchModels: canFetchModelsProvider(acc.provider),
+  raw: acc
 })))
+
+const baseAccountTableColumns = [
+  {
+    title: '名称',
+    key: 'name',
+    minWidth: 190,
+    render(row: AccountTableRow) {
+      const nodes = [h('div', { class: 'oauth-table-name', title: row.name, style: row.raw.requiresReauth ? { color: '#e5484d' } : undefined }, row.name)]
+      const subText = [row.plan, row.email].filter(Boolean).join(' · ')
+      if (subText) {
+        nodes.push(h('div', { class: 'oauth-table-sub', title: subText }, subText))
+      }
+      return h('div', { class: 'oauth-table-name-cell' }, { default: () => nodes })
+    }
+  },
+  {
+    title: '创建时间',
+    key: 'createdAt',
+    width: 150,
+    ellipsis: { tooltip: true },
+    render(row: AccountTableRow) {
+      return h('span', { class: 'oauth-table-nowrap oauth-table-token', title: row.createdAt || '—' }, row.createdAt || '—')
+    }
+  },
+  {
+    title: '厂商',
+    key: 'providerLabel',
+    width: 110,
+    render(row: AccountTableRow) {
+      return h(NTag, { size: 'small', bordered: false, type: row.providerTag }, { default: () => row.providerLabel })
+    }
+  },
+  {
+    title: '状态',
+    key: 'statusLabel',
+    width: 88,
+    render(row: AccountTableRow) {
+      return h(NTag, { size: 'small', bordered: false, type: row.statusTag }, { default: () => row.statusLabel })
+    }
+  },
+  {
+    // 额度窗口：有百分比的显示进度条；无百分比的（积分资源包等）直接显示文本，不画伪造满条。
+    title: '额度窗口',
+    key: 'windows',
+    minWidth: 260,
+    render(row: AccountTableRow) {
+      if (row.windows.length === 0) return h('span', { class: 'oauth-table-sub' }, '—')
+      return h('div', { class: 'oauth-table-windows' }, {
+        default: () => collapsePackageWindows(row.windows).map(w => {
+          if (w.usedPercent == null) {
+            return h('div', { class: 'oauth-table-window-row' }, {
+              default: () => [h('span', { class: 'oauth-table-window-label-only', title: w.label }, w.label)]
+            })
+          }
+          // 填充口径与卡片一致：显示「剩余 %」（used 100% → 空条，剩余 100% → 满绿条）。
+          const remaining = Math.min(100, Math.max(0, 100 - w.usedPercent))
+          const pctText = Math.round(remaining) + '%'
+          return h('div', { class: 'oauth-table-window-row' }, {
+            default: () => [
+              h('span', { class: 'oauth-table-window-name', title: w.label }, w.shortLabel),
+              h(NProgress, {
+                class: 'oauth-table-window-bar',
+                type: 'line',
+                percentage: remaining,
+                status: quotaColor(remaining),
+                showIndicator: false,
+                height: 10,
+                borderRadius: 3
+              }),
+              h('span', { class: 'oauth-table-window-pct' }, pctText),
+            ]
+          })
+        })
+      })
+    }
+  },
+  {
+    title: '账户网络',
+    key: 'network',
+    minWidth: 170,
+    render(row: AccountTableRow) { return networkLabel(row.raw) }
+  },
+  {
+    title: 'Token 到期',
+    key: 'tokenExpiry',
+    width: 125,
+    render(row: AccountTableRow) {
+      return h('span', { class: 'oauth-table-nowrap oauth-table-token' }, row.tokenExpiry || '—')
+    }
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 280,
+    render(row: AccountTableRow) {
+      const buttons = [
+        h(NButton, { size: 'tiny', secondary: true, disabled: !canOperateAccount(row.raw.provider), onClick: () => handleRefreshQuota(row.raw) }, { default: () => '刷新' }),
+        h(NButton, { size: 'tiny', secondary: true, disabled: !canUseVendorCatalog.value || !canOperateAccount(row.raw.provider), onClick: () => openEdit(row.raw) }, { default: () => '编辑' })
+      ]
+      if (row.raw.provider === 'codex' && row.raw.requiresReauth) {
+        buttons.push(h(NButton, { size: 'tiny', secondary: true, type: 'primary', disabled: !canOperateAccount(row.raw.provider), onClick: () => openCodexReauthorization(row.raw) }, { default: () => '重新登录' }))
+      }
+      if (row.canFetchModels) {
+        buttons.push(h(NButton, { size: 'tiny', secondary: true, onClick: () => openFetchModels(row.raw) }, { default: () => '模型' }))
+      }
+      buttons.push(h(NButton, { size: 'tiny', secondary: true, disabled: !canOperateAccount(row.raw.provider), onClick: () => handleToggle(row.raw) }, { default: () => (row.isEnabled ? '禁用' : '启用') }))
+      buttons.push(h(NPopconfirm, { onPositiveClick: () => handleDelete(row.raw) }, {
+        trigger: () => h(NButton, { size: 'tiny', secondary: true, type: 'error', disabled: !canOperateAccount(row.raw.provider) }, { default: () => '删除' }),
+        default: () => '确认删除该账号？'
+      }))
+      return h('div', { class: 'oauth-table-actions' }, { default: () => buttons })
+    }
+  }
+]
+
+// 网络代理池关闭时（capabilities 未就绪）整体隐藏代理相关列，与卡片视图一致。
+const accountTableColumns = computed(() => networkReady.value
+  ? baseAccountTableColumns
+  : baseAccountTableColumns.filter(column => column.key !== 'network'))
+
+const providerFilterSelectOptions = computed(() => providerFilterOptions.value.map(option => ({
+  label: `${option.label}（${option.count}）`,
+  value: option.key
+})))
+
 const filteredAccounts = computed(() => providerFilter.value === 'all'
   ? statusFilteredAccounts.value
   : statusFilteredAccounts.value.filter(acc => acc.provider === providerFilter.value))
 
-const loginDropdownOptions = PROVIDER_LOGIN_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 登录` }))
+const renderProviderFilterLabel: SelectRenderLabel = (option, selected) => {
+  const label = 'label' in option && typeof option.label === 'string' ? option.label : ''
+  return selected
+    ? [h('span', { class: 'oauth-provider-filter-a11y' }, '账号厂商筛选'), label]
+    : label
+}
+
+const loginDropdownOptions = computed(() => [
+  ...PROVIDER_LOGIN_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 登录` })),
+  ...deviceVendors.value.map(v => ({ key: v.vendorKey, label: `${v.label} 登录`, disabled: !canUseVendorCatalog.value }))
+])
 const importDropdownOptions = PROVIDER_IMPORT_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 凭证` }))
 
 function handleSelectLoginProvider(key: string | number): void {
@@ -177,6 +505,71 @@ function getOAuthTabFromHash(): 'accounts' | 'inspection' {
 const activeTab = ref(getOAuthTabFromHash())
 const loading = ref(false)
 const accounts = ref<UnifiedAccount[]>([])
+// 状态切换/账号变动后选中厂商变空时自动回落到「全部」，不让失效筛选卡住列表。
+// 放在 accounts 声明之后：watch 注册即求值 computed 链，提前声明会踩 TDZ。
+watch(providerFilterOptions, options => {
+  if (providerFilter.value !== 'all' && !options.some(option => option.key === providerFilter.value)) {
+    providerFilter.value = 'all'
+  }
+})
+const networkReady = ref(false)
+const networkLoadState = ref<'loading' | 'ready' | 'disabled' | 'legacy' | 'error'>('loading')
+const legacyNetworkConfirmed = ref(false)
+const networkOptions = ref<AccountProxyOption[]>([])
+const networkSummaries = ref<Record<string, AccountNetworkSummary>>({})
+const networkError = ref('')
+const oauthNetworkSelection = ref<AccountNetworkSelection>({ mode: 0 })
+const importNetworkSelection = ref<AccountNetworkSelection>()
+const editNetworkSelection = ref<AccountNetworkSelection>()
+const editNetworkOriginal = ref<AccountNetworkSummary>()
+const editPartialError = ref('')
+const editNetworkConflict = ref(false)
+const networkBatchModal = ref(false)
+const networkBatchAccounts = ref<string[]>([])
+const networkBatchSelection = ref<AccountNetworkSelection>({ mode: 0 })
+const networkBatchLoading = ref(false)
+const networkBatchErrors = ref<string[]>([])
+function networkIdentity(acc: UnifiedAccount): AccountIdentity {
+  const providerKey = acc.provider === 'antigravity' ? 'google' : ['codex', 'kimi', 'xai'].includes(acc.provider) ? acc.provider : 'device-oauth'
+  return { providerKey, accountId: acc.id }
+}
+function networkKey(acc: UnifiedAccount): string {
+  const identity = networkIdentity(acc)
+  return `${identity.providerKey}:${identity.accountId}`
+}
+function networkSummary(acc: UnifiedAccount): AccountNetworkSummary | undefined { return networkSummaries.value[networkKey(acc)] }
+function networkLabel(acc: UnifiedAccount): string { return networkSummaryLabel(networkSummary(acc)) }
+const networkBatchOptions = computed(() => accounts.value.map(acc => ({ label: `${providerLabel(acc)} · ${acc.displayName}`, value: networkKey(acc) })))
+async function loadNetwork(): Promise<void> {
+  networkLoadState.value = 'loading'
+  networkError.value = ''
+  try {
+    const capability = await getAccountNetworkCapabilities()
+    networkReady.value = capability.ready === true
+    if (!networkReady.value) { networkLoadState.value = 'disabled'; return }
+    const [options, summaries] = await Promise.all([getAccountProxyOptions(), getAccountNetworkSummaries()])
+    networkOptions.value = options
+    networkSummaries.value = Object.fromEntries(summaries.map(s => [`${s.providerKey}:${s.accountId}`, s]))
+    networkLoadState.value = 'ready'
+  } catch (error) {
+    networkReady.value = false
+    networkLoadState.value = error instanceof ApiError && error.status === 404 ? 'legacy' : 'error'
+    networkError.value = networkLoadState.value === 'legacy' ? '服务端不支持网络选择，请确认后使用旧网络路径。' : '网络策略加载失败，请重试。'
+  }
+}
+async function handleNetworkBatch(): Promise<void> {
+  if (!networkSelectionValid(networkBatchSelection.value) || !networkBatchAccounts.value.length) return
+  networkBatchLoading.value = true
+  networkBatchErrors.value = []
+  try {
+    const identities = accounts.value.filter(acc => networkBatchAccounts.value.includes(networkKey(acc))).map(networkIdentity)
+    const result = await batchSaveAccountNetworkPolicies(identities, networkBatchSelection.value)
+    networkBatchErrors.value = result.results.filter(r => !r.success).map(r => `${r.providerKey}/${r.accountId}：${r.error ?? r.errorCode}`)
+    if (result.failed) message.warning(`网络策略成功 ${result.succeeded} 个，失败 ${result.failed} 个；已成功的更改不会回滚`)
+    else { message.success(`已更新 ${result.succeeded} 个账户的网络策略`); networkBatchModal.value = false }
+    await loadNetwork()
+  } catch (e) { networkBatchErrors.value = [(e as Error).message] } finally { networkBatchLoading.value = false }
+}
 const inspection = ref<OAuthInspectionStatus | null>(null)
 const inspectionLastRun = ref<OAuthInspectionRunResult | null>(null)
 const inspectionLogs = ref<OAuthInspectionLog[]>([])
@@ -190,12 +583,13 @@ const featureDisabled = ref(false)
 
 // OAuth 弹窗
 const oauthModal = ref(false)
+const reauthorizeAccount = ref<UnifiedAccount | null>(null)
 const oauthUrl = ref('')
 const oauthCallbackInput = ref('')
 const oauthDisplayName = ref('')
 const oauthLoading = ref(false)
 const oauthStartLoading = ref(false)
-const oauthProvider = ref<ProviderKind>('codex')
+const oauthProvider = ref<string>('codex')
 
 // 凭证导入弹窗
 const importModal = ref(false)
@@ -203,9 +597,11 @@ const importJsonText = ref('')
 const importFiles = ref<File[]>([])
 const importLoading = ref(false)
 const importFailures = ref<OAuthCredentialImportFailure[]>([])
-const importProvider = ref<ProviderKind>('codex')
+const importProvider = ref<string>('codex')
 
 const exportMode = ref(false)
+// 导出凭证的勾选交互绑定在卡片上：进入导出模式自动切回卡片视图。
+watch(exportMode, active => { if (active) accountViewMode.value = 'card' })
 const selectedExportAccountIds = ref<string[]>([])
 const exportLoading = ref(false)
 
@@ -227,6 +623,7 @@ const resetCreditSubmitting = ref(false)
 // 拉取/导入模型弹窗
 const modelModal = ref(false)
 const modelAccount = ref<UnifiedAccount | null>(null)
+const modelCatalogIsPublic = computed(() => usesPublicModelCatalog(modelAccount.value?.provider ?? '', deviceVendors.value))
 type EditableOAuthModel = OAuthRemoteModelItem & { alias: string }
 
 const modelList = ref<EditableOAuthModel[]>([])
@@ -256,14 +653,37 @@ const someVisibleModelsChecked = computed(() => (
   visibleCheckedModelCount.value > 0
   && !allVisibleModelsChecked.value
 ))
+const canImportModels = computed(() => supportsOAuthModelImport(modelAccount.value, deviceVendors.value))
 const canSubmitModelSync = computed(() => (
-  modelList.value.length > 0
+  canImportModels.value && !modelLoading.value && modelList.value.length > 0
   && (modelAccount.value?.provider !== 'codex' || checkedModels.value.length > 0)
 ))
+const isCodexImportOnly = computed(() => modelAccount.value?.provider === 'codex')
+const modelSyncHint = computed(() => {
+  if (!canImportModels.value) return '该账号无关联聊天站点，远端模型目录仅供查看，不能导入或用于聊天转发。'
+  return isCodexImportOnly.value
+    ? 'Codex 只导入勾选项：未勾选的新模型不会导入，已启用的既有映射也不会被停用（本弹窗不会停用任何映射）；如需停用，请到「模型库 → 该模型 → 站点映射」关闭对应映射。'
+    : '只有勾选项会导入或启用，本次清单内未勾选的既有映射会禁用；清单外映射保持不变。'
+})
+
+// —— 批量应用到同组 ——
+// 旧批量接口保留逐项结果；其他账号的权限无法推断，会被跳过。
+const applyToGroup = ref(false)
+const modelGroupAccounts = computed<UnifiedAccount[]>(() => {
+  const acc = modelAccount.value
+  if (!acc) return []
+  return accounts.value.filter(x => (
+    x.provider === acc.provider
+    && (acc.provider !== 'codex' || (x.planType ?? '') === (acc.planType ?? ''))
+  ))
+})
+const modelGroupCount = computed(() => modelGroupAccounts.value.length)
+const modelGroupMode = computed(() => applyToGroup.value && modelGroupCount.value > 1 && canImportModels.value)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const pollingIntervalMs = 10_000
 let accountsRequestId = 0
+let pageLoadId = 0
 let inspectionRequestId = 0
 
 // 使巡检前已经发出的旧查询失效，避免响应晚到时覆盖巡检后的新数据。
@@ -272,14 +692,40 @@ function invalidatePendingRefreshes(): void {
   inspectionRequestId++
 }
 
-async function loadAccounts(showError: boolean): Promise<void> {
+function loadDeviceVendors(): Promise<void> {
+  if (vendorsRequest) return vendorsRequest
+  vendorsLoading.value = true
+  vendorsError.value = ''
+  vendorsRequest = (async () => {
+    try {
+      deviceVendors.value = await Promise.resolve().then(() => fetchDeviceOAuthVendors())
+      vendorsLoaded.value = true
+    } catch (e) {
+      vendorsLoaded.value = false
+      vendorsError.value = `厂商清单加载失败：${(e as Error)?.message || '请稍后重试'}`
+    } finally {
+      vendorsLoading.value = false
+      vendorsRequest = null
+    }
+  })()
+  return vendorsRequest
+}
+
+async function loadAccounts(showError: boolean, onAccountsSettled?: () => void): Promise<void> {
+  const accountsTask = loadAccountsRequest(showError).finally(() => onAccountsSettled?.())
+  const vendorsTask = vendorsRequest ?? (vendorsLoaded.value || vendorsError.value ? Promise.resolve() : loadDeviceVendors())
+  await Promise.allSettled([accountsTask, vendorsTask])
+}
+
+async function loadAccountsRequest(showError: boolean): Promise<void> {
   const requestId = ++accountsRequestId
   // Codex、Google、Kimi 与 xAI 账号合并展示；接口在功能开关关闭时返回 404。
-  const [codexResult, googleResult, kimiResult, xaiResult] = await Promise.allSettled([
+  const [codexResult, googleResult, kimiResult, xaiResult, deviceResult] = await Promise.allSettled([
     api.listOAuthAccounts(),
     api.listGoogleAccounts(),
     api.listKimiAccounts(),
-    api.listXaiAccounts()
+    api.listXaiAccounts(),
+    fetchDeviceOAuthAccounts()
   ])
   if (requestId !== accountsRequestId) return
 
@@ -313,10 +759,53 @@ async function loadAccounts(showError: boolean): Promise<void> {
     message.error(`Grok 账号加载失败：${(xaiResult.reason as Error).message}`)
   }
 
-  accounts.value = [...codexAccounts, ...googleAccounts, ...kimiAccounts, ...xaiAccounts].sort(
-    (a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
+  // 通用厂商账号：并入统一卡片（厂商标签用各自 label；额度窗口复用卡片进度条）。
+  const deviceAccounts: UnifiedAccount[] = deviceResult.status === 'fulfilled'
+    ? deviceResult.value.map(acc => ({
+        id: acc.id,
+        displayName: acc.displayName,
+        email: acc.email,
+        accountId: null,
+        planType: acc.planType,
+        isEnabled: acc.isEnabled,
+        isQuotaCooling: false,
+        quotaCoolingUntil: null,
+        lastQuotaCheckedAt: acc.lastQuotaCheckedAt,
+        tokenExpiresAt: acc.tokenExpiresAt,
+        createdAt: acc.createdAt,
+        windows: acc.windows.map(w => ({
+          label: w.label,
+          usedPercent: w.usedPercent,
+          resetLabel: w.resetLabel,
+          resetAtUtc: w.resetAtUtc
+        })),
+        provider: acc.vendorKey,
+        modelImportSupported: acc.modelImportSupported,
+        accountKind: acc.vendorLabel,
+        requiresReauth: acc.requiresReauth
+      } as unknown as UnifiedAccount))
+    : []
+
+  accounts.value = [...codexAccounts, ...googleAccounts, ...kimiAccounts, ...xaiAccounts, ...deviceAccounts].sort(
+    (a, b) => a.displayName.localeCompare(b.displayName, 'zh-CN', { numeric: true, sensitivity: 'base' })
+      || a.provider.localeCompare(b.provider)
+      || a.id.localeCompare(b.id)
   )
+  void Promise.allSettled(codexAccounts.map(async account => {
+    try {
+      const periods = await api.getCodexQuotaPeriods(account.id)
+      if (requestId !== accountsRequestId) return
+      quotaPeriods.value = { ...quotaPeriods.value, [account.id]: periods }
+      quotaPeriodErrors.value = { ...quotaPeriodErrors.value, [account.id]: false }
+    } catch {
+      if (requestId === accountsRequestId) {
+        quotaPeriods.value = { ...quotaPeriods.value, [account.id]: [] }
+        quotaPeriodErrors.value = { ...quotaPeriodErrors.value, [account.id]: true }
+      }
+    }
+  }))
   featureDisabled.value = false
+  void loadNetwork()
 }
 
 async function loadInspection(force = false): Promise<void> {
@@ -364,12 +853,14 @@ async function loadInspection(force = false): Promise<void> {
 async function load(): Promise<void> {
   loading.value = true
   featureDisabled.value = false
-  const tasks: Promise<void>[] = [loadAccounts(true)]
+  const loadId = ++pageLoadId
+  const tasks: Promise<void>[] = [loadAccounts(true, () => {
+    if (pageLoadId === loadId) loading.value = false
+  })]
   if (activeTab.value === 'inspection') {
     tasks.push(loadInspection(true))
   }
   await Promise.all(tasks)
-  loading.value = false
 }
 
 let silentRefreshInFlight: Promise<void> | null = null
@@ -396,11 +887,14 @@ async function refreshSilently(force = false): Promise<void> {
 }
 
 function googleKindOf(_provider?: ProviderKind): GoogleAccountKind {
+  // GeminiCli 接入已下线，Google 账号仅剩 Antigravity 一种接入方式。
   return 'Antigravity'
 }
 
 // Kimi 设备码授权状态
 const kimiDeviceCode = ref('')
+const kimiServerSessionId = ref('')
+const deviceFlowError = ref('')
 const kimiUserCode = ref('')
 const kimiVerificationUri = ref('')
 const kimiVerificationUriComplete = ref('')
@@ -420,6 +914,7 @@ function clearKimiDeviceFlow(): void {
     kimiCountdownTimer = null
   }
   kimiDeviceCode.value = ''
+  kimiServerSessionId.value = ''
   kimiUserCode.value = ''
   kimiVerificationUri.value = ''
   kimiVerificationUriComplete.value = ''
@@ -430,6 +925,7 @@ function clearKimiDeviceFlow(): void {
 
 // xAI 设备码授权状态（流程与 Kimi 同构：RFC 8628）
 const xaiDeviceCode = ref('')
+const xaiServerSessionId = ref('')
 const xaiUserCode = ref('')
 const xaiVerificationUri = ref('')
 const xaiVerificationUriComplete = ref('')
@@ -448,6 +944,7 @@ function clearXaiDeviceFlow(): void {
     xaiCountdownTimer = null
   }
   xaiDeviceCode.value = ''
+  xaiServerSessionId.value = ''
   xaiUserCode.value = ''
   xaiVerificationUri.value = ''
   xaiVerificationUriComplete.value = ''
@@ -455,9 +952,38 @@ function clearXaiDeviceFlow(): void {
   xaiCountdown.value = 600
 }
 
+// 通用厂商登录会话（OAuth 弹窗内复用「授权链接 + 粘贴回调/轮询」区域）。
+const deviceSessionId = ref('')
+const deviceInstructions = ref('')
+let devicePollTimer: ReturnType<typeof setInterval> | null = null
+
+function clearDeviceFlow(): void {
+  if (devicePollTimer) {
+    clearInterval(devicePollTimer)
+    devicePollTimer = null
+  }
+  deviceSessionId.value = ''
+  deviceInstructions.value = ''
+}
+
 function clearAllDeviceFlows(): void {
   clearKimiDeviceFlow()
   clearXaiDeviceFlow()
+  clearDeviceFlow()
+}
+
+function handleDeviceFlowPollError(error: unknown, clear: () => void, manual = false): void {
+  const failure = error as { status?: number; errorCode?: string; message?: string; response?: { status?: number; data?: { errorCode?: string } } }
+  const status = failure.status ?? failure.response?.status ?? 0
+  const code = failure.errorCode ?? failure.response?.data?.errorCode ?? ''
+  const terminal = (status >= 400 && status < 500 && status !== 408 && status !== 429)
+    || /session|network|proxy|profile|isolation/.test(code)
+    || /serverSessionId|会话.*(无效|过期)|登录.*过期/.test(failure.message ?? '')
+  if (terminal) {
+    clear()
+    deviceFlowError.value = (failure.message || '登录会话或网络策略已失效') + '。登录已停止，请重新开始登录。'
+    message.error(deviceFlowError.value)
+  } else if (manual) message.error(failure.message || '授权检查失败，请稍后重试')
 }
 
 function formatSeconds(secs: number): string {
@@ -466,8 +992,13 @@ function formatSeconds(secs: number): string {
   return `${m}:${s < 10 ? '0' : ''}${s}`
 }
 
-function openOAuthModal(provider: ProviderKind = 'codex'): void {
+function openOAuthModal(provider: string = 'codex'): void {
+  if (!canOperateAccount(provider)) return
+  reauthorizeAccount.value = null
   oauthProvider.value = provider
+  legacyNetworkConfirmed.value = false
+  deviceFlowError.value = ''
+  oauthNetworkSelection.value = { mode: 0 }
   oauthUrl.value = ''
   oauthCallbackInput.value = ''
   oauthDisplayName.value = ''
@@ -475,13 +1006,36 @@ function openOAuthModal(provider: ProviderKind = 'codex'): void {
   oauthModal.value = true
 }
 
+function openCodexReauthorization(account: UnifiedAccount): void {
+  openOAuthModal('codex')
+  reauthorizeAccount.value = account
+}
+
 async function handleStartOAuth(): Promise<void> {
+  if (!canOperateAccount(oauthProvider.value)) return
+  if (!reauthorizeAccount.value && (networkLoadState.value === 'loading' || networkLoadState.value === 'error' || (networkLoadState.value === 'legacy' && !legacyNetworkConfirmed.value))) {
+    message.warning(networkLoadState.value === 'loading' ? '网络策略正在加载' : networkError.value || '请先确认网络策略')
+    return
+  }
+  if (!reauthorizeAccount.value && networkReady.value && !networkSelectionValid(oauthNetworkSelection.value)) { message.warning('请选择有效网络出口'); return }
+  const networkSelection = !reauthorizeAccount.value && networkReady.value ? oauthNetworkSelection.value : undefined
   oauthStartLoading.value = true
+  deviceFlowError.value = ''
   clearAllDeviceFlows()
   try {
-    if (oauthProvider.value === 'kimi') {
-      const result = await api.startKimiDeviceFlow()
+    const deviceVendor = deviceVendorOf(oauthProvider.value)
+    if (deviceVendor) {
+      const result = await startDeviceOAuthSignIn(deviceVendor.vendorKey, networkSelection)
+      deviceSessionId.value = result.sessionId
+      deviceInstructions.value = result.instructions
+      oauthUrl.value = result.authorizeUrl
+      oauthCallbackInput.value = ''
+      // 3 秒自动轮询（粘贴回调流自动轮询无害：后端返回 pending）。
+      devicePollTimer = setInterval(() => void pollDeviceSignIn(false), 3000)
+    } else if (oauthProvider.value === 'kimi') {
+      const result = await api.startKimiDeviceFlow(undefined, networkSelection)
       kimiDeviceCode.value = result.deviceCode
+      kimiServerSessionId.value = result.serverSessionId ?? ''
       kimiUserCode.value = result.userCode
       kimiVerificationUri.value = result.verificationUri
       kimiVerificationUriComplete.value = result.verificationUriComplete
@@ -504,7 +1058,8 @@ async function handleStartOAuth(): Promise<void> {
           const pollRes = await api.pollKimiToken(
             kimiDeviceCode.value,
             kimiDeviceId.value || undefined,
-            oauthDisplayName.value.trim() || undefined
+            oauthDisplayName.value.trim() || undefined,
+            kimiServerSessionId.value || undefined
           )
           if (pollRes.status === 'success') {
             clearKimiDeviceFlow()
@@ -515,13 +1070,14 @@ async function handleStartOAuth(): Promise<void> {
             clearKimiDeviceFlow()
             message.error(pollRes.errorDescription || 'Kimi 授权失败')
           }
-        } catch {
-          // 轮询异常静默
+        } catch (e) {
+          handleDeviceFlowPollError(e, clearKimiDeviceFlow)
         }
       }, (result.interval || 5) * 1000)
     } else if (oauthProvider.value === 'xai') {
-      const result = await api.startXaiDeviceFlow()
+      const result = await api.startXaiDeviceFlow(networkSelection)
       xaiDeviceCode.value = result.deviceCode
+      xaiServerSessionId.value = result.serverSessionId ?? ''
       xaiUserCode.value = result.userCode
       xaiVerificationUri.value = result.verificationUri
       xaiVerificationUriComplete.value = result.verificationUriComplete
@@ -542,7 +1098,8 @@ async function handleStartOAuth(): Promise<void> {
         try {
           const pollRes = await api.pollXaiToken(
             xaiDeviceCode.value,
-            oauthDisplayName.value.trim() || undefined
+            oauthDisplayName.value.trim() || undefined,
+            xaiServerSessionId.value || undefined
           )
           if (pollRes.status === 'success') {
             clearXaiDeviceFlow()
@@ -553,14 +1110,14 @@ async function handleStartOAuth(): Promise<void> {
             clearXaiDeviceFlow()
             message.error(pollRes.errorDescription || 'Grok 授权失败')
           }
-        } catch {
-          // 轮询异常静默
+        } catch (e) {
+          handleDeviceFlowPollError(e, clearXaiDeviceFlow)
         }
       }, (result.interval || 5) * 1000)
     } else {
       const result = oauthProvider.value === 'codex'
-        ? await api.startOAuth()
-        : await api.startGoogleOAuth(googleKindOf(oauthProvider.value))
+        ? await api.startOAuth(networkSelection, reauthorizeAccount.value?.id)
+        : await api.startGoogleOAuth(googleKindOf(oauthProvider.value), networkSelection)
       oauthUrl.value = result.url
       oauthCallbackInput.value = ''
     }
@@ -571,6 +1128,41 @@ async function handleStartOAuth(): Promise<void> {
   }
 }
 
+async function pollDeviceSignIn(manual: boolean): Promise<void> {
+  // 单飞：手动检查与 3 秒自动轮询并发会竞争同一登录会话（Kiro 二段 state 错配风险）。
+  if (oauthLoading.value) return
+  if (!deviceSessionId.value || !oauthModal.value) return
+  oauthLoading.value = true
+  try {
+    const result = await pollDeviceOAuthSignIn(
+      deviceSessionId.value,
+      oauthDisplayName.value.trim() || undefined,
+      oauthCallbackInput.value.trim() || undefined
+    )
+    if (result.status === 'pending' && result.nextUrl) {
+      // 多段登录（如 Kiro 的 AWS Builder ID）：换第二段授权地址。
+      oauthUrl.value = result.nextUrl
+      oauthCallbackInput.value = ''
+      if (result.message) message.info(result.message)
+      else message.info('请继续完成第二段授权')
+    } else if (result.status === 'success') {
+      clearDeviceFlow()
+      message.success('登录成功，账号已创建')
+      oauthModal.value = false
+      await load()
+    } else if (result.status === 'failed') {
+      clearDeviceFlow()
+      message.error(result.error || '登录失败')
+    } else if (manual) {
+      message.info(result.message || '尚未完成授权，请继续')
+    }
+  } catch (e) {
+    handleDeviceFlowPollError(e, clearDeviceFlow, manual)
+  } finally {
+    oauthLoading.value = false
+  }
+}
+
 async function handleManualCheckDeviceAuth(): Promise<void> {
   const isXai = oauthProvider.value === 'xai'
   const deviceCode = isXai ? xaiDeviceCode.value : kimiDeviceCode.value
@@ -578,11 +1170,12 @@ async function handleManualCheckDeviceAuth(): Promise<void> {
   oauthLoading.value = true
   try {
     const pollRes = isXai
-      ? await api.pollXaiToken(xaiDeviceCode.value, oauthDisplayName.value.trim() || undefined)
+      ? await api.pollXaiToken(xaiDeviceCode.value, oauthDisplayName.value.trim() || undefined, xaiServerSessionId.value || undefined)
       : await api.pollKimiToken(
           kimiDeviceCode.value,
           kimiDeviceId.value || undefined,
-          oauthDisplayName.value.trim() || undefined
+          oauthDisplayName.value.trim() || undefined,
+          kimiServerSessionId.value || undefined
         )
     if (pollRes.status === 'success') {
       clearAllDeviceFlows()
@@ -594,16 +1187,22 @@ async function handleManualCheckDeviceAuth(): Promise<void> {
     } else if (pollRes.status === 'slow_down') {
       message.warning('操作过于频繁，请稍候重试')
     } else {
-      message.error(pollRes.errorDescription || '授权未成功')
+      clearAllDeviceFlows()
+      deviceFlowError.value = pollRes.errorDescription || '授权未成功，请重新开始登录'
+      message.error(deviceFlowError.value)
     }
   } catch (e) {
-    message.error((e as Error).message)
+    handleDeviceFlowPollError(e, clearAllDeviceFlows, true)
   } finally {
     oauthLoading.value = false
   }
 }
 
 async function handleCompleteOAuth(): Promise<void> {
+  if (deviceVendorOf(oauthProvider.value)) {
+    await pollDeviceSignIn(true)
+    return
+  }
   if (oauthProvider.value === 'kimi' || oauthProvider.value === 'xai') {
     await handleManualCheckDeviceAuth()
     return
@@ -620,15 +1219,24 @@ async function handleCompleteOAuth(): Promise<void> {
         oauthDisplayName.value.trim() || undefined
       )
     }
-    message.success('OAuth 登录成功')
+    message.success(reauthorizeAccount.value ? '重新登录成功，已更新原账号' : 'OAuth 登录成功')
     oauthModal.value = false
     await load()
-  } catch (e) { message.error((e as Error).message) } finally { oauthLoading.value = false }
+  } catch (e) {
+    if (reauthorizeAccount.value) {
+      oauthUrl.value = ''
+      oauthCallbackInput.value = ''
+      message.error(`${(e as Error).message}。请重新开始登录。`)
+    } else message.error((e as Error).message)
+  } finally { oauthLoading.value = false }
 }
 
 async function handleToggle(acc: UnifiedAccount): Promise<void> {
+  if (!canOperateAccount(acc.provider)) return
   try {
-    if (acc.provider === 'codex') {
+    if (deviceVendorOf(acc.provider)) {
+      await toggleDeviceOAuthAccount(acc.id, !acc.isEnabled)
+    } else if (acc.provider === 'codex') {
       await api.toggleOAuthAccount(acc.id)
     } else if (acc.provider === 'antigravity') {
       await api.toggleGoogleAccount(acc.id, !acc.isEnabled)
@@ -641,8 +1249,12 @@ async function handleToggle(acc: UnifiedAccount): Promise<void> {
   } catch (e) { message.error((e as Error).message) }
 }
 async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
+  if (!canOperateAccount(acc.provider)) return
   try {
-    if (acc.provider === 'codex') {
+    if (deviceVendorOf(acc.provider)) {
+      await refreshDeviceOAuthQuota(acc.id)
+      message.success('已刷新额度')
+    } else if (acc.provider === 'codex') {
       await api.refreshOAuthQuota(acc.id)
       message.success('已刷新额度')
     } else if (acc.provider === 'antigravity') {
@@ -659,7 +1271,10 @@ async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
   } catch (e) { message.error((e as Error).message) }
 }
 async function handleDelete(acc: UnifiedAccount): Promise<void> {
-  if (acc.provider === 'codex') {
+  if (!canOperateAccount(acc.provider)) return
+  if (deviceVendorOf(acc.provider)) {
+    await deleteDeviceOAuthAccount(acc.id)
+  } else if (acc.provider === 'codex') {
     await api.deleteOAuthAccount(acc.id)
   } else if (acc.provider === 'antigravity') {
     await api.deleteGoogleAccount(acc.id)
@@ -670,6 +1285,8 @@ async function handleDelete(acc: UnifiedAccount): Promise<void> {
   }
   message.success('已删除账号')
   await load()
+  // 号池收口：成员账号删除后同步全部池（清掉指向已删站点的生成规则）。
+  try { await syncAllAccountPools() } catch { /* 最佳努力 */ }
 }
 async function handleRunInspection(force: boolean): Promise<void> {
   if (inspectionRunning.value) return
@@ -692,15 +1309,46 @@ async function handleRunInspection(force: boolean): Promise<void> {
 
 // 编辑（重命名 + 修改凭证）
 function openEdit(acc: UnifiedAccount): void {
+  if (!canUseVendorCatalog.value || !canOperateAccount(acc.provider)) return
   editAccount.value = acc
   editDisplayName.value = acc.displayName
   editRefreshToken.value = ''
+  editPartialError.value = ''
+  editNetworkConflict.value = false
+  editNetworkOriginal.value = networkSummary(acc)
+  editNetworkSelection.value = editNetworkOriginal.value ? { ...editNetworkOriginal.value.networkSelection } : undefined
   editModal.value = true
 }
+async function rebaseEditNetwork(): Promise<void> {
+  if (!editAccount.value) return
+  await loadNetwork()
+  const latest = networkSummary(editAccount.value)
+  if (!latest || networkError.value) { message.error('无法读取最新网络策略，请稍后重试'); return }
+  // Explicit user action keeps their pending selection but uses the freshly reviewed revision.
+  editNetworkOriginal.value = latest
+  editNetworkConflict.value = false
+  editPartialError.value = '已载入最新网络策略；请核对待保存选择后再次保存。账户资料尚未提交。'
+}
 async function handleSaveEdit(): Promise<void> {
+  if (!canUseVendorCatalog.value || (editAccount.value && !canOperateAccount(editAccount.value.provider))) return
+  if (editNetworkConflict.value) { message.warning('网络策略已变化，请先确认基于最新策略重新编辑'); return }
   if (!editAccount.value || !editDisplayName.value.trim()) { message.warning('名称不能为空'); return }
+  if (networkReady.value && editNetworkSelection.value && !networkSelectionValid(editNetworkSelection.value)) { message.warning('请选择有效代理方案'); return }
   editLoading.value = true
+  editPartialError.value = ''
+  let networkSaved = false
+  let credentialsStarted = false
   try {
+    // Save a repaired network first so credential refresh cannot reuse a broken old profile.
+    const original = editNetworkOriginal.value
+    const selected = editNetworkSelection.value
+    if (networkReady.value && selected && (!original || selected.mode !== original.networkSelection.mode || (selected.proxyProfileId ?? null) !== (original.networkSelection.proxyProfileId ?? null))) {
+      const saved = await saveAccountNetworkPolicy(networkIdentity(editAccount.value), selected, original?.revision)
+      networkSummaries.value[networkKey(editAccount.value)] = saved
+      editNetworkOriginal.value = saved
+      networkSaved = true
+    }
+    credentialsStarted = true
     if (editAccount.value.provider === 'codex') {
       const result = await api.updateOAuthAccount(
         editAccount.value.id,
@@ -709,10 +1357,6 @@ async function handleSaveEdit(): Promise<void> {
       )
       if (result.message) {
         message.warning(result.message)
-      } else if (editRefreshToken.value) {
-        message.success('凭证已更新并刷新')
-      } else {
-        message.success('已更新')
       }
     } else if (editAccount.value.provider === 'antigravity') {
       await api.updateGoogleAccount(
@@ -720,25 +1364,46 @@ async function handleSaveEdit(): Promise<void> {
         editDisplayName.value.trim(),
         editRefreshToken.value || undefined
       )
-      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
     } else if (editAccount.value.provider === 'kimi') {
       await api.updateKimiAccount(
         editAccount.value.id,
         editDisplayName.value.trim(),
         editRefreshToken.value || undefined
       )
-      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
     } else if (editAccount.value.provider === 'xai') {
       await api.updateXaiAccount(
         editAccount.value.id,
         editDisplayName.value.trim(),
         editRefreshToken.value || undefined
       )
-      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
+    } else if (deviceVendorOf(editAccount.value.provider)) {
+      const renamed = editDisplayName.value.trim() !== editAccount.value.displayName
+      await updateDeviceOAuthAccount(
+        editAccount.value.id,
+        renamed ? editDisplayName.value.trim() : undefined,
+        editRefreshToken.value || undefined
+      )
+      // Final success is shown only after the independent network write succeeds.
     }
+    message.success('账户更改已保存')
+    editRefreshToken.value = ''
     editModal.value = false
     await load()
-  } catch (e) { message.error((e as Error).message) } finally { editLoading.value = false }
+  } catch (e) {
+    const failure = e as { message?: string; status?: number; errorCode?: string }
+    if (!credentialsStarted && (failure.status === 409 || failure.errorCode === 'account_network_revision_conflict')) {
+      editNetworkConflict.value = true
+      // Invalidate the captured revision, but keep all dirty fields until explicit rebase/reopen.
+      editNetworkOriginal.value = undefined
+      await loadNetwork()
+      editPartialError.value = '网络策略已被其他操作修改，未提交账户资料。已刷新策略和代理选项；请核对后明确选择基于最新策略重新编辑。'
+    } else if (networkSaved) {
+      editPartialError.value = '网络配置已保存，账号资料更新失败：' + (failure.message || '未知错误') + '。网络配置不会回滚；账号资料可能部分保存，请核对后重试。'
+    } else {
+      editPartialError.value = (credentialsStarted ? '账号资料更新失败：' : '网络策略保存失败，未提交账号资料：') + (failure.message || '未知错误')
+    }
+    message.error(editPartialError.value)
+  } finally { editLoading.value = false }
 }
 
 // 手动刷新 access_token（兜底手段：自动刷新未生效时用此恢复）
@@ -799,15 +1464,25 @@ async function handleConsumeResetCredit(): Promise<void> {
 
 // 拉取/导入模型
 async function openFetchModels(acc: UnifiedAccount): Promise<void> {
+  if (!canFetchModelsProvider(acc.provider)) return
   modelAccount.value = acc
   modelList.value = []
   checkedModels.value = []
+  applyToGroup.value = false
   modelModal.value = true
   modelLoading.value = true
   try {
     modelSearch.value = ''
     let models: OAuthRemoteModelItem[] = []
-    if (acc.provider === 'codex') {
+    if (deviceVendorOf(acc.provider)) {
+      models = (await fetchDeviceOAuthModels(acc.id)).map(m => ({
+        remoteModelName: m.remoteModelName,
+        displayName: m.displayName,
+        existingMappingId: m.existingMappingId,
+        isEnabled: m.isEnabled,
+        existingDisplayName: m.existingDisplayName
+      }))
+    } else if (acc.provider === 'codex') {
       const result = await api.fetchOAuthModels(acc.id)
       models = result.models
       // 远端分层目录刷新结果提示：变更成功提示；失败警告（不影响本次拉取）。
@@ -837,11 +1512,13 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
       ))
       .map(model => model.remoteModelName)
 
-    if (previouslyEnabled.length > 0) {
+    if (!canImportModels.value) {
+      checkedModels.value = []
+    } else if (previouslyEnabled.length > 0 || models.some(model => model.existingMappingId)) {
       checkedModels.value = previouslyEnabled
     } else {
-      // 若当前没有任何已启用的映射，默认勾选全部拉取到的可用模型
-      checkedModels.value = models.map(model => model.remoteModelName)
+      // 新账号不预选模型，由用户明确选择需要导入的条目。
+      checkedModels.value = []
     }
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
 }
@@ -862,37 +1539,82 @@ function toggleVisibleModels(checked: boolean): void {
   }
 }
 async function handleImportModels(): Promise<void> {
-  if (!modelAccount.value || modelList.value.length === 0) { message.warning('暂无可同步的模型'); return }
-  if (checkedModels.value.length === 0) {
-    message.warning(modelAccount.value.provider === 'codex' ? '请选择要导入的模型' : '请至少选择一个要同步启用的模型')
+  if (!modelAccount.value || !canSubmitModelSync.value) { message.warning('暂无可同步的模型或账号无关联聊天站点'); return }
+  if (modelAccount.value.provider === 'codex' && checkedModels.value.length === 0) {
+    message.warning('请选择要导入的模型')
     return
   }
   modelLoading.value = true
   try {
+    const checked = new Set(checkedModels.value)
+    const keptEnabled = modelList.value.filter(m => m.existingMappingId && m.isEnabled && !checked.has(m.remoteModelName)).map(m => m.remoteModelName)
     const selections: OAuthModelSelection[] = modelList.value.map(model => ({
       remoteModelName: model.remoteModelName,
       displayName: model.alias.trim() || model.remoteModelName,
-      selected: checkedModels.value.includes(model.remoteModelName)
+      selected: checked.has(model.remoteModelName)
     }))
-    if (modelAccount.value.provider === 'codex') {
+    if (modelGroupMode.value) {
+      // 兼容旧批量接口：未验证权限的其他账号会被跳过并提示。
+      let summary: { succeeded: number; failed: number }
+      if (deviceVendorOf(modelAccount.value.provider)) {
+        summary = await batchApplyDeviceModels(
+          modelAccount.value.id,
+          selections.map(m => ({ remoteModelName: m.remoteModelName, displayName: m.displayName, selected: m.selected }))
+        )
+      } else if (modelAccount.value.provider === 'codex') {
+        summary = await api.batchApplyOAuthModels(modelAccount.value.id, selections)
+        if (keptEnabled.length > 0) {
+          message.info(`Codex 只导入勾选项：${keptEnabled.length} 个已启用的既有映射保持启用（未勾选不会停用）`)
+        }
+      } else if (modelAccount.value.provider === 'antigravity') {
+        summary = await api.batchApplyGoogleModels(modelAccount.value.id, selections)
+      } else if (modelAccount.value.provider === 'kimi') {
+        summary = await api.batchApplyKimiModels(modelAccount.value.id, selections)
+      } else if (modelAccount.value.provider === 'xai') {
+        summary = await api.batchApplyXaiModels(modelAccount.value.id, selections)
+      } else {
+        throw new Error('该厂商不支持导入模型')
+      }
+      if (summary.failed > 0) {
+        message.warning(`已应用到 ${summary.succeeded} 个账号，${summary.failed} 个未同步：账号模型权限可能不同，请逐账号拉取并同步`)
+      } else {
+        message.success(`已应用到 ${summary.succeeded} 个账号`)
+      }
+    } else if (deviceVendorOf(modelAccount.value.provider)) {
+      await importSelectedDeviceModels(
+        modelAccount.value.id,
+        selections.map(m => ({ remoteModelName: m.remoteModelName, displayName: m.displayName, selected: m.selected }))
+      )
+      message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
+    } else if (modelAccount.value.provider === 'codex') {
       await api.importSelectedOAuthModels(modelAccount.value.id, selections)
+      if (keptEnabled.length > 0) {
+        message.info(`Codex 只导入勾选项：${keptEnabled.length} 个已启用的既有映射保持启用（未勾选不会停用）`)
+      }
+      message.success(`已导入 ${checkedModels.value.length} 个模型`)
     } else if (modelAccount.value.provider === 'antigravity') {
       await api.importSelectedGoogleModels(modelAccount.value.id, selections)
+      message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
     } else if (modelAccount.value.provider === 'kimi') {
       await api.importSelectedKimiModels(modelAccount.value.id, selections)
+      message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
     } else if (modelAccount.value.provider === 'xai') {
       await api.importSelectedXaiModels(modelAccount.value.id, selections)
+      message.success(`已同步 ${checkedModels.value.length} 个启用模型`)
+    } else {
+      throw new Error('该厂商不支持导入模型')
     }
-    message.success(modelAccount.value.provider === 'codex'
-      ? `已导入 ${checkedModels.value.length} 个模型`
-      : `已同步 ${checkedModels.value.length} 个启用模型`)
     modelModal.value = false
     await load()
+    // 号池收口：模型映射变更后同步全部池（无池时是空操作，失败不阻断）。
+    try { await syncAllAccountPools() } catch { /* 最佳努力 */ }
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
 }
 
-function openImportCredential(provider: ProviderKind = 'codex'): void {
+function openImportCredential(provider: string = 'codex'): void {
   importProvider.value = provider
+  // Import may update an existing account: omission must preserve its policy.
+  importNetworkSelection.value = undefined
   importJsonText.value = ''
   importFiles.value = []
   importFailures.value = []
@@ -916,19 +1638,21 @@ async function handleImportCredential(): Promise<void> {
     message.warning('请选择凭证文件或粘贴凭证 JSON')
     return
   }
+  if (networkReady.value && importNetworkSelection.value && !networkSelectionValid(importNetworkSelection.value)) { message.warning('请选择有效网络出口'); return }
+  const networkSelection = networkReady.value ? importNetworkSelection.value : undefined
   importLoading.value = true
   importFailures.value = []
   try {
     let result: { successes: unknown[]; failures: OAuthCredentialImportFailure[] }
     if (importProvider.value === 'codex') {
       const codexResult = importFiles.value.length > 0
-        ? await api.importCredentialFiles(importFiles.value)
-        : await api.importCredential(importJsonText.value.trim())
+        ? await api.importCredentialFiles(importFiles.value, networkSelection)
+        : await api.importCredential(importJsonText.value.trim(), networkSelection)
       result = codexResult
     } else if (importProvider.value === 'kimi') {
       const kimiResult = importFiles.value.length > 0
-        ? await api.importKimiCredentialFiles(importFiles.value)
-        : await api.importKimiCredential(importJsonText.value.trim())
+        ? await api.importKimiCredentialFiles(importFiles.value, networkSelection)
+        : await api.importKimiCredential(importJsonText.value.trim(), networkSelection)
       result = kimiResult
     } else if (importProvider.value === 'xai') {
       // xAI 凭证仅支持粘贴 JSON（grok auth.json 或平铺 token），文件走 Kimi/Codex。
@@ -936,14 +1660,14 @@ async function handleImportCredential(): Promise<void> {
         message.warning('请粘贴 Grok 凭证 JSON（auth.json 或平铺 access_token/refresh_token）')
         return
       }
-      result = await api.importXaiCredential(importJsonText.value.trim())
+      result = await api.importXaiCredential(importJsonText.value.trim(), networkSelection)
     } else {
       // Google 凭证：仅支持粘贴 JSON（需含 refresh_token），文件导入走 Codex。
       if (!importJsonText.value.trim()) {
         message.warning('请粘贴 gcli2api 凭证 JSON（需包含 refresh_token 字段）')
         return
       }
-      result = await api.importGoogleCredential(googleKindOf(importProvider.value), importJsonText.value.trim())
+      result = await api.importGoogleCredential(googleKindOf(importProvider.value), importJsonText.value.trim(), networkSelection)
     }
     importJsonText.value = ''
     importFiles.value = []
@@ -1061,6 +1785,14 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
+function formatTokenExpiryShort(value: string | null | undefined): string {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear() % 100}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '从未'
   return new Date(value).toLocaleString('zh-CN')
@@ -1132,12 +1864,14 @@ function inspectionRows(item: OAuthInspectionAccountResult): InspectionDisplayRo
 }
 
 function accountStatusLabel(acc: OAuthAccount): string {
+  if ((acc as UnifiedAccount).requiresReauth) return '需重新登录'
   if (acc.disabledByUpstream) return '上游403禁用'
   if (acc.isQuotaCooling) return '冷却中'
   return acc.isEnabled ? '正常' : '已禁用'
 }
 
-function accountStatusType(acc: OAuthAccount): 'success' | 'warning' | 'default' {
+function accountStatusType(acc: OAuthAccount): 'success' | 'warning' | 'default' | 'error' {
+  if ((acc as UnifiedAccount).requiresReauth) return 'error'
   if (acc.disabledByUpstream) return 'warning'
   if (acc.isQuotaCooling) return 'warning'
   return acc.isEnabled ? 'success' : 'default'
@@ -1170,7 +1904,7 @@ watch(() => route.query.tab, () => {
 })
 
 onMounted(() => {
-  load()
+  void load()
   pollTimer = setInterval(() => {
     if (document.visibilityState === 'visible') {
       void refreshSilently()
@@ -1189,6 +1923,20 @@ onUnmounted(() => {
     <PageHeader title="OAuth 管理" subtitle="管理 OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
       <template #actions>
         <template v-if="!exportMode">
+          <NButtonGroup size="small">
+            <NButton size="small" :secondary="accountViewMode !== 'card'" :type="accountViewMode === 'card' ? 'primary' : 'default'" title="卡片视图" @click="accountViewMode = 'card'">卡片</NButton>
+            <NButton size="small" :secondary="accountViewMode !== 'table'" :type="accountViewMode === 'table' ? 'primary' : 'default'" title="表格视图" @click="accountViewMode = 'table'">表格</NButton>
+          </NButtonGroup>
+
+          <NSelect
+            :value="providerFilter"
+            :disabled="!canUseVendorCatalog"
+            @update:value="setProviderFilter"
+            :options="providerFilterSelectOptions"
+            :render-label="renderProviderFilterLabel"
+            size="small"
+            style="width: 170px"
+          />
           <NSelect
             v-model:value="accountStatusFilter"
             :options="accountStatusFilterOptions"
@@ -1196,6 +1944,7 @@ onUnmounted(() => {
             size="small"
             style="width: 110px"
           />
+          <NButton v-if="networkReady" size="small" secondary @click="networkBatchErrors = []; networkBatchModal = true">批量网络策略</NButton>
           <NButton size="small" secondary :disabled="codexAccountCount === 0" @click="beginExportCredentials">导出凭证</NButton>
           <NDropdown trigger="click" :options="loginDropdownOptions" @select="handleSelectLoginProvider">
             <NButton size="small" type="primary">＋ OAuth 登录</NButton>
@@ -1206,6 +1955,11 @@ onUnmounted(() => {
         </template>
       </template>
     </PageHeader>
+    <NAlert v-if="vendorsLoading" type="info">厂商清单加载中，编辑和筛选暂不可用</NAlert>
+    <NAlert v-else-if="vendorsError" type="error">
+      {{ vendorsError }} <NButton size="small" @click="loadDeviceVendors">重试</NButton>
+    </NAlert>
+    <NAlert v-else-if="vendorsLoaded && deviceVendors.length === 0" type="warning">暂无可选厂商</NAlert>
     <NSpin :show="loading">
       <NTabs v-model:value="activeTab" type="line" animated>
         <NTabPane name="accounts" tab="账号额度">
@@ -1214,35 +1968,32 @@ onUnmounted(() => {
             <NButton size="small" type="warning" :loading="exportLoading" :disabled="selectedExportAccountIds.length === 0" @click="handleExportCredentials">下载凭证 JSON</NButton>
             <NButton size="small" secondary @click="cancelExportCredentials">取消</NButton>
           </div>
+          <NAlert v-if="networkError" type="warning">{{ networkError }} <NButton size="tiny" @click="loadNetwork">重试</NButton></NAlert>
           <div class="oauth-stack">
             <NEmpty v-if="featureDisabled" description="OAuth 功能未开启，请在系统设置中开启" />
             <NEmpty v-else-if="accounts.length === 0" description="暂无 OAuth 账号，可使用右上角 OAuth 登录或导入凭证" />
 
             <template v-else>
-              <div class="oauth-provider-filters" role="tablist" aria-label="账号厂商筛选">
-                <button
-                  v-for="filter in providerFilterOptions"
-                  :key="filter.key"
-                  type="button"
-                  class="oauth-provider-filter"
-                  :class="{ active: providerFilter === filter.key }"
-                  :data-provider="filter.key"
-                  role="tab"
-                  :aria-selected="providerFilter === filter.key"
-                  @click="providerFilter = filter.key"
-                >
-                  <span>{{ filter.label }}</span>
-                  <span class="oauth-provider-filter-count">{{ filter.count }}</span>
-                </button>
-              </div>
 
               <NEmpty v-if="filteredAccounts.length === 0" description="当前筛选条件暂无账号" />
+              <!-- 表格视图：与卡片二选一（视图切换在顶部），操作与卡片同源 -->
+              <NDataTable
+                v-else-if="accountViewMode === 'table'"
+                class="oauth-data-table"
+                :columns="accountTableColumns"
+                :data="accountTableRows"
+                :row-key="(row: AccountTableRow) => row.id"
+                size="small"
+                :bordered="false"
+                :max-height="640"
+                :scroll-x="1380"
+              />
               <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
               <article
                 v-for="acc in filteredAccounts"
                 :key="acc.id"
                 class="oauth-card"
-                :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id) }"
+                :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id), 'oauth-card-codex': acc.provider === 'codex' }"
                 @click="exportMode && (acc.provider === 'codex' || acc.provider === 'kimi') && toggleExportAccount(acc.id, !selectedExportAccountIds.includes(acc.id))"
               >
                 <NCheckbox
@@ -1254,7 +2005,10 @@ onUnmounted(() => {
                 />
                 <div class="oauth-card-header">
                   <div class="oauth-card-header-main">
-                    <div class="oauth-account-name">{{ acc.displayName }}</div>
+                    <div class="oauth-account-name">
+                      <span :style="acc.requiresReauth ? { color: '#e5484d' } : undefined">{{ acc.displayName }}</span>
+                      <span v-if="networkReady" class="oauth-network-badge" :class="{ blocked: networkSummary(acc)?.blockReason }" :title="`网络：${networkLabel(acc)}`">网络：{{ networkLabel(acc) }}</span>
+                    </div>
                     <div class="oauth-account-email">
                       {{ acc.email || '' }}
                       <button
@@ -1289,17 +2043,26 @@ onUnmounted(() => {
                 </div>
 
                 <div v-if="acc.windows && acc.windows.length > 0" class="oauth-windows-container">
-                  <div v-for="w in acc.windows" :key="w.id" class="oauth-window">
+                  <div v-for="w in acc.windows" :key="w.id" class="oauth-window" :class="{ 'no-progress': w.usedPercent == null }">
                     <div class="oauth-window-label">{{ w.label }}</div>
-                    <NProgress
-                      :percentage="Math.max(0, 100 - Math.round(Number(w.usedPercent ?? 0)))"
-                      :status="quotaColor(100 - Number(w.usedPercent ?? 0))"
-                      :show-indicator="false"
-                      :height="6"
-                      :border-radius="3"
-                    />
-                    <span class="oauth-window-percent">{{ Math.max(0, 100 - Math.round(Number(w.usedPercent ?? 0))) }}%</span>
+                    <template v-if="w.usedPercent != null">
+                      <NProgress
+                        :percentage="Math.max(0, 100 - Math.round(Number(w.usedPercent)))"
+                        :status="quotaColor(100 - Number(w.usedPercent))"
+                        :show-indicator="false"
+                        :height="6"
+                        :border-radius="3"
+                      />
+                      <span class="oauth-window-percent">{{ Math.max(0, 100 - Math.round(Number(w.usedPercent))) }}%</span>
+                    </template>
+                    <template v-else>
+                      <span class="oauth-window-percent oauth-window-no-bar">—</span>
+                    </template>
                     <div v-if="w.resetLabel" class="oauth-window-reset">于 {{ w.resetLabel }}</div>
+                    <button v-if="acc.provider === 'codex' && currentPeriod(acc, w.id)" class="oauth-period-trigger" type="button" @click.stop="openQuotaPeriods(acc)">
+                      <span>本周期 Token</span><strong>{{ formatPeriodTokens(currentPeriod(acc, w.id)!.totalTokens) }}</strong><span class="oauth-period-arrow">查看 ›</span>
+                    </button>
+                    <button v-else-if="acc.provider === 'codex' && /^(five-hour|weekly|monthly|window-[12])$/.test(w.id)" class="oauth-period-unavailable" type="button" @click.stop="openQuotaPeriods(acc)">{{ quotaPeriodErrors[acc.id] ? '周期用量加载失败 · 查看' : '周期用量等待额度刷新 · 查看' }}</button>
                   </div>
                 </div>
                 <div v-else class="oauth-window-placeholder">
@@ -1311,22 +2074,25 @@ onUnmounted(() => {
                     <div v-if="acc.lastQuotaCheckedAt">刷新时间：{{ formatDateTime(acc.lastQuotaCheckedAt) }}</div>
                   </div>
                   <div class="oauth-card-actions">
-                    <NButton class="oauth-icon-button" circle secondary title="刷新额度" aria-label="刷新额度" @click="handleRefreshQuota(acc)">
+                    <NButton v-if="acc.provider === 'codex' && acc.requiresReauth" class="oauth-icon-button primary" circle secondary title="重新登录原账号" aria-label="重新登录原账号" :disabled="!canOperateAccount(acc.provider)" @click="openCodexReauthorization(acc)">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7" /><polyline points="3 3 3 9 9 9" /><path d="M12 8v4l3 2" /></svg>
+                    </NButton>
+                    <NButton class="oauth-icon-button" circle secondary title="刷新额度" aria-label="刷新额度" :disabled="!canOperateAccount(acc.provider)" @click="handleRefreshQuota(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
                     </NButton>
-                    <NButton class="oauth-icon-button" circle secondary :title="acc.isEnabled ? '禁用账号' : '启用账号'" :aria-label="acc.isEnabled ? '禁用账号' : '启用账号'" @click="handleToggle(acc)">
+                    <NButton class="oauth-icon-button" circle secondary :title="acc.isEnabled ? '禁用账号' : '启用账号'" :aria-label="acc.isEnabled ? '禁用账号' : '启用账号'" :disabled="!canOperateAccount(acc.provider)" @click="handleToggle(acc)">
                       <svg v-if="acc.isEnabled" viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                       <svg v-else viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
                     </NButton>
-                    <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
+                    <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" :disabled="!canUseVendorCatalog || !canOperateAccount(acc.provider)" @click="openEdit(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </NButton>
-                    <NButton class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
+                    <NButton v-if="canFetchModelsProvider(acc.provider)" class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                     </NButton>
                     <NPopconfirm @positive-click="handleDelete(acc)">
                       <template #trigger>
-                        <NButton class="oauth-icon-button danger" circle secondary title="删除账号" aria-label="删除账号">
+                        <NButton class="oauth-icon-button danger" circle secondary title="删除账号" aria-label="删除账号" :disabled="!canOperateAccount(acc.provider)">
                           <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                         </NButton>
                       </template>
@@ -1426,18 +2192,24 @@ onUnmounted(() => {
             </NCard>
           </div>
         </NTabPane>
-      </NTabs>
+        </NTabs>
     </NSpin>
 
     <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序；按厂商展示对应流程。 -->
-    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${PROVIDER_LABELS[oauthProvider]}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearAllDeviceFlows">
-      <div class="oauth-form-group">
+    <NModal v-model:show="oauthModal" :title="reauthorizeAccount ? `重新登录 - ${reauthorizeAccount.displayName}` : `OAuth 登录 - ${providerLabelOf(oauthProvider)}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearAllDeviceFlows">
+      <NAlert v-if="reauthorizeAccount" type="info" style="margin-bottom: 12px">请登录原账号并选择原工作空间。身份匹配后更新原账号，保留已有配置与统计；网络连接沿用原账号策略。</NAlert>
+      <div v-if="!reauthorizeAccount" class="oauth-form-group">
         <p class="oauth-form-label">账号显示名称（可选）</p>
         <NInput v-model:value="oauthDisplayName" :placeholder="oauthProvider === 'kimi' ? '留空则默认 Kimi 账号' : oauthProvider === 'xai' ? '留空则默认 Grok 账号' : '留空则用邮箱'" />
       </div>
+      <NAlert v-if="!reauthorizeAccount && networkError" type="warning">{{ networkError }} <NButton size="tiny" @click="loadNetwork">重试</NButton></NAlert>
+      <NCheckbox v-if="!reauthorizeAccount && networkLoadState === 'legacy'" v-model:checked="legacyNetworkConfirmed">确认使用旧网络路径</NCheckbox>
+      <AccountNetworkSelector v-if="!reauthorizeAccount && networkReady" v-model="oauthNetworkSelection" :options="networkOptions" :disabled="oauthStartLoading || !!oauthUrl || !!kimiDeviceCode || !!xaiDeviceCode" style="margin-bottom: 16px" />
       <NButton type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">
         {{ (oauthProvider === 'kimi' && kimiUserCode) || (oauthProvider === 'xai' && xaiUserCode) ? '重新获取验证码' : '开始登录' }}
       </NButton>
+
+      <NAlert v-if="deviceFlowError" type="error" style="margin-top: 12px">{{ deviceFlowError }}</NAlert>
 
       <!-- Kimi / xAI RFC 8628 设备码授权区域（两厂商流程同构） -->
       <div v-if="(oauthProvider === 'kimi' && kimiUserCode) || (oauthProvider === 'xai' && xaiUserCode)" class="oauth-auth-area">
@@ -1469,11 +2241,14 @@ onUnmounted(() => {
         <NAlert type="info" :show-icon="false">
           <strong>操作步骤：</strong>
           <ol class="oauth-steps">
-            <li v-if="oauthProvider === 'codex'">点击下方链接，在新标签页中登录 OpenAI 账号。</li>
-            <li v-else>点击下方链接，在新标签页中登录 Google 账号并完成授权。</li>
-            <li>登录后浏览器跳转到 localhost 并显示无法访问是正常现象。</li>
-            <li>复制浏览器地址栏中的完整 URL，粘贴到下方输入框。</li>
-            <li>点击“完成登录”。</li>
+            <li v-if="deviceVendorOf(oauthProvider)">{{ deviceInstructions || '点击下方链接，在新标签页完成授权。' }}</li>
+            <template v-else>
+              <li v-if="oauthProvider === 'codex'">点击下方链接，在新标签页中登录 OpenAI 账号。</li>
+              <li v-else>点击下方链接，在新标签页中登录 Google 账号并完成授权。</li>
+              <li>登录后浏览器跳转到 localhost 并显示无法访问是正常现象。</li>
+            </template>
+            <li>回调式登录：复制浏览器地址栏完整 URL 粘贴到下方；轮询式登录：留空等待自动检测即可。</li>
+            <li>点击“完成登录”可立即检查。</li>
           </ol>
         </NAlert>
         <p class="oauth-form-label">授权链接</p>
@@ -1483,7 +2258,7 @@ onUnmounted(() => {
           <NButton tag="a" :href="oauthUrl" target="_blank" secondary type="primary">打开</NButton>
         </div>
         <p class="oauth-form-label">粘贴登录后跳转的完整 URL</p>
-        <NInput v-model:value="oauthCallbackInput" :placeholder="oauthProvider === 'codex' ? 'http://localhost:1455/auth/callback?code=...&state=...' : 'http://localhost:17891/?code=...&state=...'" type="textarea" :autosize="{ minRows: 3 }" />
+        <NInput v-model:value="oauthCallbackInput" :placeholder="deviceVendorOf(oauthProvider) ? '粘贴回跳地址（回调式登录）；轮询式留空即可' : oauthProvider === 'codex' ? 'http://localhost:1455/auth/callback?code=...&state=...' : 'http://localhost:17891/?code=...&state=...'" type="textarea" :autosize="{ minRows: 3 }" />
       </div>
       <template #footer>
         <NSpace justify="end">
@@ -1494,7 +2269,12 @@ onUnmounted(() => {
     </NModal>
 
     <!-- 导入凭证弹窗：Codex / Kimi 支持文件+JSON；Google 仅支持粘贴 gcli2api 凭证 JSON -->
-    <NModal v-model:show="importModal" :title="`导入 ${PROVIDER_LABELS[importProvider]} 凭证`" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
+    <NModal v-model:show="importModal" :title="`导入 ${providerLabelOf(importProvider)} 凭证`" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
+      <template v-if="networkReady">
+        <NAlert type="info" style="margin-bottom: 12px">不选择时保留已有账户策略；新账户使用默认策略。选择后会明确更新导入账户策略。</NAlert>
+        <AccountNetworkSelector v-model="importNetworkSelection" :options="networkOptions" :disabled="importLoading" style="margin-bottom: 12px" />
+        <NButton v-if="importNetworkSelection" size="small" :disabled="importLoading" @click="importNetworkSelection = undefined">保持现有策略（不提交更改）</NButton>
+      </template>
       <template v-if="importProvider === 'codex' || importProvider === 'kimi'">
         <p class="credential-import-label">选择一个或多个 {{ importProvider === 'kimi' ? 'Kimi' : 'CPA' }} 凭证 JSON 文件：</p>
         <input class="credential-file-input" type="file" accept=".json,application/json" multiple @change="handleCredentialFiles">
@@ -1526,9 +2306,88 @@ onUnmounted(() => {
       </template>
     </NModal>
 
+    <NModal v-model:show="networkBatchModal" title="批量设置账户网络（与凭证导出选择无关）" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false">
+      <NSpace vertical :size="16">
+        <NSelect v-model:value="networkBatchAccounts" multiple filterable :options="networkBatchOptions" placeholder="选择要更新的账户" :disabled="networkBatchLoading" />
+        <AccountNetworkSelector v-model="networkBatchSelection" :options="networkOptions" :disabled="networkBatchLoading" />
+        <NAlert type="warning">逐账户保存，部分失败不会回滚已成功的账户。</NAlert>
+        <NAlert v-for="error in networkBatchErrors" :key="error" type="error">{{ error }}</NAlert>
+      </NSpace>
+      <template #footer><NSpace justify="end"><NButton :disabled="networkBatchLoading" @click="networkBatchModal = false">关闭</NButton><NButton type="primary" :loading="networkBatchLoading" :disabled="!networkBatchAccounts.length || !networkSelectionValid(networkBatchSelection)" @click="handleNetworkBatch">应用网络策略</NButton></NSpace></template>
+    </NModal>
+
+    <NModal v-model:show="quotaPeriodModal" preset="card" style="width: 620px; max-width: calc(100vw - 32px)" :title="`${quotaPeriodAccount?.displayName ?? ''} · 额度周期`">
+      <div v-if="quotaWindowCards.length" class="quota-dashboard-list">
+        <section v-for="card in quotaWindowCards" :key="card.window.id" class="quota-dashboard">
+        <div class="quota-overview">
+          <div class="quota-overview-title"><span class="quota-icon">◷</span><div><strong>{{ card.window.label }}</strong><small>预计重置 {{ card.period ? formatDateTime(card.period.resetAt) : (card.window.resetLabel ?? '—') }}</small></div></div>
+          <div class="quota-remaining"><span>剩余</span><strong>{{ card.usedPercent != null ? `${Math.max(0, Math.min(100, 100 - Math.round(card.usedPercent)))}%` : '—' }}</strong></div>
+        </div>
+        <NProgress v-if="card.usedPercent != null" :percentage="Math.max(0, Math.min(100, 100 - Number(card.usedPercent)))" :status="quotaColor(100 - Number(card.usedPercent))" :show-indicator="false" :height="6" :border-radius="4" />
+        <div v-if="card.period" class="quota-compare-grid">
+          <section class="quota-compare-card">
+            <strong class="quota-compare-title">上个周期用量</strong>
+            <div class="quota-compare-date">{{ card.previous ? `${formatDateTime(card.previous.startAt)} — ${formatDateTime(card.previous.endAt)}` : '暂无已记录的上个周期' }}</div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon blue">↗</i>请求数</span><b>{{ card.previous?.requestCount ?? '—' }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon teal">◫</i>Token</span><b>{{ card.previous ? formatPeriodTokens(card.previous.totalTokens) : '—' }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon amber">$</i>参考金额</span><b>{{ card.previous?.estimatedCostUsd == null ? '—' : formatTotalCost(card.previous.estimatedCostUsd) }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon green">✓</i>成功率</span><b>{{ successRate(card.previous) }}</b></div>
+            <small v-if="card.previous?.boundaryUncertain || card.previous?.unknownCount || card.previous?.unpricedCount" class="quota-card-warning">{{ card.previous?.boundaryUncertain ? '周期边界不确定 · ' : '' }}{{ card.previous?.unknownCount ? `${card.previous.unknownCount} 次用量未知 · ` : '' }}{{ card.previous?.unpricedCount ? `${card.previous.unpricedCount} 次未定价` : '' }}</small>
+          </section>
+          <section class="quota-compare-card">
+            <strong class="quota-compare-title">当前周期已用</strong>
+            <div class="quota-compare-date">{{ formatDateTime(card.period.startAt) }} — {{ formatDateTime(card.period.resetAt) }}</div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon blue">↗</i>请求数</span><b>{{ card.period.requestCount }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon teal">◫</i>Token</span><b>{{ formatPeriodTokens(card.period.totalTokens) }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon amber">$</i>参考金额</span><b>{{ card.period.estimatedCostUsd == null ? '—' : formatTotalCost(card.period.estimatedCostUsd) }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon green">✓</i>成功率</span><b>{{ successRate(card.period) }}</b></div>
+            <small v-if="card.period.unknownCount || card.period.unpricedCount || card.period.boundaryUncertain" class="quota-card-warning">{{ card.period.boundaryUncertain ? '周期边界不确定 · ' : '' }}{{ card.period.unknownCount ? `${card.period.unknownCount} 次用量未知 · ` : '' }}{{ card.period.unpricedCount ? `${card.period.unpricedCount} 次未定价` : '' }}</small>
+          </section>
+          <section class="quota-compare-card projected">
+            <strong class="quota-compare-title">↗ 当前周期预测</strong>
+            <div class="quota-compare-date">额度用尽时本周期的估算总量</div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon blue">↗</i>预计请求</span><b>{{ card.projection?.requests ?? '—' }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon teal">◫</i>预计 Token</span><b>{{ card.projection ? formatPeriodTokens(card.projection.tokens) : '—' }}</b></div>
+            <div class="quota-compare-row"><span><i class="quota-metric-icon amber">$</i>预计金额</span><b>{{ card.projection?.costUsd == null ? '—' : formatTotalCost(card.projection.costUsd) }}</b></div>
+            <div class="quota-projection-note">
+              <NPopover trigger="click" :style="{ maxWidth: '280px' }">
+                <template #trigger><button type="button" class="quota-projection-info">{{ card.projection ? '估算仅供参考 ⓘ' : '暂无预测 ⓘ' }}</button></template>
+                {{ card.projection ? card.projection.warnings.join('；') + '。' : '缺少当前周期同一时刻的有效额度比例或调用用量，暂无法估算。' }}
+              </NPopover>
+            </div>
+          </section>
+        </div>
+        <div v-if="card.period?.models?.length" class="quota-model-breakdown">
+          <div class="quota-model-heading"><div><strong>模型用量明细</strong><small>当前周期 · 按实际上游模型统计</small></div><span>{{ card.period.models.length }} 个模型</span></div>
+          <div class="quota-model-list">
+            <div v-for="model in card.period.models" :key="model.model" class="quota-model-row">
+              <div class="quota-model-name"><strong :title="model.model">{{ model.model || '未知模型' }}</strong><span>{{ model.requests }} 次调用<span v-if="model.unknownCount"> · {{ model.unknownCount }} 次用量未知</span></span></div>
+              <div class="quota-model-value"><strong>{{ formatPeriodTokens(model.totalTokens) }}</strong><span>Token</span></div>
+              <div class="quota-model-value amount"><strong>{{ model.estimatedCostUsd == null ? '—' : formatTotalCost(model.estimatedCostUsd) }}</strong><span>{{ model.unpricedCount ? `${model.unpricedCount} 次未定价` : model.estimatedCostUsd == null ? '暂无价格' : '参考金额' }}</span></div>
+            </div>
+          </div>
+        </div>
+        <div v-if="card.period" class="quota-period-foot">额度刷新 {{ formatDateTime(card.period.lastObservedAt) }} · 用量汇总 {{ formatDateTime(card.period.aggregatedAt) }} · 周期起点为推算值</div>
+        <div v-if="card.period?.historyNormalized" class="quota-period-foot quota-card-warning">已根据记录的重置边界关联上期；两个周期之间的调用可在调用日志中按时间查看。</div>
+          <div v-if="!card.period" class="quota-window-empty">{{ quotaPeriodAccount && quotaPeriodErrors[quotaPeriodAccount.id] ? '周期用量加载失败，请稍后重试' : '暂无当前周期记录，等待下次真实额度刷新' }}</div>
+        </section>
+      </div>
+      <NEmpty v-else description="暂无额度窗口，请先刷新额度" />
+      <div class="quota-period-note">
+        <NPopover trigger="click" :style="{ maxWidth: '320px' }">
+          <template #trigger><button type="button" class="quota-projection-info">统计说明 ⓘ</button></template>
+          模型明细按实际调用汇总；上游没有提供各模型独立的额度扣减比例。请求数与成功率按上游调用尝试统计。参考金额按模型价格表估算，并非 Codex 订阅实际账单；当前周期使用当前价格表，上个周期使用最后保存时的价格。日志清理、外部使用或中断请求可能造成缺失。周期开始时间为推算值，不同窗口的用量会重叠，请勿相加。
+        </NPopover>
+      </div>
+    </NModal>
+
     <!-- 编辑账号（重命名）弹窗 -->
     <NModal v-model:show="editModal" title="编辑账号" preset="card" style="width: 480px; max-width: 92vw">
       <NSpace vertical :size="16">
+        <NAlert v-if="editPartialError" type="error">{{ editPartialError }}</NAlert>
+        <NButton v-if="editNetworkConflict" :loading="editLoading" @click="rebaseEditNetwork">确认基于最新策略重新编辑（保留待保存输入）</NButton>
+        <NAlert v-if="networkReady" type="info">网络策略先独立保存，再更新账户资料和刷新凭证；资料失败不会回滚已保存的网络配置。</NAlert>
+        <AccountNetworkSelector v-if="networkReady" v-model="editNetworkSelection" :options="networkOptions" :block-reason="editNetworkOriginal?.blockReason" :disabled="editLoading || !editNetworkOriginal" />
         <div>
           <p class="edit-label">显示名称</p>
           <NInput v-model:value="editDisplayName" placeholder="显示名称" />
@@ -1541,12 +2400,12 @@ onUnmounted(() => {
             placeholder="粘贴新的 refresh_token，留空则不修改凭证"
             :autosize="{ minRows: 2, maxRows: 4 }"
           />
-          <p class="edit-hint">填入后会立即用新凭证刷新 access_token。token 过期或失效时可用此功能恢复。</p>
+          <p class="edit-hint">{{ deviceVendorOf(editAccount?.provider ?? '') ? '填入后保存为新 refresh_token，额度查询时按需重登恢复' : '填入后会立即用新凭证刷新 access_token' }}。token 过期或失效时可用此功能恢复。</p>
         </div>
         <div v-if="editAccount?.provider === 'codex' || editAccount?.provider === 'kimi'">
           <p class="edit-label">手动刷新 Token</p>
           <NSpace align="center" :size="8">
-            <NButton :loading="editTokenRefreshing" @click="handleManualRefreshToken">立即刷新 access_token</NButton>
+            <NButton v-if="editAccount && !deviceVendorOf(editAccount.provider)" :loading="editTokenRefreshing" @click="handleManualRefreshToken">立即刷新 access_token</NButton>
             <span v-if="editAccount?.tokenExpiresAt" class="edit-hint">
               当前过期：{{ formatDateTime(editAccount.tokenExpiresAt) }}
             </span>
@@ -1557,7 +2416,7 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="editModal = false">取消</NButton>
-          <NButton type="primary" :loading="editLoading" @click="handleSaveEdit">保存</NButton>
+          <NButton type="primary" :loading="editLoading" :disabled="editNetworkConflict || !canUseVendorCatalog || (editAccount != null && !canOperateAccount(editAccount.provider))" @click="handleSaveEdit">保存</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -1610,14 +2469,17 @@ onUnmounted(() => {
     </NModal>
 
     <!-- 拉取/导入模型弹窗 -->
-    <!-- 拉取/导入模型弹窗 -->
     <NModal v-model:show="modelModal" :title="`拉取模型 - ${modelAccount?.displayName ?? ''}`" preset="card" style="width: 720px; max-width: 94vw">
       <NSpin :show="modelLoading">
-        <NEmpty v-if="!modelLoading && modelList.length === 0" description="该账号无可用模型" size="small" />
+        <NAlert v-if="modelCatalogIsPublic" type="warning">
+          该清单来自厂商公共模型目录（models.dev），不代表该账号订阅的实际可用范围；请只勾选确认可用的模型，上游拒绝的模型请取消勾选。
+        </NAlert>
+        <NEmpty v-if="!modelLoading && modelList.length === 0" :description="modelCatalogIsPublic ? '未从公共模型目录获取到文本模型' : '该账号无可用模型'" size="small" />
         <template v-else>
           <div class="oauth-model-toolbar">
             <NInput v-model:value="modelSearch" size="small" clearable placeholder="搜索模型" />
             <NCheckbox
+              v-if="canImportModels"
               :checked="allVisibleModelsChecked"
               :indeterminate="someVisibleModelsChecked"
               @update:checked="toggleVisibleModels"
@@ -1625,7 +2487,10 @@ onUnmounted(() => {
               已选 {{ visibleCheckedModelCount }} / {{ filteredModelList.length }} 个
             </NCheckbox>
           </div>
-          <div class="oauth-model-hint">模型目录会完整读取上游列表；只有勾选项会导入或启用，未勾选的既有映射会禁用。</div>
+          <div class="oauth-model-hint">{{ modelSyncHint }}</div>
+          <div v-if="canImportModels && modelGroupCount > 1" class="oauth-model-group-apply">
+            各账号的模型权限可能不同，请逐账号拉取并同步模型，其他账号不会自动应用。
+          </div>
           <div class="oauth-model-list-header">
             <span class="col-check"></span>
             <span class="col-remote">远端模型名</span>
@@ -1639,13 +2504,14 @@ onUnmounted(() => {
               class="oauth-model-row"
             >
               <NCheckbox
+                :disabled="!canImportModels"
                 :checked="checkedModels.includes(m.remoteModelName)"
                 @update:checked="(checked: boolean) => checked
                   ? checkedModels.push(m.remoteModelName)
                   : (checkedModels = checkedModels.filter(name => name !== m.remoteModelName))"
               />
               <code :title="m.remoteModelName">{{ m.remoteModelName }}</code>
-              <NInput v-model:value="m.alias" size="small" placeholder="对外模型名（留空用原始名）" />
+              <NInput v-model:value="m.alias" :disabled="!canImportModels" size="small" placeholder="对外模型名（留空用原始名）" />
               <NTag
                 size="tiny"
                 :type="m.existingMappingId ? (m.isEnabled ? 'success' : 'default') : 'info'"
@@ -1660,8 +2526,17 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="modelModal = false">取消</NButton>
-          <NButton type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
-            {{ modelAccount?.provider === 'codex' ? '导入选中' : '同步启用' }}（{{ checkedModels.length }}）
+          <NPopconfirm v-if="canImportModels && modelGroupMode" @positive-click="handleImportModels">
+            <template #trigger>
+              <NButton type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading">{{ isCodexImportOnly ? `导入到组（${modelGroupCount} 个账号）` : `应用到组（${modelGroupCount} 个账号）` }}</NButton>
+            </template>
+            {{ isCodexImportOnly
+              ? `将把勾选项导入到：${modelGroupAccounts.map(a => a.displayName).join('、')}。Codex 只增：未勾选项不会被导入或停用，仅源账号会被写入；各账号模型权限可能不同。确定继续？`
+              : `将应用到：${modelGroupAccounts.map(a => a.displayName).join('、')}。未勾选的清单内模型会被禁用；各账号模型权限可能不同。确定继续？` }}
+          </NPopconfirm>
+          <NButton v-else-if="canImportModels" type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
+            <template v-if="modelGroupMode">{{ isCodexImportOnly ? `导入到组（${modelGroupCount} 个账号）` : `应用到组（${modelGroupCount} 个账号）` }}</template>
+            <template v-else>{{ modelAccount?.provider === 'codex' ? '导入选中' : '同步启用' }}（{{ checkedModels.length }}）</template>
           </NButton>
         </NSpace>
       </template>
@@ -1682,6 +2557,11 @@ onUnmounted(() => {
   color: var(--text-color-secondary);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.oauth-model-group-apply {
+  margin: -4px 0 10px;
+  font-size: 12px;
 }
 
 .oauth-model-toolbar :deep(.n-input) {
@@ -2066,13 +2946,6 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.oauth-provider-filters {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
 
 .oauth-status-filter {
   flex-shrink: 0;
@@ -2082,62 +2955,23 @@ onUnmounted(() => {
   min-height: 28px;
 }
 
-.oauth-provider-filter {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 7px;
-  min-height: 32px;
-  padding: 5px 11px;
-  border: 1px solid var(--border-color-global);
-  border-radius: 999px;
-  background: var(--bg-card);
-  color: var(--text-color-secondary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+/* 表格视图单元格样式见文件末尾的全局块——本组件的 h() 元素渲染在 Naive UI Cell 上下文中，
+   拿不到本组件的 data-v 作用域属性，scoped 规则永远匹配不上（进度条曾因此塌成三行）。 */
+
+/* 表格：覆盖全局过宽的内边距，给内容腾出呼吸空间 */
+.oauth-data-table :deep(.n-data-table-th) {
+  padding: 10px 12px !important;
 }
-
-.oauth-provider-filter::before {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--text-color-secondary);
-  content: '';
-}
-
-.oauth-provider-filter[data-provider='codex']::before { background: #5b8ff9; }
-.oauth-provider-filter[data-provider='antigravity']::before { background: #f0a020; }
-
-.oauth-provider-filter:hover,
-.oauth-provider-filter:focus-visible {
-  border-color: var(--primary-color, #3b82f6);
-  color: var(--text-primary);
-  outline: none;
-}
-
-.oauth-provider-filter.active {
-  border-color: var(--primary-color, #3b82f6);
-  background: color-mix(in srgb, var(--primary-color, #3b82f6) 10%, var(--bg-card));
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.oauth-provider-filter-count {
-  min-width: 18px;
-  padding: 1px 5px;
-  border-radius: 999px;
-  background: var(--bg-page);
-  color: var(--text-color-secondary);
-  font-size: 11px;
-  line-height: 16px;
-  text-align: center;
+.oauth-data-table :deep(.n-data-table-td) {
+  padding: 10px 12px !important;
 }
 
 .oauth-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  /* 竖长方形卡片：列宽锁在 360–375，不随窗口拉伸，
+     窗口越宽排更多列而不是把卡片撑宽；整体靠左，剩余空白留右侧。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 375px));
+  justify-content: start;
   align-items: stretch;
   gap: 18px;
   margin-top: 16px;
@@ -2148,7 +2982,8 @@ onUnmounted(() => {
   position: relative;
   flex-direction: column;
   min-width: 0;
-  align-self: stretch;
+  height: auto;
+  min-height: 440px;
   box-sizing: border-box;
   padding: 20px;
   border: 1px solid var(--border-color-global);
@@ -2186,6 +3021,7 @@ onUnmounted(() => {
 
 .oauth-card-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
@@ -2211,6 +3047,25 @@ onUnmounted(() => {
   font-weight: 700;
   line-height: 1.45;
   word-break: break-all;
+}
+
+.oauth-network-badge {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-color-secondary) 12%, transparent);
+  color: var(--text-color-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oauth-network-badge.blocked {
+  background: color-mix(in srgb, #e5484d 12%, transparent);
+  color: #e5484d;
 }
 
 .oauth-account-email {
@@ -2285,21 +3140,35 @@ onUnmounted(() => {
 :global([data-theme='dark']) .oauth-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
 .oauth-windows-container {
+  /* 额度内容占用卡片中间的剩余空间，超出时只在此区域滚动。 */
   flex: 1 1 auto;
-  max-height: 320px;
+  max-height: 220px;
   min-height: 60px;
   margin: 16px 0;
   overflow-y: auto;
   padding-right: 6px;
   scrollbar-color: var(--border-color-global) transparent;
   scrollbar-width: thin;
+  /* 各窗口行共享同一套列轨道（行内 subgrid 对齐）：
+     标签列 fit-content 按卡片内最长标签取宽，进度条紧跟其后 8px 开始，
+     消灭短标签（如「5 小时限额」）和进度条之间的大片留白。 */
+  display: grid;
+  grid-template-columns: fit-content(180px) 1fr 44px;
+  column-gap: 8px;
+  align-content: start;
+}
+
+/* Codex 的额度窗口完整展开；仅其他厂商的多资源包内容在中间区域滚动。 */
+.oauth-card-codex .oauth-windows-container {
+  max-height: none;
+  overflow: visible;
 }
 
 .oauth-window {
   display: grid;
-  grid-template-columns: minmax(180px, 1.35fr) minmax(120px, 1fr) 56px;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
   align-items: center;
-  column-gap: 12px;
   row-gap: 6px;
   padding: 10px 0 12px;
   border-bottom: 1px solid var(--border-color-soft);
@@ -2312,18 +3181,25 @@ onUnmounted(() => {
 .oauth-window-label {
   min-width: 0;
   overflow: visible;
+  /* 右对齐：短标签直接贴住自己的进度条，不留空档（左缘参差由列轨道吸收） */
   color: var(--text-color-secondary);
   font-size: 13px;
+  text-align: right;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
 .oauth-window-percent {
-  min-width: 56px;
+  min-width: 44px;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 600;
   text-align: right;
+}
+
+.oauth-window-no-bar {
+  font-weight: 400;
+  color: var(--text-color-secondary);
 }
 
 .oauth-window-reset {
@@ -2335,6 +3211,77 @@ onUnmounted(() => {
   line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.oauth-period-trigger, .oauth-period-unavailable {
+  grid-column: 2 / 4;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.oauth-period-trigger {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--primary-color, #3b82f6) 14%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--primary-color, #3b82f6) 6%, var(--bg-card));
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.oauth-period-trigger:hover { border-color: var(--primary-color, #3b82f6); }
+.oauth-period-trigger strong { color: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.oauth-period-arrow { margin-left: auto; color: var(--primary-color, #3b82f6); white-space: nowrap; }
+.oauth-period-unavailable { padding: 0; border: 0; background: none; color: var(--text-color-secondary); text-align: left; cursor: pointer; }
+.quota-period-note { color: var(--text-color-secondary); font-size: 12px; line-height: 1.7; }
+.quota-period-note { margin-top: 16px; }
+.quota-dashboard-list { display: grid; gap: 14px; max-height: min(70vh, 720px); overflow-y: auto; padding: 1px 3px 1px 1px; }
+.quota-dashboard { padding: 14px; border: 1px solid var(--border-color-global); border-radius: 10px; }
+.quota-window-empty { padding: 24px 0 10px; color: var(--text-color-secondary); font-size: 12px; text-align: center; }
+.quota-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.quota-overview-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.quota-overview-title > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.quota-overview-title small { color: var(--text-color-secondary); font-size: 11px; }
+.quota-icon { display: grid; width: 32px; height: 32px; flex: none; place-items: center; border-radius: 9px; background: color-mix(in srgb, var(--primary-color, #3b82f6) 12%, transparent); color: var(--primary-color, #3b82f6); font-size: 21px; }
+.quota-remaining { display: flex; align-items: baseline; gap: 5px; color: var(--primary-color, #3b82f6); white-space: nowrap; }
+.quota-remaining span { font-size: 11px; }
+.quota-remaining strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.quota-compare-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
+.quota-compare-card { min-width: 0; padding: 12px 10px; border: 1px solid var(--border-color-global); border-radius: 9px; background: var(--bg-card); }
+.quota-compare-card.projected { background: color-mix(in srgb, var(--primary-color, #3b82f6) 5%, var(--bg-card)); border-color: color-mix(in srgb, var(--primary-color, #3b82f6) 20%, var(--border-color-global)); }
+.quota-compare-title { display: block; color: var(--text-primary); font-size: 12px; }
+.quota-compare-date { min-height: 33px; margin-top: 5px; color: var(--text-color-secondary); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.quota-compare-row { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 10px; font-size: 11px; }
+.quota-compare-row > span { display: flex; align-items: center; gap: 5px; color: var(--text-color-secondary); white-space: nowrap; }
+.quota-compare-row b { color: var(--text-primary); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+.quota-metric-icon { display: inline-grid; width: 19px; height: 19px; flex: none; place-items: center; border-radius: 50%; font-size: 11px; font-style: normal; }
+.quota-metric-icon.blue { color: #4295f5; background: #4295f522; }
+.quota-metric-icon.teal { color: #12a895; background: #12a89522; }
+.quota-metric-icon.amber { color: #d89a17; background: #d89a1722; }
+.quota-metric-icon.green { color: #10a77b; background: #10a77b22; }
+.quota-card-warning, .quota-projection-note { display: block; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border-color-global); color: var(--text-color-secondary); font-size: 10px; line-height: 1.5; }
+.quota-projection-info { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.quota-projection-info:hover, .quota-projection-info:focus-visible { color: var(--primary-color, #3b82f6); }
+.quota-card-warning { color: var(--status-warning-text); }
+.quota-model-breakdown { margin-top: 15px; border-top: 1px solid var(--border-color-global); padding-top: 13px; }
+.quota-model-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.quota-model-heading > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.quota-model-heading strong { color: var(--text-primary); font-size: 12px; }
+.quota-model-heading small, .quota-model-heading > span { color: var(--text-color-secondary); font-size: 10px; }
+.quota-model-list { display: grid; gap: 5px; max-height: 220px; overflow-y: auto; margin-top: 9px; scrollbar-width: thin; }
+.quota-model-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, auto) minmax(72px, auto); align-items: center; gap: 10px; padding: 8px 9px; border-radius: 7px; background: var(--bg-surface-soft); }
+.quota-model-name, .quota-model-value { display: grid; min-width: 0; gap: 2px; }
+.quota-model-name strong { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.quota-model-name span, .quota-model-value span { color: var(--text-color-secondary); font-size: 10px; }
+.quota-model-value { text-align: right; }
+.quota-model-value strong { color: var(--text-primary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.quota-model-value.amount strong { color: var(--primary-color, #3b82f6); }
+.quota-period-foot { margin-top: 12px; color: var(--text-color-secondary); font-size: 11px; }
+@media (max-width: 520px) {
+  .quota-compare-grid { grid-template-columns: 1fr; }
+  .quota-compare-date { min-height: 0; }
 }
 
 .oauth-window-placeholder {
@@ -2354,6 +3301,7 @@ onUnmounted(() => {
 }
 
 .oauth-card-meta {
+  flex: 0 0 auto;
   margin-top: auto;
   padding-top: 16px;
   border-top: 1px solid var(--border-color-global);
@@ -2430,14 +3378,9 @@ onUnmounted(() => {
   .oauth-grid,
   .account-kpi-row,
   .account-meta-grid,
-  .oauth-window,
   .inspection-summary-grid,
   .inspection-log-row {
     grid-template-columns: 1fr;
-  }
-
-  .oauth-window-reset {
-    grid-column: 1;
   }
 
   .oauth-card-header,
@@ -2467,5 +3410,137 @@ onUnmounted(() => {
   .reset-credit-expiry {
     text-align: left;
   }
+}
+</style>
+
+<style>
+.oauth-provider-filter-a11y {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.n-base-select-option .oauth-provider-filter-a11y {
+  display: none;
+}
+/* 表格视图单元格——必须是非 scoped 全局块。
+   原因：这些 class 都出现在 NDataTable columns 的 h() 渲染函数里，由 Naive UI 的 Cell
+   组件在自己的渲染上下文中调用，元素上没有本组件的 data-v 属性，scoped 选择器永远匹配不上。
+   所有类名均带 oauth-table- 前缀，不会污染全局。 */
+.oauth-table-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.oauth-table-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-sub {
+  font-size: 12px;
+  color: var(--text-color-secondary, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-email { font-size: 11px; }
+/* 网格三列（标签｜条｜百分比）：标签列取组内最宽（fit-content 上限 150px），
+   上下窗口行的进度条与百分比随之纵向对齐成列，不再跟着各自标签宽度左右漂移 */
+.oauth-table-windows {
+  display: grid;
+  grid-template-columns: fit-content(150px) minmax(100px, 1fr) auto;
+  align-items: center;
+  gap: 4px 6px;
+}
+/* 行容器只做语义分组：display:contents 让「文字/条/百分比」直接成为网格项；
+   纯文本行用整行跨列（grid-column: 1 / -1）实现分行并使用整格宽度，带进度条行仍钉死各自列纵向对齐 */
+.oauth-table-window-row {
+  display: contents;
+}
+.oauth-table-window-name {
+  grid-column: 1;
+}
+.oauth-table-window-label-only,
+.oauth-table-window-none {
+  grid-column: 1 / -1;
+}
+.oauth-table-window-bar {
+  grid-column: 2;
+}
+.oauth-table-window-pct {
+  grid-column: 3;
+}
+.oauth-table-window-name {
+  /* 数值型窗口（企业周期（已用 8/100）、积分（3/10）等）短名按内容自适应，超长省略悬浮看全 */
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-window-bar .n-progress {
+  display: block;
+}
+.oauth-table-window-bar .n-progress-graph-line {
+  padding: 0;
+}
+.oauth-table-window-bar .n-progress-graph-line-rail,
+.oauth-table-window-bar .n-progress-graph-line-fill {
+  height: 14px !important;
+  border-radius: 3px;
+}
+.oauth-table-window-bar .n-progress-graph-line-rail {
+  background: var(--bg-page, #f3f3f3);
+}
+.oauth-table-window-pct {
+  flex-shrink: 0;
+  width: 42px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-color-secondary, #666);
+  font-variant-numeric: tabular-nums;
+}
+.oauth-table-window-none {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-color-secondary, #888);
+}
+.oauth-table-window-label-only {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-color-secondary, #666);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oauth-table-nowrap {
+  white-space: nowrap;
+}
+/* Token 列不折行 */
+.oauth-table-token {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* 操作按钮——两排紧凑栅格，弱化边框 */
+.oauth-table-actions {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 4px 6px;
+  justify-content: start;
+}
+.oauth-table-actions .n-button {
+  --n-height: 22px;
+  font-size: 12px;
+  padding: 0 8px;
+  border-radius: 4px;
 }
 </style>

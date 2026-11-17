@@ -1,5 +1,7 @@
 using System.Net.Http.Json;
 using AITool.Application.SiteCatalog;
+using AITool.Application.Networking;
+using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Sites;
@@ -23,10 +25,16 @@ public sealed class OpenAiSiteCatalogClient : ISiteCatalogClient
     /// <summary>
     /// 注入 HTTP 客户端和站点密钥选择器
     /// </summary>
-    public OpenAiSiteCatalogClient(HttpClient httpClient, SiteKeySelector siteKeySelector)
+    private readonly IForwardNetworkPolicyResolver? _networkPolicyResolver;
+    private readonly INetworkTransport? _networkTransport;
+
+    public OpenAiSiteCatalogClient(HttpClient httpClient, SiteKeySelector siteKeySelector,
+        IForwardNetworkPolicyResolver? networkPolicyResolver = null, INetworkTransport? networkTransport = null)
     {
         _httpClient = httpClient;
         _siteKeySelector = siteKeySelector;
+        _networkPolicyResolver = networkPolicyResolver;
+        _networkTransport = networkTransport;
     }
 
     /// <summary>
@@ -34,20 +42,42 @@ public sealed class OpenAiSiteCatalogClient : ISiteCatalogClient
     /// </summary>
     public async Task<IReadOnlyList<string>> GetModelsAsync(Site site, CancellationToken cancellationToken)
     {
-        // 取站点活动密钥：多 Key 站点用优先级最高的启用项，没有 SiteKey 时回退 site.ApiKey（兼容 Codex/未迁移）。
-        var apiKey = await _siteKeySelector.GetActiveKeyAsync(site.Id, cancellationToken);
-        if (string.IsNullOrEmpty(apiKey))
+        var credential = await _siteKeySelector.GetActiveCredentialAsync(site.Id, cancellationToken);
+        var policyRequest = new ProxyForwardRequest
         {
-            apiKey = site.ApiKey;
+            TargetBaseUrl = site.BaseUrl,
+            TargetEndpointPathMode = site.EndpointPathMode,
+            TargetApiKey = string.IsNullOrEmpty(credential.ApiKey) ? site.ApiKey : credential.ApiKey,
+            EgressProxyUrl = credential.EgressProxyUrl ?? site.EgressProxyUrl,
+            AccountIdentity = credential.AccountIdentity
+        };
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) timeout.CancelAfter(_httpClient.Timeout);
+        var networkToken = timeout.Token;
+        var client = _httpClient;
+        INetworkTransportLease? acquired = null;
+        if (_networkPolicyResolver is not null)
+        {
+            var policy = await _networkPolicyResolver.ResolveAsync(policyRequest, networkToken);
+            if (!policy.UseDefaultClient)
+            {
+                acquired = await (_networkTransport ?? throw new InvalidOperationException("Network transport is unavailable."))
+                    .AcquireAsync(policy.Configuration, policy.IsolationKey, "site-catalog", networkToken);
+                client = acquired.Client;
+            }
         }
+        else if (policyRequest.AccountIdentity is not null || !string.IsNullOrWhiteSpace(policyRequest.EgressProxyUrl))
+        {
+            throw new InvalidOperationException("Network policy resolver is unavailable.");
+        }
+        await using var lease = acquired;
+        using var request = new HttpRequestMessage(HttpMethod.Get, SiteEndpointPathResolver.BuildUrl(site.BaseUrl, site.EndpointPathMode, "models"));
+        request.Headers.Add("Authorization", $"Bearer {policyRequest.TargetApiKey}");
 
-        var request = new HttpRequestMessage(HttpMethod.Get, SiteEndpointPathResolver.BuildUrl(site.BaseUrl, site.EndpointPathMode, "models"));
-        request.Headers.Add("Authorization", $"Bearer {apiKey}");
-
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var response = await client.SendAsync(request, networkToken);
         response.EnsureSuccessStatusCode();
 
-        var result = await response.Content.ReadFromJsonAsync<OpenAiModelsResponse>(cancellationToken);
+        var result = await response.Content.ReadFromJsonAsync<OpenAiModelsResponse>(networkToken);
         return result?.Data?.Select(m => m.Id).ToList() ?? [];
     }
 

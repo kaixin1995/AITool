@@ -1,7 +1,7 @@
 namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
-/// 熔断触发事件的回调参数。
+/// 熔断触发事件的回调参数（split：跨宿主熔断事件链）。
 /// <para>
 /// 当某条路由因连续失败达到阈值被首次熔断时，<see cref="RouteCircuitStateStore"/>
 /// 通过 <see cref="RouteCircuitStateStore.OnCircuitOpened"/> 事件向外通知。
@@ -9,244 +9,367 @@ namespace AITool.Infrastructure.Proxy;
 /// </summary>
 public sealed class CircuitOpenedEventArgs : EventArgs
 {
-    /// <summary>
-    /// 被熔断的路由标识。
-    /// </summary>
+    /// <summary>被熔断的路由标识。</summary>
     public required Guid RouteId { get; init; }
 
-    /// <summary>
-    /// 触发熔断时的连续失败次数。
-    /// </summary>
+    /// <summary>触发熔断时的连续失败次数。</summary>
     public required int FailureCount { get; init; }
 
-    /// <summary>
-    /// 熔断阈值（触发熔断所需的最小连续失败次数）。
-    /// </summary>
+    /// <summary>熔断阈值（触发熔断所需的最小连续失败次数）。</summary>
     public required int FailThreshold { get; init; }
 
-    /// <summary>
-    /// 熔断持续时长（路由被屏蔽的时间窗口）。
-    /// </summary>
+    /// <summary>熔断持续时长（路由被屏蔽的时间窗口）。</summary>
     public required TimeSpan BlockDuration { get; init; }
 
-    /// <summary>
-    /// 熔断预计解除时间（UTC）。
-    /// </summary>
+    /// <summary>熔断预计解除时间（UTC）。</summary>
     public required DateTimeOffset RecoveryTime { get; init; }
 }
 
 /// <summary>
 /// 路由级熔断状态存储，单条路由连续失败达到阈值后被临时屏蔽。
-/// <para>
-/// 当熔断首次触发时，通过 <see cref="OnCircuitOpened"/> 事件通知订阅者，
-/// 外部可据此发布跨宿主事件到 Admin 侧，用于实时监控路由健康状态。
-/// </para>
+/// <para>split：首次触发熔断时通过 <see cref="OnCircuitOpened"/> 事件通知订阅者（跨宿主事件链）。</para>
 /// </summary>
 public sealed class RouteCircuitStateStore
 {
-    /// <summary>
-    /// 保护熔断参数读写的同步锁。
-    /// </summary>
     private readonly object _syncRoot = new();
-
-    /// <summary>
-    /// 触发熔断后路由被屏蔽的持续时间（以 Ticks 存储，便于 Volatile.Read/Write 跨线程可见）。
-    /// </summary>
     private long _blockDurationTicks;
-
-    /// <summary>
-    /// 连续失败达到该次数时触发熔断。
-    /// </summary>
     private int _failThreshold;
+    private long _restVersion;
+    // 保留各站点最近一次配额休息版本，即使休息被清理或重置，旧查询也不能解除同站点的其他休息。
+    private readonly Dictionary<Guid, long> _siteQuotaRestVersions = [];
+    // 同一站点的配额耗尽写入与异步账号回启串行化；不得在持有 _syncRoot 时等待。
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, SemaphoreSlim> _siteQuotaGates = [];
 
-    /// <summary>
-    /// 路由连续失败次数记录。
-    /// </summary>
+    private SemaphoreSlim QuotaGate(Guid siteId) => _siteQuotaGates.GetOrAdd(siteId, static _ => new SemaphoreSlim(1, 1));
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> _failCounts = [];
 
-    /// <summary>
-    /// 被熔断的路由及其解除时间。
-    /// </summary>
+    /// <summary>split：当某条路由因连续失败达到阈值被首次熔断时触发（跨宿主事件链）。</summary>
+    public event EventHandler<CircuitOpenedEventArgs>? OnCircuitOpened;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTimeOffset> _blockedRoutes = [];
-    /// <summary>
-    /// 熔断键对应的站点/模型归属（面板在候选移除后仍能展示其归属；成功/解除/过期时一并清理）。
-    /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CircuitRouteMeta> _routeMeta = [];
 
-    /// <summary>
-    /// 当某条路由因连续失败达到阈值被首次熔断时触发。
-    /// 订阅者可据此发布跨宿主事件，事件参数包含路由标识、失败计数、阈值和恢复时间。
-    /// </summary>
-    public event EventHandler<CircuitOpenedEventArgs>? OnCircuitOpened;
+    // 每种原因/物理站点独立保留期限与元数据；短限流不能覆盖长配额休息，恢复配额也不能清掉限流。
+    // 所有读写均由 _syncRoot 保护，与恢复、过期清理、手动重置保持原子性。
+    private readonly Dictionary<Guid, Dictionary<RestOwner, RestEntry>> _restedRoutes = [];
+    private readonly record struct RestOwner(RouteRestKind Kind, Guid? SiteId);
+    private sealed record RestEntry(DateTimeOffset UntilUtc, string Reason, CircuitRouteMeta? Meta, long Version);
 
-    /// <summary>
-    /// 注入熔断屏蔽时长和连续失败阈值。
-    /// </summary>
     public RouteCircuitStateStore(TimeSpan? blockDuration = null, int failThreshold = 5)
     {
         _blockDurationTicks = (blockDuration ?? TimeSpan.FromMinutes(2)).Ticks;
         _failThreshold = failThreshold;
     }
 
-    /// <summary>
-    /// 动态更新熔断参数，新配置应尽快影响后续请求。
-    /// </summary>
+    /// <summary>动态更新熔断参数，新配置应尽快影响后续请求。</summary>
     public void UpdateOptions(TimeSpan blockDuration, int failThreshold)
     {
         lock (_syncRoot)
         {
-            // 使用 Volatile.Write 保证写入对其它线程立即可见（Block 在锁外读取这两个字段）。
             Volatile.Write(ref _blockDurationTicks, blockDuration.Ticks);
             Volatile.Write(ref _failThreshold, failThreshold);
         }
     }
 
-    /// <summary>
-    /// 记录一次失败，连续失败达到阈值时触发熔断。
-    /// meta 携带站点/模型归属（仅在提供时覆盖旧值），供面板在候选移除后仍能展示归属。
-    /// <para>
-    /// 首次触发熔断时会引发 <see cref="OnCircuitOpened"/> 事件（split：跨宿主熔断事件链）。
-    /// 如果路由已被熔断，则不再重复计数。
-    /// </para>
-    /// </summary>
+    /// <summary>记录一次失败，连续失败达到阈值时触发熔断。</summary>
     public void Block(Guid routeId, CircuitRouteMeta? meta = null)
     {
-        // 如果已经被熔断，不再重复计数
-        if (IsBlocked(routeId)) return;
-
-        var count = _failCounts.AddOrUpdate(routeId, 1, (_, current) => current + 1);
-        if (meta is not null)
+        lock (_syncRoot)
         {
-            _routeMeta[routeId] = meta;
-        }
-        // 使用 Volatile.Read 保证读到 UpdateOptions 最新写入的值（Block 在锁外读取）。
-        var failThreshold = Volatile.Read(ref _failThreshold);
-        var blockDuration = TimeSpan.FromTicks(Volatile.Read(ref _blockDurationTicks));
+            if (IsBlocked(routeId)) return;
 
-        if (count >= failThreshold)
-        {
-            var recoveryTime = DateTimeOffset.UtcNow.Add(blockDuration);
-            _blockedRoutes[routeId] = recoveryTime;
-
-            // 首次触发熔断时通知订阅者
-            OnCircuitOpened?.Invoke(this, new CircuitOpenedEventArgs
+            var count = _failCounts.AddOrUpdate(routeId, 1, (_, current) => current + 1);
+            if (meta is not null)
             {
-                RouteId = routeId,
-                FailureCount = count,
-                FailThreshold = failThreshold,
-                BlockDuration = blockDuration,
-                RecoveryTime = recoveryTime
-            });
+                _routeMeta[routeId] = meta;
+            }
+
+            if (count >= Volatile.Read(ref _failThreshold))
+            {
+                var blockDuration = TimeSpan.FromTicks(Volatile.Read(ref _blockDurationTicks));
+                var recoveryTime = DateTimeOffset.UtcNow.Add(blockDuration);
+                _blockedRoutes[routeId] = recoveryTime;
+
+                // split：首次触发熔断时通知订阅者（跨宿主熔断事件链）。
+                OnCircuitOpened?.Invoke(this, new CircuitOpenedEventArgs
+                {
+                    RouteId = routeId,
+                    FailureCount = count,
+                    FailThreshold = Volatile.Read(ref _failThreshold),
+                    BlockDuration = blockDuration,
+                    RecoveryTime = recoveryTime
+                });
+            }
         }
     }
 
     /// <summary>
-    /// 记录一次成功，清除该路由的连续失败计数。
+    /// 分级冷却，不走失败计数，同时清空失败计数。同类/同归属休息保留最晚期限，
+    /// 查询时与其他休息及普通熔断取最大值；kind/siteId 缺省兼容旧调用，但不参与配额恢复。
+    /// 每次实际写入或更新休息时单调推进版本，确保健康查询期间新到的配额休息不会被旧查询结果解除。
     /// </summary>
-    public void Succeed(Guid routeId)
+    public void Rest(Guid routeId, DateTimeOffset untilUtc, string reason, CircuitRouteMeta? meta = null,
+        RouteRestKind kind = RouteRestKind.Other, Guid? siteId = null)
     {
-        _failCounts.TryRemove(routeId, out _);
-        _routeMeta.TryRemove(routeId, out _);
+        var gate = kind == RouteRestKind.Quota && siteId.HasValue ? QuotaGate(siteId.Value) : null;
+        gate?.Wait();
+        try { RestCore(routeId, untilUtc, reason, meta, kind, siteId); }
+        finally { gate?.Release(); }
     }
 
-    /// <summary>
-    /// 判断路由当前是否仍处于熔断窗口内。
-    /// </summary>
-    public bool IsBlocked(Guid routeId)
+    private void RestCore(Guid routeId, DateTimeOffset untilUtc, string reason, CircuitRouteMeta? meta,
+        RouteRestKind kind, Guid? siteId)
     {
-        if (_blockedRoutes.TryGetValue(routeId, out var until))
+        lock (_syncRoot)
         {
-            if (until > DateTimeOffset.UtcNow) return true;
-            _blockedRoutes.TryRemove(routeId, out _);
+            if (untilUtc <= DateTimeOffset.UtcNow) return;
+
+            var version = ++_restVersion;
+            if (kind == RouteRestKind.Quota && siteId is { } quotaSiteId)
+            {
+                _siteQuotaRestVersions[quotaSiteId] = version;
+            }
+
+            if (!_restedRoutes.TryGetValue(routeId, out var rests))
+            {
+                rests = [];
+                _restedRoutes[routeId] = rests;
+            }
+
+            var owner = new RestOwner(kind, siteId);
+            rests.TryGetValue(owner, out var previous);
+            if (previous is null || untilUtc >= previous.UntilUtc)
+            {
+                rests[owner] = new RestEntry(untilUtc,
+                    string.IsNullOrWhiteSpace(reason) ? previous?.Reason ?? string.Empty : reason,
+                    meta ?? previous?.Meta,
+                    version);
+            }
+            else
+            {
+                rests[owner] = previous with { Version = version };
+            }
+
             _failCounts.TryRemove(routeId, out _);
-            _routeMeta.TryRemove(routeId, out _);
         }
-        return false;
     }
 
     /// <summary>
-    /// 返回所有当前被熔断的路由（routeId → 解除时间）和正在累计失败但尚未熔断的路由。
+    /// 捕获用于解除配额休息的版本令牌。必须在健康查询发起前捕获，
+    /// 确保查询期间新写入或刷新的配额休息拥有更高版本而得以保留。
     /// </summary>
-    public IReadOnlyDictionary<Guid, CircuitRouteInfo> GetAllCircuitStates()
+    public QuotaRestReleaseToken CaptureQuotaRestReleaseToken(Guid siteId)
     {
-        var now = DateTimeOffset.UtcNow;
-        var result = new Dictionary<Guid, CircuitRouteInfo>();
-
-        // 先清理已过期的熔断
-        foreach (var pair in _blockedRoutes)
+        lock (_syncRoot)
         {
-            if (pair.Value <= now)
+            return new(siteId, _restVersion);
+        }
+    }
+
+    /// <summary>在同站点配额耗尽写入的互斥区内校验版本并执行异步回启。</summary>
+    public async Task<bool> TryRunQuotaRecoveryAsync(QuotaRestReleaseToken token, Func<Task> recovery, CancellationToken cancellationToken)
+    {
+        var gate = QuotaGate(token.SiteId);
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            lock (_syncRoot)
             {
-                _blockedRoutes.TryRemove(pair.Key, out _);
-                _failCounts.TryRemove(pair.Key, out _);
-                _routeMeta.TryRemove(pair.Key, out _);
+                if (_siteQuotaRestVersions.GetValueOrDefault(token.SiteId) > token.Version) return false;
+            }
+            await recovery();
+            return true;
+        }
+        finally { gate.Release(); }
+    }
+
+    /// <summary>
+    /// 仅在新鲜配额查询确认恢复后调用：如果查询期间该站点出现新的配额休息，
+    /// 则不释放该站点的任何配额休息。不触碰限流/其他休息、普通熔断或失败计数。
+    /// 返回移除的配额休息数。
+    /// </summary>
+    public int ReleaseQuotaRests(QuotaRestReleaseToken token)
+    {
+        lock (_syncRoot)
+        {
+            if (_siteQuotaRestVersions.GetValueOrDefault(token.SiteId) > token.Version) return 0;
+
+            var removed = 0;
+            var owner = new RestOwner(RouteRestKind.Quota, token.SiteId);
+            foreach (var pair in _restedRoutes.ToArray())
+            {
+                if (pair.Value.TryGetValue(owner, out var entry) && entry.Version <= token.Version)
+                {
+                    pair.Value.Remove(owner);
+                    removed++;
+                    if (pair.Value.Count == 0) _restedRoutes.Remove(pair.Key);
+                }
+            }
+
+            return removed;
+        }
+    }
+
+    /// <summary>查询有效休息信息，解除时间与普通熔断取更晚者。</summary>
+    public (DateTimeOffset UntilUtc, string Reason)? GetRest(Guid routeId)
+    {
+        lock (_syncRoot)
+        {
+            var rest = GetActiveRest(routeId, DateTimeOffset.UtcNow);
+            if (rest is null) return null;
+            var until = _blockedRoutes.TryGetValue(routeId, out var blocked) && blocked > rest.UntilUtc
+                ? blocked : rest.UntilUtc;
+            return (until, rest.Reason);
+        }
+    }
+
+    // 调用方持有 _syncRoot；原因与元数据始终来自最晚的有效休息，而非最后一次较短写入。
+    private RestEntry? GetActiveRest(Guid routeId, DateTimeOffset now)
+    {
+        if (!_restedRoutes.TryGetValue(routeId, out var rests)) return null;
+        RestEntry? latest = null;
+        foreach (var pair in rests.ToArray())
+        {
+            if (pair.Value.UntilUtc <= now)
+            {
+                rests.Remove(pair.Key);
+            }
+            else if (latest is null || pair.Value.UntilUtc > latest.UntilUtc)
+            {
+                latest = pair.Value;
             }
         }
 
-        // 收集当前被熔断的路由
-        foreach (var pair in _blockedRoutes)
-        {
-            var failCount = _failCounts.GetValueOrDefault(pair.Key, 0);
-            result[pair.Key] = new CircuitRouteInfo(
-                IsBlocked: true,
-                FailureCount: failCount,
-                BlockedUntil: pair.Value,
-                RemainingTime: pair.Value > now ? pair.Value - now : TimeSpan.Zero,
-                Meta: _routeMeta.GetValueOrDefault(pair.Key));
-        }
+        if (rests.Count == 0) _restedRoutes.Remove(routeId);
+        return latest;
+    }
 
-        // 收集正在累计失败但尚未熔断的路由
-        var failThreshold = Volatile.Read(ref _failThreshold);
-        foreach (var pair in _failCounts)
+    /// <summary>记录成功，清除连续失败计数、休息与归属元数据（不解除已有普通熔断）。</summary>
+    public void Succeed(Guid routeId)
+    {
+        lock (_syncRoot)
         {
-            if (result.ContainsKey(pair.Key)) continue;
-            result[pair.Key] = new CircuitRouteInfo(
-                IsBlocked: false,
-                FailureCount: pair.Value,
-                BlockedUntil: null,
-                RemainingTime: null,
-                Meta: _routeMeta.GetValueOrDefault(pair.Key));
+            _failCounts.TryRemove(routeId, out _);
+            _routeMeta.TryRemove(routeId, out _);
+            _restedRoutes.Remove(routeId);
         }
+    }
 
-        return result;
+    /// <summary>判断路由当前是否仍处于熔断或休息窗口内。</summary>
+    public bool IsBlocked(Guid routeId)
+    {
+        lock (_syncRoot)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_blockedRoutes.TryGetValue(routeId, out var until))
+            {
+                if (until > now) return true;
+                _blockedRoutes.TryRemove(routeId, out _);
+                _failCounts.TryRemove(routeId, out _);
+                _routeMeta.TryRemove(routeId, out _);
+            }
+
+            return GetActiveRest(routeId, now) is not null;
+        }
     }
 
     /// <summary>
-    /// 手动解除指定路由的熔断状态（同时清除失败计数与归属元数据）。
+    /// 返回熔断/休息及正在累计失败的路由快照。期限取普通熔断与全部休息的最大值。
     /// </summary>
+    public IReadOnlyDictionary<Guid, CircuitRouteInfo> GetAllCircuitStates()
+    {
+        lock (_syncRoot)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var result = new Dictionary<Guid, CircuitRouteInfo>();
+            foreach (var pair in _blockedRoutes)
+            {
+                if (pair.Value <= now)
+                {
+                    _blockedRoutes.TryRemove(pair.Key, out _);
+                    _failCounts.TryRemove(pair.Key, out _);
+                    _routeMeta.TryRemove(pair.Key, out _);
+                }
+            }
+
+            foreach (var routeId in _blockedRoutes.Keys.Concat(_restedRoutes.Keys).Distinct().ToArray())
+            {
+                var rest = GetActiveRest(routeId, now);
+                var until = _blockedRoutes.TryGetValue(routeId, out var blocked)
+                    ? (DateTimeOffset?)blocked : null;
+                if (rest is not null && (until is null || rest.UntilUtc > until)) until = rest.UntilUtc;
+                if (until is null) continue;
+
+                result[routeId] = new CircuitRouteInfo(
+                    IsBlocked: true,
+                    FailureCount: _failCounts.GetValueOrDefault(routeId, 0),
+                    BlockedUntil: until,
+                    RemainingTime: until.Value - now,
+                    Meta: rest?.Meta ?? _routeMeta.GetValueOrDefault(routeId),
+                    RestReason: string.IsNullOrWhiteSpace(rest?.Reason) ? null : rest.Reason);
+            }
+
+            foreach (var pair in _failCounts)
+            {
+                if (result.ContainsKey(pair.Key)) continue;
+                result[pair.Key] = new CircuitRouteInfo(
+                    IsBlocked: false,
+                    FailureCount: pair.Value,
+                    BlockedUntil: null,
+                    RemainingTime: null,
+                    Meta: _routeMeta.GetValueOrDefault(pair.Key));
+            }
+
+            return result;
+        }
+    }
+
+    /// <summary>手动解除指定路由的全部熔断、休息、失败计数和元数据。</summary>
     public bool Reset(Guid routeId)
     {
-        var removed = false;
-        removed |= _blockedRoutes.TryRemove(routeId, out _);
-        removed |= _failCounts.TryRemove(routeId, out _);
-        removed |= _routeMeta.TryRemove(routeId, out _);
-        return removed;
+        lock (_syncRoot)
+        {
+            var removed = _blockedRoutes.TryRemove(routeId, out _);
+            removed |= _restedRoutes.Remove(routeId);
+            removed |= _failCounts.TryRemove(routeId, out _);
+            removed |= _routeMeta.TryRemove(routeId, out _);
+            return removed;
+        }
     }
 
-    /// <summary>
-    /// 解除所有路由的熔断状态。
-    /// </summary>
+    /// <summary>解除所有路由的熔断状态。</summary>
     public int ResetAll()
     {
-        var count = _blockedRoutes.Count;
-        _blockedRoutes.Clear();
-        _failCounts.Clear();
-        _routeMeta.Clear();
-        return count;
+        lock (_syncRoot)
+        {
+            var count = _blockedRoutes.Keys.Concat(_restedRoutes.Keys).Distinct().Count();
+            _blockedRoutes.Clear();
+            _restedRoutes.Clear();
+            _failCounts.Clear();
+            _routeMeta.Clear();
+            return count;
+        }
     }
 }
 
-/// <summary>
-/// 单条路由的熔断状态信息。
-/// </summary>
+/// <summary>休息类型。旧调用缺省 Other，不凭展示文案推断配额归属。</summary>
+public enum RouteRestKind
+{
+    Other,
+    Quota,
+    RateLimit
+}
+
+/// <summary>配额休息解除令牌，记录目标站点及捕获时的全局休息版本栅栏。</summary>
+public readonly record struct QuotaRestReleaseToken(Guid SiteId, long Version);
+
+/// <summary>单条路由的熔断状态信息。</summary>
 public sealed record CircuitRouteInfo(
     bool IsBlocked,
     int FailureCount,
     DateTimeOffset? BlockedUntil,
     TimeSpan? RemainingTime,
-    CircuitRouteMeta? Meta = null);
+    CircuitRouteMeta? Meta = null,
+    string? RestReason = null);
 
-/// <summary>
-/// 熔断键对应的站点/模型归属，供面板在候选移除后仍能展示归属。
-/// </summary>
+/// <summary>熔断键对应的站点/模型展示归属，不用于识别物理站点。</summary>
 public sealed record CircuitRouteMeta(string SiteName, string SiteModelName);

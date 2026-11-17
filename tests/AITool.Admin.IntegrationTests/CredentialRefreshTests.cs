@@ -62,7 +62,6 @@ public sealed class CredentialRefreshTests : IDisposable
             db,
             oauth,
             scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>(),
-            null!,
             NullLogger<CodexCredentialRefreshService>.Instance);
 
         var first = service.RefreshAsync(_siteId, "old-access-token", CancellationToken.None);

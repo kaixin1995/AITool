@@ -1,0 +1,123 @@
+import { httpGet, httpPost, httpPut, httpDelete, notify } from './http'
+
+/** 号池成员行摘要。 */
+export interface AccountPoolMemberSummary {
+  accountRefId: string
+  displayName: string | null
+  linkedSiteId: string
+  priority: number
+  excluded: boolean
+}
+
+/** 号池摘要。 */
+export interface AccountPoolSummary {
+  id: string
+  name: string
+  vendorKey: string
+  vendorLabel: string
+  /** Codex 可选套餐筛选；null 或空字符串表示全部套餐，可混合。 */
+  planType: string | null
+  autoIncludeMembers: boolean
+  /** 托管模型白名单；null = 不限（成员模型并集全部生成入口）。 */
+  exposedModels: string[] | null
+  /** 池认领的托管路由入口数（每个成员模型一个入口）。 */
+  managedEntryCount: number
+  createdAt: string
+  updatedAt: string
+  members: AccountPoolMemberSummary[]
+}
+
+/** 建池请求。 */
+export interface CreateAccountPoolRequest {
+  name: string
+  vendorKey: string
+  /** Codex 可选套餐筛选；不传、null 或空字符串表示全部套餐，可混合。 */
+  planType?: string | null
+  autoIncludeMembers: boolean
+  memberAccountIds?: string[]
+  /** 托管模型白名单；不传/空 = 全部生成。 */
+  exposedModels?: string[] | null
+}
+
+/** 成员候选（厂商账号）。 */
+export interface AccountPoolCandidate {
+  accountId: string
+  displayName: string
+  linkedSiteId: string
+}
+
+/** 一次池同步的结果摘要（skippedModels：被手工路由占用而跳过的模型）。 */
+export interface AccountPoolSyncSummary {
+  poolId: string
+  name: string
+  memberCount: number
+  modelCount: number
+  ruleCount: number
+  skippedModels: string[]
+}
+
+export interface AccountPoolReconciliationStatus {
+  scanFailure: string | null
+  poolFailures: Record<string, string>
+}
+
+export function fetchPoolSyncStatus(): Promise<AccountPoolReconciliationStatus> {
+  return httpGet<AccountPoolReconciliationStatus>('/api/admin/account-pools/sync-status')
+}
+
+export function fetchAccountPools(): Promise<AccountPoolSummary[]> {
+  return httpGet<AccountPoolSummary[]>('/api/admin/account-pools')
+}
+
+export function fetchPoolCandidates(vendorKey: string, planType?: string | null): Promise<AccountPoolCandidate[]> {
+  const query = planType
+    ? `?vendorKey=${encodeURIComponent(vendorKey)}&planType=${encodeURIComponent(planType)}`
+    : `?vendorKey=${encodeURIComponent(vendorKey)}`
+  return httpGet<AccountPoolCandidate[]>(`/api/admin/account-pools/candidates${query}`)
+}
+
+export async function createAccountPool(req: CreateAccountPoolRequest): Promise<AccountPoolSyncSummary> {
+  const res = await httpPost<{ poolId: string; sync: AccountPoolSyncSummary }>('/api/admin/account-pools', req)
+  return res.sync
+}
+
+/** 模型预览：厂商（+套餐，可选限定成员账号）站点启用映射的对外模型并集。 */
+export function previewPoolModels(req: {
+  vendorKey: string
+  planType?: string | null
+  memberAccountIds?: string[]
+}): Promise<string[]> {
+  return httpPost<string[]>('/api/admin/account-pools/models-preview', req)
+}
+
+/** 更新托管模型白名单：models 为空 = 不限（全部生成）。返回同步结果。 */
+export async function updatePoolModels(id: string, models: string[] | null): Promise<AccountPoolSyncSummary> {
+  const res = await httpPut<{ sync: AccountPoolSyncSummary }>(`/api/admin/account-pools/${id}/models`, { exposedModels: models })
+  return res.sync
+}
+
+export async function replacePoolMembers(
+  id: string,
+  members: Array<{ accountRefId: string; excluded: boolean }>
+): Promise<AccountPoolSyncSummary> {
+  const res = await httpPut<{ sync: AccountPoolSyncSummary }>(`/api/admin/account-pools/${id}/members`, { members })
+  return res.sync
+}
+
+export async function syncAccountPool(id: string): Promise<AccountPoolSyncSummary> {
+  const res = await httpPost<{ sync: AccountPoolSyncSummary }>(`/api/admin/account-pools/${id}/sync`)
+  return res.sync
+}
+
+export async function syncAllAccountPools(): Promise<void> {
+  try {
+    await httpPost('/api/admin/account-pools/sync-all')
+  } catch (error) {
+    notify('warning', '号池同步失败，此前操作的结果不受影响（模型同步结果请参照先前提示）。请前往「路由管理」的「号池」，对相关号池逐个点击「同步」重试。')
+    throw error
+  }
+}
+
+export async function deleteAccountPool(id: string): Promise<void> {
+  await httpDelete(`/api/admin/account-pools/${id}`)
+}

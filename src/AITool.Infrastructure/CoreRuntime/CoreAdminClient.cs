@@ -41,7 +41,7 @@ public sealed class CoreAdminClient
     /// </summary>
     public async Task<CoreFullSyncResult> FullSyncAsync(CoreRuntimeConfigSnapshot snapshot, CancellationToken cancellationToken = default)
     {
-        var response = await _httpClient.PostAsJsonAsync("api/core/config/full-sync", snapshot, cancellationToken);
+                var response = await _httpClient.PostAsJsonAsync("api/core/config/full-sync", snapshot, cancellationToken);
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<CoreFullSyncResult>(cancellationToken))!;
     }

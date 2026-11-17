@@ -20,7 +20,7 @@ public static class CodexUsageParser
     /// <summary>
     /// 解析 wham/usage 响应体，返回所有额度窗口（5 小时 / 周 / 代码审查 / 额外）。
     /// </summary>
-    public static (string? PlanType, List<Window> Windows) Parse(string body)
+    public static (string? PlanType, List<Window> Windows) Parse(string body, DateTimeOffset? observedAt = null)
     {
         var windows = new List<Window>();
 
@@ -34,25 +34,13 @@ public static class CodexUsageParser
         var rateLimit = payload.Rate_Limit ?? payload.RateLimit;
         if (rateLimit is not null)
         {
-            var (fiveHour, weekly) = ClassifyWindows(rateLimit);
-            var limitReached = rateLimit.Limit_Reached ?? rateLimit.LimitReached;
-            var allowed = rateLimit.Allowed;
-            if (fiveHour is not null)
-                windows.Add(BuildWindow("five-hour", "5 小时限额", fiveHour, limitReached, allowed));
-            if (weekly is not null)
-                windows.Add(BuildWindow("weekly", "周限额", weekly, limitReached, allowed));
+            AddWindows(windows, rateLimit, "", "", observedAt);
         }
 
         var codeReview = payload.Code_Review_Rate_Limit ?? payload.CodeReviewRateLimit;
         if (codeReview is not null)
         {
-            var (fiveHour, weekly) = ClassifyWindows(codeReview);
-            var limitReached = codeReview.Limit_Reached ?? codeReview.LimitReached;
-            var allowed = codeReview.Allowed;
-            if (fiveHour is not null)
-                windows.Add(BuildWindow("code-review-five-hour", "代码审查 5 小时限额", fiveHour, limitReached, allowed));
-            if (weekly is not null)
-                windows.Add(BuildWindow("code-review-weekly", "代码审查周限额", weekly, limitReached, allowed));
+            AddWindows(windows, codeReview, "code-review-", "代码审查 ", observedAt);
         }
 
         var additional = payload.Additional_Rate_Limits ?? payload.AdditionalRateLimits;
@@ -66,53 +54,48 @@ public static class CodexUsageParser
                 var limitName = item?.Limit_Name ?? item?.LimitName
                                 ?? item?.Metered_Feature ?? item?.MeteredFeature
                                 ?? $"additional-{i + 1}";
-                var (fiveHour, weekly) = ClassifyWindows(rateInfo);
-                var limitReached = rateInfo.Limit_Reached ?? rateInfo.LimitReached;
-                var allowed = rateInfo.Allowed;
-                if (fiveHour is not null)
-                    windows.Add(BuildWindow($"additional-five-hour-{i}", $"{limitName} 5 小时限额", fiveHour, limitReached, allowed));
-                if (weekly is not null)
-                    windows.Add(BuildWindow($"additional-weekly-{i}", $"{limitName} 周限额", weekly, limitReached, allowed));
+                AddWindows(windows, rateInfo, $"additional-{i}-", $"{limitName} ", observedAt);
             }
         }
 
         return (planType, windows);
     }
 
-    private static (CodexUsageWindow? fiveHour, CodexUsageWindow? weekly) ClassifyWindows(CodexRateLimitInfo info)
+    private static void AddWindows(List<Window> result, CodexRateLimitInfo info, string prefix, string labelPrefix, DateTimeOffset? observedAt)
     {
         var primary = info.Primary_Window ?? info.PrimaryWindow;
         var secondary = info.Secondary_Window ?? info.SecondaryWindow;
-
-        CodexUsageWindow? fiveHour = null;
-        CodexUsageWindow? weekly = null;
-
+        var index = 0;
         foreach (var window in new[] { primary, secondary })
         {
+            index++;
             if (window is null) continue;
             var seconds = GetSeconds(window);
-            if (seconds == FiveHourSeconds && fiveHour is null) fiveHour = window;
-            else if (seconds == WeekSeconds && weekly is null) weekly = window;
+            var (id, label) = seconds switch
+            {
+                FiveHourSeconds => ("five-hour", "5 小时限额"),
+                WeekSeconds => ("weekly", "周限额"),
+                28 * 86400 => ("monthly", "4 周限额"),
+                >= 29 * 86400 and <= 31 * 86400 => ("monthly", "月度限额"),
+                _ => ($"window-{index}", "其他额度窗口")
+            };
+            if (result.Any(x => x.Id == prefix + id)) id += $"-{index}";
+            result.Add(BuildWindow(prefix + id, labelPrefix + label, window, info.Limit_Reached ?? info.LimitReached, info.Allowed, observedAt));
         }
-
-        // 回退：按顺序假设 primary=5h, secondary=weekly
-        if (fiveHour is null && primary is not null && primary != weekly) fiveHour = primary;
-        if (weekly is null && secondary is not null && secondary != fiveHour) weekly = secondary;
-
-        return (fiveHour, weekly);
     }
 
-    private static Window BuildWindow(string id, string label, CodexUsageWindow window, bool? limitReached, bool? allowed)
+    private static Window BuildWindow(string id, string label, CodexUsageWindow window, bool? limitReached, bool? allowed, DateTimeOffset? observedAt)
     {
         var isLimitReached = limitReached == true || allowed == false;
         var usedPercent = GetUsedPercent(window) ?? (isLimitReached ? 100 : (double?)null);
-        return new Window(id, label, usedPercent, BuildResetLabel(window), ResolveResetAtUtc(window), GetSeconds(window));
+        var reset = ResolveResetAtUtc(window, observedAt);
+        return new Window(id, label, usedPercent, reset is null ? "-" : FormatRemaining(reset.Value - DateTimeOffset.UtcNow), reset, GetSeconds(window));
     }
 
     /// <summary>
     /// 解析窗口的 UTC 重置时间（优先 reset_at 绝对时间戳，其次 now+reset_after_seconds）；无则为 null。
     /// </summary>
-    private static DateTimeOffset? ResolveResetAtUtc(CodexUsageWindow window)
+    private static DateTimeOffset? ResolveResetAtUtc(CodexUsageWindow window, DateTimeOffset? observedAt)
     {
         var resetAt = window.Reset_At ?? window.ResetAt;
         if (resetAt.HasValue && resetAt.Value > 0 && double.IsFinite(resetAt.Value))
@@ -122,7 +105,7 @@ public static class CodexUsageParser
         var resetAfter = window.Reset_After_Seconds ?? window.ResetAfterSeconds;
         if (resetAfter.HasValue && resetAfter.Value > 0 && double.IsFinite(resetAfter.Value))
         {
-            return DateTimeOffset.UtcNow.AddSeconds(resetAfter.Value);
+            return (observedAt ?? DateTimeOffset.UtcNow).AddSeconds(resetAfter.Value);
         }
         return null;
     }
@@ -137,21 +120,6 @@ public static class CodexUsageParser
     {
         var v = window.Used_Percent ?? window.UsedPercent;
         return v.HasValue && double.IsFinite(v.Value) ? v.Value : null;
-    }
-
-    private static string BuildResetLabel(CodexUsageWindow window)
-    {
-        var resetAt = window.Reset_At ?? window.ResetAt;
-        if (resetAt.HasValue && resetAt.Value > 0 && double.IsFinite(resetAt.Value))
-        {
-            return FormatRemaining(DateTimeOffset.FromUnixTimeSeconds((long)resetAt.Value).UtcDateTime - DateTime.UtcNow);
-        }
-        var resetAfter = window.Reset_After_Seconds ?? window.ResetAfterSeconds;
-        if (resetAfter.HasValue && resetAfter.Value > 0 && double.IsFinite(resetAfter.Value))
-        {
-            return FormatRemaining(TimeSpan.FromSeconds(resetAfter.Value));
-        }
-        return "-";
     }
 
     private static string FormatRemaining(TimeSpan span)

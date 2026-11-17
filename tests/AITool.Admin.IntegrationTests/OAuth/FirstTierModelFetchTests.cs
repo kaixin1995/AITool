@@ -1,0 +1,518 @@
+using System.Net;
+using System.Text;
+using System.Text.RegularExpressions;
+using AITool.Application.OAuth;
+using AITool.Infrastructure.OAuth;
+using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
+using Xunit;
+
+namespace AITool.Admin.IntegrationTests.OAuth;
+
+/// <summary>
+/// 一线厂商（MiniMax CN/Global、Copilot、ZCode）远端模型目录拉取链路测试。
+/// 全部走桩 HttpMessageHandler，无真实网络；断言真实端点 URL、鉴权形态、排序/过滤规则，
+/// 以及「上游失败必须失败、绝不回退静态 DefaultModels 冒充动态目录」的行为。
+/// </summary>
+public sealed class FirstTierModelFetchTests
+{
+    private static readonly DeviceOAuthTokenSet Token = new()
+    {
+        AccessToken = "stub-access",
+        RefreshToken = "stub-refresh",
+    };
+
+    private static HttpResponseMessage Json(string body, HttpStatusCode status = HttpStatusCode.OK) => new(status)
+    {
+        Content = new StringContent(body, Encoding.UTF8, "application/json"),
+    };
+
+    private static string Envelope(object? data) => System.Text.Json.JsonSerializer.Serialize(new { code = 0, msg = "ok", data });
+
+    [Theory]
+    [InlineData(false, 401)]
+    [InlineData(false, 407)]
+    [InlineData(true, 401)]
+    [InlineData(true, 407)]
+    public async Task MiniMax_public_catalog_refusal_never_marks_account_token_invalid(bool global, int status)
+    {
+        var handler = new FirstTierStubHandler(_ => Json("{}", (HttpStatusCode)status));
+        using var client = new HttpClient(handler);
+        var vendor = new MiniMaxOAuthVendor(client, NullLogger<MiniMaxOAuthVendor>.Instance, global);
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+        ex.Should().NotBeOfType<AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException>();
+        handler.Requests[0].Headers["Authorization"].Should().Be("Bearer stub-access");
+        handler.Requests.Should().HaveCount(status == 401 ? 2 : 1);
+        if (status == 401) handler.Requests[1].Headers.Should().NotContainKey("Authorization");
+    }
+
+    // ---- MiniMax（CN + Global）-------------------------------------------------
+
+    [Theory]
+    [InlineData(false, "https://agent.minimax.cn/mavis/api/v1/models?region=cn&buildEnv=prod")]
+    [InlineData(true, "https://agent.minimax.io/mavis/api/v1/models?region=en&buildEnv=prod")]
+    public async Task MiniMax_uses_regional_mcode_endpoint_and_orders_by_model_order(bool global, string expectedUrl)
+    {
+        var handler = new FirstTierStubHandler(_ => Json("""
+            {"providers":[
+              {"providerId":"other","config":{"models":{"wrong":{"name":"Wrong"}}}},
+              {"providerId":"minimax","config":{
+                "model_order":["m-b","gone","m-a","m-b"],
+                "models":{
+                  "m-a":{"name":"Model A","limit":{"context":1048576,"output":524288},
+                        "modalities":{"input":["text","image"]},"thinking_config":{"mode":"switchable"}},
+                  "m-b":{"name":"Model B","reasoning":false,"effort_options":["high"]},
+                  "m-c":{"name":"Model C"}
+                }}}
+            ]}
+            """));
+        var vendor = new MiniMaxOAuthVendor(new HttpClient(handler), NullLogger<MiniMaxOAuthVendor>.Instance, global);
+
+        vendor.SupportsModelFetch.Should().BeTrue();
+        vendor.VendorKey.Should().Be(global ? "minimax-global" : "minimax-cn");
+
+        var models = await vendor.FetchModelsAsync(Token, null, CancellationToken.None);
+
+        // model_order 在前（缺失/重复的 ID 跳过），其余按目录出现顺序补后。
+        models.Should().BeEquivalentTo(
+        [
+            new DeviceOAuthRemoteModel("m-b", "Model B"),
+            new DeviceOAuthRemoteModel("m-a", "Model A"),
+            new DeviceOAuthRemoteModel("m-c", "Model C"),
+        ], options => options.WithStrictOrdering());
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Uri.Should().Be(expectedUrl);
+        request.Headers["Authorization"].Should().Be("Bearer stub-access");
+        request.Headers["Accept"].Should().Contain("application/json");
+    }
+
+    [Fact]
+    public async Task MiniMax_retries_without_authorization_when_refused_then_succeeds()
+    {
+        var handler = new FirstTierStubHandler(req => req.Headers.ContainsKey("Authorization")
+            ? Json("{}", HttpStatusCode.Unauthorized)
+            : Json("""{"providers":[{"providerId":"minimax","config":{"models":{"m-a":{"name":"A"}}}}]}"""));
+        var vendor = new MiniMaxOAuthVendor(new HttpClient(handler), NullLogger<MiniMaxOAuthVendor>.Instance);
+
+        var models = await vendor.FetchModelsAsync(Token, null, CancellationToken.None);
+
+        models.Should().ContainSingle().Which.Slug.Should().Be("m-a");
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests[0].Headers.Should().ContainKey("Authorization");
+        handler.Requests[1].Headers.Should().NotContainKey("Authorization");
+    }
+
+    [Theory]
+    [InlineData(403)]
+    [InlineData(500)]
+    public async Task MiniMax_propagates_upstream_failures_instead_of_falling_back_to_static(int status)
+    {
+        var handler = new FirstTierStubHandler(_ => Json("{}", (HttpStatusCode)status));
+        var vendor = new MiniMaxOAuthVendor(new HttpClient(handler), NullLogger<MiniMaxOAuthVendor>.Instance);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+        ex.Message.Should().Contain(status.ToString());
+    }
+
+    [Theory]
+    [InlineData("""{"providers":[{"providerId":"minimax","config":{"models":{}}}]}""")]
+    [InlineData("""{"providers":[{"providerId":"other","config":{"models":{"x":{}}}}]}""")]
+    [InlineData("""{"providers":[]}""")]
+    [InlineData("not-json")]
+    public async Task MiniMax_rejects_empty_or_unparsable_catalogs_without_static_fallback(string body)
+    {
+        var handler = new FirstTierStubHandler(_ => Json(body));
+        var vendor = new MiniMaxOAuthVendor(new HttpClient(handler), NullLogger<MiniMaxOAuthVendor>.Instance);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+        ex.Message.Should().NotBeNullOrEmpty();
+    }
+
+    // ---- Copilot（已缓存会话令牌 + 持久化的 endpoints.api）-----------------------
+
+    [Fact]
+    public async Task Copilot_uses_cached_session_token_and_persisted_api_with_editor_headers_and_filters()
+    {
+        var handler = new FirstTierStubHandler(_ => Json("""
+            {"data":[
+              {"id":"gpt-pick","name":"GPT Pick","model_picker_enabled":true,"capabilities":{"type":"chat"}},
+              {"id":"claude-terms","name":"Claude Terms","model_picker_category":"versatile",
+               "policy":{"state":"disabled","terms":"Enable access"},"capabilities":{"type":"chat"}},
+              {"id":"claude-no-terms","name":"No Terms","model_picker_category":"powerful",
+               "policy":{"state":"disabled"},"capabilities":{"type":"chat"}},
+              {"id":"hidden-snapshot","name":"Hidden","policy":{"state":"enabled"},"capabilities":{"type":"chat"}},
+              {"id":"picker-no-policy","name":"Picker Only","model_picker_enabled":true,"capabilities":{"type":"chat"}},
+              {"id":"embed-model","name":"Embed","model_picker_enabled":true,"capabilities":{"type":"embedding"}},
+              {"id":"exec-agent-x","name":"Internal","model_picker_enabled":true,"capabilities":{"type":"chat"}},
+              {"id":"copilot-search-y","name":"Internal 2","model_picker_enabled":true,"capabilities":{"type":"chat"}},
+              {"id":"model-secondary","name":"Internal 3","model_picker_enabled":true,"capabilities":{"type":"chat"}},
+              {"id":"kimi-exp","name":"Experimental","vendor":"Experimental","model_picker_enabled":true,"capabilities":{"type":"chat"}}
+            ]}
+            """));
+        var vendor = new CopilotOAuthVendor(new HttpClient(handler));
+
+        var models = await vendor.FetchModelsAsync(Token, """{"chatBaseUrl":"https://copilot-api.acme.ghe.com/"}""", CancellationToken.None);
+
+        // 只保留：chat 能力、非 internal、非 Experimental、picker/category 可见、
+        // policy enabled / 无 policy 且 picker / 有 terms 待同意；无 terms 的 disabled 与旧快照剔除。
+        models.Select(m => m.Slug).Should().BeEquivalentTo(
+            ["gpt-pick", "claude-terms", "picker-no-policy"], options => options.WithStrictOrdering());
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Uri.Should().Be("https://copilot-api.acme.ghe.com/models");
+        request.Headers["Authorization"].Should().Be("Bearer stub-access", "账号 AccessToken 即后台刷新持有的 Copilot 会话令牌");
+        request.Headers["Editor-Version"].Should().Be("vscode/1.140.0");
+        request.Headers["Editor-Plugin-Version"].Should().Be("copilot-chat/0.68.0");
+        request.Headers["Copilot-Integration-Id"].Should().Be("vscode-chat");
+        request.Headers["User-Agent"].Should().Be("GitHubCopilotChat/0.68.0");
+        request.Headers["X-GitHub-Api-Version"].Should().Be("2026-01-09");
+    }
+
+    [Fact]
+    public async Task Copilot_falls_back_to_public_api_when_persisted_base_is_untrusted()
+    {
+        var handler = new FirstTierStubHandler(_ => Json("""{"data":[{"id":"gpt-4.1","model_picker_enabled":true,"capabilities":{"type":"chat"}}]}"""));
+        var vendor = new CopilotOAuthVendor(new HttpClient(handler));
+
+        await vendor.FetchModelsAsync(Token, """{"chatBaseUrl":"https://evil.example.com"}""", CancellationToken.None);
+
+        handler.Requests.Should().ContainSingle().Which.Uri.Should().Be("https://api.githubcopilot.com/models");
+    }
+
+    [Theory]
+    [InlineData(401, "拒绝")]
+    [InlineData(403, "拒绝")]
+    [InlineData(503, "503")]
+    public async Task Copilot_distinguishes_credential_refusals_from_transient_failures(int status, string expected)
+    {
+        var handler = new FirstTierStubHandler(_ => Json("{}", (HttpStatusCode)status));
+        var vendor = new CopilotOAuthVendor(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+        ex.Message.Should().Contain(expected);
+        (ex is AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException).Should().Be(status == 401);
+    }
+
+    [Fact]
+    public async Task Copilot_rejects_empty_catalog_without_static_fallback()
+    {
+        var handler = new FirstTierStubHandler(_ => Json("""{"data":[]}"""));
+        var vendor = new CopilotOAuthVendor(new HttpClient(handler));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+    }
+
+    // ---- ZCode（configs → provider 配置 → 订阅判定套餐 → gift 追加）--------------
+
+    private const string ConfigUrl = "https://cdn.z.ai/static/zcode-builtin.json";
+
+    private const string ProviderConfigJson = """
+        {"revision":7,"config":{
+          "providerConfigRules":{"providerRules":[
+            {"providerId":"account:zai-individual-coding-plan","builtinModelIds":["GLM-5.3","GLM-5.3-Flash"]},
+            {"providerId":"account:zai-start-plan","builtinModelIds":["GLM-5.2"]},
+            {"providerId":"account:bigmodel-individual-coding-plan","builtinModelIds":["GLM-Other-Plan"]}
+          ]},
+          "modelConfigRules":{"builtinProviderModelRules":[
+            {"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3-Flash","config":{"enabled":false}},
+            {"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5-Turbo","config":{"enabled":true}},
+            {"providerId":"account:zai-individual-coding-plan","modelId":"GLM-5.3"}
+          ]}}}
+        """;
+
+    private static string GiftBalanceJson() => Envelope(new
+    {
+        server_time = 1_750_000_000L,
+        plans = new[] { new { plan_id = "zai-start-plan", user_plan_id = "up1", name = "Start Plan", status = "active", ends_at = 1_750_864_000L } },
+        balances = new object[]
+        {
+            new { plan_id = "zai-start-plan", user_plan_id = "up1", capabilities = new[] { "model:GLM-5.2", "model:GLM-9.9" }, remaining_units = 5 },
+            new { plan_id = "zai-start-plan", user_plan_id = "up1", capabilities = new[] { "model:GLM-5-Turbo" }, remaining_units = 0 },
+        },
+    });
+
+    /// <summary>ZCode 链路桩：configs / 配置 URL / 订阅 / gift 余额，按需覆写单个端点。</summary>
+    private static FirstTierStubHandler ZCodeHandler(
+        Func<HttpResponseMessage>? configs = null,
+        Func<HttpResponseMessage>? providerConfig = null,
+        Func<HttpResponseMessage>? subscription = null,
+        Func<HttpResponseMessage>? balance = null)
+    {
+        var handler = new FirstTierStubHandler(req => req.Uri.AbsoluteUri switch
+        {
+            var u when u.StartsWith("https://zcode.z.ai/api/v1/client/configs") => configs?.Invoke() ?? Json(Envelope(new
+            {
+                configs = new { builtin_provider_config_json = ConfigUrl },
+            })),
+            var u when u == ConfigUrl => providerConfig?.Invoke() ?? Json(ProviderConfigJson),
+            "https://api.z.ai/api/biz/subscription/list" => subscription?.Invoke() ?? Json(Envelope(Array.Empty<object>())),
+            var u when u.Contains("/api/v1/zcode-plan/billing/balance") => balance?.Invoke()
+                ?? Json(Envelope(new { plans = Array.Empty<object>(), balances = Array.Empty<object>() })),
+            _ => Json("{}", HttpStatusCode.NotFound),
+        });
+        return handler;
+    }
+
+    private static Func<HttpResponseMessage> ValidSubscription() =>
+        () => Json(Envelope(new[] { new { productName = "GLM Coding Pro", status = "VALID" } }));
+
+    [Fact]
+    public async Task ZCode_missing_access_token_does_not_make_unauthenticated_requests()
+    {
+        var handler = ZCodeHandler();
+        using var http = new HttpClient(handler);
+        var ex = await Assert.ThrowsAnyAsync<InvalidOperationException>(() =>
+            new ZCodeOAuthVendor(http).FetchModelsAsync(new DeviceOAuthTokenSet(), null, CancellationToken.None));
+        ex.Should().NotBeOfType<AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException>();
+        handler.Requests.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("configs", 401, false)]
+    [InlineData("configs", 407, false)]
+    [InlineData("download", 401, false)]
+    [InlineData("download", 407, false)]
+    [InlineData("subscription", 401, true)]
+    [InlineData("subscription", 407, false)]
+    public async Task ZCode_model_chain_classifies_which_credential_was_rejected(string endpoint, int status, bool accountRejected)
+    {
+        Func<HttpResponseMessage> failure = () => Json("{}", (HttpStatusCode)status);
+        var handler = ZCodeHandler(configs: endpoint == "configs" ? failure : null,
+            providerConfig: endpoint == "download" ? failure : null,
+            subscription: endpoint == "subscription" ? failure : null);
+        using var http = new HttpClient(handler);
+        var vendor = new ZCodeOAuthVendor(http);
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() => vendor.FetchModelsAsync(Token, "{\"zaiToken\":\"zai-jwt\"}", CancellationToken.None));
+        (ex is AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException).Should().Be(accountRejected);
+        var request = handler.Requests.Last();
+        if (endpoint == "subscription") request.Headers["Authorization"].Should().Be("stub-access");
+        else request.Headers.Should().NotContainKey("Authorization");
+    }
+
+    [Fact]
+    public async Task ZCode_fetches_only_models_from_the_api_key_plan_not_gift_aliases()
+    {
+        var handler = ZCodeHandler(subscription: ValidSubscription(), balance: () => Json(GiftBalanceJson()));
+        var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
+        var extra = """{"zaiToken":"zai-jwt","org":"o1","project":"p1"}""";
+
+        var models = await vendor.FetchModelsAsync(Token, extra, CancellationToken.None);
+
+        // 只取该账号自己套餐（zai-individual）的 ID：start-plan / bigmodel 的模型不混入；
+        // GLM-5.3-Flash 被 enabled=false 剔除；GLM-5-Turbo 由 builtinProviderModelRules 追加。
+        // gift 使用不同的凭证和计费路径，不导入其原名或构造的 -Trial 别名。
+        models.Should().BeEquivalentTo(
+        [
+            new DeviceOAuthRemoteModel("GLM-5.3", "GLM-5.3"),
+            new DeviceOAuthRemoteModel("GLM-5-Turbo", "GLM-5-Turbo"),
+        ], options => options.WithStrictOrdering());
+
+        var configs = handler.Requests.Single(r => r.Uri.AbsoluteUri.StartsWith("https://zcode.z.ai/api/v1/client/configs"));
+        configs.Uri.Query.Should().MatchRegex(@"^\?app_version=3\.16\.3&platform=(win32|darwin|linux)-(x64|arm64)$");
+        configs.Headers["X-Device-Mid"].Should().NotBeNullOrEmpty();
+        configs.Headers["User-Agent"].Should().Contain("ZCode/");
+
+        var configDownload = handler.Requests.Single(r => r.Uri.AbsoluteUri == ConfigUrl);
+        configDownload.Headers["User-Agent"].Should().Be("ZCode/3.16.3");
+
+        var subscriptionRequest = handler.Requests.Single(r => r.Uri.AbsoluteUri == "https://api.z.ai/api/biz/subscription/list");
+        subscriptionRequest.Headers["Authorization"].Should().Be("stub-access", "订阅端点以裸铸造 key 鉴权");
+
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"),
+            "gift 余额使用不同凭证，不能证明 API key 聊天路径可用");
+        vendor.ChatSiteConfig!.BaseUrl.Should().Be("https://api.z.ai/api/anthropic");
+        vendor.ChatSiteConfig.ExtraHeaders["X-AITool-Auth-Mode"].Should().Be("bearer");
+    }
+
+    [Fact]
+    public async Task ZCode_rejects_start_plan_even_when_gift_balance_exists()
+    {
+        var handler = ZCodeHandler(balance: () => Json(GiftBalanceJson()));
+        var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
+
+        ex.Message.Should().Contain("Start Plan");
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"));
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"code\":0,\"data\":null}")]
+    [InlineData("{\"code\":0,\"data\":{}}")]
+    [InlineData("{\"code\":0,\"data\":\"unexpected\"}")]
+    [InlineData("{\"code\":0,\"data\":[null]}")]
+    [InlineData("{\"code\":0,\"data\":[{}]}")]
+    [InlineData("{\"code\":0,\"data\":[{\"status\":42}]}")]
+    [InlineData("{\"code\":0,\"data\":[{\"status\":\"VALID\"},{}]}")]
+    [InlineData("[]")]
+    public async Task ZCode_rejects_unrecognizable_subscription_responses(string response)
+    {
+        var handler = ZCodeHandler(subscription: () => Json(response));
+        using var http = new HttpClient(handler);
+        var vendor = new ZCodeOAuthVendor(http);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+
+        ex.Message.Should().Contain("响应格式异常").And.NotContain("Start Plan");
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"));
+    }
+
+    [Fact]
+    public async Task ZCode_recognizes_a_well_formed_non_valid_subscription()
+    {
+        var handler = ZCodeHandler(subscription: () => Json(Envelope(new[] { new { status = "EXPIRED" } })));
+        using var http = new HttpClient(handler);
+        var vendor = new ZCodeOAuthVendor(http);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, null, CancellationToken.None));
+
+        ex.Message.Should().Contain("Start Plan").And.NotContain("响应格式异常");
+    }
+
+    [Fact]
+    public async Task ZCode_returns_plan_catalog_without_zai_token()
+    {
+        var handler = ZCodeHandler(subscription: ValidSubscription());
+        var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
+
+        var models = await vendor.FetchModelsAsync(Token, null, CancellationToken.None);
+
+        models.Select(m => m.Slug).Should().BeEquivalentTo(["GLM-5.3", "GLM-5-Turbo"]);
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("/api/v1/zcode-plan/billing/balance"));
+    }
+
+    [Fact]
+    public async Task ZCode_fails_explicitly_when_the_plan_cannot_be_identified()
+    {
+        var handler = ZCodeHandler(subscription: () => Json("{}", HttpStatusCode.InternalServerError));
+        var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
+
+        // 订阅端点读不出 → 无法辨识套餐 → 明确失败，绝不静态兜底。
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ZCode_reports_credential_refusal_from_the_subscription_endpoint()
+    {
+        var handler = ZCodeHandler(subscription: () => Json("{}", HttpStatusCode.Forbidden));
+        var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<DeviceOAuthRefreshRefusedException>(() =>
+            vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
+        ex.Message.Should().Contain("403");
+    }
+
+    [Fact]
+    public async Task ZCode_fails_when_configs_name_no_https_provider_config_url()
+    {
+        var handler = ZCodeHandler(configs: () => Json(Envelope(new
+        {
+            configs = new { builtin_provider_config_json = "http://insecure.example.com/config.json" },
+        })));
+        var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
+        handler.Requests.Should().NotContain(r => r.Uri.AbsoluteUri.Contains("insecure.example.com"));
+    }
+
+    [Theory]
+    [InlineData("https://127.0.0.1/provider.json")]
+    [InlineData("https://[::1]/provider.json")]
+    [InlineData("https://169.254.169.254/latest/meta-data")]
+    [InlineData("https://192.168.1.1/provider.json")]
+    [InlineData("https://localhost/provider.json")]
+    [InlineData("https://evil.example/provider.json")]
+    [InlineData("https://cdn.z.ai.evil.example/provider.json")]
+    [InlineData("https://evil.example@cdn.z.ai/provider.json")]
+    [InlineData("https://cdn.z.ai@evil.example/provider.json")]
+    [InlineData("https://cdn.z.ai:8443/provider.json")]
+    [InlineData("http://cdn.z.ai/provider.json")]
+    public async Task ZCode_rejects_untrusted_config_urls_before_download(string url)
+    {
+        var handler = ZCodeHandler(configs: () => Json(Envelope(new
+        {
+            configs = new { builtin_provider_config_json = url },
+        })));
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new ZCodeOAuthVendor(http).FetchModelsAsync(Token, null, CancellationToken.None));
+        handler.Requests.Should().ContainSingle();
+        handler.Requests.Single().Uri.Host.Should().Be("zcode.z.ai");
+    }
+
+    [Theory]
+    [InlineData("https://127.0.0.1/private")]
+    [InlineData("https://evil.example/provider.json")]
+    [InlineData("/other.json")]
+    public async Task ZCode_rejects_config_download_redirects(string location)
+    {
+        var handler = ZCodeHandler(providerConfig: () =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Redirect);
+            response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+            return response;
+        });
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new ZCodeOAuthVendor(http).FetchModelsAsync(Token, null, CancellationToken.None));
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests.Last().Uri.AbsoluteUri.Should().Be(ConfigUrl);
+    }
+
+    [Fact]
+    public async Task ZCode_fails_when_the_plan_has_no_models_and_no_gift()
+    {
+        var handler = ZCodeHandler(providerConfig: () => Json("""{"revision":1,"config":{}}"""), subscription: ValidSubscription());
+        var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
+
+        // API key 的套餐目录为空 → 明确失败，不回退静态清单或 gift。
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ZCode_fails_when_the_provider_config_download_breaks()
+    {
+        var handler = ZCodeHandler(providerConfig: () => Json("{}", HttpStatusCode.BadGateway));
+        var vendor = new ZCodeOAuthVendor(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            vendor.FetchModelsAsync(Token, """{"zaiToken":"zai-jwt"}""", CancellationToken.None));
+        ex.Message.Should().Contain("502");
+    }
+
+    [Fact]
+    public async Task All_three_vendors_declare_model_fetch_without_claude()
+    {
+        new MiniMaxOAuthVendor(new HttpClient(), NullLogger<MiniMaxOAuthVendor>.Instance).SupportsModelFetch.Should().BeTrue();
+        new MiniMaxOAuthVendor(new HttpClient(), NullLogger<MiniMaxOAuthVendor>.Instance, global: true).SupportsModelFetch.Should().BeTrue();
+        new CopilotOAuthVendor(new HttpClient()).SupportsModelFetch.Should().BeTrue();
+        new ZCodeOAuthVendor(new HttpClient()).SupportsModelFetch.Should().BeTrue();
+    }
+}
+
+/// <summary>记录请求的桩 handler（按 URI 分派；无真实网络）。</summary>
+public sealed class FirstTierStubHandler(Func<FirstTierStubHandler.RecordedRequest, HttpResponseMessage> responder) : HttpMessageHandler
+{
+    private readonly List<RecordedRequest> _requests = [];
+
+    public IReadOnlyList<RecordedRequest> Requests => _requests;
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var recorded = new RecordedRequest(
+            request.RequestUri!,
+            request.Headers.ToDictionary(header => header.Key, header => string.Join(",", header.Value), StringComparer.OrdinalIgnoreCase));
+        _requests.Add(recorded);
+        return Task.FromResult(responder(recorded));
+    }
+
+    public sealed record RecordedRequest(Uri Uri, IReadOnlyDictionary<string, string> Headers);
+}

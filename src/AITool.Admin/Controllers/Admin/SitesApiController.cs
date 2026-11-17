@@ -141,6 +141,7 @@ public sealed class SitesApiController : ControllerBase
             clientEmulation = site.ClientEmulation,
             extraHeadersJson = site.ExtraHeadersJson ?? string.Empty,
             egressProxyUrl = site.EgressProxyUrl ?? string.Empty,
+            quotaBalanceJson = site.QuotaBalanceJson ?? string.Empty,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt,
             keys = siteKeys.Select(k => new
@@ -190,6 +191,7 @@ public sealed class SitesApiController : ControllerBase
             ClientEmulation = ClientEmulationConstants.Normalize(payload.ClientEmulation),
             ExtraHeadersJson = string.IsNullOrWhiteSpace(payload.ExtraHeadersJson) ? null : payload.ExtraHeadersJson.Trim(),
             EgressProxyUrl = string.IsNullOrWhiteSpace(payload.EgressProxyUrl) ? null : payload.EgressProxyUrl.Trim(),
+            QuotaBalanceJson = NormalizeQuotaBalanceJson(payload.QuotaBalanceJson),
             IsEnabled = payload.IsEnabled
         };
         _dbContext.Sites.Add(site);
@@ -251,6 +253,7 @@ public sealed class SitesApiController : ControllerBase
         site.ClientEmulation = ClientEmulationConstants.Normalize(payload.ClientEmulation);
         site.ExtraHeadersJson = string.IsNullOrWhiteSpace(payload.ExtraHeadersJson) ? null : payload.ExtraHeadersJson.Trim();
         site.EgressProxyUrl = string.IsNullOrWhiteSpace(payload.EgressProxyUrl) ? null : payload.EgressProxyUrl.Trim();
+        site.QuotaBalanceJson = NormalizeQuotaBalanceJson(payload.QuotaBalanceJson);
         site.IsEnabled = payload.IsEnabled;
 
         await _dbContext.UpdateAsync(site, cancellationToken);
@@ -561,6 +564,7 @@ public sealed class SitesApiController : ControllerBase
                 clientEmulation = s.ClientEmulation,
                 extraHeadersJson = s.ExtraHeadersJson,
                 egressProxyUrl = s.EgressProxyUrl,
+                quotaBalanceJson = s.QuotaBalanceJson,
                 keys = keysExport
             };
         });
@@ -603,6 +607,7 @@ public sealed class SitesApiController : ControllerBase
                 ClientEmulation = ClientEmulationConstants.Normalize(item.ClientEmulation),
                 ExtraHeadersJson = string.IsNullOrWhiteSpace(item.ExtraHeadersJson) ? null : item.ExtraHeadersJson.Trim(),
                 EgressProxyUrl = string.IsNullOrWhiteSpace(item.EgressProxyUrl) ? null : item.EgressProxyUrl.Trim(),
+                QuotaBalanceJson = NormalizeQuotaBalanceJson(item.QuotaBalanceJson),
                 IsEnabled = true
             };
             _dbContext.Sites.Add(site);
@@ -681,10 +686,18 @@ public sealed class SitesApiController : ControllerBase
             clientEmulation = site.ClientEmulation,
             extraHeadersJson = site.ExtraHeadersJson,
             egressProxyUrl = site.EgressProxyUrl,
+            quotaBalanceJson = site.QuotaBalanceJson,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt
         };
     }
+
+    /// <summary>
+    /// 归一化自定义余额查询配置：空白清除；非空但解析不出有效配置时原样保留原文，
+    /// 由 SiteQuotaBalanceConfig.TryParse 在查询侧兜底为不接管（不因手误配置阻断站点保存）。
+    /// </summary>
+    private static string? NormalizeQuotaBalanceJson(string? json)
+        => string.IsNullOrWhiteSpace(json) ? null : json.Trim();
 
     /// <summary>
     /// 简单脱敏：保留前 4 位和后 4 位，中间用 *** 代替。
@@ -748,6 +761,10 @@ public sealed class SitePayload
     /// 站点专用出口网络代理地址。
     /// </summary>
     public string? EgressProxyUrl { get; set; }
+    /// <summary>
+    /// 自定义余额查询配置 JSON（{"url":...,"method":"GET|POST","expression":...,"currency":...}）。
+    /// </summary>
+    public string? QuotaBalanceJson { get; set; }
     /// <summary>
     /// 是否启用（仅创建时生效）。
     /// </summary>

@@ -1,3 +1,6 @@
+using AITool.Infrastructure.Common;
+using System.Collections.Concurrent;
+using AITool.Application.Networking;
 using System.Text.Json;
 using AITool.Application.Common;
 using AITool.Application.Xai;
@@ -13,8 +16,15 @@ namespace AITool.Admin.Controllers.Admin;
 /// <summary>
 /// 请求模型：轮询/交换 Token。
 /// </summary>
+public sealed class XaiStartDeviceFlowRequest
+{
+    public AccountNetworkSelection? NetworkSelection { get; set; }
+}
+
 public sealed class XaiPollTokenRequest
 {
+    public string? ServerSessionId { get; set; }
+    public AccountNetworkSelection? NetworkSelection { get; set; }
     public string DeviceCode { get; set; } = string.Empty;
     public string? DisplayName { get; set; }
 }
@@ -55,6 +65,15 @@ public sealed class XaiImportModelsRequest
     public List<XaiModelSelectionDto>? Selections { get; set; }
 }
 
+public sealed class XaiBatchApplyModelsRequest
+{
+    public Guid SourceAccountId { get; set; }
+    public List<XaiModelSelectionDto>? Models { get; set; }
+    public List<XaiModelSelectionDto>? Selections { get; set; }
+}
+
+public sealed record XaiBatchApplyResult(Guid AccountId, string? DisplayName, bool Ok, string? Error);
+
 /// <summary>
 /// xAI (Grok) 账号管理 API 控制器。
 /// 提供 RFC 8628 设备码授权登录、凭证导入（支持 ~/.grok/auth.json 形态）、模型拉取、
@@ -64,6 +83,11 @@ public sealed class XaiImportModelsRequest
 [ServiceFilter(typeof(OAuthFeatureToggleAttribute))]
 public sealed class XaiAccountsApiController : ControllerBase
 {
+    private sealed record PendingLogin(string DeviceCode, string? DeviceId, DateTimeOffset ExpiresAt,
+        NetworkOperationContext Network, bool UpdateNetworkPolicy);
+    private static readonly ConcurrentDictionary<string, PendingLogin> PendingLogins = new();
+    private static readonly KeyedAsyncLock PollLocks = new();
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly IXaiOAuthClient _oauth;
     private readonly XaiAccountProvisioner _provisioner;
@@ -77,8 +101,10 @@ public sealed class XaiAccountsApiController : ControllerBase
         XaiAccountProvisioner provisioner,
         IXaiModelFetcher modelFetcher,
         XaiQuotaService quotaService,
-        ILogger<XaiAccountsApiController> logger)
+        ILogger<XaiAccountsApiController> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _oauth = oauth;
         _provisioner = provisioner;
@@ -91,12 +117,20 @@ public sealed class XaiAccountsApiController : ControllerBase
     /// 发起 xAI 设备授权流程，获取 User Code 与验证链接。
     /// </summary>
     [HttpPost("start-device-flow")]
-    public async Task<IActionResult> StartDeviceFlow(CancellationToken ct)
+    public async Task<IActionResult> StartDeviceFlow(CancellationToken ct, [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] XaiStartDeviceFlowRequest? req = null)
     {
         try
         {
-            var deviceCodeResp = await _oauth.StartDeviceFlowAsync(ct);
-            return Ok(deviceCodeResp);
+            var operation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, req?.NetworkSelection, ct);
+            using var network = _networkFactory?.CreateForOperation(operation, "login-start");
+            var deviceCodeResp = await (network?.XaiOAuth ?? _oauth).StartDeviceFlowAsync(ct);
+            foreach (var old in PendingLogins.Where(p => p.Value.ExpiresAt <= DateTimeOffset.UtcNow))
+                PendingLogins.TryRemove(old.Key, out _);
+            var serverSessionId = Guid.NewGuid().ToString("N");
+            PendingLogins[serverSessionId] = new PendingLogin(deviceCodeResp.DeviceCode, null,
+                DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(deviceCodeResp.ExpiresIn, 1, 1800)), operation, req?.NetworkSelection is not null);
+            return Ok(new { deviceCodeResp.DeviceCode, deviceCodeResp.UserCode, deviceCodeResp.VerificationUri,
+                deviceCodeResp.VerificationUriComplete, deviceCodeResp.ExpiresIn, deviceCodeResp.Interval, serverSessionId });
         }
         catch (Exception ex)
         {
@@ -111,14 +145,32 @@ public sealed class XaiAccountsApiController : ControllerBase
     [HttpPost("poll-token")]
     public async Task<IActionResult> PollToken([FromBody] XaiPollTokenRequest req, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(req?.DeviceCode))
+        if (req is null || (string.IsNullOrWhiteSpace(req.ServerSessionId) && string.IsNullOrWhiteSpace(req.DeviceCode)))
         {
             return BadRequest(new { message = "DeviceCode 不能为空" });
         }
 
         try
         {
-            var exchange = await _oauth.ExchangeDeviceCodeAsync(req.DeviceCode, ct);
+            var lockCode = !string.IsNullOrWhiteSpace(req.ServerSessionId) && PendingLogins.TryGetValue(req.ServerSessionId, out var issued)
+                ? issued.DeviceCode : req.DeviceCode;
+            using var pollLease = await PollLocks.WaitAsync(lockCode, ct);
+            PendingLogin? pending = null;
+            if (!string.IsNullOrWhiteSpace(req.ServerSessionId))
+            {
+                if (!PendingLogins.TryGetValue(req.ServerSessionId, out pending) || pending.ExpiresAt <= DateTimeOffset.UtcNow)
+                    return BadRequest(new { message = "登录会话无效或已过期" });
+            }
+            else
+            {
+                pending = PendingLogins.Values.FirstOrDefault(p => p.DeviceCode == req.DeviceCode && p.ExpiresAt > DateTimeOffset.UtcNow);
+                if ((_networkFactory is not null && pending is null) || req.NetworkSelection is not null || pending?.UpdateNetworkPolicy == true)
+                    return BadRequest(new { message = "显式网络选择需要 serverSessionId" });
+            }
+            var operation = pending?.Network ?? await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, null, ct);
+            using var network = _networkFactory?.CreateForOperation(operation, "login-poll");
+            var exchange = await (network?.XaiOAuth ?? _oauth).ExchangeDeviceCodeAsync(
+                pending?.DeviceCode ?? req.DeviceCode, ct);
             if (exchange.IsPending)
             {
                 return Ok(new { status = "pending", message = "等待用户在浏览器中授权" });
@@ -150,7 +202,9 @@ public sealed class XaiAccountsApiController : ControllerBase
                 TokenExpiresAt = tokens.ExpiresAt
             };
 
-            var account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+            var account = await _provisioner.ProvisionFromTokensAsync(input, ct, operation, pending?.UpdateNetworkPolicy == true);
+            foreach (var completed in PendingLogins.Where(p => p.Value.DeviceCode == (pending?.DeviceCode ?? req.DeviceCode)))
+                PendingLogins.TryRemove(completed.Key, out _);
             return Ok(new
             {
                 status = "success",
@@ -230,7 +284,12 @@ public sealed class XaiAccountsApiController : ControllerBase
 
         try
         {
-            var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
+            using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("xai", account.Id, ct);
+                    account = await _dbContext.XaiAccounts.InSingleAsync(account.Id) ?? account;
+                    if (string.IsNullOrWhiteSpace(account.RefreshToken))
+                        return BadRequest(new { message = "账号没有 refresh_token" });
+                    using var network = _networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "manual-token-refresh");
+                    var tokens = await (network?.XaiOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken, ct);
 
             account.AccessToken = tokens.AccessToken;
             if (!string.IsNullOrWhiteSpace(tokens.RefreshToken)) account.RefreshToken = tokens.RefreshToken;
@@ -239,7 +298,9 @@ public sealed class XaiAccountsApiController : ControllerBase
             account.LastRefreshAt = DateTimeOffset.UtcNow;
             account.RequiresReauth = false;
             account.UpdatedAt = DateTimeOffset.UtcNow;
-            await _dbContext.Client.Updateable(account).ExecuteCommandAsync(ct);
+            await _dbContext.Client.Updateable(account)
+                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.Scope, a.TokenExpiresAt, a.LastRefreshAt, a.RequiresReauth, a.UpdatedAt })
+                .ExecuteCommandAsync(ct);
 
             var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
             if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
@@ -314,7 +375,18 @@ public sealed class XaiAccountsApiController : ControllerBase
             return NotFound(new { message = "账号不存在" });
         }
 
-        var models = await _modelFetcher.FetchAsync(account.AccessToken ?? string.Empty, ct);
+        var snapshot = new ForwardOAuthCredentialSnapshot("xai", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
+        IReadOnlyList<(string Slug, string DisplayName)> models;
+        try
+        {
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "models");
+            models = await ModelCredentialRecovery.FetchAsync(_dbContext, HttpContext.RequestServices, snapshot,
+                token => (network?.XaiModels ?? _modelFetcher).FetchAsync(token, ct), ct);
+        }
+        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
+        {
+            return StatusCode(StatusCodes.Status401Unauthorized, new { message = ex.Message });
+        }
         var existingMappings = await _dbContext.SiteModelMappings
             .Where(m => m.SiteId == account.LinkedSiteId)
             .ToListAsync(ct);
@@ -351,16 +423,7 @@ public sealed class XaiAccountsApiController : ControllerBase
             return NotFound(new { message = "账号不存在" });
         }
 
-        var rawList = req.Models ?? req.Selections ?? new();
-        var selections = rawList
-            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
-            .Select(m => (
-                Slug: m.RemoteModelName!.Trim(),
-                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
-                Selected: m.Selected ?? true))
-            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.Last())
-            .ToList();
+        var selections = NormalizeSelections(req.Models ?? req.Selections);
 
         if (selections.Count == 0)
         {
@@ -372,13 +435,80 @@ public sealed class XaiAccountsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 仅对源账号应用选择；其他账号权限无法从源账号清单推断，跳过并报告风险。
+    /// </summary>
+    [HttpPost("accounts/batch-apply-models")]
+    public async Task<IActionResult> BatchApplyModels([FromBody] XaiBatchApplyModelsRequest? req, CancellationToken ct)
+    {
+        if (req is null || req.SourceAccountId == Guid.Empty)
+        {
+            return BadRequest(new { message = "缺少源账号" });
+        }
+        var source = await _dbContext.XaiAccounts.InSingleAsync(req.SourceAccountId);
+        if (source == null || source.IsDeleted)
+        {
+            return NotFound(new { message = "源账号不存在" });
+        }
+
+        var selections = NormalizeSelections(req.Models ?? req.Selections);
+        if (selections.Count == 0)
+        {
+            return BadRequest(new { message = "未收到模型清单" });
+        }
+
+        var members = await _dbContext.XaiAccounts.Where(a => !a.IsDeleted).ToListAsync(ct);
+        var results = new List<XaiBatchApplyResult>(members.Count);
+        foreach (var member in members)
+        {
+            if (member.Id != source.Id)
+            {
+                results.Add(new XaiBatchApplyResult(member.Id, member.DisplayName, false, "无法验证该账号的模型权限，已跳过；请逐账号拉取并同步模型"));
+                continue;
+            }
+            try
+            {
+                await _provisioner.SyncRemoteModelsAsync(member.LinkedSiteId, selections, ct);
+                results.Add(new XaiBatchApplyResult(member.Id, member.DisplayName, true, null));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                results.Add(new XaiBatchApplyResult(member.Id, member.DisplayName, false, ex.Message));
+            }
+        }
+
+        return Ok(new { results, succeeded = results.Count(r => r.Ok), failed = results.Count(r => !r.Ok) });
+    }
+
+    private static List<(string Slug, string DisplayName, bool Selected)> NormalizeSelections(List<XaiModelSelectionDto>? rawList)
+    {
+        return (rawList ?? [])
+            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
+            .Select(m => (
+                Slug: m.RemoteModelName!.Trim(),
+                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
+                Selected: m.Selected ?? true))
+            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
+            .ToList();
+    }
+
+    /// <summary>
     /// 导入凭证文件：支持平铺 JSON（access_token/refresh_token）或 Grok CLI 的
     /// ~/.grok/auth.json（scope → { key, refresh_token, expires_at }，优先 OIDC 条目）。
     /// </summary>
     [HttpPost("import-credential")]
     [RequestSizeLimit(10 * 1024 * 1024)]
-    public async Task<IActionResult> ImportCredential([FromQuery] string? name, CancellationToken ct)
+    public async Task<IActionResult> ImportCredential([FromQuery] string? name, CancellationToken ct,
+        [FromQuery] int? networkMode = null, [FromQuery] Guid? proxyProfileId = null)
     {
+        try
+        {
+        var selection = NetworkBoundOAuthClientFactory.ImportSelection(networkMode, proxyProfileId);
+        var importOperation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, selection, ct);
         var parseResults = new List<(string FileName, string Json)>();
 
         if (Request.HasFormContentType && Request.Form.Files.Count > 0)
@@ -424,10 +554,18 @@ public sealed class XaiAccountsApiController : ControllerBase
                     // TokenExpiresAt 留空时由后台 XaiTokenRefreshService 首轮扫描刷新一次获取真实过期时间。
                 };
 
+                var existing = (await _dbContext.XaiAccounts.Where(a => !a.IsDeleted && ((!string.IsNullOrEmpty(input.RefreshToken) && a.RefreshToken == input.RefreshToken) || (!string.IsNullOrEmpty(input.Email) && a.Email == input.Email) || (!string.IsNullOrEmpty(input.AccessToken) && a.AccessToken == input.AccessToken))).ToListAsync(ct)).FirstOrDefault();
+                var operation = selection is null && existing is not null
+                    ? importOperation with { Account = new AccountIdentity("xai", existing.Id) }
+                    : importOperation;
+                if (_networkFactory is not null && selection is null && existing is null && string.IsNullOrWhiteSpace(input.AccessToken))
+                    throw new NetworkPolicyException("network_selection_required", "An explicit network selection is required for credentials whose account cannot be identified before refresh.");
+                using var network = _networkFactory?.CreateForOperation(operation, "credential-import");
+
                 // 若只有 refresh_token，则先刷新一次获取 access_token。
                 if (string.IsNullOrWhiteSpace(input.AccessToken) && !string.IsNullOrWhiteSpace(input.RefreshToken))
                 {
-                    var tokens = await _oauth.RefreshTokenAsync(input.RefreshToken, ct);
+                    var tokens = await (network?.XaiOAuth ?? _oauth).RefreshTokenAsync(input.RefreshToken, ct);
                     input.AccessToken = tokens.AccessToken;
                     if (!string.IsNullOrWhiteSpace(tokens.RefreshToken)) input.RefreshToken = tokens.RefreshToken;
                     input.TokenExpiresAt = tokens.ExpiresAt;
@@ -435,7 +573,7 @@ public sealed class XaiAccountsApiController : ControllerBase
                     input.Email = tokens.Email ?? input.Email;
                 }
 
-                var account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+                var account = await _provisioner.ProvisionFromTokensAsync(input, ct, operation, selection is not null);
                 successes.Add(ToSummary(account));
             }
             catch (Exception ex)
@@ -445,6 +583,11 @@ public sealed class XaiAccountsApiController : ControllerBase
         }
 
         return Ok(new { successes, failures });
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>

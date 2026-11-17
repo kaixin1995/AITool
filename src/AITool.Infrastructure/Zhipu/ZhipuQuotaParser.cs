@@ -34,11 +34,20 @@ public static class ZhipuQuotaParser
         public IReadOnlyList<SiteQuotaWindow> Windows { get; init; } = [];
         /// <summary>业务级错误（响应 success=false 的 msg），有值时表示确定性失败。</summary>
         public string? Error { get; init; }
+        /// <summary>业务级错误码（响应 success=false 的 code，数字或字符串均兼容），无错误或无码为 null。</summary>
+        public int? ErrorCode { get; init; }
+        /// <summary>
+        /// 是否为「密钥被拒绝」类错误（code 1000–1005：密钥不存在/缺失/过期/需二次验证等）。
+        /// 对齐智谱官方错误码表：此类错误说明密钥本身不可用，不应再尝试团队端点或其他路径。
+        /// </summary>
+        public bool IsKeyRefusal => ErrorCode is >= 1000 and <= 1005;
     }
 
     /// <summary>智谱额度窗口标识与标签。</summary>
     public const string FiveHourWindowId = "five_hour";
     public const string WeeklyWindowId = "weekly_limit";
+    /// <summary>月度 MCP 限时窗口（TIME_LIMIT）标识：非阻塞，仅展示。</summary>
+    public const string McpMonthWindowId = "mcp_month";
 
     /// <summary>
     /// 解析智谱额度响应原始报文。返回 null 表示报文不可识别（非 JSON 或缺少 data 字段）。
@@ -59,14 +68,20 @@ public static class ZhipuQuotaParser
                 return null;
             }
 
-            // 业务级错误：success=false 时 msg 为面向用户的错误信息。
+            // 业务级错误：success=false 时 msg 为面向用户的错误信息，code 为平台错误码
+            //（数字或字符串两种形态都出现过，对齐 magpie zhipu_envelope.go 的兼容读法）。
             if (root.TryGetProperty("success", out var success)
                 && success.ValueKind == JsonValueKind.False)
             {
                 var msg = root.TryGetProperty("msg", out var m) && m.ValueKind == JsonValueKind.String
                     ? m.GetString()
                     : null;
-                return new ParseResult { Error = string.IsNullOrWhiteSpace(msg) ? "未知错误" : msg };
+                var code = ReadErrorCode(root);
+                return new ParseResult
+                {
+                    Error = string.IsNullOrWhiteSpace(msg) ? "未知错误" : msg,
+                    ErrorCode = code,
+                };
             }
 
             if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
@@ -92,12 +107,14 @@ public static class ZhipuQuotaParser
 
     /// <summary>
     /// 把智谱 data.limits[] 里的 TOKENS_LIMIT/CREDIT_LIMIT 条目解析成窗口列表（5 小时在前）。
+    /// TIME_LIMIT 条目（月度 MCP 工具限时）解析为非阻塞 Aside 窗口追加在末尾。
     /// </summary>
     /// <param name="data">响应的 data 对象。</param>
     public static IReadOnlyList<SiteQuotaWindow> ParseTokenTiers(JsonElement data)
     {
         var fiveHour = default(Entry?);
         var weekly = default(Entry?);
+        var mcpMonth = default(Entry?);
         var unclassified = new List<Entry>();
 
         if (data.TryGetProperty("limits", out var limits) && limits.ValueKind == JsonValueKind.Array)
@@ -112,6 +129,14 @@ public static class ZhipuQuotaParser
                 var limitType = item.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String
                     ? t.GetString()
                     : string.Empty;
+
+                // 月度 MCP 工具限时：单独一桶，不阻塞账号（对齐 magpie 的 Aside 语义）。
+                if (string.Equals(limitType, "TIME_LIMIT", StringComparison.OrdinalIgnoreCase))
+                {
+                    mcpMonth ??= new Entry(ReadPercentage(item), ReadResetTime(item));
+                    continue;
+                }
+
                 // 大小写不敏感：上游若把 TOKENS_LIMIT 改成小写或驼峰仍能识别。
                 if (!string.Equals(limitType, "TOKENS_LIMIT", StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(limitType, "CREDIT_LIMIT", StringComparison.OrdinalIgnoreCase))
@@ -154,7 +179,7 @@ public static class ZhipuQuotaParser
             // 智谱当前最多两条 TOKENS_LIMIT，多余的忽略。
         }
 
-        var windows = new List<SiteQuotaWindow>(2);
+        var windows = new List<SiteQuotaWindow>(3);
         if (fiveHour is { } fh)
         {
             windows.Add(ToWindow(FiveHourWindowId, "5 小时窗口", fh));
@@ -163,6 +188,11 @@ public static class ZhipuQuotaParser
         if (weekly is { } wk)
         {
             windows.Add(ToWindow(WeeklyWindowId, "每周额度", wk));
+        }
+
+        if (mcpMonth is { } mm)
+        {
+            windows.Add(ToWindow(McpMonthWindowId, "MCP 月度", mm, isAside: true));
         }
 
         return windows;
@@ -227,12 +257,32 @@ public static class ZhipuQuotaParser
         return DateTimeOffset.FromUnixTimeMilliseconds(millis).UtcDateTime;
     }
 
-    private static SiteQuotaWindow ToWindow(string id, string label, Entry entry) => new(
+    private static SiteQuotaWindow ToWindow(string id, string label, Entry entry, bool isAside = false) => new(
         id,
         label,
         entry.Percentage,
         entry.ResetAtUtc?.ToLocalTime().ToString("MM-dd HH:mm"),
-        entry.ResetAtUtc);
+        entry.ResetAtUtc,
+        isAside);
+
+    /// <summary>
+    /// 读取平台错误码（success=false 时的 code 字段）：数字或字符串两种形态兼容，无法解析为 null。
+    /// </summary>
+    private static int? ReadErrorCode(JsonElement root)
+    {
+        if (!root.TryGetProperty("code", out var value)
+            || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return int.TryParse(value.GetString(), out var parsed) ? parsed : null;
+        }
+
+        return value.TryGetInt32(out var number) ? number : null;
+    }
 
     /// <summary>
     /// 站点 base_url 是否属于智谱（host 级匹配 bigmodel.cn / z.ai 及其子域）。
@@ -251,7 +301,7 @@ public static class ZhipuQuotaParser
             ? "https://open.bigmodel.cn"
             : "https://api.z.ai";
 
-    /// <summary>智谱套餐额度查询路径（个人版；团队版同路径加 ?type=2 与组织/项目头，暂未支持）。</summary>
+    /// <summary>智谱套餐额度查询路径（个人版；团队版同路径加 ?type=2，由供应商层回退尝试）。</summary>
     public const string QuotaPath = "/api/monitor/usage/quota/limit";
 
     private static bool TryGetHost(string baseUrl, out string host)

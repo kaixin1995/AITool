@@ -24,6 +24,7 @@ public sealed class CoreConfigSyncHostedService : IHostedService
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<CoreConfigSyncHostedService> _logger;
     private readonly CoreSyncStatusStore _syncStatusStore;
+    private readonly Microsoft.Extensions.Hosting.IHostEnvironment? _environment;
 
     // 启动后首次同步前的等待时间，给 Core 宿主一点启动时间
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(2);
@@ -40,11 +41,13 @@ public sealed class CoreConfigSyncHostedService : IHostedService
     public CoreConfigSyncHostedService(
         IServiceProvider serviceProvider,
         ILogger<CoreConfigSyncHostedService> logger,
-        CoreSyncStatusStore syncStatusStore)
+        CoreSyncStatusStore syncStatusStore,
+        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
         _syncStatusStore = syncStatusStore;
+        _environment = environment;
     }
 
     /// <summary>
@@ -52,6 +55,12 @@ public sealed class CoreConfigSyncHostedService : IHostedService
     /// </summary>
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        // Testing 环境（TestHost）不推送：启动全量同步会用空库快照覆盖测试手工预置的
+        // Core 配置（V1Relay 等真实 Core 进程测试依赖 last-good-config.json 的预置内容）。
+        if (_environment?.IsEnvironment("Testing") == true)
+        {
+            return Task.CompletedTask;
+        }
         // 在后台线程执行同步，不阻塞宿主启动
         _ = Task.Run(() => SyncConfigToCoreAsync(cancellationToken), cancellationToken);
         return Task.CompletedTask;

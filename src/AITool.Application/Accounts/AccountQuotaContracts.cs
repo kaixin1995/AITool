@@ -18,6 +18,8 @@ public sealed class AccountQuotaTarget
     public DateTimeOffset? TokenExpiresAt { get; init; }
     public DateTimeOffset? LastQuotaCheckedAt { get; init; }
     public string? LastQuotaRawJson { get; init; }
+    /// <summary>Recovery claim carried to the transactional state writer; null for ordinary inspections.</summary>
+    public Guid? QuotaRecheckLeaseToken { get; set; }
 }
 
 /// <summary>
@@ -40,6 +42,8 @@ public sealed class AccountQuotaSnapshot
 {
     public bool Success { get; init; }
     public string? Error { get; init; }
+    /// <summary>本次真实上游 HTTP 401；不包括代理 407 或其他认证失败。</summary>
+    public bool UpstreamUnauthorized { get; init; }
     public string? PlanType { get; init; }
     public string? RawJson { get; init; }
     public DateTimeOffset CheckedAt { get; init; } = DateTimeOffset.UtcNow;
@@ -57,10 +61,30 @@ public interface IAccountQuotaProvider
 
     Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken);
 
+    /// <summary>读取单个账号的最新状态；未实现的提供程序保留枚举回退。</summary>
+    async Task<AccountQuotaTarget?> GetAccountAsync(Guid accountId, CancellationToken cancellationToken)
+        => (await GetAccountsAsync(cancellationToken)).FirstOrDefault(account => account.AccountId == accountId);
+
+    /// <summary>
+    /// 按隐藏 Site 反查账号（路由层配额贯通）：站点没有 SiteKey 配额数据时，
+    /// 路由的配额感知排序与分级冷却按 LinkedSiteId 回退读取账号表的巡检额度缓存
+    /// （巡检数据落在账号表而非 SiteKey，OAuth 隐藏站点无 Key 行）。
+    /// 默认返回空（未覆写的提供程序不参与回退）；返回目标的 LastQuotaRawJson
+    /// 供调用方经 <see cref="ParseCachedQuota(string)"/> 解析。不过滤启用状态——
+    /// 重置时刻对禁用账号同样有效（冷却时长计算用）。
+    /// </summary>
+    Task<IReadOnlyList<AccountQuotaTarget>> FindByLinkedSiteIdsAsync(
+        IReadOnlyList<Guid> siteIds,
+        CancellationToken cancellationToken)
+        => Task.FromResult<IReadOnlyList<AccountQuotaTarget>>([]);
+
     /// <summary>
     /// 从账号持久化的最近一次原始响应恢复额度快照；无法解析时返回 null。
     /// </summary>
     AccountQuotaSnapshot? ParseCachedQuota(string rawJson);
+
+    /// <summary>解析缓存时提供真实观测时间，避免相对倒计时随读取时间漂移。</summary>
+    AccountQuotaSnapshot? ParseCachedQuota(string rawJson, DateTimeOffset? observedAt) => ParseCachedQuota(rawJson);
 
     /// <summary>
     /// 选择用于自动禁用/恢复判定的已用百分比。默认取所有窗口的最大值；

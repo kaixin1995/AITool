@@ -1,3 +1,6 @@
+using AITool.Infrastructure.Common;
+using System.Collections.Concurrent;
+using AITool.Application.Networking;
 using System.Text.Json;
 using AITool.Application.Common;
 using AITool.Application.Kimi;
@@ -7,7 +10,6 @@ using AITool.Domain.Sites;
 using AITool.Infrastructure.Kimi;
 using AITool.Infrastructure.Persistence;
 using AITool.Admin.Services;
-using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Admin.Controllers.Admin;
@@ -17,6 +19,7 @@ namespace AITool.Admin.Controllers.Admin;
 /// </summary>
 public sealed class KimiStartDeviceFlowRequest
 {
+    public AccountNetworkSelection? NetworkSelection { get; set; }
     public string? DeviceId { get; set; }
 }
 
@@ -25,6 +28,8 @@ public sealed class KimiStartDeviceFlowRequest
 /// </summary>
 public sealed class KimiPollTokenRequest
 {
+    public string? ServerSessionId { get; set; }
+    public AccountNetworkSelection? NetworkSelection { get; set; }
     public string DeviceCode { get; set; } = string.Empty;
     public string? DeviceId { get; set; }
     public string? DisplayName { get; set; }
@@ -66,6 +71,15 @@ public sealed class KimiImportModelsRequest
     public List<KimiModelSelectionDto>? Selections { get; set; }
 }
 
+public sealed class KimiBatchApplyModelsRequest
+{
+    public Guid SourceAccountId { get; set; }
+    public List<KimiModelSelectionDto>? Models { get; set; }
+    public List<KimiModelSelectionDto>? Selections { get; set; }
+}
+
+public sealed record KimiBatchApplyResult(Guid AccountId, string? DisplayName, bool Ok, string? Error);
+
 /// <summary>
 /// Kimi 账号管理 API 控制器。
 /// 提供 RFC 8628 设备码授权登录、凭证导入/导出、模型拉取、启停、Token 手动刷新等功能。
@@ -74,6 +88,11 @@ public sealed class KimiImportModelsRequest
 [ServiceFilter(typeof(OAuthFeatureToggleAttribute))]
 public sealed class KimiAccountsApiController : ControllerBase
 {
+    private sealed record PendingLogin(string DeviceCode, string? DeviceId, DateTimeOffset ExpiresAt,
+        NetworkOperationContext Network, bool UpdateNetworkPolicy);
+    private static readonly ConcurrentDictionary<string, PendingLogin> PendingLogins = new();
+    private static readonly KeyedAsyncLock PollLocks = new();
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly IKimiOAuthClient _oauth;
     private readonly KimiAccountProvisioner _provisioner;
@@ -89,8 +108,10 @@ public sealed class KimiAccountsApiController : ControllerBase
         IKimiModelFetcher modelFetcher,
         KimiCredentialRefreshService credentialRefreshService,
         KimiQuotaService quotaService,
-        ILogger<KimiAccountsApiController> logger)
+        ILogger<KimiAccountsApiController> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _oauth = oauth;
         _provisioner = provisioner;
@@ -104,12 +125,20 @@ public sealed class KimiAccountsApiController : ControllerBase
     /// 发起 Kimi 设备授权流程，获取 User Code 与验证链接。
     /// </summary>
     [HttpPost("start-device-flow")]
-    public async Task<IActionResult> StartDeviceFlow([FromBody] KimiStartDeviceFlowRequest? req, CancellationToken ct)
+    public async Task<IActionResult> StartDeviceFlow([FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] KimiStartDeviceFlowRequest? req, CancellationToken ct)
     {
         try
         {
-            var deviceCodeResp = await _oauth.StartDeviceFlowAsync(req?.DeviceId, ct);
-            return Ok(deviceCodeResp);
+            var operation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, req?.NetworkSelection, ct);
+            using var network = _networkFactory?.CreateForOperation(operation, "login-start");
+            var deviceCodeResp = await (network?.KimiOAuth ?? _oauth).StartDeviceFlowAsync(req?.DeviceId, ct);
+            foreach (var old in PendingLogins.Where(p => p.Value.ExpiresAt <= DateTimeOffset.UtcNow))
+                PendingLogins.TryRemove(old.Key, out _);
+            var serverSessionId = Guid.NewGuid().ToString("N");
+            PendingLogins[serverSessionId] = new PendingLogin(deviceCodeResp.DeviceCode, deviceCodeResp.DeviceId,
+                DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(deviceCodeResp.ExpiresIn, 1, 1800)), operation, req?.NetworkSelection is not null);
+            return Ok(new { deviceCodeResp.DeviceCode, deviceCodeResp.UserCode, deviceCodeResp.VerificationUri,
+                deviceCodeResp.VerificationUriComplete, deviceCodeResp.ExpiresIn, deviceCodeResp.Interval, deviceCodeResp.DeviceId, serverSessionId });
         }
         catch (Exception ex)
         {
@@ -124,14 +153,32 @@ public sealed class KimiAccountsApiController : ControllerBase
     [HttpPost("poll-token")]
     public async Task<IActionResult> PollToken([FromBody] KimiPollTokenRequest req, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(req?.DeviceCode))
+        if (req is null || (string.IsNullOrWhiteSpace(req.ServerSessionId) && string.IsNullOrWhiteSpace(req.DeviceCode)))
         {
             return BadRequest(new { message = "DeviceCode 不能为空" });
         }
 
         try
         {
-            var exchange = await _oauth.ExchangeDeviceCodeAsync(req.DeviceCode, req.DeviceId, ct);
+            var lockCode = !string.IsNullOrWhiteSpace(req.ServerSessionId) && PendingLogins.TryGetValue(req.ServerSessionId, out var issued)
+                ? issued.DeviceCode : req.DeviceCode;
+            using var pollLease = await PollLocks.WaitAsync(lockCode, ct);
+            PendingLogin? pending = null;
+            if (!string.IsNullOrWhiteSpace(req.ServerSessionId))
+            {
+                if (!PendingLogins.TryGetValue(req.ServerSessionId, out pending) || pending.ExpiresAt <= DateTimeOffset.UtcNow)
+                    return BadRequest(new { message = "登录会话无效或已过期" });
+            }
+            else
+            {
+                pending = PendingLogins.Values.FirstOrDefault(p => p.DeviceCode == req.DeviceCode && p.ExpiresAt > DateTimeOffset.UtcNow);
+                if ((_networkFactory is not null && pending is null) || req.NetworkSelection is not null || pending?.UpdateNetworkPolicy == true)
+                    return BadRequest(new { message = "显式网络选择需要 serverSessionId" });
+            }
+            var operation = pending?.Network ?? await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, null, ct);
+            using var network = _networkFactory?.CreateForOperation(operation, "login-poll");
+            var exchange = await (network?.KimiOAuth ?? _oauth).ExchangeDeviceCodeAsync(
+                pending?.DeviceCode ?? req.DeviceCode, pending?.DeviceId ?? req.DeviceId, ct);
             if (exchange.IsPending)
             {
                 return Ok(new { status = "pending", message = "等待用户在浏览器中授权" });
@@ -154,7 +201,7 @@ public sealed class KimiAccountsApiController : ControllerBase
             var input = new KimiProvisionInput
             {
                 DisplayName = !string.IsNullOrWhiteSpace(req.DisplayName) ? req.DisplayName : "Kimi 账号",
-                DeviceId = req.DeviceId,
+                DeviceId = pending?.DeviceId ?? req.DeviceId,
                 AccessToken = tokens.AccessToken,
                 RefreshToken = tokens.RefreshToken,
                 TokenType = tokens.TokenType,
@@ -162,7 +209,9 @@ public sealed class KimiAccountsApiController : ControllerBase
                 TokenExpiresAt = tokens.ExpiresAt
             };
 
-            var account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+            var account = await _provisioner.ProvisionFromTokensAsync(input, ct, operation, pending?.UpdateNetworkPolicy == true);
+            foreach (var completed in PendingLogins.Where(p => p.Value.DeviceCode == (pending?.DeviceCode ?? req.DeviceCode)))
+                PendingLogins.TryRemove(completed.Key, out _);
             return Ok(new
             {
                 status = "success",
@@ -290,7 +339,18 @@ public sealed class KimiAccountsApiController : ControllerBase
             return NotFound(new { message = "账号不存在" });
         }
 
-        var models = await _modelFetcher.FetchAsync(account.AccessToken ?? string.Empty, account.DeviceId, ct);
+        var snapshot = new ForwardOAuthCredentialSnapshot("kimi", account.Id, account.LinkedSiteId, account.AccessToken, account.RefreshToken, account.LastRefreshAt);
+        IReadOnlyList<(string Slug, string DisplayName)> models;
+        try
+        {
+            using var network = _networkFactory?.CreateForAccount(new AccountIdentity("kimi", account.Id), "models");
+            models = await ModelCredentialRecovery.FetchAsync(_dbContext, HttpContext.RequestServices, snapshot,
+                token => (network?.KimiModels ?? _modelFetcher).FetchAsync(token, account.DeviceId, ct), ct);
+        }
+        catch (AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException ex)
+        {
+            return StatusCode(StatusCodes.Status401Unauthorized, new { message = ex.Message });
+        }
         var existingMappings = await _dbContext.SiteModelMappings
             .Where(m => m.SiteId == account.LinkedSiteId)
             .ToListAsync(ct);
@@ -328,16 +388,7 @@ public sealed class KimiAccountsApiController : ControllerBase
             return NotFound(new { message = "账号不存在" });
         }
 
-        var rawList = req.Models ?? req.Selections ?? new();
-        var selections = rawList
-            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
-            .Select(m => (
-                Slug: m.RemoteModelName!.Trim(),
-                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
-                Selected: m.Selected ?? true))
-            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.Last())
-            .ToList();
+        var selections = NormalizeSelections(req.Models ?? req.Selections);
 
         if (selections.Count == 0)
         {
@@ -349,12 +400,79 @@ public sealed class KimiAccountsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 仅对源账号应用选择；其他账号权限无法从源账号清单推断，跳过并报告风险。
+    /// </summary>
+    [HttpPost("accounts/batch-apply-models")]
+    public async Task<IActionResult> BatchApplyModels([FromBody] KimiBatchApplyModelsRequest? req, CancellationToken ct)
+    {
+        if (req is null || req.SourceAccountId == Guid.Empty)
+        {
+            return BadRequest(new { message = "缺少源账号" });
+        }
+        var source = await _dbContext.KimiAccounts.InSingleAsync(req.SourceAccountId);
+        if (source == null || source.IsDeleted)
+        {
+            return NotFound(new { message = "源账号不存在" });
+        }
+
+        var selections = NormalizeSelections(req.Models ?? req.Selections);
+        if (selections.Count == 0)
+        {
+            return BadRequest(new { message = "未收到模型清单" });
+        }
+
+        var members = await _dbContext.KimiAccounts.Where(a => !a.IsDeleted).ToListAsync(ct);
+        var results = new List<KimiBatchApplyResult>(members.Count);
+        foreach (var member in members)
+        {
+            if (member.Id != source.Id)
+            {
+                results.Add(new KimiBatchApplyResult(member.Id, member.DisplayName, false, "无法验证该账号的模型权限，已跳过；请逐账号拉取并同步模型"));
+                continue;
+            }
+            try
+            {
+                await _provisioner.SyncRemoteModelsAsync(member.LinkedSiteId, selections, ct);
+                results.Add(new KimiBatchApplyResult(member.Id, member.DisplayName, true, null));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                results.Add(new KimiBatchApplyResult(member.Id, member.DisplayName, false, ex.Message));
+            }
+        }
+
+        return Ok(new { results, succeeded = results.Count(r => r.Ok), failed = results.Count(r => !r.Ok) });
+    }
+
+    private static List<(string Slug, string DisplayName, bool Selected)> NormalizeSelections(List<KimiModelSelectionDto>? rawList)
+    {
+        return (rawList ?? [])
+            .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
+            .Select(m => (
+                Slug: m.RemoteModelName!.Trim(),
+                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
+                Selected: m.Selected ?? true))
+            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
+            .ToList();
+    }
+
+    /// <summary>
     /// 导入凭证文件（CLIProxyAPI Kimi 凭证 JSON 或 raw token）。
     /// </summary>
     [HttpPost("import-credential")]
     [RequestSizeLimit(10 * 1024 * 1024)]
-    public async Task<IActionResult> ImportCredential([FromQuery] string? name, CancellationToken ct)
+    public async Task<IActionResult> ImportCredential([FromQuery] string? name, CancellationToken ct,
+        [FromQuery] int? networkMode = null, [FromQuery] Guid? proxyProfileId = null)
     {
+        try
+        {
+        var selection = NetworkBoundOAuthClientFactory.ImportSelection(networkMode, proxyProfileId);
+        var importOperation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, selection, ct);
         var parseResults = new List<(string FileName, string Json)>();
 
         if (Request.HasFormContentType && Request.Form.Files.Count > 0)
@@ -423,16 +541,24 @@ public sealed class KimiAccountsApiController : ControllerBase
                     // 后台 KimiTokenRefreshService 首轮扫描会刷新一次以获取真实的 expires_in。
                 };
 
+                var existing = (await _dbContext.KimiAccounts.Where(a => !a.IsDeleted && ((!string.IsNullOrEmpty(input.RefreshToken) && a.RefreshToken == input.RefreshToken) || (!string.IsNullOrEmpty(input.Email) && a.Email == input.Email) || (!string.IsNullOrEmpty(input.DeviceId) && a.DeviceId == input.DeviceId) || (!string.IsNullOrEmpty(input.AccessToken) && a.AccessToken == input.AccessToken))).ToListAsync(ct)).FirstOrDefault();
+                var operation = selection is null && existing is not null
+                    ? importOperation with { Account = new AccountIdentity("kimi", existing.Id) }
+                    : importOperation;
+                if (_networkFactory is not null && selection is null && existing is null && string.IsNullOrWhiteSpace(input.AccessToken))
+                    throw new NetworkPolicyException("network_selection_required", "An explicit network selection is required for credentials whose account cannot be identified before refresh.");
+                using var network = _networkFactory?.CreateForOperation(operation, "credential-import");
+
                 // 若只有 refresh_token，则先刷新一次获取 access_token
                 if (string.IsNullOrWhiteSpace(input.AccessToken) && !string.IsNullOrWhiteSpace(input.RefreshToken))
                 {
-                    var tokens = await _oauth.RefreshTokenAsync(input.RefreshToken, input.DeviceId, ct);
+                    var tokens = await (network?.KimiOAuth ?? _oauth).RefreshTokenAsync(input.RefreshToken, input.DeviceId, ct);
                     input.AccessToken = tokens.AccessToken;
                     if (!string.IsNullOrWhiteSpace(tokens.RefreshToken)) input.RefreshToken = tokens.RefreshToken;
                     input.TokenExpiresAt = tokens.ExpiresAt;
                 }
 
-                var account = await _provisioner.ProvisionFromTokensAsync(input, ct);
+                var account = await _provisioner.ProvisionFromTokensAsync(input, ct, operation, selection is not null);
                 successes.Add(ToSummary(account));
             }
             catch (Exception ex)
@@ -442,6 +568,11 @@ public sealed class KimiAccountsApiController : ControllerBase
         }
 
         return Ok(new { successes, failures });
+        }
+        catch (NetworkPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     /// <summary>
@@ -494,6 +625,7 @@ public sealed class KimiAccountsApiController : ControllerBase
             deviceId = a.DeviceId,
             planType = "Kimi Code",
             isEnabled = a.IsEnabled,
+            requiresReauth = a.RequiresReauth,
             isQuotaCooling = false,
             quotaCoolingUntil = (string?)null,
             lastQuotaCheckedAt = a.LastQuotaCheckedAt?.ToString("o"),

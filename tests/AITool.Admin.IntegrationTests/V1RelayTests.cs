@@ -250,6 +250,7 @@ internal sealed class RelayWebApplicationFactory : WebApplicationFactory<AITool.
                 ExternalModelName = "gpt-conserve",
                 UpstreamModelName = "gpt-conserve",
                 SiteId = Guid.Parse("dddd0000-0000-0000-0000-000000000001"),
+                TargetKind = "Site",
                 SiteModelName = "gpt-conserve",
                 IsEnabled = true,
                 ModelPriority = 0,

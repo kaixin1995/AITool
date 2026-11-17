@@ -21,28 +21,40 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
     /// <inheritdoc />
     public async Task<IReadOnlyList<(string Slug, string DisplayName)>> FetchAsync(string accountKind, string accessToken, CancellationToken ct)
     {
-        return await FetchAntigravityModelsAsync(accessToken, ct);
+        return await FetchAntigravityModelsAsync(accountKind, accessToken, ct);
     }
 
-    private async Task<IReadOnlyList<(string Slug, string DisplayName)>> FetchAntigravityModelsAsync(string accessToken, CancellationToken ct)
+    private async Task<IReadOnlyList<(string Slug, string DisplayName)>> FetchAntigravityModelsAsync(string? accountKind, string accessToken, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
-            $"{GoogleAccountKinds.GetBaseUrl(GoogleAccountKinds.Antigravity)}/v1internal:fetchAvailableModels")
+            $"{GoogleAccountKinds.GetBaseUrl(accountKind)}/v1internal:fetchAvailableModels")
         {
             Content = new StringContent("{}", Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        request.Headers.TryAddWithoutValidation("User-Agent", GoogleAccountKinds.AntigravityUserAgent);
+        request.Headers.TryAddWithoutValidation("User-Agent", GoogleAccountKinds.GetUserAgent(accountKind));
         request.Headers.TryAddWithoutValidation("requestId", $"req-{Guid.NewGuid():N}");
         request.Headers.TryAddWithoutValidation("requestType", "agent");
 
-        using var response = await _httpClient.SendAsync(request, ct);
-        var body = await response.Content.ReadAsStringAsync(ct);
+        using var requestBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan) requestBudget.CancelAfter(_httpClient.Timeout);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestBudget.Token);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            throw new AITool.Infrastructure.Codex.ModelAccessTokenUnauthorizedException();
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException($"fetchAvailableModels returned {(int)response.StatusCode}: {body}");
+            // Retain the diagnostic body when available, but preserve the actual status
+            // even if the body cannot be read. Error body is best-effort diagnostic info;
+            // only caller cancellation (ct) should abort. Internal requestBudget/HttpClient
+            // timeouts must not swallow the status code (e.g. 403 drives auto-disabling).
+            string? errorBody = null;
+            try { errorBody = await response.Content.ReadAsStringAsync(requestBudget.Token); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception) { errorBody = null; }
+            throw new HttpRequestException($"fetchAvailableModels returned {(int)response.StatusCode}: {errorBody}", null, response.StatusCode);
         }
+        var body = await response.Content.ReadAsStringAsync(requestBudget.Token);
 
         var models = new List<(string Slug, string DisplayName)>();
         using var doc = JsonDocument.Parse(body);

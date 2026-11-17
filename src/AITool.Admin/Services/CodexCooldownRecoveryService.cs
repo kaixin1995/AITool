@@ -51,7 +51,7 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
         }
     }
 
-    private async Task RecoverDueAsync(CancellationToken ct)
+    internal async Task RecoverDueAsync(CancellationToken ct)
     {
         using var scope = _services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -75,46 +75,43 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
             return;
         }
 
-        // 用全局 SQLite 串行化锁包裹"查 due → 更新账号/站点"完整块，
-        // 避免与巡检/日志写等后台服务并发踩 SqlSugarScope 竞态。
-        await dbContext.SerialExecuteAsync(async () =>
+        // Use a private writer-first transaction per account so manual disable and recovery
+        // serialize in SQLite; never restore a site from a stale pre-transaction snapshot.
+        var now = DateTimeOffset.UtcNow;
+        var due = await dbContext.CodexAccounts
+            .Where(a => a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
+            .Select(a => a.Id).ToListAsync(ct);
+        var changed = false;
+        foreach (var id in due)
         {
-            var now = DateTimeOffset.UtcNow;
-            var due = await dbContext.CodexAccounts
-                .Where(a => a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
-                .ToListAsync(ct);
-
-            if (due.Count == 0) return;
-
-            var anyRecovered = false;
-            foreach (var account in due)
+            using var client = dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+            await client.Ado.BeginTranAsync();
+            try
             {
-                account.IsQuotaCooling = false;
-                account.QuotaCoolingUntil = null;
-                await dbContext.UpdateAsync(account, ct);
-
-                // 仅当账号本身启用（非手动禁用）才恢复 Site
-                if (account.IsEnabled)
+                var updated = await client.Updateable<AITool.Domain.Codex.CodexAccount>()
+                    .SetColumns(a => new AITool.Domain.Codex.CodexAccount { IsQuotaCooling = false, QuotaCoolingUntil = null })
+                    .Where(a => a.Id == id && a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
+                    .Where(a => SqlSugar.SqlFunc.Subqueryable<AITool.Domain.Operations.SystemRuntimeSettings>()
+                        .Where(s => s.Id == 1 && s.OAuthFeaturesEnabled).Any())
+                    .ExecuteCommandAsync(ct);
+                if (updated != 0)
                 {
-                    var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                    if (site != null && !site.IsEnabled)
-                    {
-                        site.IsEnabled = true;
-                        await dbContext.UpdateAsync(site, ct);
-                        anyRecovered = true;
-                    }
+                    var account = await client.Queryable<AITool.Domain.Codex.CodexAccount>().InSingleAsync(id);
+                    if (account is { IsEnabled: true, ManuallyDisabled: false, DisabledByFeatureToggle: false, RequiresReauth: false })
+                        await client.Updateable<AITool.Domain.Sites.Site>()
+                            .SetColumns(s => new AITool.Domain.Sites.Site { IsEnabled = true })
+                            .Where(s => s.Id == account.LinkedSiteId).ExecuteCommandAsync(ct);
+                    changed = true;
                 }
-                _logger.LogInformation("Codex account {Id} cooldown recovered", account.Id);
+                await client.Ado.CommitTranAsync();
             }
-
-            if (anyRecovered)
-            {
-                cache.InvalidateRouteTargets();
-                cache.InvalidateCodexAccounts();
-                // split 双宿主：恢复的账号/站点需推送到 Core。
-                await scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>()
-                    .InvalidateAccountCredentialsAsync(ct);
-            }
-        }, ct);
+            catch { await client.Ado.RollbackTranAsync(); throw; }
+        }
+        if (changed)
+        {
+            cache.InvalidateRouteTargets();
+            cache.InvalidateCodexAccounts();
+        }
     }
 }

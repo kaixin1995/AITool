@@ -41,32 +41,45 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
         ["gpt-image-1.5", "gpt-image-2"];
 
     /// <summary>不可变分层快照；刷新时整体替换引用（volatile 读），读侧无锁。</summary>
-    private sealed record CatalogSnapshot(
+    internal sealed record CatalogSnapshot(
         IReadOnlyList<string> Free, IReadOnlyList<string> Team,
         IReadOnlyList<string> Plus, IReadOnlyList<string> Pro);
 
     private static readonly CatalogSnapshot InitialSnapshot = new(Free, Team, Plus, Pro);
 
-    // 目录状态必须为 static：本类经 AddHttpClient 注册为瞬态（typed client），
-    // 刷新结果要进程级留存就不能放在实例字段上（与旧版 static 分层设计一致）。
-    // 快照为不可变对象，刷新时整体替换引用（volatile 写），读侧取局部引用无锁。
-    private static volatile CatalogSnapshot _snapshot = InitialSnapshot;
-    private static volatile ConcurrentDictionary<string, IReadOnlyList<string>> _planCache = new();
+    /// <summary>
+    /// 目录状态容器。生产环境由 <see cref="SharedState"/> 进程级单例承载；
+    /// 测试环境可注入独立实例实现状态隔离。
+    /// 快照为不可变对象，刷新时整体替换引用（volatile 写），读侧取局部引用无锁。
+    /// </summary>
+    internal sealed class CatalogState
+    {
+        internal volatile CatalogSnapshot _snapshot = InitialSnapshot;
+        internal volatile ConcurrentDictionary<string, IReadOnlyList<string>> _planCache = new();
+    }
 
+    private static readonly CatalogState SharedState = new();
+    private readonly CatalogState _state;
     private readonly HttpClient _httpClient;
     private readonly ILogger<CodexModelCatalog> _logger;
 
     public CodexModelCatalog(HttpClient httpClient, ILogger<CodexModelCatalog> logger)
+        : this(httpClient, logger, SharedState)
+    {
+    }
+
+    internal CodexModelCatalog(HttpClient httpClient, ILogger<CodexModelCatalog> logger, CatalogState state)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _state = state ?? throw new ArgumentNullException(nameof(state));
     }
 
     /// <inheritdoc />
     public IReadOnlyList<string> GetModelsForPlan(string? planType)
     {
         var key = (planType ?? string.Empty).ToLowerInvariant();
-        var cache = _planCache;
+        var cache = _state._planCache;
         return cache.GetOrAdd(key, ComputeModels);
     }
 
@@ -80,7 +93,7 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
                 var parsed = await FetchAndParseAsync(url, cancellationToken);
                 if (parsed is null) continue;
 
-                var snapshot = _snapshot;
+                var snapshot = _state._snapshot;
                 var changed = !TiersEqual(parsed.Free, snapshot.Free)
                     || !TiersEqual(parsed.Team, snapshot.Team)
                     || !TiersEqual(parsed.Plus, snapshot.Plus)
@@ -88,9 +101,9 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
 
                 if (changed)
                 {
-                    _snapshot = parsed;
+                    _state._snapshot = parsed;
                     // 换新字典使旧的按 plan 缓存整体失效；读侧每次调用取当前引用，无锁竞争。
-                    _planCache = new ConcurrentDictionary<string, IReadOnlyList<string>>();
+                    _state._planCache = new ConcurrentDictionary<string, IReadOnlyList<string>>();
                     _logger.LogInformation(
                         "Codex model catalog refreshed from {Url}: free={Free}, team={Team}, plus={Plus}, pro={Pro}",
                         url, string.Join(",", parsed.Free), string.Join(",", parsed.Team),
@@ -134,7 +147,9 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
         var pro = ParseTier(root, "codex-pro");
 
         // 校验（照 CPA validateModelsCatalog 的关键约束）：四层非空、层内无重复、
-        // 且至少一层含 gpt-5.5（证明这确实是一份 Codex 客户端目录而非损坏数据）。
+        // 且至少一层含 gpt-<数字> 系模型（证明这确实是一份 Codex 客户端目录而非损坏数据）。
+        // 注意不能用具体模型名当锚点：2026-10 上游目录已全面进入 gpt-6 代际、移除 gpt-5.5，
+        // 硬编码 gpt-5.5 会让每次刷新都被误判为「数据无效」（实测线上两来源均被拒）。
         if (free.Count == 0 || team.Count == 0 || plus.Count == 0 || pro.Count == 0)
         {
             _logger.LogWarning("Codex remote catalog from {Url} has empty tier, rejected", url);
@@ -145,9 +160,9 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
             _logger.LogWarning("Codex remote catalog from {Url} contains duplicate ids, rejected", url);
             return null;
         }
-        if (!free.Concat(team).Concat(plus).Concat(pro).Any(id => string.Equals(id, "gpt-5.5", StringComparison.OrdinalIgnoreCase)))
+        if (!free.Concat(team).Concat(plus).Concat(pro).Any(IsCodexGenerationModel))
         {
-            _logger.LogWarning("Codex remote catalog from {Url} is missing expected baseline model gpt-5.5, rejected", url);
+            _logger.LogWarning("Codex remote catalog from {Url} contains no gpt-<digit> generation model, rejected", url);
             return null;
         }
 
@@ -184,10 +199,19 @@ public sealed class CodexModelCatalog : ICodexModelCatalog
     private static bool TiersEqual(IReadOnlyList<string> a, IReadOnlyList<string> b)
         => a.Count == b.Count && a.SequenceEqual(b, StringComparer.Ordinal);
 
+    /// <summary>
+    /// 代际无关的 Codex 目录锚点：id 形如 gpt-&lt;数字&gt;…（gpt-5.5 / gpt-6-luna 等）。
+    /// gpt-image-* 不算——图片模型是 builtin，不构成「这是 Codex 客户端分层」的证据。
+    /// </summary>
+    private static bool IsCodexGenerationModel(string id)
+        => id.Length > 4
+            && id.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase)
+            && char.IsAsciiDigit(id[4]);
+
     private IReadOnlyList<string> ComputeModels(string key)
     {
         // 分层选择规则照搬 CPA sdk/cliproxy/service.go
-        var snapshot = _snapshot;
+        var snapshot = _state._snapshot;
         var tier = key switch
         {
             "pro" => snapshot.Pro,

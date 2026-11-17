@@ -1,4 +1,7 @@
+using AITool.Infrastructure.Networking;
 using AITool.Application.Sites;
+using AITool.Application.Networking;
+using AITool.Application.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
@@ -18,18 +21,27 @@ public sealed class SiteQuotaService
     /// <summary>按站点串行化并发刷新，避免同站并发打上游。</summary>
     private static readonly KeyedAsyncLock Locks = new();
 
+    /// <summary>
+    /// 额度查询的全局并发闸（同时打到所有上游的额度请求数上限，对齐 magpie keyReadsAtOnce=8；
+    /// 同站点本身已按 KeyedAsyncLock 串行，此闸约束跨站点并发）。
+    /// </summary>
+    private static readonly SemaphoreSlim KeyQuerySlots = new(Math.Min(8, Environment.ProcessorCount * 2));
+
     private readonly AppDbContext _dbContext;
     private readonly IEnumerable<ISiteQuotaProvider> _providers;
     private readonly ILogger<SiteQuotaService> _logger;
+    private readonly IAccountNetworkPolicyStore? _accountPolicies;
 
     public SiteQuotaService(
         AppDbContext dbContext,
         IEnumerable<ISiteQuotaProvider> providers,
-        ILogger<SiteQuotaService> logger)
+        ILogger<SiteQuotaService> logger,
+        IAccountNetworkPolicyStore? accountPolicies = null)
     {
         _dbContext = dbContext;
         _providers = providers;
         _logger = logger;
+        _accountPolicies = accountPolicies;
     }
 
     /// <summary>
@@ -47,7 +59,7 @@ public sealed class SiteQuotaService
         var result = new List<SiteQuotaSiteInfo>();
         foreach (var site in sites)
         {
-            var provider = MatchProvider(site.BaseUrl);
+            var provider = MatchProvider(site);
             if (provider is null)
             {
                 continue;
@@ -72,7 +84,7 @@ public sealed class SiteQuotaService
             return null;
         }
 
-        var provider = MatchProvider(site.BaseUrl);
+        var provider = MatchProvider(site);
         if (provider is null)
         {
             return null;
@@ -90,8 +102,19 @@ public sealed class SiteQuotaService
                     .ToListAsync(cancellationToken))
                 .ToList();
 
-            var results = await Task.WhenAll(keys.Select(k =>
-                provider.QueryAsync(site.BaseUrl, k.KeyValue, cancellationToken)));
+            AccountIdentity? account = null;
+            if (_accountPolicies is not null)
+            {
+                var owners = await _accountPolicies.GetLinkedSiteOwnersAsync([siteId], cancellationToken);
+                owners.TryGetValue(siteId, out account);
+            }
+            var results = await Task.WhenAll(keys.Select(k => QueryWithSlotAsync(
+                provider, BuildContext(site) with
+                {
+                    SiteKeyId = k.Id,
+                    AccountIdentity = account,
+                    EgressProxyUrl = !string.IsNullOrWhiteSpace(k.EgressProxyUrl) ? k.EgressProxyUrl : site.EgressProxyUrl
+                }, k.KeyValue, cancellationToken)));
 
             for (var i = 0; i < keys.Count; i++)
             {
@@ -102,8 +125,47 @@ public sealed class SiteQuotaService
         }
     }
 
-    private ISiteQuotaProvider? MatchProvider(string baseUrl)
-        => _providers.FirstOrDefault(p => p.MatchesBaseUrl(baseUrl));
+    /// <summary>带站点内并发闸的密钥额度查询：限制同一站点同时打到上游的额度请求数。</summary>
+    private async Task<SiteQuotaQueryResult> QueryWithSlotAsync(
+        ISiteQuotaProvider provider,
+        SiteQuotaSiteContext site,
+        string apiKey,
+        CancellationToken cancellationToken)
+    {
+        await KeyQuerySlots.WaitAsync(cancellationToken);
+        try
+        {
+            return await provider.QueryAsync(site, apiKey, cancellationToken);
+        }
+        finally
+        {
+            KeyQuerySlots.Release();
+        }
+    }
+
+    /// <summary>构建额度查询的站点上下文（含自定义余额配置）。</summary>
+    private static SiteQuotaSiteContext BuildContext(Domain.Sites.Site site)
+        => new(site.BaseUrl, SiteQuotaBalanceConfig.TryParse(site.QuotaBalanceJson), site.EgressProxyUrl);
+
+    /// <summary>
+    /// 匹配站点的额度供应商：站点配置了自定义余额（QuotaBalanceJson）时自定义余额优先于域名匹配
+    ///（用户显式配置覆盖内置厂商识别）；未配置时行为与按 base_url 匹配完全一致。
+    /// </summary>
+    private ISiteQuotaProvider? MatchProvider(Domain.Sites.Site site)
+    {
+        var context = BuildContext(site);
+        if (context.Balance is not null)
+        {
+            var custom = _providers.FirstOrDefault(p =>
+                string.Equals(p.ProviderKey, "custom-balance", StringComparison.OrdinalIgnoreCase));
+            if (custom is not null)
+            {
+                return custom;
+            }
+        }
+
+        return _providers.FirstOrDefault(p => p.MatchesSite(context));
+    }
 
     private async Task<Dictionary<Guid, List<SiteKey>>> LoadKeysBySiteAsync(
         IReadOnlyList<Guid> siteIds,
@@ -206,5 +268,44 @@ public sealed class SiteQuotaService
             return "***";
         }
         return string.Concat(apiKey.AsSpan(0, 4), "***", apiKey.AsSpan(apiKey.Length - 4));
+    }
+}
+
+/// <summary>Operation-owned quota client; its lease encloses response consumption.</summary>
+internal sealed class SiteQuotaNetworkClient(HttpClient client, HttpClient? ownedClient, INetworkTransportLease? lease) : IAsyncDisposable
+{
+    public HttpClient Client { get; } = client;
+
+    public static async Task<SiteQuotaNetworkClient> AcquireAsync(SiteQuotaSiteContext site, string apiKey,
+        HttpClient defaultClient, AccountNetworkClientFactory? accountClients,
+        IForwardNetworkPolicyResolver? policies, INetworkTransport? transport, CancellationToken ct)
+    {
+        if (site.AccountIdentity is { } account)
+        {
+            var owned = (accountClients ?? throw new InvalidOperationException(
+                "Account network client factory is unavailable.")).CreateForAccount(account, "site-quota");
+            owned.Timeout = defaultClient.Timeout;
+            return new(owned, owned, null);
+        }
+        if (policies is null)
+        {
+            if (!string.IsNullOrWhiteSpace(site.EgressProxyUrl))
+                throw new InvalidOperationException("Network policy resolver is unavailable.");
+            return new(defaultClient, null, null);
+        }
+        var policy = await policies.ResolveAsync(new ProxyForwardRequest
+        {
+            TargetBaseUrl = site.BaseUrl, TargetApiKey = apiKey, EgressProxyUrl = site.EgressProxyUrl
+        }, ct);
+        if (policy.UseDefaultClient) return new(defaultClient, null, null);
+        var acquired = await (transport ?? throw new InvalidOperationException(
+            "Network transport is unavailable.")).AcquireAsync(policy.Configuration, policy.IsolationKey, "site-quota", ct);
+        return new(acquired.Client, null, acquired);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        ownedClient?.Dispose();
+        if (lease is not null) await lease.DisposeAsync();
     }
 }

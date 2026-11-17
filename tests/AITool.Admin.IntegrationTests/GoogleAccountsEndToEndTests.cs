@@ -128,6 +128,21 @@ public sealed class GoogleAccountsEndToEndTests
     }
 
 
+    private sealed class StubNetworkTransport(Func<HttpRequestMessage, HttpResponseMessage> responder) : AITool.Application.Networking.INetworkTransport
+    {
+        public ValueTask<AITool.Application.Networking.INetworkTransportLease> AcquireAsync(
+            AITool.Application.Networking.ResolvedNetworkConfiguration configuration,
+            string isolationScope, string purpose, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<AITool.Application.Networking.INetworkTransportLease>(
+                new Lease(new HttpClient(new StubHandler(responder))));
+
+        private sealed class Lease(HttpClient client) : AITool.Application.Networking.INetworkTransportLease
+        {
+            public HttpClient Client => client;
+            public ValueTask DisposeAsync() { client.Dispose(); return ValueTask.CompletedTask; }
+        }
+    }
+
     private sealed class GeminiProxyWebApplicationFactory : WebApplicationFactory<AITool.Admin.AdminProgramMarker>
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
@@ -155,6 +170,10 @@ public sealed class GoogleAccountsEndToEndTests
                 var httpClient = new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
                 services.RemoveAll<System.Net.Http.IHttpClientFactory>();
                 services.AddSingleton<System.Net.Http.IHttpClientFactory>(new SingletonHttpClientFactory(httpClient));
+                // master 同步：额度/刷新链路改经 INetworkTransport 出站（Testing 默认是拒绝一切的
+                // TestingNetworkTransport），换成同 responder 的直通 stub 保持端到端可测。
+                services.RemoveAll<AITool.Application.Networking.INetworkTransport>();
+                services.AddSingleton<AITool.Application.Networking.INetworkTransport>(new StubNetworkTransport(_responder));
             });
         }
 

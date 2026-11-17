@@ -20,6 +20,7 @@ public sealed class CoreEventPullHostedService : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<CoreEventPullHostedService> _logger;
+    private readonly Microsoft.Extensions.Hosting.IHostEnvironment? _environment;
 
     /// <summary>
     /// SSE 通知触发拉取后，最小等待间隔，避免密集事件导致连续拉取过于频繁。
@@ -46,10 +47,12 @@ public sealed class CoreEventPullHostedService : BackgroundService
     /// </summary>
     public CoreEventPullHostedService(
         IServiceProvider serviceProvider,
-        ILogger<CoreEventPullHostedService> logger)
+        ILogger<CoreEventPullHostedService> logger,
+        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _environment = environment;
     }
 
     /// <summary>
@@ -57,6 +60,11 @@ public sealed class CoreEventPullHostedService : BackgroundService
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Testing 环境（TestHost）不拉取：避免干扰测试专用的真实 Core 进程。
+        if (_environment?.IsEnvironment("Testing") == true)
+        {
+            return;
+        }
         // 启动后等待一小段时间，确保 Core 宿主可能已经启动完成
         try
         {

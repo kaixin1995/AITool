@@ -124,7 +124,6 @@ public sealed class GoogleQuotaMatchingTests
             new HttpClient(),
             null!,
             metadataCache,
-            provider.GetRequiredService<IServiceScopeFactory>(),
             new MemoryCache(new MemoryCacheOptions()),
             null!,
             NullLogger<GoogleAccountQuotaService>.Instance);

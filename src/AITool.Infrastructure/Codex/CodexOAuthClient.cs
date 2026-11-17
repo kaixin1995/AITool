@@ -120,8 +120,11 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException(
-                $"Codex token endpoint returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+            var message = $"Codex token endpoint returned {(int)response.StatusCode} {response.ReasonPhrase}: {body}";
+            if (parameters.TryGetValue("grant_type", out var grantType) && grantType == "refresh_token"
+                && AITool.Application.OAuth.OAuthRefreshRefusedException.IsCredentialRejection(response.StatusCode, body))
+                throw new AITool.Application.OAuth.OAuthRefreshRefusedException(message);
+            throw new InvalidOperationException(message);
         }
 
         using var doc = JsonDocument.Parse(body);

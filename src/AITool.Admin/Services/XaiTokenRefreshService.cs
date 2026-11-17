@@ -1,9 +1,10 @@
+using AITool.Infrastructure.Proxy;
+using AITool.Application.Networking;
 using System.Collections.Concurrent;
 using AITool.Application.Xai;
 using AITool.Domain.Sites;
 using AITool.Domain.Xai;
 using AITool.Infrastructure.Persistence;
-using AITool.Infrastructure.Proxy;
 using Microsoft.Extensions.Hosting;
 
 namespace AITool.Admin.Services;
@@ -74,6 +75,7 @@ public sealed class XaiTokenRefreshService : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var oauthClient = scope.ServiceProvider.GetRequiredService<IXaiOAuthClient>();
+        var networkFactory = scope.ServiceProvider.GetService<NetworkBoundOAuthClientFactory>();
 
         var runtime = await cache.GetRuntimeSettingsAsync(ct);
         if (!runtime.OAuthFeaturesEnabled)
@@ -111,7 +113,7 @@ public sealed class XaiTokenRefreshService : BackgroundService
         foreach (var account in due)
         {
             if (ct.IsCancellationRequested) break;
-            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct);
+            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct, networkFactory);
             if (updated) anyUpdated = true;
             await Task.Delay(InterAccountDelay, ct);
         }
@@ -119,14 +121,26 @@ public sealed class XaiTokenRefreshService : BackgroundService
         if (anyUpdated)
         {
             cache.InvalidateRouteTargets();
+            // split 双宿主：xAI token 轮换写回隐藏 Site.ApiKey，推送 Sites 补丁到 Core。
+            var adminCacheInvalidation = scope.ServiceProvider.GetService<AdminCacheInvalidationService>();
+            if (adminCacheInvalidation is not null)
+            {
+                await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+            }
         }
     }
 
-    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, IXaiOAuthClient oauthClient, XaiAccount account, CancellationToken ct)
+    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, IXaiOAuthClient oauthClient, XaiAccount account, CancellationToken ct, NetworkBoundOAuthClientFactory? networkFactory = null)
     {
         try
         {
-            var tokens = await oauthClient.RefreshTokenAsync(account.RefreshToken!, ct);
+            using var refreshLease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("xai", account.Id, ct);
+            var current = await db.XaiAccounts.InSingleAsync(account.Id);
+            if (current is null || current.IsDeleted || current.RequiresReauth || string.IsNullOrWhiteSpace(current.RefreshToken)
+                || !string.Equals(current.AccessToken, account.AccessToken, StringComparison.Ordinal)) return false;
+            account = current;
+            using var network = networkFactory?.CreateForAccount(new AccountIdentity("xai", account.Id), "background-token-refresh");
+            var tokens = await (network?.XaiOAuth ?? oauthClient).RefreshTokenAsync(account.RefreshToken!, ct);
 
             using var client = db.Client.CopyNew();
             client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
@@ -143,7 +157,9 @@ public sealed class XaiTokenRefreshService : BackgroundService
             account.LastRefreshAt = DateTimeOffset.UtcNow;
             account.UpdatedAt = DateTimeOffset.UtcNow;
 
-            await client.Updateable(account).ExecuteCommandAsync(ct);
+            await client.Updateable(account)
+                .UpdateColumns(a => new { a.AccessToken, a.RefreshToken, a.TokenExpiresAt, a.LastRefreshAt, a.UpdatedAt })
+                .ExecuteCommandAsync(ct);
 
             var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
             if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
@@ -163,10 +179,11 @@ public sealed class XaiTokenRefreshService : BackgroundService
             {
                 using var client = db.Client.CopyNew();
                 client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-                account.RequiresReauth = true;
-                account.UpdatedAt = DateTimeOffset.UtcNow;
-                await client.Updateable(account)
-                    .UpdateColumns(a => new { a.RequiresReauth, a.UpdatedAt })
+                var updatedAt = DateTimeOffset.UtcNow;
+                await client.Updateable<XaiAccount>()
+                    .SetColumns(a => new XaiAccount { RequiresReauth = true, UpdatedAt = updatedAt })
+                    .Where(a => a.Id == account.Id && !a.IsDeleted && a.AccessToken == account.AccessToken
+                        && a.RefreshToken == account.RefreshToken && a.LastRefreshAt == account.LastRefreshAt)
                     .ExecuteCommandAsync(ct);
                 cache.InvalidateRouteTargets();
             }

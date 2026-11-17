@@ -1,7 +1,7 @@
 using AITool.Infrastructure.Proxy;
+using AITool.Application.Networking;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
-using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
 
 namespace AITool.Admin.Services;
@@ -11,114 +11,106 @@ namespace AITool.Admin.Services;
 /// </summary>
 public sealed class CodexCredentialRefreshService
 {
-    /// <summary>
-    /// 同一隐藏站点的 401 刷新采用 single-flight，避免并发请求重复轮换 refresh_token。
-    /// </summary>
-    private static readonly KeyedAsyncLock RefreshLocks = new();
-
+    private readonly NetworkBoundOAuthClientFactory? _networkFactory;
     private readonly AppDbContext _dbContext;
     private readonly ICodexOAuthClient _oauth;
     private readonly ProxyRequestMetadataCache _metadataCache;
-    /// <summary>split 双宿主：变更推送 Core（惰性解析，避免 配额服务→失效服务→设置服务→配额服务 的 DI 环）。</summary>
-    private readonly IServiceScopeFactory _corePushScopeFactory;
     private readonly ILogger<CodexCredentialRefreshService> _logger;
+    /// <summary>split 双宿主：变更推送 Core（惰性解析，避免 DI 环）。</summary>
+    private readonly IServiceScopeFactory? _corePushScopeFactory;
 
     public CodexCredentialRefreshService(
         AppDbContext dbContext,
         ICodexOAuthClient oauth,
         ProxyRequestMetadataCache metadataCache,
-        IServiceScopeFactory corePushScopeFactory,
-        ILogger<CodexCredentialRefreshService> logger)
+        ILogger<CodexCredentialRefreshService> logger,
+        NetworkBoundOAuthClientFactory? networkFactory = null,
+        IServiceScopeFactory? corePushScopeFactory = null)
     {
+        _networkFactory = networkFactory;
         _dbContext = dbContext;
         _oauth = oauth;
         _metadataCache = metadataCache;
-        _corePushScopeFactory = corePushScopeFactory;
         _logger = logger;
+        _corePushScopeFactory = corePushScopeFactory;
     }
 
-    public async Task<string?> RefreshAsync(
-        Guid linkedSiteId,
-        string staleAccessToken,
-        CancellationToken cancellationToken)
+    public async Task<string?> RefreshForAccountAsync(Guid accountId, string staleAccessToken, CancellationToken cancellationToken)
     {
-        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
+        using (await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", accountId, cancellationToken))
         {
-            return await RefreshCoreAsync(linkedSiteId, staleAccessToken, cancellationToken);
+            var account = await _dbContext.CodexAccounts.InSingleAsync(accountId);
+            if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken)) return null;
+            if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal)) return account.AccessToken;
+            using var coreCts = new CancellationTokenSource(RefreshSafetyTimeout);
+            return await RefreshAndPersistAsync(account, coreCts.Token);
         }
     }
 
-    private async Task<string?> RefreshCoreAsync(
-        Guid linkedSiteId,
-        string staleAccessToken,
-        CancellationToken cancellationToken)
+    public async Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
     {
+        if (linkedSiteId == Guid.Empty) return null;
+        cancellationToken.ThrowIfCancellationRequested();
+        using var queryClient = _dbContext.Client.CopyNew();
+        var accounts = await queryClient.Queryable<CodexAccount>().Where(a => a.LinkedSiteId == linkedSiteId)
+            .ToListAsync(cancellationToken);
+        if (accounts.Count != 1) return null;
         try
         {
-            var account = (await _dbContext.CodexAccounts
-                .Where(item => item.LinkedSiteId == linkedSiteId)
-                .ToListAsync(cancellationToken))
-                .FirstOrDefault();
-            if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken))
-            {
-                return null;
-            }
-
-            // 其他请求已经完成刷新时直接复用新 token，避免重复轮换。
-            if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal))
-            {
-                return account.AccessToken;
-            }
-
-            var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, cancellationToken);
-            await _dbContext.SerialExecuteAsync(async () =>
-            {
-                if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    account.AccessToken = tokens.AccessToken;
-                }
-
-                // OpenAI 会轮换 refresh_token，但某些响应可能不返回新 refresh_token，保留旧值避免被清空导致永久无法刷新。
-                if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
-                {
-                    account.RefreshToken = tokens.RefreshToken;
-                }
-
-                if (!string.IsNullOrWhiteSpace(tokens.IdToken))
-                {
-                    account.IdToken = tokens.IdToken;
-                }
-
-                account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(
-                    tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
-                account.LastRefreshAt = DateTimeOffset.UtcNow;
-                await _dbContext.UpdateAsync(account, cancellationToken);
-
-                var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                {
-                    site.ApiKey = tokens.AccessToken;
-                    await _dbContext.UpdateAsync(site, cancellationToken);
-                }
-            }, cancellationToken);
-
-            _metadataCache.InvalidateRouteTargets();
-            await PushToCoreAsyncAccountCredentials(CancellationToken.None);
-            _metadataCache.InvalidateCodexAccounts();
-            await PushToCoreAsyncAccountCredentials(CancellationToken.None);
-            _logger.LogInformation("Codex account {Id} token refreshed after upstream unauthorized", account.Id);
-            return tokens.AccessToken;
+            return await RefreshForAccountAsync(accounts[0].Id, staleAccessToken, cancellationToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (NetworkPolicyException) { throw; }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning(exception, "Unable to refresh Codex token for linked site {SiteId}", linkedSiteId);
+            _logger.LogWarning(ex, "Unable to refresh Codex token for linked site {SiteId}", linkedSiteId);
             return null;
         }
+    }
+
+    /// <summary>关键段的上限时长：覆盖“刷新请求发出 → 响应落盘”全过程，防止站点锁被长时间占用。</summary>
+    private static readonly TimeSpan RefreshSafetyTimeout = TimeSpan.FromSeconds(30);
+
+    private async Task<string?> RefreshAndPersistAsync(
+        CodexAccount account,
+        CancellationToken cancellationToken)
+    {
+        using var network = _networkFactory?.CreateForAccount(new AccountIdentity("codex", account.Id), "credential-refresh");
+        var tokens = await (network?.CodexOAuth ?? _oauth).RefreshTokenAsync(account.RefreshToken!, cancellationToken);
+        await _dbContext.SerialExecuteAsync(async () =>
+        {
+            if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
+            {
+                account.AccessToken = tokens.AccessToken;
+            }
+
+            // OpenAI 会轮换 refresh_token，但某些响应可能不返回新 refresh_token，保留旧值避免被清空导致永久无法刷新。
+            if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
+            {
+                account.RefreshToken = tokens.RefreshToken;
+            }
+
+            if (!string.IsNullOrWhiteSpace(tokens.IdToken))
+            {
+                account.IdToken = tokens.IdToken;
+            }
+
+            account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(
+                tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
+            account.LastRefreshAt = DateTimeOffset.UtcNow;
+            await CodexCredentialPersistence.SaveAsync(_dbContext, account, cancellationToken);
+        }, cancellationToken);
+
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
+        _logger.LogInformation("Codex account {Id} token refreshed after upstream unauthorized", account.Id);
+        return tokens.AccessToken;
     }
 
     /// <summary>惰性解析 AdminCacheInvalidationService 推送变更到 Core（scoped，调用点建作用域）。</summary>
     private async Task PushToCoreAsyncAccountCredentials(CancellationToken cancellationToken)
     {
+        if (_corePushScopeFactory is null) return;
         try
         {
             using var scope = _corePushScopeFactory.CreateScope();
@@ -128,6 +120,7 @@ public sealed class CodexCredentialRefreshService
         catch (Exception ex)
         {
             // 推送失败不影响主流程：下次写操作或启动推送会重试。
+            _logger.LogWarning(ex, "Codex 凭证变更推送 Core 失败，等待下次写操作或启动推送重试。");
         }
     }
 }

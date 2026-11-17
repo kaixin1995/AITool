@@ -160,7 +160,6 @@ public sealed class TokenRefreshDisabledAccountTests : IDisposable
             db,
             _serviceProvider.GetRequiredService<StubGoogleOAuthClient>(),
             scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>(),
-            null!,
             NullLogger<GoogleCredentialRefreshService>.Instance);
 
         (await service.DisableAsync(siteId, "proxy-403", CancellationToken.None)).Should().BeTrue();

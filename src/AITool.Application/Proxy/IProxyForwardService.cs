@@ -2,6 +2,7 @@ namespace AITool.Application.Proxy;
 
 using System.Diagnostics.CodeAnalysis;
 using Sites;
+using AITool.Application.Networking;
 
 /// <summary>
 /// 代理转发请求参数，用于描述一次上游调用所需的完整上下文。
@@ -22,6 +23,12 @@ public sealed class ProxyForwardRequest
     /// 目标站点 API 密钥，用于上游鉴权。
     /// </summary>
     public string TargetApiKey { get; set; } = string.Empty;
+
+    /// <summary>Real persisted site identity; never infer this from a cached credential.</summary>
+    public Guid? SiteId { get; set; }
+    public string? ManagedSource { get; set; }
+    /// <summary>Explicitly permits a non-site diagnostic target, never a managed account.</summary>
+    public bool AllowNonSiteTarget { get; set; }
 
     /// <summary>
     /// 协议类型，例如 OpenAI 或 Anthropic，用于决定请求格式和目标接口。
@@ -85,10 +92,19 @@ public sealed class ProxyForwardRequest
     /// </summary>
     public string? EgressProxyUrl { get; set; }
 
+    /// <summary>Immutable owner identity; the current account policy is re-read before every send.</summary>
+    public AccountIdentity? AccountIdentity { get; set; }
+
+    /// <summary>Optional explicit operation selection/isolation, never ambient request state.</summary>
+    public NetworkOperationContext? NetworkContext { get; set; }
+
     /// <summary>
     /// 上游返回 401 时刷新特定凭证并返回新 API Key；普通站点不设置此回调。
     /// </summary>
     public Func<string, CancellationToken, Task<string?>>? RefreshTargetApiKeyAsync { get; set; }
+
+    /// <summary>Called only for an actual upstream HTTP 401 after refresh/retry has been exhausted.</summary>
+    public Func<string, object?, CancellationToken, Task>? InvalidateTargetCredentialAsync { get; set; }
 
     /// <summary>
     /// 上游返回 403 时禁用特定托管凭证；普通站点不设置此回调。
@@ -158,6 +174,12 @@ public sealed class ProxyForwardResult
     public int RateLimitRetryCount { get; set; }
 
     /// <summary>
+    /// 上游 429 响应携带的 Retry-After 秒数（无该头或解析失败为 null）。
+    /// 供路由分级冷却按上游指示休息，而非固定时长。
+    /// </summary>
+    public int? RetryAfterSeconds { get; set; }
+
+    /// <summary>
     /// 标记本次调用是否因客户端主动取消而结束；取消不应触发后续路由回退。
     /// </summary>
     public bool IsCanceled { get; set; }
@@ -183,9 +205,38 @@ public sealed class ProxyForwardResult
     public string? ErrorMessage { get; set; }
 }
 
-/// <summary>
-/// 代理转发服务接口，负责将标准化请求发送到目标站点并返回统一结果。
-/// </summary>
+/// <summary>Live credential and optional send-boundary gate. Dispose immediately after SendAsync is initiated.</summary>
+public sealed class ForwardCredentialLease(string apiKey, bool isDeviceOAuth = false, IDisposable? gate = null,
+    bool useResolvedApiKey = false, bool protectAuthenticationHeaders = false, object? credentialSnapshot = null) : IDisposable
+{
+    public string ApiKey { get; } = apiKey;
+    public object? CredentialSnapshot { get; } = credentialSnapshot;
+    public bool IsDeviceOAuth { get; } = isDeviceOAuth;
+    public bool UseResolvedApiKey { get; } = useResolvedApiKey || isDeviceOAuth;
+    public bool ProtectAuthenticationHeaders { get; } = protectAuthenticationHeaders || isDeviceOAuth;
+    private IDisposable? _gate = gate;
+    public void Dispose() => Interlocked.Exchange(ref _gate, null)?.Dispose();
+}
+
+public interface IForwardCredentialResolver
+{
+    Task<ForwardCredentialLease> ResolveAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Validated send-time policy and opaque pool isolation; never serialize transport credentials.</summary>
+public sealed record ForwardNetworkPolicyResolution(
+    ResolvedNetworkConfiguration Configuration,
+    string IsolationKey,
+    bool UseDefaultClient = false);
+
+/// <summary>Must validate the current policy/profile/global switch on every attempt, including 401 retries.</summary>
+public interface IForwardNetworkPolicyResolver
+{
+    Task<ForwardNetworkPolicyResolution> ResolveAsync(ProxyForwardRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>代理转发服务接口，负责将标准化请求发送到目标站点并返回统一结果。</summary>
 public interface IProxyForwardService
 {
     /// <summary>

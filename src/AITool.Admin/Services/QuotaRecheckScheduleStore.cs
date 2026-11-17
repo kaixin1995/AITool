@@ -1,0 +1,269 @@
+using AITool.Application.Accounts;
+using AITool.Domain.Operations;
+using AITool.Infrastructure.Persistence;
+using SqlSugar;
+
+namespace AITool.Admin.Services;
+
+/// <summary>
+/// SQLite-backed work queue. Every operation owns its connection; no database lock survives
+/// into an upstream request. Atomic conditional updates, not process locks, arbitrate claims.
+/// </summary>
+public sealed class QuotaRecheckScheduleStore(
+    IServiceScopeFactory scopeFactory,
+    TimeProvider timeProvider,
+    IQuotaRecheckIntervalSource intervals) : IQuotaRecheckScheduleStore
+{
+    // Inspector requests must have a shorter total timeout (currently two minutes).
+    // A crashed worker becomes claimable at this deadline, without another 40–60 minute delay.
+    public static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(10);
+    public DateTimeOffset UtcNow => timeProvider.GetUtcNow();
+
+    public async Task EnsureScheduledAsync(string providerKey, Guid accountId,
+        DateTimeOffset? lastQuotaCheckedAt, CancellationToken cancellationToken)
+    {
+        ValidateProvider(providerKey);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var scope = scopeFactory.CreateScope();
+        using var client = OpenClient(scope);
+        await InsertMissingAsync(client, providerKey, accountId, lastQuotaCheckedAt, InsertOrigin.NewDisableEvent, cancellationToken);
+    }
+
+    public async Task<QuotaRecheckObservation> BeginReconciliationAsync(string providerKey, CancellationToken cancellationToken)
+    {
+        ValidateProvider(providerKey);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var scope = scopeFactory.CreateScope();
+        using var client = OpenClient(scope);
+        var rows = await client.Queryable<QuotaRecheckSchedule>()
+            .Where(s => s.ProviderKey == providerKey).ToListAsync(cancellationToken);
+        return new QuotaRecheckObservation(providerKey, rows.ToDictionary(s => s.AccountId, s => s.Generation));
+    }
+
+    // Without a pre-listing observation there is no safe deletion authority. This overload
+    // remains useful to initialize legacy schedules and supports older interface consumers.
+    public Task<IReadOnlyList<QuotaRecheckScheduleInfo>> ReconcileAsync(string providerKey,
+        IReadOnlyList<AccountQuotaTarget> eligibleAccounts, CancellationToken cancellationToken)
+        => ReconcileAsync(providerKey, eligibleAccounts,
+            new QuotaRecheckObservation(providerKey, new Dictionary<Guid, string>()), cancellationToken);
+
+    public async Task<IReadOnlyList<QuotaRecheckScheduleInfo>> ReconcileAsync(string providerKey,
+        IReadOnlyList<AccountQuotaTarget> eligibleAccounts, QuotaRecheckObservation observation,
+        CancellationToken cancellationToken)
+    {
+        ValidateProvider(providerKey);
+        ArgumentNullException.ThrowIfNull(observation);
+        if (!StringComparer.Ordinal.Equals(providerKey, observation.ProviderKey))
+            throw new ArgumentException("Observation belongs to a different provider.", nameof(observation));
+        ArgumentNullException.ThrowIfNull(eligibleAccounts);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var scope = scopeFactory.CreateScope();
+        using var client = OpenClient(scope);
+        var accounts = eligibleAccounts.DistinctBy(a => a.AccountId).ToArray();
+        var ids = accounts.Select(a => a.AccountId).ToHashSet();
+        // Read outside the write transaction: unchanged heartbeats require no writer lock.
+        // Conflicts and generation checks still fence concurrent changes after this snapshot.
+        var existing = await client.Queryable<QuotaRecheckSchedule>()
+            .Where(s => s.ProviderKey == providerKey).ToListAsync(cancellationToken);
+        var existingById = existing.ToDictionary(s => s.AccountId);
+        var missing = accounts.Where(a => !existingById.ContainsKey(a.AccountId)).ToArray();
+        var snapshotNow = timeProvider.GetUtcNow().UtcTicks;
+        var removals = observation.Generations.Where(s => !ids.Contains(s.Key)
+            && existingById.TryGetValue(s.Key, out var row) && row.Generation == s.Value
+            && (row.LeaseToken == null || row.LeaseExpiresAtUtcTicks <= snapshotNow)).ToArray();
+        if (missing.Length == 0 && removals.Length == 0)
+            return existing.Select(ToInfo).ToArray();
+
+        client.Ado.BeginTran();
+        try
+        {
+            // A listing can already be stale when it returns. Never delete rows inserted,
+            // re-disabled, claimed or completed since its pre-listing observation, nor any
+            // active lease (even if acquired before that observation). A later successful
+            // fresh listing can clean them up after completion or crash expiry.
+            foreach (var observed in removals)
+            {
+                var accountId = observed.Key;
+                var generation = observed.Value;
+                var now = timeProvider.GetUtcNow().UtcTicks;
+                await client.Deleteable<QuotaRecheckSchedule>()
+                    .Where(s => s.ProviderKey == providerKey && s.AccountId == accountId && s.Generation == generation)
+                    .Where(s => s.LeaseToken == null || s.LeaseExpiresAtUtcTicks <= now)
+                    .ExecuteCommandAsync(cancellationToken);
+            }
+
+            // Insert before reading so any non-empty transaction acquires its writer lock
+            // without a SQLite deferred-transaction read-to-write upgrade race. A conflict
+            // is not an Ensure event and must not change the existing row's generation.
+            foreach (var account in missing)
+                await InsertMissingAsync(client, providerKey, account.AccountId, account.LastQuotaCheckedAt,
+                    InsertOrigin.HistoricalBackfill, cancellationToken);
+
+            var result = await client.Queryable<QuotaRecheckSchedule>()
+                .Where(s => s.ProviderKey == providerKey).ToListAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            client.Ado.CommitTran();
+            return result.Select(ToInfo).ToArray();
+        }
+        catch
+        {
+            client.Ado.RollbackTran();
+            throw;
+        }
+    }
+
+    private QuotaRecheckScheduleInfo ToInfo(QuotaRecheckSchedule s) => new(s.ProviderKey, s.AccountId,
+        new DateTimeOffset(s.NextCheckAtUtcTicks, TimeSpan.Zero), s.Generation,
+        s.LastResetCheckAtUtcTicks is { } ticks ? new DateTimeOffset(ticks, TimeSpan.Zero) : null,
+        s.LeaseToken is not null && s.LeaseExpiresAtUtcTicks > timeProvider.GetUtcNow().UtcTicks);
+
+    public async Task<bool> ScheduleResetAsync(string providerKey, Guid accountId, DateTimeOffset resetAt,
+        string observedGeneration, CancellationToken cancellationToken)
+    {
+        ValidateProvider(providerKey);
+        if (string.IsNullOrEmpty(observedGeneration)) return false;
+        using var scope = scopeFactory.CreateScope();
+        using var client = OpenClient(scope);
+        var now = timeProvider.GetUtcNow().UtcTicks;
+        var boundary = resetAt.UtcTicks;
+        var due = Math.Max(now, boundary);
+        var newGeneration = Guid.NewGuid().ToString("D");
+        var updated = await client.Updateable<QuotaRecheckSchedule>()
+            .SetColumns(s => new QuotaRecheckSchedule { NextCheckAtUtcTicks = due, LastResetCheckAtUtcTicks = boundary,
+                Generation = newGeneration, UpdatedAtUtcTicks = now })
+            .Where(s => s.ProviderKey == providerKey && s.AccountId == accountId && s.Generation == observedGeneration
+                && (s.LeaseToken == null || s.LeaseExpiresAtUtcTicks <= now)
+                && s.NextCheckAtUtcTicks > due
+                && (s.LastResetCheckAtUtcTicks == null || s.LastResetCheckAtUtcTicks < boundary))
+            .ExecuteCommandAsync(cancellationToken);
+        return updated == 1;
+    }
+
+    public async Task<QuotaRecheckLease?> TryAcquireAsync(string providerKey, Guid accountId,
+        CancellationToken cancellationToken, bool force = false)
+    {
+        ValidateProvider(providerKey);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var scope = scopeFactory.CreateScope();
+        using var client = OpenClient(scope);
+        var now = timeProvider.GetUtcNow().UtcTicks;
+        var deadline = now + LeaseDuration.Ticks;
+        var token = Guid.NewGuid();
+        var tokenText = token.ToString("D");
+        var updated = await client.Updateable<QuotaRecheckSchedule>()
+            .SetColumns(s => new QuotaRecheckSchedule
+            {
+                Generation = tokenText,
+                LeaseToken = tokenText,
+                LeaseExpiresAtUtcTicks = deadline,
+                NextCheckAtUtcTicks = deadline,
+                UpdatedAtUtcTicks = now
+            })
+            .Where(s => s.ProviderKey == providerKey && s.AccountId == accountId)
+            .Where(s => force || s.NextCheckAtUtcTicks <= now)
+            .Where(s => s.LeaseToken == null || s.LeaseExpiresAtUtcTicks <= now)
+            .ExecuteCommandAsync(cancellationToken);
+        return updated == 1 ? new QuotaRecheckLease(providerKey, accountId, token) : null;
+    }
+
+    public async Task CompleteAsync(QuotaRecheckLease lease, bool keepScheduled, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var scope = scopeFactory.CreateScope();
+        using var client = OpenClient(scope);
+        var token = lease.Token.ToString("D");
+        var now = timeProvider.GetUtcNow().UtcTicks;
+        var generation = Guid.NewGuid().ToString("D");
+        var next = now + intervals.NextInterval().Ticks;
+        // A manual force-check before the scheduled reset must not erase that
+        // wake-up. Preserve it only while still in the future; an already elapsed
+        // boundary has been attempted and must fall back to the random interval.
+        var current = await client.Queryable<QuotaRecheckSchedule>()
+            .Where(s => s.ProviderKey == lease.ProviderKey && s.AccountId == lease.AccountId && s.LeaseToken == token)
+            .FirstAsync(cancellationToken);
+        if (current?.LastResetCheckAtUtcTicks is { } reset && reset > now && reset < next)
+            next = reset;
+        // An expired worker no longer owns the work, even if a new worker has not claimed it yet.
+        if (!keepScheduled)
+        {
+            // Claim stamps Generation with its lease token. Ensure on an existing row changes
+            // only Generation: that newer disable event must survive an older worker's removal.
+            await client.Deleteable<QuotaRecheckSchedule>()
+                .Where(s => s.ProviderKey == lease.ProviderKey && s.AccountId == lease.AccountId
+                    && s.LeaseToken == token && s.LeaseExpiresAtUtcTicks > now && s.Generation == token)
+                .ExecuteCommandAsync(cancellationToken);
+            await client.Updateable<QuotaRecheckSchedule>()
+                .SetColumns(s => new QuotaRecheckSchedule
+                {
+                    Generation = generation,
+                    NextCheckAtUtcTicks = next,
+                    UpdatedAtUtcTicks = now,
+                    LeaseToken = null,
+                    LeaseExpiresAtUtcTicks = null
+                })
+                .Where(s => s.ProviderKey == lease.ProviderKey && s.AccountId == lease.AccountId
+                    && s.LeaseToken == token && s.LeaseExpiresAtUtcTicks > now && s.Generation != token)
+                .ExecuteCommandAsync(cancellationToken);
+            return;
+        }
+
+        await client.Updateable<QuotaRecheckSchedule>()
+            .SetColumns(s => new QuotaRecheckSchedule
+            {
+                Generation = generation,
+                NextCheckAtUtcTicks = next,
+                UpdatedAtUtcTicks = now,
+                LeaseToken = null,
+                LeaseExpiresAtUtcTicks = null
+            })
+            .Where(s => s.ProviderKey == lease.ProviderKey && s.AccountId == lease.AccountId
+                && s.LeaseToken == token && s.LeaseExpiresAtUtcTicks > now)
+            .ExecuteCommandAsync(cancellationToken);
+    }
+
+    private enum InsertOrigin { NewDisableEvent, HistoricalBackfill }
+
+    // 新禁用事件与 Reconcile 补排共用同一套到期计算；两者只在冲突处理上不同
+    // （新禁用事件刷新 Generation，补排不动已存在日程）。
+    private async Task InsertMissingAsync(ISqlSugarClient client, string providerKey, Guid accountId,
+        DateTimeOffset? lastQuotaCheckedAt, InsertOrigin origin, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var now = timeProvider.GetUtcNow();
+        // 到期即查：距上次检查已超过随机间隔（含从未检查）→ 立即以 0–60 秒错峰复查——
+        // 额度窗口可能早已重置，不该再等一个完整间隔；未到期 → next = last + 40–60 分钟随机，
+        // 天然保证最迟约一小时内必有下一次复查（额度被上游提前重置也不会长期无人发现）。
+        var next = lastQuotaCheckedAt is { } last && last + intervals.NextInterval() is var due && due > now
+            ? due
+            : now + intervals.NextCatchUpDelay();
+
+        // An Ensure event renews the generation even on conflict, but NEVER postpones due
+        // or alters a current lease. Historical backfill insertion is not a new disable event.
+        var conflict = origin == InsertOrigin.NewDisableEvent
+            ? "DO UPDATE SET Generation = excluded.Generation"
+            : "DO NOTHING";
+        await client.Ado.ExecuteCommandAsync($"""
+            INSERT INTO QuotaRecheckSchedules
+                (ProviderKey, AccountId, Generation, NextCheckAtUtcTicks, CreatedAtUtcTicks, UpdatedAtUtcTicks)
+            VALUES (@provider, @id, @generation, @next, @now, @now)
+            ON CONFLICT (ProviderKey, AccountId) {conflict};
+            """, new[]
+            {
+                new SugarParameter("@provider", providerKey),
+                new SugarParameter("@id", accountId),
+                new SugarParameter("@generation", Guid.NewGuid().ToString("D")),
+                new SugarParameter("@next", next.UtcTicks),
+                new SugarParameter("@now", now.UtcTicks)
+            });
+    }
+
+    private static ISqlSugarClient OpenClient(IServiceScope scope)
+    {
+        var client = scope.ServiceProvider.GetRequiredService<AppDbContext>().Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        return client;
+    }
+
+    private static void ValidateProvider(string providerKey) => ArgumentException.ThrowIfNullOrWhiteSpace(providerKey);
+}

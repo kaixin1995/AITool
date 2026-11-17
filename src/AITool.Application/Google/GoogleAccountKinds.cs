@@ -3,6 +3,7 @@ namespace AITool.Application.Google;
 /// <summary>
 /// Google 账号接入方式与上游端点常量。
 /// Antigravity 走 daily-cloudcode-pa.googleapis.com 的 v1internal 接口（Antigravity CLI 客户端身份）。
+/// 历史上曾提供 GeminiCli（cloudcode-pa.googleapis.com）接入，已下线；存量账号经 Normalize 归一化为 Antigravity。
 /// </summary>
 public static class GoogleAccountKinds
 {
@@ -32,37 +33,37 @@ public static class GoogleAccountKinds
     /// （即使本机没有服务监听、页面显示无法访问，地址栏也携带 code/state，用户复制粘贴回完成登录）。</summary>
     public const string RedirectUri = "http://localhost:17891";
 
-    /// <summary>判断接入方式是否为合法值。</summary>
+    /// <summary>判断接入方式是否为合法值（GeminiCli 已下线，仅剩 Antigravity）。</summary>
     public static bool IsValid(string? accountKind)
     {
         return string.Equals(accountKind, Antigravity, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>接入方式归一化（归一化为 Antigravity）。</summary>
+    /// <summary>接入方式归一化（历史 GeminiCli 与未知值一并归一化为 Antigravity）。</summary>
     public static string Normalize(string? accountKind)
     {
         return Antigravity;
     }
 
-    /// <summary>获取接入方式对应的上游根地址。</summary>
+    /// <summary>上游根地址（仅 Antigravity 一种接入方式）。</summary>
     public static string GetBaseUrl(string? accountKind = null)
     {
         return AntigravityBaseUrl;
     }
 
-    /// <summary>获取接入方式对应的 OAuth client_id。</summary>
+    /// <summary>OAuth client_id（仅 Antigravity 一种接入方式）。</summary>
     public static string GetClientId(string? accountKind = null)
     {
         return AntigravityClientId;
     }
 
-    /// <summary>获取接入方式对应的 OAuth client_secret。</summary>
+    /// <summary>OAuth client_secret（仅 Antigravity 一种接入方式）。</summary>
     public static string GetClientSecret(string? accountKind = null)
     {
         return AntigravityClientSecret;
     }
 
-    /// <summary>获取接入方式对应的 OAuth scope 列表（空格拼接后放入授权 URL）。</summary>
+    /// <summary>OAuth scope 列表（空格拼接后放入授权 URL）。</summary>
     public static IReadOnlyList<string> GetScopes(string? accountKind = null)
     {
         return
@@ -77,4 +78,10 @@ public static class GoogleAccountKinds
 
     /// <summary>Antigravity CLI 客户端 User-Agent（对齐 agy 1.1.20 真实官方抓包特征）。</summary>
     public const string AntigravityUserAgent = "antigravity/cli/1.1.20 (aidev_client; os_type=windows; arch=amd64; cl=970154694; auth_method=consumer)";
+
+    /// <summary>客户端 User-Agent（仅 Antigravity 一种接入方式）。</summary>
+    public static string GetUserAgent(string? accountKind = null)
+    {
+        return AntigravityUserAgent;
+    }
 }

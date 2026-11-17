@@ -1,55 +1,54 @@
+using AITool.Application.Networking;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 
 namespace AITool.Infrastructure.Sites;
 
-/// <summary>
-/// 站点密钥选择器，供站点级、非路由的操作（模型目录拉取、健康检测）取用一个可用密钥。
-/// <para>
-/// 转发链路在缓存层按 Key 展开多候选，走的是另一套逻辑；本选择器只服务于
-/// "站点级单次调用"场景：取该站点优先级最高（Priority 最小）的启用 Key，
-/// 若站点没有任何启用的 SiteKey（Codex 托管站点或未迁移），则回退到 <see cref="Site.ApiKey"/>。
-/// </para>
-/// </summary>
+/// <summary>The selected credential and its effective, unresolved network selector.</summary>
+public sealed record SiteCredentialContext(
+    Guid? SiteKeyId,
+    string ApiKey,
+    string? EgressProxyUrl,
+    AccountIdentity? AccountIdentity = null,
+    string? KeyEgressProxyUrl = null);
+
+/// <summary>Selects the highest priority enabled credential for a site-level operation.</summary>
 public sealed class SiteKeySelector
 {
     private readonly AppDbContext _dbContext;
+    private readonly IAccountNetworkPolicyStore? _accountPolicies;
 
-    /// <summary>
-    /// 注入数据库上下文。
-    /// </summary>
-    public SiteKeySelector(AppDbContext dbContext)
+    public SiteKeySelector(AppDbContext dbContext, IAccountNetworkPolicyStore? accountPolicies = null)
     {
         _dbContext = dbContext;
+        _accountPolicies = accountPolicies;
     }
 
-    /// <summary>
-    /// 取指定站点的活动密钥（优先级最高、已启用）。
-    /// 站点没有启用的 SiteKey 时回退到 Site.ApiKey；若站点也不存在则返回空字符串。
-    /// </summary>
+    /// <summary>Retained for callers which only need the secret.</summary>
     public async Task<string> GetActiveKeyAsync(Guid siteId, CancellationToken cancellationToken = default)
-    {
-        var primaryKeys = await _dbContext.SiteKeys
+        => (await GetActiveCredentialAsync(siteId, cancellationToken)).ApiKey;
 
+    public async Task<SiteCredentialContext> GetActiveCredentialAsync(Guid siteId,
+        CancellationToken cancellationToken = default)
+    {
+        var keys = await _dbContext.SiteKeys
             .Where(k => k.SiteId == siteId && k.IsEnabled)
             .OrderBy(k => k.Priority)
             .ThenBy(k => k.CreatedAt)
             .ThenBy(k => k.Id)
-            .Select(k => k.KeyValue)
             .ToListAsync(cancellationToken);
-
-        if (primaryKeys.Count > 0 && !string.IsNullOrEmpty(primaryKeys[0]))
+        var site = await _dbContext.Sites.FirstAsync(s => s.Id == siteId, cancellationToken);
+        var key = keys.FirstOrDefault();
+        // Preserve the legacy fallback when the first selected credential is empty.
+        if (string.IsNullOrEmpty(key?.KeyValue)) key = null;
+        AccountIdentity? account = null;
+        if (_accountPolicies is not null)
         {
-            return primaryKeys[0];
+            var owners = await _accountPolicies.GetLinkedSiteOwnersAsync([siteId], cancellationToken);
+            owners.TryGetValue(siteId, out account);
         }
-
-        // 回退：站点没有启用的 SiteKey（Codex 托管站点 / 未迁移），用 Site.ApiKey
-        var siteApiKeys = await _dbContext.Sites
-
-            .Where(s => s.Id == siteId)
-            .Select(s => s.ApiKey)
-            .ToListAsync(cancellationToken);
-
-        return siteApiKeys.Count > 0 ? (siteApiKeys[0] ?? string.Empty) : string.Empty;
+        return new SiteCredentialContext(key?.Id, key?.KeyValue ?? site?.ApiKey ?? string.Empty,
+            !string.IsNullOrWhiteSpace(key?.EgressProxyUrl) ? key.EgressProxyUrl : site?.EgressProxyUrl,
+            account, key?.EgressProxyUrl);
     }
 }

@@ -1,4 +1,5 @@
 import { httpGet, httpPost, httpDelete, httpPut } from './http'
+import { withNetworkSelectionQuery, type AccountNetworkSelection } from './accountNetwork'
 
 // 通用额度窗口（进度条数据），与后端 OAuth 账号额度提供程序返回结果对齐。
 export interface OAuthQuotaWindow {
@@ -6,6 +7,63 @@ export interface OAuthQuotaWindow {
   label: string
   usedPercent: number | null
   resetLabel: string | null
+}
+
+export interface CodexQuotaModelUsage {
+  model: string
+  requests: number
+  totalTokens: number
+  inputTokens?: number
+  cachedTokens?: number
+  outputTokens?: number
+  estimatedCostUsd?: number | null
+  unpricedCount?: number | null
+  unknownCount?: number
+}
+
+export interface CodexQuotaPeriod {
+  id: string
+  windowId: string
+  label: string
+  startAt: string
+  resetAt: string
+  endAt: string | null
+  firstObservedAt: string
+  lastObservedAt: string
+  aggregatedAt: string
+  usedPercent: number | null
+  boundaryUncertain: boolean
+  isCurrent: boolean
+  projectionBasis?: {
+    observedAt: string
+    requestCount: number
+    totalTokens: number
+    unknownCount: number
+    estimatedCostUsd: number | null
+    unpricedCount: number | null
+  } | null
+  previousPeriodId?: string | null
+  historyNormalized?: boolean
+  inputTokens: number
+  cachedTokens: number
+  outputTokens: number
+  totalTokens: number
+  requestCount: number
+  successCount: number | null
+  lastUsageAt: string | null
+  unknownCount: number
+  estimatedCostUsd: number | null
+  unpricedCount: number | null
+  models: CodexQuotaModelUsage[]
+}
+
+export function getCodexQuotaPeriods(id: string): Promise<CodexQuotaPeriod[]> {
+  return httpGet(`/api/admin/oauth/accounts/${encodeURIComponent(id)}/quota-periods`, { skipErrorNotify: true })
+}
+export type CodexQuotaUsage = Pick<CodexQuotaPeriod, 'inputTokens' | 'cachedTokens' | 'outputTokens' | 'totalTokens' | 'requestCount' | 'successCount' | 'unknownCount' | 'estimatedCostUsd' | 'unpricedCount' | 'models'>
+export function getCodexQuotaUsage(id: string, start: string, end: string): Promise<CodexQuotaUsage> {
+  const query = new URLSearchParams({ start, end })
+  return httpGet(`/api/admin/oauth/accounts/${encodeURIComponent(id)}/quota-usage?${query}`, { skipErrorNotify: true })
 }
 
 export interface OAuthAccount {
@@ -102,11 +160,12 @@ export interface OAuthCredentialImportResult {
 }
 
 export async function importCredential(
-  jsonText: string
+  jsonText: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<OAuthCredentialImportResult> {
   // 文本导入提供稳定文件名，保持旧页面的默认账号名称。
   const result = await httpPost<Partial<OAuthCredentialImportResult>>(
-    '/api/admin/oauth/import-credential?name=imported.json',
+    withNetworkSelectionQuery('/api/admin/oauth/import-credential?name=imported.json', networkSelection),
     JSON.parse(jsonText)
   )
   return {
@@ -116,12 +175,13 @@ export async function importCredential(
 }
 
 export async function importCredentialFiles(
-  files: File[]
+  files: File[],
+  networkSelection?: AccountNetworkSelection
 ): Promise<OAuthCredentialImportResult> {
   const form = new FormData()
   files.forEach(file => form.append('files', file))
   const result = await httpPost<Partial<OAuthCredentialImportResult>>(
-    '/api/admin/oauth/import-credential',
+    withNetworkSelectionQuery('/api/admin/oauth/import-credential', networkSelection),
     form,
     { headers: { 'Content-Type': 'multipart/form-data' } }
   )
@@ -156,9 +216,9 @@ export async function exportCredentials(
     { accountIds }
   )
 }
-export async function startOAuth(): Promise<{ url: string; state: string }> {
+export async function startOAuth(networkSelection?: AccountNetworkSelection, reauthorizeAccountId?: string): Promise<{ url: string; state: string }> {
   // 后端返回字段名为 url（不是 authorizeUrl）
-  return httpPost<{ url: string; state: string }>('/api/admin/oauth/start-oauth', {})
+  return httpPost<{ url: string; state: string }>('/api/admin/oauth/start-oauth', { ...(networkSelection ? { networkSelection } : {}), ...(reauthorizeAccountId ? { reauthorizeAccountId } : {}) })
 }
 export async function completeOAuth(callbackUrl: string, displayName?: string): Promise<void> {
   await httpPost('/api/admin/oauth/complete-oauth', { callbackUrl, displayName })
@@ -240,6 +300,19 @@ export interface OAuthResetCreditsInfo {
 export async function importSelectedOAuthModels(id: string, selections: OAuthModelSelection[]): Promise<void> {
   await httpPost(`/api/admin/oauth/accounts/${id}/import-selected-models`, { selections })
 }
+
+/** 批量应用模型选择的逐账号结果（同组账号）。 */
+export interface BatchApplyResult {
+  results: Array<{ accountId: string; displayName: string | null; ok: boolean; error: string | null; importedCount?: number | null; changed?: number }>
+  succeeded: number
+  failed: number
+}
+
+/** 兼容旧批量接口：仅同步源账号，其他账号因权限无法验证而跳过。 */
+export async function batchApplyOAuthModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
+  return httpPost<BatchApplyResult>('/api/admin/oauth/accounts/batch-apply-models', { sourceAccountId, selections })
+}
+
 // 重置额度信用（rate_limit_reset_credits）。
 export async function getResetCredits(id: string): Promise<OAuthResetCreditsInfo> {
   return httpGet<OAuthResetCreditsInfo>(`/api/admin/oauth/accounts/${id}/reset-credits`)
@@ -275,9 +348,10 @@ export async function listGoogleAccounts(): Promise<GoogleAccountSummary[]> {
   return httpGet<GoogleAccountSummary[]>('/api/admin/google-accounts/accounts')
 }
 export async function startGoogleOAuth(
-  kind: GoogleAccountKind
+  kind: GoogleAccountKind,
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ url: string; state: string }> {
-  return httpPost<{ url: string; state: string }>('/api/admin/google-accounts/start-oauth', { kind })
+  return httpPost<{ url: string; state: string }>('/api/admin/google-accounts/start-oauth', { kind, ...(networkSelection ? { networkSelection } : {}) })
 }
 export async function completeGoogleOAuth(
   kind: GoogleAccountKind,
@@ -292,10 +366,11 @@ export async function completeGoogleOAuth(
 }
 export async function importGoogleCredential(
   kind: GoogleAccountKind,
-  jsonText: string
+  jsonText: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
   const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
-    `/api/admin/google-accounts/import-credential?kind=${encodeURIComponent(kind)}&name=imported.json`,
+    withNetworkSelectionQuery(`/api/admin/google-accounts/import-credential?kind=${encodeURIComponent(kind)}&name=imported.json`, networkSelection),
     JSON.parse(jsonText)
   )
   return {
@@ -331,6 +406,11 @@ export async function importSelectedGoogleModels(
   await httpPost(`/api/admin/google-accounts/accounts/${id}/import-selected-models`, { models: selections })
 }
 
+/** Google（Antigravity）：仅同步源账号，其他账号因权限无法验证而跳过。 */
+export async function batchApplyGoogleModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
+  return httpPost<BatchApplyResult>('/api/admin/google-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
+}
+
 // —— Kimi 账号 (Moonshot AI) ——
 
 export interface KimiAccountSummary {
@@ -352,6 +432,7 @@ export interface KimiAccountSummary {
 }
 
 export interface KimiDeviceCodeResponse {
+  serverSessionId?: string
   deviceCode: string
   userCode: string
   verificationUri: string
@@ -374,20 +455,23 @@ export async function listKimiAccounts(): Promise<KimiAccountSummary[]> {
 }
 
 export async function startKimiDeviceFlow(
-  deviceId?: string
+  deviceId?: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<KimiDeviceCodeResponse> {
-  return httpPost<KimiDeviceCodeResponse>('/api/admin/kimi-accounts/start-device-flow', { deviceId })
+  return httpPost<KimiDeviceCodeResponse>('/api/admin/kimi-accounts/start-device-flow', { deviceId, ...(networkSelection ? { networkSelection } : {}) })
 }
 
 export async function pollKimiToken(
   deviceCode: string,
   deviceId?: string,
-  displayName?: string
+  displayName?: string,
+  serverSessionId?: string
 ): Promise<KimiPollTokenResponse> {
   return httpPost<KimiPollTokenResponse>('/api/admin/kimi-accounts/poll-token', {
     deviceCode,
     deviceId,
-    displayName
+    displayName,
+    ...(serverSessionId ? { serverSessionId } : {})
   })
 }
 
@@ -434,11 +518,17 @@ export async function importSelectedKimiModels(
   await httpPost(`/api/admin/kimi-accounts/accounts/${id}/import-selected-models`, { models: selections })
 }
 
+/** Kimi：仅同步源账号，其他账号因权限无法验证而跳过。 */
+export async function batchApplyKimiModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
+  return httpPost<BatchApplyResult>('/api/admin/kimi-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
+}
+
 export async function importKimiCredential(
-  jsonText: string
+  jsonText: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
   const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
-    '/api/admin/kimi-accounts/import-credential?name=imported.json',
+    withNetworkSelectionQuery('/api/admin/kimi-accounts/import-credential?name=imported.json', networkSelection),
     JSON.parse(jsonText)
   )
   return {
@@ -448,12 +538,13 @@ export async function importKimiCredential(
 }
 
 export async function importKimiCredentialFiles(
-  files: File[]
+  files: File[],
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
   const form = new FormData()
   files.forEach(file => form.append('files', file))
   const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
-    '/api/admin/kimi-accounts/import-credential',
+    withNetworkSelectionQuery('/api/admin/kimi-accounts/import-credential', networkSelection),
     form,
     { headers: { 'Content-Type': 'multipart/form-data' } }
   )
@@ -494,6 +585,7 @@ export interface XaiAccountSummary {
 }
 
 export interface XaiDeviceCodeResponse {
+  serverSessionId?: string
   deviceCode: string
   userCode: string
   verificationUri: string
@@ -514,17 +606,19 @@ export async function listXaiAccounts(): Promise<XaiAccountSummary[]> {
   return httpGet<XaiAccountSummary[]>('/api/admin/xai-accounts/accounts')
 }
 
-export async function startXaiDeviceFlow(): Promise<XaiDeviceCodeResponse> {
-  return httpPost<XaiDeviceCodeResponse>('/api/admin/xai-accounts/start-device-flow', {})
+export async function startXaiDeviceFlow(networkSelection?: AccountNetworkSelection): Promise<XaiDeviceCodeResponse> {
+  return httpPost<XaiDeviceCodeResponse>('/api/admin/xai-accounts/start-device-flow', { ...(networkSelection ? { networkSelection } : {}) })
 }
 
 export async function pollXaiToken(
   deviceCode: string,
-  displayName?: string
+  displayName?: string,
+  serverSessionId?: string
 ): Promise<XaiPollTokenResponse> {
   return httpPost<XaiPollTokenResponse>('/api/admin/xai-accounts/poll-token', {
     deviceCode,
-    displayName
+    displayName,
+    ...(serverSessionId ? { serverSessionId } : {})
   })
 }
 
@@ -571,11 +665,17 @@ export async function importSelectedXaiModels(
   await httpPost(`/api/admin/xai-accounts/accounts/${id}/import-selected-models`, { models: selections })
 }
 
+/** xAI（Grok）：仅同步源账号，其他账号因权限无法验证而跳过。 */
+export async function batchApplyXaiModels(sourceAccountId: string, selections: OAuthModelSelection[]): Promise<BatchApplyResult> {
+  return httpPost<BatchApplyResult>('/api/admin/xai-accounts/accounts/batch-apply-models', { sourceAccountId, models: selections })
+}
+
 export async function importXaiCredential(
-  jsonText: string
+  jsonText: string,
+  networkSelection?: AccountNetworkSelection
 ): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
   const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
-    '/api/admin/xai-accounts/import-credential',
+    withNetworkSelectionQuery('/api/admin/xai-accounts/import-credential', networkSelection),
     jsonText,
     { headers: { 'Content-Type': 'application/json' } }
   )

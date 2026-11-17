@@ -21,10 +21,10 @@ public sealed class ZhipuQuotaParserTests
         result.Should().NotBeNull();
         result!.Error.Should().BeNull();
         return result.Windows.Select(w => new SiteQuotaWindowLike(
-            w.Id, w.Label, w.UsedPercent, w.ResetAtUtc)).ToList();
+            w.Id, w.Label, w.UsedPercent, w.ResetAtUtc, w.IsAside)).ToList();
     }
 
-    private sealed record SiteQuotaWindowLike(string Id, string Label, double UsedPercent, DateTimeOffset? ResetAtUtc);
+    private sealed record SiteQuotaWindowLike(string Id, string Label, double UsedPercent, DateTimeOffset? ResetAtUtc, bool IsAside = false);
 
     [Fact]
     public void Parse_extracts_level_from_data()
@@ -53,7 +53,7 @@ public sealed class ZhipuQuotaParserTests
             }
             """);
 
-        windows.Should().HaveCount(2);
+        windows.Should().HaveCount(3);
         windows[0].Id.Should().Be(ZhipuQuotaParser.FiveHourWindowId);
         windows[0].Label.Should().Be("5 小时窗口");
         windows[0].UsedPercent.Should().Be(1.0);
@@ -61,6 +61,11 @@ public sealed class ZhipuQuotaParserTests
         windows[1].Id.Should().Be(ZhipuQuotaParser.WeeklyWindowId);
         windows[1].Label.Should().Be("每周额度");
         windows[1].UsedPercent.Should().Be(42.0);
+        // TIME_LIMIT 解析为非阻塞 Aside 窗口，追加在主窗口之后。
+        windows[2].Id.Should().Be(ZhipuQuotaParser.McpMonthWindowId);
+        windows[2].Label.Should().Be("MCP 月度");
+        windows[2].UsedPercent.Should().Be(7.0);
+        windows[2].IsAside.Should().BeTrue();
     }
 
     [Fact]
@@ -97,16 +102,19 @@ public sealed class ZhipuQuotaParserTests
             }
             """);
 
-        windows.Should().HaveCount(1);
+        windows.Should().HaveCount(2);
         windows[0].Id.Should().Be(ZhipuQuotaParser.FiveHourWindowId);
         windows[0].UsedPercent.Should().Be(2.0);
+        windows[1].Id.Should().Be(ZhipuQuotaParser.McpMonthWindowId);
+        windows[1].IsAside.Should().BeTrue();
     }
 
     [Fact]
-    public void No_token_limits_returns_empty()
+    public void No_token_limits_returns_only_aside_window()
     {
+        // 仅有 TIME_LIMIT 时，除 Aside 窗口外没有可调度窗口。
         var windows = ParseWindows("""{ "limits": [ { "type": "TIME_LIMIT", "percentage": 5.0 } ] }""");
-        windows.Should().BeEmpty();
+        windows.Should().ContainSingle(w => w.Id == ZhipuQuotaParser.McpMonthWindowId && w.IsAside);
     }
 
     [Fact]
@@ -273,6 +281,32 @@ public sealed class ZhipuQuotaParserTests
         result.Should().NotBeNull();
         result!.Error.Should().Be("令牌无效");
         result.Windows.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Envelope_error_code_parsed_from_number_or_string()
+    {
+        // 智谱平台信封（HTTP 200 + success:false + code）：code 数字与字符串两种形态都要能读。
+        var numeric = ZhipuQuotaParser.Parse("""{ "success": false, "code": 1001, "msg": "令牌无效" }""");
+        numeric!.ErrorCode.Should().Be(1001);
+        numeric.IsKeyRefusal.Should().BeTrue("1000–1005 是密钥本身被拒");
+
+        var text = ZhipuQuotaParser.Parse("""{ "success": false, "code": "1113", "msg": "余额不足" }""");
+        text!.ErrorCode.Should().Be(1113);
+        text.IsKeyRefusal.Should().BeFalse("1113 是余额不足，不是密钥被拒");
+
+        var none = ZhipuQuotaParser.Parse("""{ "success": false, "msg": "未知" }""");
+        none!.ErrorCode.Should().BeNull();
+        none.IsKeyRefusal.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Key_refusal_range_boundaries()
+    {
+        ZhipuQuotaParser.Parse("""{ "success": false, "code": 1000, "msg": "x" }""")!.IsKeyRefusal.Should().BeTrue();
+        ZhipuQuotaParser.Parse("""{ "success": false, "code": 1005, "msg": "x" }""")!.IsKeyRefusal.Should().BeTrue();
+        ZhipuQuotaParser.Parse("""{ "success": false, "code": 1006, "msg": "x" }""")!.IsKeyRefusal.Should().BeFalse();
+        ZhipuQuotaParser.Parse("""{ "success": false, "code": 999, "msg": "x" }""")!.IsKeyRefusal.Should().BeFalse();
     }
 
     [Fact]

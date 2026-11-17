@@ -1,7 +1,11 @@
 using AITool.Admin;
+using Microsoft.AspNetCore.DataProtection;
 using AITool.Admin.Controllers.Proxy;
 using AITool.Admin.Services;
 using AITool.Application.Sites;
+using AITool.Application.Networking;
+using AITool.Application.OAuth;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using AITool.Infrastructure.Xai;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
@@ -247,6 +251,8 @@ builder.Services.AddHttpClient<ICodexOAuthClient, CodexOAuthClient>(c =>
 });
 // 注册 Codex 静态模型目录（进程内只读）。
 builder.Services.AddSingleton<ICodexModelCatalog, CodexModelCatalog>();
+// Codex 上游客户端版本解析（NetworkBoundOAuthClientFactory 构造依赖）。
+builder.Services.AddSingleton<ICodexClientVersionResolver, CodexClientVersionResolver>();
 // Codex 上游客户端版本配置化（模型拉取 UA / client_version 参数可按上游演进调整，780ac7b）。
 builder.Services.Configure<CodexUpstreamOptions>(builder.Configuration.GetSection(CodexUpstreamOptions.SectionName));
 // 注册 Codex 动态模型拉取客户端（chatgpt.com/backend-api/codex/models）。
@@ -276,6 +282,10 @@ builder.Services.AddHttpClient<ICodexResetCreditsService, CodexResetCreditsServi
 {
     client.Timeout = TimeSpan.FromSeconds(30);
 });
+// 额度重置复查调度（到期即查 + 保底随机复查），供各厂商 QuotaService 使用。
+builder.Services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.TryAddSingleton<IQuotaRecheckIntervalSource, QuotaRecheckIntervalSource>();
+builder.Services.TryAddSingleton<IQuotaRecheckScheduleStore, QuotaRecheckScheduleStore>();
 
 // —— Google（Antigravity）账号托管五件套 ——
 builder.Services.AddHttpClient<IGoogleOAuthClient, GoogleOAuthClient>(client =>
@@ -325,6 +335,12 @@ builder.Services.AddHttpClient<DeepSeekSiteQuotaProvider>(client =>
     client.Timeout = TimeSpan.FromSeconds(20);
 });
 builder.Services.AddTransient<ISiteQuotaProvider>(sp => sp.GetRequiredService<DeepSeekSiteQuotaProvider>());
+// 自定义余额查询（Site.QuotaBalanceJson 配置表达式，通用兜底）。
+builder.Services.AddHttpClient<CustomBalanceSiteQuotaProvider>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
+builder.Services.AddTransient<ISiteQuotaProvider>(sp => sp.GetRequiredService<CustomBalanceSiteQuotaProvider>());
 
 // —— xAI (Grok/SuperGrok) 账号托管 ——
 builder.Services.AddHttpClient<AITool.Application.Xai.IXaiOAuthClient, AITool.Infrastructure.Xai.XaiOAuthClient>(client =>
@@ -342,6 +358,75 @@ builder.Services.AddHttpClient<XaiQuotaService>(client =>
 });
 builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<XaiQuotaService>());
 builder.Services.AddHostedService<XaiTokenRefreshService>();
+
+// —— 账号网络策略与出站安全基座（Legacy/Direct/ProxyProfile 三态）——
+builder.Services.AddDataProtection().SetApplicationName("AITool.NetworkSecurity.v1");
+builder.Services.AddSingleton<AITool.Infrastructure.Networking.ProxyProfileSecretService>();
+builder.Services.AddSingleton<AITool.Infrastructure.Networking.AccountNetworkPolicyStore>();
+builder.Services.AddSingleton<AITool.Application.Networking.IAccountNetworkPolicyStore>(sp => sp.GetRequiredService<AITool.Infrastructure.Networking.AccountNetworkPolicyStore>());
+builder.Services.AddSingleton<AITool.Application.Networking.IAccountNetworkPolicyResolver>(sp => sp.GetRequiredService<AITool.Infrastructure.Networking.AccountNetworkPolicyStore>());
+// Testing 环境换确定性假传输，供集成测试断言出站行为。
+if (builder.Environment.IsEnvironment("Testing"))
+    builder.Services.AddSingleton<AITool.Application.Networking.INetworkTransport, TestingNetworkTransport>();
+else
+    builder.Services.AddSingleton<AITool.Application.Networking.INetworkTransport, AITool.Infrastructure.Networking.NetworkTransport>();
+builder.Services.AddSingleton<AccountNetworkClientFactory>();
+// 发送边界实时解析：账号级网络策略与凭证所有权复验（Admin/AllInOne 有库形态；Core 快照形态见 CoreProgramServices）。
+builder.Services.AddSingleton<AITool.Application.Proxy.IForwardNetworkPolicyResolver, ForwardNetworkPolicyResolver>();
+builder.Services.AddSingleton<AITool.Application.Proxy.IForwardCredentialResolver, ForwardCredentialResolver>();
+builder.Services.AddScoped<ForwardOAuthInvalidationService>();
+builder.Services.AddScoped<AITool.Application.Proxy.IHealthCredentialCallbacks, HealthCredentialCallbacks>();
+builder.Services.AddSingleton<NetworkBoundOAuthClientFactory>();
+builder.Services.AddSingleton<NetworkBoundDeviceOAuthVendorFactory>();
+
+// —— 通用设备 OAuth 厂商（Claude/Copilot/Kiro/MiniMax/Qoder/Trae/WorkBuddy/ZCode）——
+builder.Services.AddHttpClient("device-oauth-minimax-cn", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-minimax-global", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-qoder", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-qoder-cn", c => c.Timeout = TimeSpan.FromSeconds(20));
+// ZCode downloads an upstream-provided config URL; redirects must not bypass its host allowlist.
+builder.Services.AddHttpClient("device-oauth-zcode", c => c.Timeout = TimeSpan.FromSeconds(20))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient("device-oauth-copilot", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-claude", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-kiro", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-trae-cn", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-trae-global", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-workbuddy-cn", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("device-oauth-workbuddy-global", c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.ClaudeOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-claude")));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.KiroOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-kiro")));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.TraeOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-trae-cn")));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.TraeOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-trae-global"), global: true));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.WorkBuddyOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-workbuddy-cn")));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.WorkBuddyOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-workbuddy-global"), global: true));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.CopilotOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-copilot")));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.MiniMaxOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-minimax-cn"),
+    sp.GetRequiredService<ILogger<AITool.Infrastructure.OAuth.MiniMaxOAuthVendor>>(), global: false));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.MiniMaxOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-minimax-global"),
+    sp.GetRequiredService<ILogger<AITool.Infrastructure.OAuth.MiniMaxOAuthVendor>>(), global: true));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.QoderOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-qoder"), china: false));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.QoderOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-qoder-cn"), china: true));
+builder.Services.AddTransient<AITool.Application.OAuth.IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.ZCodeOAuthVendor(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-zcode")));
+builder.Services.AddSingleton<DeviceOAuthVendorRegistry>();
+builder.Services.AddScoped<DeviceOAuthAccountProvisioner>();
+builder.Services.AddScoped<DeviceOAuthQuotaService>();
+builder.Services.AddScoped<DeviceOAuthCredentialRefreshService>();
+builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<DeviceOAuthQuotaService>());
+builder.Services.AddHostedService<DeviceOAuthTokenRefreshService>();
+// 账号网络策略管理 API 支撑（策略存取 + 代理方案密文脱敏）。
 
 // AI 助手：请求头模板查最新版本、模型价格 AI 查价等后台功能的统一 AI 调用通道。
 builder.Services.AddScoped<AiAssistantService>();
@@ -431,6 +516,8 @@ builder.Services.AddHttpClient("RelayCoreClient", client =>
 // Admin 定时从 Core 拉取事件（replay）、消费入库（ingest）、提交确认（ack）。
 // 构成完整的事件消费闭环：Core 产生事件 → spool 兜底 → Admin 拉取 → 入库 → 确认。
 // AllInOne 单进程形态（enableCrossHostServices=false）两者均无跨宿主语义，不注册。
+// Testing 环境同样不注册：TestHost 后台推送会用空库快照覆盖测试手工预置的 Core 配置
+// （V1Relay 等真实 Core 进程测试依赖 last-good-config.json 的预置内容）。
 if (enableCrossHostServices)
 {
     builder.Services.AddHostedService<CoreConfigSyncHostedService>();
