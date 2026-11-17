@@ -25,7 +25,7 @@ namespace AITool.Web.Controllers.Admin;
 public sealed class CodexApiController : ControllerBase
 {
     // —— OAuth 会话暂存（state → verifier，TTL 10min）——
-    private sealed record OAuthSession(string State, string Verifier, DateTimeOffset ExpiresAt, NetworkOperationContext Network, bool UpdateNetworkPolicy);
+    private sealed record OAuthSession(string State, string Verifier, DateTimeOffset ExpiresAt, NetworkOperationContext Network, bool UpdateNetworkPolicy, Guid? ReauthorizeAccountId);
     private static readonly ConcurrentDictionary<string, OAuthSession> Sessions = new();
 
     private readonly NetworkBoundOAuthClientFactory? _networkFactory;
@@ -76,12 +76,19 @@ public sealed class CodexApiController : ControllerBase
         try
         {
         CleanupExpiredSessions();
-        var operation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, req?.NetworkSelection, ct);
+        NetworkOperationContext operation;
+        if (req?.ReauthorizeAccountId is { } id)
+        {
+            if (id == Guid.Empty || await GetAccountAsync(id, ct) is null) return NotFound(new { message = "原账号不存在，请刷新列表。" });
+            if (req.NetworkSelection is not null) return BadRequest(new { message = "重新登录沿用原账号网络策略，请先在账号设置中修改。" });
+            operation = new NetworkOperationContext(new AccountIdentity("codex", id), Guid.NewGuid().ToString("N"), new AccountNetworkSelection(AITool.Domain.Operations.NetworkMode.Legacy));
+        }
+        else operation = await NetworkBoundOAuthClientFactory.PrepareOperationAsync(_networkFactory, req?.NetworkSelection, ct);
         using var network = _networkFactory?.CreateForOperation(operation, "login-start");
         var oauth = network?.CodexOAuth ?? _oauth;
         var (state, verifier) = oauth.CreateOAuthSession();
         var url = await oauth.BuildAuthorizeUrlAsync(state, verifier, ct);
-        Sessions[state] = new OAuthSession(state, verifier, DateTimeOffset.UtcNow.AddMinutes(10), operation, req?.NetworkSelection is not null);
+        Sessions[state] = new OAuthSession(state, verifier, DateTimeOffset.UtcNow.AddMinutes(10), operation, req?.NetworkSelection is not null, req?.ReauthorizeAccountId);
         return Ok(new { url, state });
         }
         catch (NetworkPolicyException ex)
@@ -146,7 +153,7 @@ public sealed class CodexApiController : ControllerBase
         {
             // 未自定义名时传 null：默认名统一由 provisioner 生成（邮箱 + plan 后缀），
             // 同邮箱多 workspace（plus + team）的两条账号在列表里一眼可分。
-            DisplayName = !string.IsNullOrWhiteSpace(req.DisplayName) ? req.DisplayName.Trim() : null,
+            DisplayName = session.ReauthorizeAccountId is null && !string.IsNullOrWhiteSpace(req.DisplayName) ? req.DisplayName.Trim() : null,
             AccessToken = tokens.AccessToken,
             RefreshToken = tokens.RefreshToken,
             IdToken = tokens.IdToken,
@@ -158,11 +165,17 @@ public sealed class CodexApiController : ControllerBase
         CodexAccount account;
         try
         {
-            account = await _provisioner.ProvisionFromTokensAsync(input, ct, session.Network, session.UpdateNetworkPolicy);
+            account = session.ReauthorizeAccountId is { } id
+                ? await _provisioner.ReauthorizeAsync(id, input, ct)
+                : await _provisioner.ProvisionFromTokensAsync(input, ct, session.Network, session.UpdateNetworkPolicy);
         }
         catch (CodexWorkspaceRequiredException ex)
         {
             return BadRequest(new { code = "codex_workspace_required", message = ex.Message });
+        }
+        catch (InvalidOperationException ex) when (session.ReauthorizeAccountId is not null)
+        {
+            return BadRequest(new { code = "codex_reauthorization_rejected", message = ex.Message });
         }
         return Ok(ToSummary(account));
         }
@@ -886,6 +899,7 @@ public sealed class StartOAuthRequest
 {
     public AccountNetworkSelection? NetworkSelection { get; set; }
     public string? DisplayName { get; set; }
+    public Guid? ReauthorizeAccountId { get; set; }
 }
 
 public sealed class CompleteOAuthRequest

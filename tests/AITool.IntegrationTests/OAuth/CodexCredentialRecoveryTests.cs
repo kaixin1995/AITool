@@ -15,6 +15,50 @@ namespace AITool.IntegrationTests.OAuth;
 
 public sealed class CodexCredentialRecoveryTests : IDisposable
 {
+    [Theory]
+    [InlineData("workspace", "member@example.com", true)]
+    [InlineData("wrong-workspace", "member@example.com", false)]
+    [InlineData("workspace", "other@example.com", false)]
+    public async Task Reauthorize_oauth_callback_updates_only_matching_existing_account(string workspace, string email, bool matches)
+    {
+        var (account, site) = await SeedAsync(false, false, true);
+        await _db.Client.Updateable<CodexAccount>().SetColumns(x => new CodexAccount { AccountId = "workspace", Email = "member@example.com" })
+            .Where(x => x.Id == account.Id).ExecuteCommandAsync();
+        var controller = Controller(new LoginOAuth(workspace, email));
+        var start = (await controller.StartOAuth(new StartOAuthRequest { ReauthorizeAccountId = account.Id }, default)).Should().BeOfType<OkObjectResult>().Subject;
+        using var json = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(start.Value));
+        var state = json.RootElement.GetProperty("state").GetString();
+        var result = await controller.CompleteOAuth(new CompleteOAuthRequest { CallbackUrl = $"http://localhost/callback?code=test&state={state}", DisplayName = "must-not-rename" }, default);
+        if (matches) result.Should().BeOfType<OkObjectResult>(); else result.Should().BeOfType<BadRequestObjectResult>();
+        var saved = await _db.CodexAccounts.InSingleAsync(account.Id);
+        saved.DisplayName.Should().Be("Codex");
+        saved.AccessToken.Should().Be(matches ? "new-access" : "old-access");
+        (await _db.Sites.InSingleAsync(site.Id)).ApiKey.Should().Be(matches ? "new-access" : "old-access");
+        (await _db.CodexAccounts.ToListAsync()).Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(false, false, false)]
+    public async Task Reauthorization_preserves_manual_cooling_and_global_disable(bool manual, bool cooling, bool featureEnabled)
+    {
+        var (account, site) = await SeedAsync(manual, cooling, featureEnabled);
+        await _db.Client.Updateable<CodexAccount>().SetColumns(x => new CodexAccount { AccountId = "workspace", Email = "member@example.com" })
+            .Where(x => x.Id == account.Id).ExecuteCommandAsync();
+        var controller = Controller(new LoginOAuth("workspace", "member@example.com"));
+        var start = (OkObjectResult)await controller.StartOAuth(new StartOAuthRequest { ReauthorizeAccountId = account.Id }, default);
+        using var json = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(start.Value));
+        var state = json.RootElement.GetProperty("state").GetString();
+        (await controller.CompleteOAuth(new CompleteOAuthRequest { CallbackUrl = $"http://localhost/callback?code=test&state={state}" }, default)).Should().BeOfType<OkObjectResult>();
+        var saved = await _db.CodexAccounts.InSingleAsync(account.Id);
+        saved.RequiresReauth.Should().BeFalse();
+        saved.IsEnabled.Should().BeFalse();
+        saved.ManuallyDisabled.Should().Be(manual);
+        saved.IsQuotaCooling.Should().Be(cooling);
+        (await _db.Sites.InSingleAsync(site.Id)).IsEnabled.Should().BeFalse();
+    }
+
     private readonly string _path = Path.Combine(Path.GetTempPath(), $"codex-recovery-{Guid.NewGuid():N}.db");
     private readonly ServiceProvider _services;
     private readonly AppDbContext _db;
@@ -132,5 +176,20 @@ public sealed class CodexCredentialRecoveryTests : IDisposable
         public Task<string> BuildAuthorizeUrlAsync(string state, string verifier, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<CodexTokenSet> ExchangeCodeAsync(string code, string verifier, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<CodexTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken) => access is null ? throw new InvalidOperationException("invalid refresh token") : Task.FromResult(new CodexTokenSet { AccessToken = access, RefreshToken = "rotated-refresh", ExpiresIn = 3600 });
+    }
+
+    private sealed class LoginOAuth(string workspace, string email) : ICodexOAuthClient
+    {
+        public (string State, string Verifier) CreateOAuthSession() => (Guid.NewGuid().ToString("N"), "verifier");
+        public Task<string> BuildAuthorizeUrlAsync(string state, string verifier, CancellationToken cancellationToken = default) => Task.FromResult("https://example.test/authorize");
+        public Task<CodexTokenSet> ExchangeCodeAsync(string code, string verifier, CancellationToken cancellationToken)
+        {
+            var payload = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object> {
+                ["email"] = email, ["https://api.openai.com/auth"] = new Dictionary<string, string> { ["chatgpt_account_id"] = workspace }
+            });
+            var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(payload)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            return Task.FromResult(new CodexTokenSet { AccessToken = "new-access", RefreshToken = "new-refresh", IdToken = "h." + encoded + ".s", ExpiresIn = 3600 });
+        }
+        public Task<CodexTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 }

@@ -216,9 +216,9 @@ export async function exportCredentials(
     { accountIds }
   )
 }
-export async function startOAuth(networkSelection?: AccountNetworkSelection): Promise<{ url: string; state: string }> {
+export async function startOAuth(networkSelection?: AccountNetworkSelection, reauthorizeAccountId?: string): Promise<{ url: string; state: string }> {
   // 后端返回字段名为 url（不是 authorizeUrl）
-  return httpPost<{ url: string; state: string }>('/api/admin/oauth/start-oauth', { ...(networkSelection ? { networkSelection } : {}) })
+  return httpPost<{ url: string; state: string }>('/api/admin/oauth/start-oauth', { ...(networkSelection ? { networkSelection } : {}), ...(reauthorizeAccountId ? { reauthorizeAccountId } : {}) })
 }
 export async function completeOAuth(callbackUrl: string, displayName?: string): Promise<void> {
   await httpPost('/api/admin/oauth/complete-oauth', { callbackUrl, displayName })

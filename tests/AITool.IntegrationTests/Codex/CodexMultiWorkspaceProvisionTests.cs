@@ -113,6 +113,55 @@ public sealed class CodexMultiWorkspaceProvisionTests : IDisposable
     }
 
     [Fact]
+    public async Task Explicit_reauthorization_preserves_account_site_history_and_rules()
+    {
+        var provisioner = CreateProvisioner();
+        var original = await provisioner.ProvisionFromTokensAsync(Input("workspace", "member@example.com", "team", "old", "Team002"), default);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await provisioner.UpsertRemoteModelsAsync(original.LinkedSiteId, [("model-a", "model-a")], default);
+        var period = new AITool.Domain.Codex.CodexQuotaPeriod { AccountId = original.Id, SiteId = original.LinkedSiteId, WindowId = "weekly", RequestCount = 123 };
+        var log = new AITool.Domain.Proxy.ProxyUsageLog { TargetSiteId = original.LinkedSiteId, TotalTokens = 456 };
+        var rule = new AITool.Domain.Proxy.ProxyRouteRule { ExternalModelName = "entry", SiteId = original.LinkedSiteId, SiteModelName = "model-a", UpstreamModelName = "model-a" };
+        await db.Client.Insertable(period).ExecuteCommandAsync();
+        await db.Client.Insertable(log).ExecuteCommandAsync();
+        await db.Client.Insertable(rule).ExecuteCommandAsync();
+        await db.Client.Updateable<AITool.Domain.Codex.CodexAccount>()
+            .SetColumns(x => new AITool.Domain.Codex.CodexAccount { RequiresReauth = true, IsEnabled = false })
+            .Where(x => x.Id == original.Id).ExecuteCommandAsync();
+        var updated = await provisioner.ReauthorizeAsync(original.Id, Input("workspace", "MEMBER@example.com", "team", "new", "ignored"), default);
+        updated.Id.Should().Be(original.Id);
+        updated.LinkedSiteId.Should().Be(original.LinkedSiteId);
+        updated.DisplayName.Should().Be("Team002");
+        updated.RequiresReauth.Should().BeFalse();
+        (await db.Client.Queryable<AITool.Domain.Codex.CodexQuotaPeriod>().InSingleAsync(period.Id)).RequestCount.Should().Be(123);
+        (await db.Client.Queryable<AITool.Domain.Proxy.ProxyUsageLog>().InSingleAsync(log.Id)).TotalTokens.Should().Be(456);
+        (await db.Client.Queryable<AITool.Domain.Proxy.ProxyRouteRule>().InSingleAsync(rule.Id)).SiteId.Should().Be(original.LinkedSiteId);
+        (await db.SiteModelMappings.ToListAsync()).Should().ContainSingle(x => x.SiteId == original.LinkedSiteId && x.RemoteModelName == "model-a");
+        (await db.Sites.InSingleAsync(original.LinkedSiteId)).ApiKey.Should().Be("new");
+    }
+
+    [Theory]
+    [InlineData("other-workspace", "member@example.com")]
+    [InlineData("workspace", "other@example.com")]
+    [InlineData(null, "member@example.com")]
+    [InlineData("workspace", null)]
+    public async Task Explicit_reauthorization_rejects_wrong_or_unverifiable_identity_without_changing_original(string? workspace, string? email)
+    {
+        var provisioner = CreateProvisioner();
+        var original = await provisioner.ProvisionFromTokensAsync(Input("workspace", "member@example.com", "team", "old", "Team002"), default);
+        var newCredentials = Input(workspace, email ?? "", "team", "new");
+        newCredentials.Email = email;
+        var action = () => provisioner.ReauthorizeAsync(original.Id, newCredentials, default);
+        await action.Should().ThrowAsync<InvalidOperationException>();
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await db.CodexAccounts.InSingleAsync(original.Id)).AccessToken.Should().Be("old");
+        (await db.Sites.InSingleAsync(original.LinkedSiteId)).ApiKey.Should().Be("old");
+        (await db.CodexAccounts.ToListAsync()).Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task Email_fallback_only_matches_legacy_rows_without_account_id()
     {
         var provisioner = CreateProvisioner();

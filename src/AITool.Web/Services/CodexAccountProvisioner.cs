@@ -89,6 +89,43 @@ public sealed class CodexAccountProvisioner
         }
     }
 
+    /// <summary>Reauthorize a selected account only when the new workspace and member identity match.</summary>
+    public async Task<CodexAccount> ReauthorizeAsync(Guid accountId, CodexProvisionInput input, CancellationToken ct)
+    {
+        if (accountId == Guid.Empty || string.IsNullOrWhiteSpace(input.AccessToken) || string.IsNullOrWhiteSpace(input.RefreshToken))
+            throw new InvalidOperationException("授权凭证不完整，请重新登录。");
+        input.DisplayName = null;
+        await _provisionGate.WaitAsync(ct);
+        try
+        {
+            using var lease = await NetworkBoundOAuthClientFactory.LockCredentialsAsync("codex", accountId, ct);
+            using var lookup = _dbContext.Client.CopyNew();
+            var current = await lookup.Queryable<CodexAccount>().InSingleAsync(accountId)
+                ?? throw new InvalidOperationException("原账号已不存在，请刷新列表。");
+            if (!ReauthorizationIdentityMatches(current, input))
+                throw new InvalidOperationException("登录的账号或工作空间与原账号不一致，或缺少可验证的身份信息；请使用原账号及原工作空间重新授权。");
+            var operation = new NetworkOperationContext(new AccountIdentity("codex", accountId), Guid.NewGuid().ToString("N"), new AccountNetworkSelection(AITool.Domain.Operations.NetworkMode.Legacy));
+            return await ProvisionFromTokensCoreAsync(input, ct, operation, updateNetworkPolicy: false, preserveCredentials: false, candidateId: accountId);
+        }
+        finally { _provisionGate.Release(); }
+    }
+
+    private static bool ReauthorizationIdentityMatches(CodexAccount account, CodexProvisionInput input)
+    {
+        var oldWorkspace = NormalizeKey(account.AccountId);
+        var newWorkspace = NormalizeKey(input.AccountId);
+        if (oldWorkspace is null || newWorkspace is null || oldWorkspace != newWorkspace) return false;
+        var oldUser = NormalizeKey(CodexJwtParser.Parse(account.IdToken)?.UserId);
+        var newUser = NormalizeKey(CodexJwtParser.Parse(input.IdToken)?.UserId);
+        if (oldUser is not null && newUser is not null && oldUser != newUser) return false;
+        var oldEmail = NormalizeEmail(account.Email);
+        var newEmail = NormalizeEmail(input.Email);
+        // A workspace is shared by members: if both known member identifiers conflict,
+        // never accept a matching email alone. Missing evidence cannot identify a member.
+        if (oldEmail is not null && newEmail is not null) return oldEmail == newEmail;
+        return oldUser is not null && oldUser == newUser;
+    }
+
     private async Task<CodexAccount> ProvisionFromTokensCoreAsync(CodexProvisionInput input, CancellationToken ct,
         NetworkOperationContext? networkOperation, bool updateNetworkPolicy, bool preserveCredentials, Guid? candidateId)
     {

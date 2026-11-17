@@ -420,12 +420,15 @@ const baseAccountTableColumns = [
   {
     title: '操作',
     key: 'actions',
-    width: 220,
+    width: 280,
     render(row: AccountTableRow) {
       const buttons = [
         h(NButton, { size: 'tiny', secondary: true, disabled: !canOperateAccount(row.raw.provider), onClick: () => handleRefreshQuota(row.raw) }, { default: () => '刷新' }),
         h(NButton, { size: 'tiny', secondary: true, disabled: !canUseVendorCatalog.value || !canOperateAccount(row.raw.provider), onClick: () => openEdit(row.raw) }, { default: () => '编辑' })
       ]
+      if (row.raw.provider === 'codex' && row.raw.requiresReauth) {
+        buttons.push(h(NButton, { size: 'tiny', secondary: true, type: 'primary', disabled: !canOperateAccount(row.raw.provider), onClick: () => openCodexReauthorization(row.raw) }, { default: () => '重新登录' }))
+      }
       if (row.canFetchModels) {
         buttons.push(h(NButton, { size: 'tiny', secondary: true, onClick: () => openFetchModels(row.raw) }, { default: () => '模型' }))
       }
@@ -580,6 +583,7 @@ const featureDisabled = ref(false)
 
 // OAuth 弹窗
 const oauthModal = ref(false)
+const reauthorizeAccount = ref<UnifiedAccount | null>(null)
 const oauthUrl = ref('')
 const oauthCallbackInput = ref('')
 const oauthDisplayName = ref('')
@@ -990,6 +994,7 @@ function formatSeconds(secs: number): string {
 
 function openOAuthModal(provider: string = 'codex'): void {
   if (!canOperateAccount(provider)) return
+  reauthorizeAccount.value = null
   oauthProvider.value = provider
   legacyNetworkConfirmed.value = false
   deviceFlowError.value = ''
@@ -1001,14 +1006,19 @@ function openOAuthModal(provider: string = 'codex'): void {
   oauthModal.value = true
 }
 
+function openCodexReauthorization(account: UnifiedAccount): void {
+  openOAuthModal('codex')
+  reauthorizeAccount.value = account
+}
+
 async function handleStartOAuth(): Promise<void> {
   if (!canOperateAccount(oauthProvider.value)) return
-  if (networkLoadState.value === 'loading' || networkLoadState.value === 'error' || (networkLoadState.value === 'legacy' && !legacyNetworkConfirmed.value)) {
+  if (!reauthorizeAccount.value && (networkLoadState.value === 'loading' || networkLoadState.value === 'error' || (networkLoadState.value === 'legacy' && !legacyNetworkConfirmed.value))) {
     message.warning(networkLoadState.value === 'loading' ? '网络策略正在加载' : networkError.value || '请先确认网络策略')
     return
   }
-  if (networkReady.value && !networkSelectionValid(oauthNetworkSelection.value)) { message.warning('请选择有效网络出口'); return }
-  const networkSelection = networkReady.value ? oauthNetworkSelection.value : undefined
+  if (!reauthorizeAccount.value && networkReady.value && !networkSelectionValid(oauthNetworkSelection.value)) { message.warning('请选择有效网络出口'); return }
+  const networkSelection = !reauthorizeAccount.value && networkReady.value ? oauthNetworkSelection.value : undefined
   oauthStartLoading.value = true
   deviceFlowError.value = ''
   clearAllDeviceFlows()
@@ -1106,7 +1116,7 @@ async function handleStartOAuth(): Promise<void> {
       }, (result.interval || 5) * 1000)
     } else {
       const result = oauthProvider.value === 'codex'
-        ? await api.startOAuth(networkSelection)
+        ? await api.startOAuth(networkSelection, reauthorizeAccount.value?.id)
         : await api.startGoogleOAuth(googleKindOf(oauthProvider.value), networkSelection)
       oauthUrl.value = result.url
       oauthCallbackInput.value = ''
@@ -1209,10 +1219,16 @@ async function handleCompleteOAuth(): Promise<void> {
         oauthDisplayName.value.trim() || undefined
       )
     }
-    message.success('OAuth 登录成功')
+    message.success(reauthorizeAccount.value ? '重新登录成功，已更新原账号' : 'OAuth 登录成功')
     oauthModal.value = false
     await load()
-  } catch (e) { message.error((e as Error).message) } finally { oauthLoading.value = false }
+  } catch (e) {
+    if (reauthorizeAccount.value) {
+      oauthUrl.value = ''
+      oauthCallbackInput.value = ''
+      message.error(`${(e as Error).message}。请重新开始登录。`)
+    } else message.error((e as Error).message)
+  } finally { oauthLoading.value = false }
 }
 
 async function handleToggle(acc: UnifiedAccount): Promise<void> {
@@ -1970,7 +1986,7 @@ onUnmounted(() => {
                 size="small"
                 :bordered="false"
                 :max-height="640"
-                :scroll-x="1320"
+                :scroll-x="1380"
               />
               <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
               <article
@@ -2058,6 +2074,9 @@ onUnmounted(() => {
                     <div v-if="acc.lastQuotaCheckedAt">刷新时间：{{ formatDateTime(acc.lastQuotaCheckedAt) }}</div>
                   </div>
                   <div class="oauth-card-actions">
+                    <NButton v-if="acc.provider === 'codex' && acc.requiresReauth" class="oauth-icon-button primary" circle secondary title="重新登录原账号" aria-label="重新登录原账号" :disabled="!canOperateAccount(acc.provider)" @click="openCodexReauthorization(acc)">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7" /><polyline points="3 3 3 9 9 9" /><path d="M12 8v4l3 2" /></svg>
+                    </NButton>
                     <NButton class="oauth-icon-button" circle secondary title="刷新额度" aria-label="刷新额度" :disabled="!canOperateAccount(acc.provider)" @click="handleRefreshQuota(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
                     </NButton>
@@ -2177,14 +2196,15 @@ onUnmounted(() => {
     </NSpin>
 
     <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序；按厂商展示对应流程。 -->
-    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${providerLabelOf(oauthProvider)}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearAllDeviceFlows">
-      <div class="oauth-form-group">
+    <NModal v-model:show="oauthModal" :title="reauthorizeAccount ? `重新登录 - ${reauthorizeAccount.displayName}` : `OAuth 登录 - ${providerLabelOf(oauthProvider)}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearAllDeviceFlows">
+      <NAlert v-if="reauthorizeAccount" type="info" style="margin-bottom: 12px">请登录原账号并选择原工作空间。身份匹配后更新原账号，保留已有配置与统计；网络连接沿用原账号策略。</NAlert>
+      <div v-if="!reauthorizeAccount" class="oauth-form-group">
         <p class="oauth-form-label">账号显示名称（可选）</p>
         <NInput v-model:value="oauthDisplayName" :placeholder="oauthProvider === 'kimi' ? '留空则默认 Kimi 账号' : oauthProvider === 'xai' ? '留空则默认 Grok 账号' : '留空则用邮箱'" />
       </div>
-      <NAlert v-if="networkError" type="warning">{{ networkError }} <NButton size="tiny" @click="loadNetwork">重试</NButton></NAlert>
-      <NCheckbox v-if="networkLoadState === 'legacy'" v-model:checked="legacyNetworkConfirmed">确认使用旧网络路径</NCheckbox>
-      <AccountNetworkSelector v-if="networkReady" v-model="oauthNetworkSelection" :options="networkOptions" :disabled="oauthStartLoading || !!oauthUrl || !!kimiDeviceCode || !!xaiDeviceCode" style="margin-bottom: 16px" />
+      <NAlert v-if="!reauthorizeAccount && networkError" type="warning">{{ networkError }} <NButton size="tiny" @click="loadNetwork">重试</NButton></NAlert>
+      <NCheckbox v-if="!reauthorizeAccount && networkLoadState === 'legacy'" v-model:checked="legacyNetworkConfirmed">确认使用旧网络路径</NCheckbox>
+      <AccountNetworkSelector v-if="!reauthorizeAccount && networkReady" v-model="oauthNetworkSelection" :options="networkOptions" :disabled="oauthStartLoading || !!oauthUrl || !!kimiDeviceCode || !!xaiDeviceCode" style="margin-bottom: 16px" />
       <NButton type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">
         {{ (oauthProvider === 'kimi' && kimiUserCode) || (oauthProvider === 'xai' && xaiUserCode) ? '重新获取验证码' : '开始登录' }}
       </NButton>
