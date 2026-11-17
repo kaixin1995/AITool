@@ -1,0 +1,47 @@
+# AI-Tool Web 宿主的 systemd 部署模板（Linux）。
+#
+# 安装：
+#   1. 把发布产物放到 /opt/aitool（目录可改，与下方 WorkingDirectory/ExecStart 保持一致）：
+#      dotnet publish src/AITool.Web/AITool.Web.csproj -c Release -r linux-x64 -o /opt/aitool
+#   2. cp deploy/aitool-web.service.example /etc/systemd/system/aitool-web.service
+#   3. 按需修改 ExecStart 中的 dotnet 路径与 User 后：
+#      systemctl daemon-reload && systemctl enable --now aitool-web
+#      journalctl -u aitool-web -f 跟随日志；NLog 文件日志在 <部署目录>/logs/ 下。
+#
+# 内存参数说明（与代码内内存策略联动，调整前先读注释）：
+# - MemoryHigh（软上限）：超过即触发内核回收（先页缓存、后冷匿名页），进程变慢但不会被杀。
+#   常态水位约 80-120MB，这里留出负载尖峰余量。若出现持续延迟上浮，适当调高。
+# - MemoryMax（硬上限）：必须大于「GC 堆硬上限（runtimeconfig.template.json 中
+#   System.GC.HeapHardLimit=256MB）+ 原生内存（SQLite/线程栈/HTTP 缓冲，约 100-150MB）」，
+#   否则托管堆合法增长到上限附近时会被 systemd 直接 OOM-kill。不确定就先不设或按 450M 起步。
+#
+# 可选：内存紧张的 VPS 建议启用 zram（把冷页压缩驻留内存，比换盘快得多）：
+#   Debian/Ubuntu: apt install zram-tools && 编辑 /etc/default/zramswap（PERCENT=25）后重启服务
+#   或通用做法：1GB swapfile + vm.swappiness=60（/etc/sysctl.d/99-aitool.conf）
+
+[Unit]
+Description=AITool Web (AI API gateway)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 建议专用非 root 用户运行（需对部署目录有写权限：数据库 aitool.db 与 logs/）
+# User=aitool
+# Group=aitool
+WorkingDirectory=/opt/aitool
+ExecStart=/usr/bin/dotnet /opt/aitool/AITool.Web.dll
+Restart=on-failure
+RestartSec=5
+
+# 内存软/硬上限（理由见文件头注释；MemoryMax 可按机器余量增删）
+MemoryHigh=170M
+MemoryMax=450M
+
+# 轻量加固（按需启用；启用后须保证部署目录可写、日志目录可写）
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ReadWritePaths=/opt/aitool
+
+[Install]
+WantedBy=multi-user.target

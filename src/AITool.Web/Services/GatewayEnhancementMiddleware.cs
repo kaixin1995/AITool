@@ -10,6 +10,16 @@ public sealed class GatewayEnhancementMiddleware(RequestDelegate next)
         GatewayBudgetGate gate, GatewayRequestContext context, AppDbContext db, ILogger<GatewayEnhancementMiddleware> logger)
     {
         if (!http.Request.Path.StartsWithSegments("/v1") && !http.Request.Path.StartsWithSegments("/mcp")) { await next(http); return; }
+        // 在飞计数覆盖 /v1 与 /mcp 请求的全生命周期（含下方所有早退路径、流式与 WebSocket 响应期），
+        // 供 MemoryMaintenanceService 判定进程空闲；任何路径（含异常）都必须释放票据。
+        ProxyTrafficGauge.Begin();
+        try { await InvokeGatewayAsync(http, settings, metadata, gate, context, db, logger); }
+        finally { ProxyTrafficGauge.End(); }
+    }
+
+    private async Task InvokeGatewayAsync(HttpContext http, GatewayEnhancementSettings settings, ProxyRequestMetadataCache metadata,
+        GatewayBudgetGate gate, GatewayRequestContext context, AppDbContext db, ILogger<GatewayEnhancementMiddleware> logger)
+    {
         if (settings.LoadError is { } loadError)
         {
             http.Response.StatusCode = 503;

@@ -1,5 +1,6 @@
 {
   "configProperties": {
-    "System.GC.HeapHardLimit": 268435456
+    "System.GC.HeapHardLimit": 268435456,
+    "System.GC.ConserveMemory": 5
   }
 }

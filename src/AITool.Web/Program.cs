@@ -204,7 +204,13 @@ if (swaggerEnabled)
 
 // 数据库文件放在软件根目录下。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
+// 默认连接串关闭 ADO 连接池：SqlSugar 即开即关（IsAutoCloseConnection），池化会让关掉的连接滞留
+// 原生 sqlite3 句柄与页缓存（主连接 PRAGMA cache_size 上限 64MB，见 AppDbContext.InitializeDatabase）；
+// 关池后每次操作都是短连接（默认 2MB 页缓存、用完即毁），常态原生内存显著下降，
+// 且空闲时全部连接关闭会让 SQLite 自动 checkpoint 收走 -wal 文件（备份更干净）。
+// 代价仅每次开连接 ~0.1ms（元数据缓存 TTL 300s 挡住了绝大多数 DB 往返）。
+// 显式配置了 ConnectionStrings:DefaultConnection 的部署保持其自定义值（含池化选择）。
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)};Pooling=False";
 // 注册 SqlSugar 数据访问层（SqlSugarScope 单例 + AppDbContext 适配），连接级 PRAGMA 与原 EF 配置一致。
 builder.Services.AddSqlSugar(connectionString);
 
