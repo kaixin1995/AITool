@@ -34,7 +34,6 @@ interface StabilitySettings {
   keepAliveSeconds: number | null
   loopDetectionEnabled: boolean
   extendedHeadBufferEnabled: boolean
-  sessionMetricsEnabled: boolean
 }
 interface GatewaySettingsSnapshot extends StabilitySettings {
   revision: string
@@ -44,8 +43,7 @@ const stability = reactive<StabilitySettings>({
   keepAliveEnabled: false,
   keepAliveSeconds: 15,
   loopDetectionEnabled: false,
-  extendedHeadBufferEnabled: false,
-  sessionMetricsEnabled: false
+  extendedHeadBufferEnabled: false
 })
 const stabilityFields = Object.keys(stability) as (keyof StabilitySettings)[]
 function stabilitySnapshot(value: StabilitySettings): string {
@@ -347,7 +345,7 @@ onMounted(() => {
         </NCard>
 
         <NCard class="settings-card settings-body-card">
-          <h5 class="settings-card-title">稳定性与会话统计</h5>
+          <h5 class="settings-card-title">稳定性</h5>
           <NAlert v-if="stabilityError" type="error" class="stability-alert">{{ stabilityError }}；保存失败时会保留当前输入，请确认后重试。</NAlert>
           <NSpin :show="stabilityLoading">
             <NForm label-placement="top" :disabled="!stabilityLoaded || stabilitySaving">
@@ -363,7 +361,6 @@ onMounted(() => {
               <div class="settings-switch-column compact-row">
                 <label class="settings-switch-inline"><NSwitch v-model:value="stability.loopDetectionEnabled" /><span class="form-label-tip">检测并终止重复输出<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>流式回答出现大量重复文本时终止请求，避免持续消耗额度；刻意重复的超长内容也可能被截断。</NTooltip></span></label>
                 <label class="settings-switch-inline"><NSwitch v-model:value="stability.extendedHeadBufferEnabled" /><span class="form-label-tip">延长流式热身事件缓冲<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>延长 Responses、Chat 和 Claude 流式正文之前的准备事件缓冲，保留故障回退机会；正文、推理或工具内容开始后立即放行。</NTooltip></span></label>
-                <label class="settings-switch-inline"><NSwitch v-model:value="stability.sessionMetricsEnabled" /><span class="form-label-tip">会话与流量统计<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>按 Session-Id、Thread-Id、X-Session-Id 或 X-Conversation-Id 汇总；子代理可传 X-Parent-Session-Id。仅存标识摘要与统计，不保存对话正文。到调试工具的「会话统计」查看结果。</NTooltip></span></label>
               </div>
             </NForm>
           </NSpin>

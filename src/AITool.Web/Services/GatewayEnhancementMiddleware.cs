@@ -23,7 +23,7 @@ public sealed class GatewayEnhancementMiddleware(RequestDelegate next)
         // around a call that will acquire it again, including chunked MCP requests.
         if (http.Request.Path.StartsWithSegments("/mcp")) { await next(http); return; }
         if (http.WebSockets.IsWebSocketRequest) { await next(http); return; }
-        if (!options.KeepAliveEnabled && !options.SessionMetricsEnabled && options.Budgets.Count == 0) { await next(http); return; }
+        if (!options.KeepAliveEnabled && options.Budgets.Count == 0) { await next(http); return; }
         var bearer = http.Request.Headers.Authorization.ToString();
         var token = bearer.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? bearer[7..] : http.Request.Headers["x-api-key"].ToString();
         var key = await metadata.ValidateAccessKeyAsync(token, http.RequestAborted);
@@ -42,8 +42,7 @@ public sealed class GatewayEnhancementMiddleware(RequestDelegate next)
             await http.Response.WriteAsJsonAsync(new { error = new { code = "budget_exceeded", message = error } });
             return;
         }
-        context.Enabled = options.SessionMetricsEnabled || budgets.Count > 0;
-        context.CaptureSession(key.Id, http.Request.Headers, null);
+        context.Enabled = budgets.Count > 0;
         var started = DateTimeOffset.UtcNow;
         var watch = Stopwatch.StartNew();
         var original = http.Response.Body;
@@ -55,17 +54,16 @@ public sealed class GatewayEnhancementMiddleware(RequestDelegate next)
         {
             await measured.StopAsync();
             http.Response.Body = original;
-            if (options.SessionMetricsEnabled || budgets.Count > 0)
+            if (budgets.Count > 0)
             {
                 // Admission ledger must settle even when the client has disconnected.
-                var row = new GatewayRequestMetric { AccessKeyId = key.Id, SessionDigest = context.SessionDigest,
-                    ParentSessionDigest = context.ParentSessionDigest, StartedUtcTicks = started.UtcTicks,
+                var row = new GatewayRequestMetric { AccessKeyId = key.Id, StartedUtcTicks = started.UtcTicks,
                     RequestBytes = http.Request.ContentLength ?? 0, ResponseBytes = measured.BytesWritten,
                     DurationMs = watch.ElapsedMilliseconds, StatusCode = http.Response.StatusCode,
                     Outcome = http.RequestAborted.IsCancellationRequested ? "canceled" : !completed || http.Response.StatusCode >= 400 || context.Failed ? "failed" : "completed",
                     Tokens = context.Tokens, CostUsd = context.CostUsd, Unpriced = context.Unpriced };
                 try { await db.Client.Insertable(row).ExecuteCommandAsync(); }
-                catch (Exception ex) { logger.LogError(ex, "网关预算与会话记录写入失败"); if (budgets.Count > 0) gate.MarkUnsettled(key.Id); }
+                catch (Exception ex) { logger.LogError(ex, "网关预算记录写入失败"); if (budgets.Count > 0) gate.MarkUnsettled(key.Id); }
             }
         }
     }

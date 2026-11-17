@@ -15,7 +15,7 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 实时流式透传（OpenAI / Anthropic / Responses 三协议原生 SSE 流式转发）
 - 跨协议桥接（OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 三协议**任意两两转换**，流式与非流式都支持；独立 `AITool.Protocol` 项目承载）
 - 并发控制（站点+模型维度限制最大并发，SkipOnFull 跳过 / WaitForSlot 排队两种策略）
-- 网关增强（可选流式保活、扩展首包缓冲、重复输出终止、会话/带宽统计、HTTP/WS token 与金额预算、搜索/识图工具、HTTP MCP 路由、Codex/Claude 本机配置预览与恢复；当前支持范围见 [docs/gateway-enhancements.md](docs/gateway-enhancements.md)）
+- 网关增强（可选流式保活、扩展首包缓冲、重复输出终止、HTTP/WS token 与金额预算、搜索/识图工具、HTTP MCP 路由、Codex/Claude 本机配置预览与恢复；当前支持范围见 [docs/gateway-enhancements.md](docs/gateway-enhancements.md)）
 - 访问密钥（统一对外 API Key 认证，支持**绑定允许的路由入口集合**）
 - 模型检测（定时/手动探测模型可用性，Cron 任务 + 增量进度）
 - 健康监控（模型可用率时间线）

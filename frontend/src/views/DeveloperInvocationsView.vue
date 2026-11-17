@@ -28,7 +28,6 @@ import DiagnosticDumpsTab from './DiagnosticDumpsTab.vue'
 import HeaderProfilesTab from './HeaderProfilesTab.vue'
 import ProxyProfilesTab from './ProxyProfilesTab.vue'
 import SqlMigrationsTab from './SqlMigrationsTab.vue'
-import SessionUsageTab from './SessionUsageTab.vue'
 import GatewayToolsTab from './GatewayToolsTab.vue'
 import SharedMcpTab from './SharedMcpTab.vue'
 import DeveloperAiDiagnosisDrawer from './DeveloperAiDiagnosisDrawer.vue'
@@ -108,7 +107,7 @@ const activeTab = ref<DeveloperToolTab>(developerTabFromHash(route.hash))
 // header-presets 属转发配置页，不受调试分开关控制；proxy-profiles 受网络代理池开关控制。
 const developerTabs = computed(() => auth.status?.features?.developerTabs)
 function tabVisible(tab: DeveloperToolTab): boolean {
-  if (tab === 'session-usage' || tab === 'search-tools' || tab === 'shared-mcp') return true
+  if (tab === 'search-tools' || tab === 'shared-mcp') return true
   if (!auth.status?.features?.developerEnabled) return false
   const tabs = developerTabs.value
   if (!tabs) return true
@@ -122,10 +121,10 @@ function tabVisible(tab: DeveloperToolTab): boolean {
     default: return true
   }
 }
-// 开发者功能关闭时，共享工具与会话用量仍可访问。
+// 开发者功能关闭时，共享工具仍可访问。
 watch(() => auth.status?.features, () => {
   if (!auth.status) return
-  if (!tabVisible(activeTab.value)) activeTab.value = 'session-usage'
+  if (!tabVisible(activeTab.value)) activeTab.value = 'search-tools'
 }, { immediate: true })
 const prefillSignal = ref(0)
 provide('protocol-diagnostics-prefill', prefillSignal)
@@ -941,9 +940,6 @@ onUnmounted(() => {
 
         <NTabPane v-if="tabVisible('sql-migrations')" name="sql-migrations" tab="SQL 迁移">
           <SqlMigrationsTab />
-        </NTabPane>
-        <NTabPane name="session-usage" tab="会话统计" display-directive="show:lazy">
-          <SessionUsageTab />
         </NTabPane>
         <NTabPane name="search-tools" tab="搜索与识图" display-directive="show:lazy">
           <GatewayToolsTab />

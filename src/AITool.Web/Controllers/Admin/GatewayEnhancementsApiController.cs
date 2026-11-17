@@ -1,4 +1,3 @@
-using AITool.Application.Pricing;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
@@ -8,8 +7,7 @@ namespace AITool.Web.Controllers.Admin;
 
 [ApiController]
 [Route("api/admin/gateway-enhancements")]
-public sealed class GatewayEnhancementsApiController(GatewayEnhancementSettings settings, AppDbContext db,
-    IModelPricingService pricing) : ControllerBase
+public sealed class GatewayEnhancementsApiController(GatewayEnhancementSettings settings, AppDbContext db) : ControllerBase
 {
     [HttpGet]
     public IActionResult Get()
@@ -59,35 +57,13 @@ public sealed class GatewayEnhancementsApiController(GatewayEnhancementSettings 
         catch (InvalidOperationException ex) { return Conflict(new { message = ex.Message }); }
     }
 
-    [HttpGet("sessions")]
-    public async Task<IActionResult> Sessions(int days = 7, CancellationToken ct = default)
-    {
-        var after = DateTimeOffset.UtcNow.AddDays(-Math.Clamp(days, 1, 90));
-        // Budget windows can span a month; never erase the ledger of an active window.
-        var retainAfter = DateTimeOffset.UtcNow.AddDays(-Math.Max(32, settings.Current.MetricsRetentionDays)).UtcTicks;
-        await db.Client.Deleteable<GatewayRequestMetric>().Where(m => m.StartedUtcTicks < retainAfter).ExecuteCommandAsync(ct);
-        var rows = await db.ProxyUsageLogs.Where(l => l.RequestedAt >= after && l.SessionDigest != null && l.SessionDigest != "")
-            .OrderByDescending(l => l.RequestedAt).Take(20_000).ToListAsync(ct);
-        var metrics = await db.Client.Queryable<GatewayRequestMetric>().Where(m => m.StartedUtcTicks >= after.UtcTicks)
-            .OrderByDescending(m => m.StartedUtcTicks).Take(20_000).ToListAsync(ct);
-        var grouped = rows.GroupBy(l => l.SessionDigest!).Select(g =>
-        {
-            var traffic = metrics.Where(m => m.SessionDigest == g.Key).ToList();
-            var costs = g.Select(l => pricing.CalculateCostUsd(l.AttemptedModel, l.RequestedAt, l.InputTokens, l.CachedTokens, l.OutputTokens).CostUsd).ToList();
-            return new { session = g.Key, parent = g.Select(l => l.ParentSessionDigest).FirstOrDefault(p => !string.IsNullOrEmpty(p)),
-                requests = g.Select(l => l.RequestId).Distinct().Count(), attempts = g.Count(),
-                inputTokens = g.Sum(l => (long)l.InputTokens), cachedTokens = g.Sum(l => (long)l.CachedTokens), outputTokens = g.Sum(l => (long)l.OutputTokens),
-                costUsd = costs.Sum(c => c ?? 0), unpricedAttempts = costs.Count(c => c is null),
-                requestBytes = traffic.Sum(t => t.RequestBytes), responseBytes = traffic.Sum(t => t.ResponseBytes),
-                switches = g.OrderBy(l => l.RequestedAt).Select(l => l.TargetSiteId).Zip(g.OrderBy(l => l.RequestedAt).Select(l => l.TargetSiteId).Skip(1)).Count(p => p.First != p.Second),
-                lastUsed = g.Max(l => l.RequestedAt), latestContextTokens = g.OrderByDescending(l => l.RequestedAt).First().InputTokens + g.OrderByDescending(l => l.RequestedAt).First().CachedTokens };
-        }).OrderByDescending(s => s.lastUsed).Take(200);
-        return Ok(grouped);
-    }
-
     [HttpGet("budgets")]
     public async Task<IActionResult> Budgets(CancellationToken ct)
     {
+        // Budget views are the only remaining consumer of the request metric ledger; prune
+        // expired rows on access. Budget windows can span a month; never erase an active window.
+        var retainAfter = DateTimeOffset.UtcNow.AddDays(-Math.Max(32, settings.Current.MetricsRetentionDays)).UtcTicks;
+        await db.Client.Deleteable<GatewayRequestMetric>().Where(m => m.StartedUtcTicks < retainAfter).ExecuteCommandAsync(ct);
         var result = new List<object>();
         foreach (var budget in settings.Current.Budgets)
         {
@@ -98,32 +74,5 @@ public sealed class GatewayEnhancementsApiController(GatewayEnhancementSettings 
                 hasUnpricedUsage = await query.Clone().Where(r => r.Unpriced).AnyAsync() });
         }
         return Ok(result);
-    }
-
-    /// <summary>未携带可识别会话标识的请求仍记入普通使用日志，不将它们猜测合并为会话。</summary>
-    [HttpGet("sessions/coverage")]
-    public async Task<IActionResult> SessionCoverage(int days = 7, CancellationToken ct = default)
-    {
-        var after = DateTimeOffset.UtcNow.AddDays(-Math.Clamp(days, 1, 90)).UtcTicks;
-        var metrics = db.Client.Queryable<GatewayRequestMetric>().Where(m => m.StartedUtcTicks >= after);
-        var total = await metrics.Clone().CountAsync();
-        var unidentified = await metrics.Clone().Where(m => m.SessionDigest == null || m.SessionDigest == "").CountAsync();
-        return Ok(new { totalRequests = total, unidentifiedRequests = unidentified });
-    }
-
-    [HttpGet("sessions/{digest}")]
-    public async Task<IActionResult> Session(string digest, CancellationToken ct)
-    {
-        if (digest.Length != 64 || digest.Any(c => !char.IsAsciiHexDigit(c))) return BadRequest();
-        var rows = await db.ProxyUsageLogs.Where(l => l.SessionDigest == digest)
-            .OrderByDescending(l => l.RequestedAt).Take(1000).ToListAsync(ct);
-        return Ok(rows.OrderBy(l => l.RequestedAt).Select(l => new {
-            l.RequestId, l.AttemptIndex, l.RequestedAt, l.Status, l.RequestModel, l.AttemptedModel, l.TargetSiteId,
-            l.InputTokens, l.CachedTokens, l.OutputTokens, l.TotalTokens, l.FirstTokenLatencyMs, l.TotalDurationMs,
-            l.FallbackTriggered, l.ErrorCategory, l.ParentSessionDigest,
-            contextTokens = (long)l.InputTokens + l.CachedTokens,
-            cacheShare = l.InputTokens + l.CachedTokens == 0 ? 0 : (double)l.CachedTokens / ((long)l.InputTokens + l.CachedTokens),
-            costUsd = pricing.CalculateCostUsd(l.AttemptedModel, l.RequestedAt, l.InputTokens, l.CachedTokens, l.OutputTokens).CostUsd
-        }));
     }
 }

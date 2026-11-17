@@ -154,7 +154,7 @@ public sealed class GatewayEnhancementTests
         await using var factory = new ResponsesWebApplicationFactory(fake);
         _ = factory.CreateClient();
         var settings = factory.Services.GetRequiredService<GatewayEnhancementSettings>();
-        await settings.SaveAsync(new GatewayEnhancementOptions { SessionMetricsEnabled = true, Budgets = [new GatewayKeyBudget {
+        await settings.SaveAsync(new GatewayEnhancementOptions { Budgets = [new GatewayKeyBudget {
             KeyId = Guid.Parse("c3c3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3"), TokenLimit = 10 }] }, CancellationToken.None);
         var client = factory.Server.CreateWebSocketClient();
         client.ConfigureRequest = r => { r.Headers["Authorization"] = "Bearer responses-test-key"; r.Headers["Session-Id"] = "budget-session"; };
@@ -293,101 +293,5 @@ public sealed class GatewayEnhancementTests
             fake.Requests.Should().BeEmpty();
         }
         finally { await settings.SaveAsync(before, CancellationToken.None); }
-    }
-
-    [Fact]
-    public async Task Session_statistics_hash_identifier_and_keep_existing_token_accounting()
-    {
-        var fake = new ResponsesFakeProxyForwardService();
-        await using var factory = new ResponsesWebApplicationFactory(fake);
-        using var client = factory.CreateClient();
-        var settings = factory.Services.GetRequiredService<GatewayEnhancementSettings>();
-        var before = settings.Current;
-        try
-        {
-            await settings.SaveAsync(new GatewayEnhancementOptions { SessionMetricsEnabled = true }, CancellationToken.None);
-            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
-            { Content = new StringContent("""{"model":"auto","input":"hi"}""", Encoding.UTF8, "application/json") };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
-            request.Headers.Add("Session-Id", "private-session-value");
-            var response = await client.SendAsync(request);
-            response.StatusCode.Should().Be(HttpStatusCode.OK);
-            await using var scope = factory.Services.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var metrics = await db.Client.Queryable<GatewayRequestMetric>().ToListAsync();
-            metrics.Should().ContainSingle();
-            metrics[0].SessionDigest.Should().HaveLength(64).And.NotContain("private-session-value");
-            metrics[0].Tokens.Should().Be(15);
-            metrics[0].ResponseBytes.Should().BeGreaterThan(0);
-            var logs = await db.ProxyUsageLogs.ToListAsync();
-            logs.Should().ContainSingle();
-            logs[0].TotalTokens.Should().Be(15);
-            logs[0].SessionDigest.Should().Be(metrics[0].SessionDigest);
-        }
-        finally { await settings.SaveAsync(before, CancellationToken.None); }
-    }
-
-    [Theory]
-    [InlineData("/v1/responses", "{\"model\":\"auto\",\"input\":\"hi\",\"prompt_cache_key\":\"private-session\"}")]
-    [InlineData("/v1/messages", "{\"model\":\"auto\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"metadata\":{\"user_id\":\"{\\\"session_id\\\":\\\"private-session\\\"}\"}}")]
-    public async Task Session_from_request_body_is_consistent_in_usage_and_traffic(string endpoint, string body)
-    {
-        var fake = new ResponsesFakeProxyForwardService();
-        await using var factory = new ResponsesWebApplicationFactory(fake);
-        using var client = factory.CreateClient();
-        var settings = factory.Services.GetRequiredService<GatewayEnhancementSettings>();
-        await settings.SaveAsync(new GatewayEnhancementOptions { SessionMetricsEnabled = true }, CancellationToken.None);
-        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
-        using var response = await client.SendAsync(request);
-        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
-        await using var scope = factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var metrics = await db.Client.Queryable<GatewayRequestMetric>().ToListAsync();
-        var logs = await db.ProxyUsageLogs.ToListAsync();
-        metrics.Should().ContainSingle();
-        logs.Should().ContainSingle();
-        metrics[0].SessionDigest.Should().HaveLength(64).And.NotContain("private-session");
-        logs[0].SessionDigest.Should().Be(metrics[0].SessionDigest);
-        logs[0].TotalTokens.Should().Be(15);
-    }
-
-    [Fact]
-    public async Task Session_coverage_reports_unidentified_requests_without_inventing_a_session()
-    {
-        await using var factory = new ResponsesWebApplicationFactory(new ResponsesFakeProxyForwardService());
-        using var client = factory.CreateClient();
-        await factory.Services.GetRequiredService<GatewayEnhancementSettings>().SaveAsync(new GatewayEnhancementOptions { SessionMetricsEnabled = true }, CancellationToken.None);
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
-        { Content = new StringContent("""{"model":"auto","input":"hi"}""", Encoding.UTF8, "application/json") };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
-        (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.OK);
-        var coverage = JsonNode.Parse(await client.GetStringAsync("/api/admin/gateway-enhancements/sessions/coverage"))!;
-        coverage["totalRequests"]!.GetValue<int>().Should().Be(1);
-        coverage["unidentifiedRequests"]!.GetValue<int>().Should().Be(1);
-        var sessions = JsonNode.Parse(await client.GetStringAsync("/api/admin/gateway-enhancements/sessions"))!.AsArray();
-        sessions.Should().BeEmpty();
-    }
-
-    [Fact]
-    public void Session_capture_uses_explicit_identifiers_only_and_keeps_existing_header_priority()
-    {
-        var key = Guid.NewGuid();
-        var headers = new Microsoft.AspNetCore.Http.HeaderDictionary { ["Session-Id"] = "header-session" };
-        var context = new GatewayRequestContext { Enabled = true };
-        context.CaptureSession(key, headers, """{"prompt_cache_key":"body-session"}""");
-        context.SessionDigest.Should().Be(GatewayRequestContext.Digest(key, "header-session"));
-        context.CaptureSession(key, new Microsoft.AspNetCore.Http.HeaderDictionary(), """{"messages":[{"content":"session_id: not an identifier"}]}""");
-        context.SessionDigest.Should().BeEmpty();
-        context.CaptureSession(key, new Microsoft.AspNetCore.Http.HeaderDictionary { ["X-Codex-Turn-Metadata"] = """{"session_id":"codex-session"}""" }, "{}");
-        context.SessionDigest.Should().Be(GatewayRequestContext.Digest(key, "codex-session"));
-        var connectionDigest = context.SessionDigest;
-        context.CaptureSession(key, new Microsoft.AspNetCore.Http.HeaderDictionary(), "{}", connectionDigest);
-        context.SessionDigest.Should().Be(connectionDigest);
-        context.CaptureSession(key, new Microsoft.AspNetCore.Http.HeaderDictionary(), """{"prompt_cache_key":"new-session"}""", connectionDigest);
-        context.SessionDigest.Should().Be(GatewayRequestContext.Digest(key, "new-session"));
-        context.Enabled = false;
-        context.CaptureSession(key, headers, "{}");
-        context.SessionDigest.Should().Be(GatewayRequestContext.Digest(key, "new-session"));
     }
 }

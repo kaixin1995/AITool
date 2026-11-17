@@ -2,7 +2,7 @@
 
 > 本文是 [README.md](../README.md) 的前端细节篇。管理后台是 Vue 3 SPA，构建产物输出到 `src/AITool.Web/wwwroot`，与后端同进程同源部署（无 CORS）。
 
-「代理配置 → 网关增强」对应 `/gateway-enhancements`，提供稳定性开关、会话用量、密钥预算、搜索/识图授权、HTTP MCP 服务和本机客户端配置。后端和当前限制见 [gateway-enhancements.md](gateway-enhancements.md)。
+「代理配置 → 网关增强」对应 `/gateway-enhancements`，提供稳定性开关、密钥预算、搜索/识图授权、HTTP MCP 服务和本机客户端配置。后端和当前限制见 [gateway-enhancements.md](gateway-enhancements.md)。
 
 ---
 

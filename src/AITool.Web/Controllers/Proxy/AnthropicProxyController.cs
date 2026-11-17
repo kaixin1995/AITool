@@ -261,7 +261,6 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         // 优先读取显式来源标记，其次退回到 User-Agent 识别常见客户端工具。
-        HttpContext.RequestServices.GetService<GatewayRequestContext>()?.CaptureSession(accessKey.Id, Request.Headers, requestBody);
         var isolationContext = AccountSessionIsolationService.Capture(accessKey.Id.ToString("D"), Request.Headers, requestBody);
         var requestSource = ResolveRequestSource(Request);
         var forwardHeaders = CollectAnthropicForwardHeaders(Request);

@@ -1,6 +1,6 @@
 import type { CompatibilityRuleForm } from './compatibilityState'
 
-export type DeveloperToolTab = 'invocations' | 'diagnostic-dumps' | 'simulator' | 'protocol-diagnostics' | 'header-presets' | 'proxy-profiles' | 'sql-migrations' | 'session-usage' | 'search-tools' | 'shared-mcp'
+export type DeveloperToolTab = 'invocations' | 'diagnostic-dumps' | 'simulator' | 'protocol-diagnostics' | 'header-presets' | 'proxy-profiles' | 'sql-migrations' | 'search-tools' | 'shared-mcp'
 
 // ────────────────────────────────────────────────
 // 调用记录 → 协议诊断台 联动：详情面板把某条请求/响应体一键载入诊断表单。
@@ -47,7 +47,6 @@ const hashToTab: Record<string, DeveloperToolTab> = {
   '#developerHeaderPresetsPane': 'header-presets',
   '#developerProxyProfilesPane': 'proxy-profiles',
   '#developerSqlMigrationsPane': 'sql-migrations',
-  '#session-usage': 'session-usage',
   '#search-tools': 'search-tools',
   '#shared-mcp': 'shared-mcp',
   '#diagnostic-dumps': 'diagnostic-dumps',
@@ -67,7 +66,6 @@ const tabToHash: Record<DeveloperToolTab, string> = {
   'header-presets': '#developerHeaderPresetsPane',
   'proxy-profiles': '#developerProxyProfilesPane',
   'sql-migrations': '#developerSqlMigrationsPane',
-  'session-usage': '#session-usage',
   'search-tools': '#search-tools',
   'shared-mcp': '#shared-mcp'
 }

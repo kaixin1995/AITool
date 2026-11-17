@@ -8,7 +8,6 @@ public sealed class GatewayEnhancementOptions
     public bool KeepAliveEnabled { get; set; }
     public int KeepAliveSeconds { get; set; } = 15;
     public bool LoopDetectionEnabled { get; set; }
-    public bool SessionMetricsEnabled { get; set; }
     public bool ExtendedHeadBufferEnabled { get; set; }
     public int MetricsRetentionDays { get; set; } = 30;
     public List<GatewayKeyBudget> Budgets { get; set; } = [];

@@ -16,8 +16,6 @@ public interface IUsageLogService
 /// </summary>
 public sealed class UsageLogEntry
 {
-    public string? SessionDigest { get; set; }
-    public string? ParentSessionDigest { get; set; }
     /// <summary>
     /// 标识同一条代理请求链路，便于将多次重试记录串联起来。
     /// </summary>

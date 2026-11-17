@@ -234,8 +234,6 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             ErrorCategory = entry.ErrorCategory ?? UsageLogErrorClassifier.Classify(entry),
             InputTokens = entry.InputTokens,
             CachedTokens = entry.CachedTokens,
-            SessionDigest = entry.SessionDigest,
-            ParentSessionDigest = entry.ParentSessionDigest,
             OutputTokens = entry.OutputTokens,
             TotalTokens = entry.InputTokens + entry.CachedTokens + entry.OutputTokens,
             IsStreaming = entry.IsStreaming,
