@@ -1,5 +1,7 @@
 using AITool.Web.Services;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
+using System.Net;
 
 namespace AITool.IntegrationTests.Developer;
 
@@ -9,6 +11,46 @@ namespace AITool.IntegrationTests.Developer;
 /// </summary>
 public sealed class ClientReleaseFeedServiceTests
 {
+    [Fact]
+    public async Task Claude_sources_keep_successes_when_another_source_fails()
+    {
+        using var client = new HttpClient(new ReleaseHandler());
+        var service = new ClientReleaseFeedService(new ReleaseClientFactory(client), NullLogger<ClientReleaseFeedService>.Instance);
+        var sources = await service.LookupClaudeDesktopAsync(CancellationToken.None);
+        sources.Single(x => x.Key == "cli").Version.Should().Be("2.1.327");
+        sources.Single(x => x.Key == "npm").Error.Should().NotBeNullOrEmpty();
+        sources.Single(x => x.Key == "desktop").Version.Should().Be("6.6395.0");
+    }
+
+    private sealed class ReleaseClientFactory(HttpClient client) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => client;
+    }
+
+    private sealed class ReleaseHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var host = request.RequestUri!.Host;
+            var response = host switch
+            {
+                "code.claude.com" => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""<div class="update-container" id="2-1-327">""") },
+                "aiticker.site" => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""<ul class="rel-list"><li><a href="/"><code>v6.6395.0</code>""") },
+                _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            };
+            return Task.FromResult(response);
+        }
+    }
+    [Fact]
+    public void Claude_release_sources_extract_only_structured_release_entries()
+    {
+        const string cli = """<a href="#2-9-999">noise</a><div class="update relative update-container" id="2-1-327"><button>2.1.327</button></div>""";
+        const string desktop = """<meta name="description" content="latest v99.0.0"><ul class="rel-list"><li><a href="/tools/claude-desktop/6.6395.0/"><code>v6.6395.0</code></a></li></ul>""";
+        ClientReleaseFeedService.ParseClaudeChangelogVersion(cli).Should().Be("2.1.327");
+        ClientReleaseFeedService.ParseClaudeDesktopVersion(desktop).Should().Be("6.6395.0");
+        ClientReleaseFeedService.ParseClaudeChangelogVersion("<div>2.1.327</div>").Should().BeNull();
+        ClientReleaseFeedService.ParseClaudeDesktopVersion("<p>latest 6.6395.0</p>").Should().BeNull();
+    }
     [Fact]
     public void GitHub_releases_parse_to_fact_lines()
     {

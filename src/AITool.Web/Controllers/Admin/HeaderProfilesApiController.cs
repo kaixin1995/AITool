@@ -318,6 +318,38 @@ public class HeaderProfilesApiController : ControllerBase
             return Ok(ApiResponse.Ok(new { success = false, error = $"无法从 User-Agent 中识别版本号：{userAgent}" }));
         }
 
+        if (string.Equals(profile.Key, ClientEmulationConstants.ClaudeCodeDesktop, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(userAgent, @"^claude-cli/\d+\.\d+\.\d+(?:\s|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                return Ok(ApiResponse.Ok(new { success = false, error = "该方案的 User-Agent 未包含可识别的 claude-cli 版本" }));
+            if (_releaseFeed is null) return Ok(ApiResponse.Ok(new { success = false, error = "版本来源查询不可用" }));
+            var sources = await _releaseFeed.LookupClaudeDesktopAsync(cancellationToken);
+            var cli = sources.First(x => x.Key == "cli").Version;
+            var npm = sources.First(x => x.Key == "npm").Version;
+            var desktop = sources.First(x => x.Key == "desktop").Version;
+            var conflict = cli is not null && npm is not null && cli != npm;
+            headers.TryGetValue("Anthropic-Client-Version", out var currentDesktop);
+            if (currentDesktop is not null && !System.Text.RegularExpressions.Regex.IsMatch(currentDesktop, @"^\d+\.\d+\.\d+$"))
+                currentDesktop = null;
+            // AI receives only public version facts, never editable headers or credentials.
+            string? summary = null;
+            try
+            {
+                var ai = await _aiAssistant.CompleteAsync($"仅根据以下公开信息用中文简述版本差异，不推测 SDK 或 Windows 版本：Claude Code 官方 {cli ?? "不可用"}，npm {npm ?? "不可用"}，第三方 Desktop {desktop ?? "不可用"}（平台未确认）；当前 CLI {currentVersion}，Desktop {currentDesktop ?? "未配置"}。", cancellationToken);
+                if (ai.Success) summary = ai.Content;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception ex) { _logger?.LogWarning(ex, "Claude version summary unavailable"); }
+            return Ok(ApiResponse.Ok(new
+            {
+                success = true, currentVersion, currentDesktopVersion = currentDesktop,
+                latestVersion = conflict ? null : cli ?? npm, latestDesktopVersion = desktop,
+                cliConflict = conflict, sources, summary, checkedAt = DateTimeOffset.UtcNow,
+                currentHeadersJson = profile.HeadersJson,
+                note = "Desktop 来源为第三方，Windows 版本未核实；SDK、Node、Stainless 和 beta 不自动推算。"
+            }));
+        }
+
         // 先拉官方发布源（GitHub Releases / npm）拿确定性数据，AI 只负责归纳；
         // 没有公开源的档案（如 ZCode / Antigravity）回落 AI 自身知识。
         var feed = _releaseFeed is null

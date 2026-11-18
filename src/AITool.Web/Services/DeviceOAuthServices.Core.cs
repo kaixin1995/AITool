@@ -51,6 +51,9 @@ public sealed class DeviceOAuthAccountProvisioner
     private readonly IAccountNetworkPolicyStore? _networkPolicies;
     private static readonly KeyedAsyncLock ProvisionLocks = new();
 
+    internal static Task<IDisposable> LockVendorProvisionAsync(string vendorKey, CancellationToken ct)
+        => ProvisionLocks.WaitAsync(vendorKey.ToLowerInvariant(), ct);
+
     public DeviceOAuthAccountProvisioner(
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
@@ -80,7 +83,7 @@ public sealed class DeviceOAuthAccountProvisioner
         if (networkSelection is not null && _networkPolicies is not AccountNetworkPolicyStore)
             throw new NetworkPolicyException("network_policy_unavailable", "Transactional account network policy storage is unavailable.");
         // Serialize deduplication through publication, including concurrent sessions for one vendor.
-        using var provisionLock = await ProvisionLocks.WaitAsync(vendor.VendorKey.ToLowerInvariant(), ct);
+        using var provisionLock = await LockVendorProvisionAsync(vendor.VendorKey, ct);
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         // Never wait for the credential gate while holding the SQLite writer. The vendor
@@ -197,11 +200,19 @@ public sealed class DeviceOAuthAccountProvisioner
             }
             else
             {
+                var isClaude = string.Equals(vendor.VendorKey, "claude", StringComparison.OrdinalIgnoreCase);
+                var upgradeClaude = isClaude && NeedsClaudeHeaderMigration(site.ExtraHeadersJson);
+                // A relogin can arrive before the startup migration. Do not write the
+                // migration marker until existing unconfigured mappings are migrated.
+                if (upgradeClaude)
+                    await MigrateClaudeMappingsAsync(client, site.Id, ct);
                 site.ApiKey = tokens.AccessToken;
                 // 站点名与账号名同步：仅在账号名本轮变更时跟随（自定义名保持时站点名不动）。
                 if (renameOnProvision) site.Name = label;
                 site.BaseUrl = chatBaseUrl ?? chat.BaseUrl;
-                site.ExtraHeadersJson = mergedHeadersJson;
+                site.ExtraHeadersJson = isClaude
+                    ? MergeClaudeSiteHeaders(site.ExtraHeadersJson, mergedHeadersJson, upgradeClaude)
+                    : mergedHeadersJson;
                 site.IsEnabled = account.IsEnabled;
                 await client.Updateable(site).ExecuteCommandAsync(ct);
             }
@@ -216,7 +227,7 @@ public sealed class DeviceOAuthAccountProvisioner
             await client.Updateable(account).ExecuteCommandAsync(ct);
         }
 
-        // 模型由用户手动选择导入；供给和重新登录不修改既有映射。
+        // 模型由用户手动选择导入；仅旧 Claude 账号首次升级回填默认方案。
 
         // Missing selection on relogin preserves existing policy; an explicit Legacy selection
         // is still an update. New unspecified accounts inherit Legacy without a policy row.
@@ -372,6 +383,56 @@ public sealed class DeviceOAuthAccountProvisioner
             effectiveHeaders, AITool.Application.Common.JsonSerializerPresets.Compact);
     }
 
+    internal static bool NeedsClaudeHeaderMigration(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return true;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && !doc.RootElement.EnumerateObject().Any(p => string.Equals(p.Name, "X-AITool-Claude-OAuth", StringComparison.OrdinalIgnoreCase));
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+    }
+
+    internal static string MergeClaudeSiteHeaders(string? existingJson, string managedJson, bool upgrade)
+    {
+        var headers = new Dictionary<string, System.Text.Json.JsonElement>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(existingJson))
+            {
+                using var existing = System.Text.Json.JsonDocument.Parse(existingJson);
+                if (existing.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return existingJson;
+                foreach (var p in existing.RootElement.EnumerateObject())
+                    if (!headers.TryAdd(p.Name, p.Value.Clone())) return existingJson;
+            }
+            if (upgrade)
+                foreach (var old in new[] { (Name: "User-Agent", Value: "claude-cli/2.0.14 (external, cli)"), (Name: "anthropic-beta", Value: "oauth-2025-04-20") })
+                    if (headers.TryGetValue(old.Name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
+                        && value.GetString() == old.Value) headers.Remove(old.Name);
+            using var managed = System.Text.Json.JsonDocument.Parse(managedJson);
+            foreach (var p in managed.RootElement.EnumerateObject()) headers[p.Name] = p.Value.Clone();
+            return System.Text.Json.JsonSerializer.Serialize(headers, AITool.Application.Common.JsonSerializerPresets.Compact);
+        }
+        catch (System.Text.Json.JsonException) { return existingJson ?? managedJson; }
+    }
+
+    internal static async Task<int> MigrateClaudeMappingsAsync(SqlSugar.ISqlSugarClient client, Guid siteId, CancellationToken ct)
+    {
+        var mappings = await client.Queryable<Domain.SiteCatalog.SiteModelMapping>().Where(m => m.SiteId == siteId).ToListAsync(ct);
+        var changed = 0;
+        foreach (var mapping in mappings.Where(m => string.IsNullOrWhiteSpace(m.ClientEmulation)
+            || string.Equals(m.ClientEmulation, ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)))
+        {
+            var previous = mapping.ClientEmulation;
+            changed += await client.Updateable<Domain.SiteCatalog.SiteModelMapping>()
+                .SetColumns(m => new Domain.SiteCatalog.SiteModelMapping { ClientEmulation = ClientEmulationConstants.ClaudeCodeDesktop })
+                .Where(m => m.Id == mapping.Id && m.ClientEmulation == previous).ExecuteCommandAsync(ct);
+        }
+        return changed;
+    }
+
     /// <summary>读取厂商 ExtraJson 的对象字段（如 chatHeaders）。</summary>
     private static System.Text.Json.JsonElement? TryGetExtraObject(string? extraJson, string name)
     {
@@ -483,6 +544,8 @@ public sealed class DeviceOAuthAccountProvisioner
                         SiteId = account.LinkedSiteId,
                         ModelLibraryItemId = item!.Id,
                         RemoteModelName = slug,
+                        ClientEmulation = string.Equals(account.VendorKey, "claude", StringComparison.OrdinalIgnoreCase)
+                            ? ClientEmulationConstants.ClaudeCodeDesktop : ClientEmulationConstants.None,
                     });
                 }
                 foreach (var mapping in mappings)
@@ -676,9 +739,15 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
         if (accounts.Count == 0) return;
 
         var changed = false;
-        foreach (var account in accounts)
+        foreach (var listedAccount in accounts)
         {
             ct.ThrowIfCancellationRequested();
+            // Claude's one-time migration and reauthorization both update its site and
+            // mappings. Serialize them and reload the account after acquiring the lock.
+            using var provisionLock = string.Equals(listedAccount.VendorKey, "claude", StringComparison.OrdinalIgnoreCase)
+                ? await DeviceOAuthAccountProvisioner.LockVendorProvisionAsync(listedAccount.VendorKey, ct) : null;
+            var account = provisionLock is null ? listedAccount : await db.DeviceOAuthAccounts.InSingleAsync(listedAccount.Id);
+            if (account is null || account.IsDeleted || account.LinkedSiteId == Guid.Empty) continue;
             if (registry.Find(account.VendorKey)?.ChatSiteConfig is not { } chat) continue;
 
             try
@@ -699,6 +768,17 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
                 }
 
                 var headersChanged = false;
+                if (string.Equals(account.VendorKey, "claude", StringComparison.OrdinalIgnoreCase))
+                {
+                    var firstUpgrade = !headers.ContainsKey("X-AITool-Claude-OAuth");
+                    // Remove only known old defaults; preserve explicitly customized values.
+                    foreach (var old in new[] { (Name: "User-Agent", Value: "claude-cli/2.0.14 (external, cli)"), (Name: "anthropic-beta", Value: "oauth-2025-04-20") })
+                        if (firstUpgrade && headers.TryGetValue(old.Name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
+                            && value.GetString() == old.Value && headers.Remove(old.Name)) headersChanged = true;
+
+                    if (firstUpgrade && await DeviceOAuthAccountProvisioner.MigrateClaudeMappingsAsync(db.Client, site.Id, ct) > 0)
+                        changed = true;
+                }
                 using var managed = System.Text.Json.JsonDocument.Parse(expected);
                 foreach (var property in managed.RootElement.EnumerateObject())
                 {
@@ -730,6 +810,7 @@ public sealed class DeviceOAuthTokenRefreshService : BackgroundService
         {
             // 路由目标缓存携带站点自定义头，变更后必须失效重建。
             metadataCache.InvalidateRouteTargets();
+            metadataCache.InvalidateModelMetadata();
         }
     }
 

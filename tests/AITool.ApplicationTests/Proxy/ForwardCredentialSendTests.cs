@@ -11,6 +11,61 @@ namespace AITool.ApplicationTests.Proxy;
 
 public sealed class ForwardCredentialSendTests
 {
+    [Fact]
+    public async Task Other_device_vendor_cannot_be_treated_as_claude_by_marker()
+    {
+        var handler = new Handler(request =>
+        {
+            request.Headers.GetValues("anthropic-beta").Single().Should().Be("other-beta");
+            request.Headers.Contains("X-AITool-Claude-OAuth").Should().BeFalse();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("{\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}") };
+        });
+        var service = new ProxyForwardService(new HttpClient(handler), NullLogger<ProxyForwardService>.Instance,
+            networkPolicyResolver: new FakeNetwork(), credentialResolver: new FakeCredentials(() => "live", "other"));
+        var request = new ProxyForwardRequest
+        {
+            SiteId = Guid.NewGuid(), AccountIdentity = new AccountIdentity("device-oauth", Guid.NewGuid()),
+            ManagedSource = "device_oauth", ProtocolType = "Anthropic", TargetBaseUrl = "https://example.test",
+            RequestBody = "{}", RequestTimeoutSeconds = 10,
+            ForwardHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            { ["X-AITool-Claude-OAuth"] = "true", ["anthropic-beta"] = "other-beta" }
+        };
+        var result = await service.ForwardAsync(request);
+        result.Success.Should().BeTrue(result.ErrorMessage);
+    }
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task Claude_subscription_merges_oauth_beta_with_desktop_headers_and_uses_live_credential(string marker)
+    {
+        var resolver = new FakeCredentials(() => "live-token", "claude");
+        var handler = new Handler(request =>
+        {
+            request.Headers.Authorization!.Parameter.Should().Be("live-token");
+            request.Headers.Contains("x-api-key").Should().BeFalse();
+            request.Headers.Contains("X-AITool-Claude-OAuth").Should().BeFalse();
+            request.Headers.GetValues("anthropic-beta").Single().Should().Be("claude-code-20250219,oauth-2025-04-20");
+            request.Headers.GetValues("Anthropic-Client-Platform").Single().Should().Be("desktop_app");
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}") };
+        });
+        var service = new ProxyForwardService(new HttpClient(handler), NullLogger<ProxyForwardService>.Instance,
+            networkPolicyResolver: new FakeNetwork(), credentialResolver: resolver);
+        var request = new ProxyForwardRequest
+        {
+            SiteId = Guid.NewGuid(), AccountIdentity = new AccountIdentity("device-oauth", Guid.NewGuid()),
+            ManagedSource = "device_oauth", ProtocolType = "Anthropic", TargetBaseUrl = "https://example.test",
+            TargetApiKey = "stale", RequestBody = "{}", RequestTimeoutSeconds = 10,
+            ForwardHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["X-AITool-Claude-OAuth"] = marker, ["X-AITool-Auth-Mode"] = "api-key",
+                ["anthropic-beta"] = "claude-code-20250219", ["Anthropic-Client-Platform"] = "desktop_app",
+                ["Authorization"] = "Bearer untrusted", ["x-api-key"] = "untrusted"
+            }
+        };
+        var result = await service.ForwardAsync(request);
+        result.Success.Should().BeTrue(result.ErrorMessage);
+    }
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -299,7 +354,7 @@ public sealed class ForwardCredentialSendTests
             => Task.FromResult(new ForwardNetworkPolicyResolution(ResolvedNetworkConfiguration.Legacy, "test", true));
     }
 
-    private sealed class FakeCredentials(Func<string> token) : IForwardCredentialResolver
+    private sealed class FakeCredentials(Func<string> token, string? deviceVendor = null) : IForwardCredentialResolver
     {
         public int Calls { get; private set; }
         public int Active { get; private set; }
@@ -307,7 +362,7 @@ public sealed class ForwardCredentialSendTests
         {
             Calls++;
             Active++;
-            return Task.FromResult(new ForwardCredentialLease(token(), true, new Release(() => Active--)));
+            return Task.FromResult(new ForwardCredentialLease(token(), true, new Release(() => Active--), deviceVendorKey: deviceVendor));
         }
     }
 

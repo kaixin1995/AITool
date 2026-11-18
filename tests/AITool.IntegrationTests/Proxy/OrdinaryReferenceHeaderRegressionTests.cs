@@ -87,6 +87,7 @@ public sealed class OrdinaryReferenceHeaderRegressionTests
     [InlineData("CodexCli", "X-Codex-Window-Id")]
     [InlineData("CodexVsCode", "X-Client-Request-Id")]
     [InlineData("CodexVsCode", "X-Codex-Window-Id")]
+    [InlineData("ClaudeCodeDesktop", "X-Claude-Code-Session-Id")]
     public async Task Responses_endpoint_accepts_real_builtin_profile_templates_and_continues_with_same_owner(string preset, string dynamicHeader)
     {
         // Pin the real built-in profile at the site layer so this test does not depend on

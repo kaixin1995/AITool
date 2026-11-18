@@ -73,6 +73,12 @@ export interface AiLatestVersionResponse {
   sourceNote?: string | null
   currentHeadersJson?: string | null
   proposedHeadersJson?: string | null
+  currentDesktopVersion?: string | null
+  latestDesktopVersion?: string | null
+  cliConflict?: boolean
+  checkedAt?: string
+  summary?: string | null
+  sources?: Array<{ key: string; label: string; version?: string | null; error?: string | null }>
 }
 
 // AI 查询该方案客户端的最新版本（耗时较长，单独放宽超时）。

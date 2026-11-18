@@ -123,7 +123,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         try
         {
             var key = credential.UseResolvedApiKey ? credential.ApiKey : currentApiKey;
-            message = BuildRequestMessage(request, requestBody, key, credential.ProtectAuthenticationHeaders);
+            message = BuildRequestMessage(request, requestBody, key, credential.ProtectAuthenticationHeaders, credential.DeviceVendorKey);
             var response = (lease?.Client ?? _httpClient).SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
             return new StartedForward(message, response, lease, key, credential.CredentialSnapshot);
         }
@@ -1191,7 +1191,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// <summary>
     /// 构建发送到上游的 HTTP 请求对象
     /// </summary>
-    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody, string apiKey, bool trustedDeviceCredential)
+    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody, string apiKey, bool trustedDeviceCredential, string? deviceVendorKey)
     {
         var targetPath = string.IsNullOrWhiteSpace(request.TargetPath)
             ? request.ProtocolType == "Anthropic"
@@ -1208,11 +1208,15 @@ public sealed class ProxyForwardService : IProxyForwardService
         };
 
         // 根据协议类型设置认证头
+        var claudeSubscription = trustedDeviceCredential && string.Equals(deviceVendorKey, "claude", StringComparison.OrdinalIgnoreCase);
         if (request.ProtocolType == "Anthropic")
         {
             if (!string.IsNullOrEmpty(apiKey))
             {
-                foreach (var (name, value) in ResolveAnthropicAuthHeaders(apiKey, request.ForwardHeaders))
+                var authHeaders = claudeSubscription
+                    ? new[] { ("Authorization", "Bearer " + apiKey) }
+                    : ResolveAnthropicAuthHeaders(apiKey, request.ForwardHeaders);
+                foreach (var (name, value) in authHeaders)
                 {
                     httpRequest.Headers.TryAddWithoutValidation(name, value);
                 }
@@ -1234,6 +1238,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         foreach (var header in request.ForwardHeaders)
         {
+            if (string.Equals(header.Key, "X-AITool-Claude-OAuth", StringComparison.OrdinalIgnoreCase)) continue;
             if (trustedDeviceCredential && (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(header.Key, "x-api-key", StringComparison.OrdinalIgnoreCase)))
                 continue;
@@ -1266,6 +1271,17 @@ public sealed class ProxyForwardService : IProxyForwardService
             }
 
             httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+
+        // Claude subscription requires its OAuth beta in addition to client beta features.
+        if (request.ProtocolType == "Anthropic" && claudeSubscription)
+        {
+            var betas = httpRequest.Headers.TryGetValues("anthropic-beta", out var values)
+                ? string.Join(",", values).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList()
+                : new List<string>();
+            if (!betas.Contains("oauth-2025-04-20", StringComparer.OrdinalIgnoreCase)) betas.Add("oauth-2025-04-20");
+            httpRequest.Headers.Remove("anthropic-beta");
+            httpRequest.Headers.TryAddWithoutValidation("anthropic-beta", string.Join(",", betas));
         }
 
         return httpRequest;

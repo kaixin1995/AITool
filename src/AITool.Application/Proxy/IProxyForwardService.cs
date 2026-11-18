@@ -207,11 +207,13 @@ public sealed class ProxyForwardResult
 
 /// <summary>Live credential and optional send-boundary gate. Dispose immediately after SendAsync is initiated.</summary>
 public sealed class ForwardCredentialLease(string apiKey, bool isDeviceOAuth = false, IDisposable? gate = null,
-    bool useResolvedApiKey = false, bool protectAuthenticationHeaders = false, object? credentialSnapshot = null) : IDisposable
+    bool useResolvedApiKey = false, bool protectAuthenticationHeaders = false, object? credentialSnapshot = null,
+    string? deviceVendorKey = null) : IDisposable
 {
     public string ApiKey { get; } = apiKey;
     public object? CredentialSnapshot { get; } = credentialSnapshot;
     public bool IsDeviceOAuth { get; } = isDeviceOAuth;
+    public string? DeviceVendorKey { get; } = isDeviceOAuth ? deviceVendorKey : null;
     public bool UseResolvedApiKey { get; } = useResolvedApiKey || isDeviceOAuth;
     public bool ProtectAuthenticationHeaders { get; } = protectAuthenticationHeaders || isDeviceOAuth;
     private IDisposable? _gate = gate;

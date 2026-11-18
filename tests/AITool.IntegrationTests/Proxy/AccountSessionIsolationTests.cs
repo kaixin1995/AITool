@@ -1010,6 +1010,7 @@ public sealed class AccountSessionIsolationTests : IDisposable
     [InlineData("CodexCli", "X-Client-Request-Id")]
     [InlineData("CodexVsCode", "X-Codex-Window-Id")]
     [InlineData("ZCode", "x-zcode-trace-id")]
+    [InlineData("ClaudeCodeDesktop", "X-Claude-Code-Session-Id")]
     public async Task Ordinary_responses_accepts_merged_builtin_header_profile_with_dynamic_templates(string profile, string dynamicHeader)
     {
         var forwarder = new ResponsesFakeProxyForwardService();

@@ -97,7 +97,7 @@ public sealed partial class OpenAiProxyController
         "User-Agent", "x-session-affinity", "x-session-id", "x-opencode-client", "x-opencode-project",
         "X-Claude-Code-Session-Id", "X-Stainless-Arch", "X-Stainless-Lang", "X-Stainless-OS", "X-Stainless-Package-Version",
         "X-Stainless-Retry-Count", "X-Stainless-Runtime", "X-Stainless-Runtime-Version", "X-Stainless-Timeout",
-        "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "x-app", "Originator",
+        "anthropic-beta", "anthropic-dangerous-direct-browser-access", "anthropic-version", "anthropic-client-platform", "anthropic-client-version", "x-app", "Originator",
         "Session-Id", "Thread-Id", "X-Codex-Beta-Features", "X-Codex-Turn-Metadata",
         "http-referer", "x-client-language", "x-client-timezone",
         "x-os-category", "x-os-version", "x-platform", "x-release-channel", "x-title",

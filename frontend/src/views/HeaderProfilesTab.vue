@@ -34,6 +34,7 @@ import {
   type AiLatestVersionResponse
 } from '@/api/headerProfiles'
 import JsonDiffView from '@/components/JsonDiffView.vue'
+import { isNewerVersion, proposeClaudeDesktopHeaders } from './claudeDesktopVersionState'
 
 const message = useMessage()
 const loading = ref(false)
@@ -46,6 +47,16 @@ const aiResult = ref<AiLatestVersionResponse | null>(null)
 const aiApplying = ref(false)
 const aiProfileId = ref<string | null>(null)
 const aiProfileName = ref('')
+const updateClaudeCli = ref(false)
+const updateClaudeDesktop = ref(false)
+const isClaudeDesktopResult = computed(() => !!aiResult.value?.sources)
+const claudeProposedHeaders = computed(() => {
+  const result = aiResult.value
+  if (!result?.currentHeadersJson) return ''
+  return proposeClaudeDesktopHeaders(result.currentHeadersJson,
+    updateClaudeCli.value && !result.cliConflict ? result.latestVersion ?? null : null,
+    updateClaudeDesktop.value ? result.latestDesktopVersion ?? null : null)
+})
 
 // upToDate=true 且无 latestVersion 表示 AI 无法确定该客户端的最新版本（非「已是最新」）。
 const aiResultTagType = computed(() =>
@@ -237,6 +248,8 @@ function copyPlaceholder(tag: string) {
 
 async function handleAiCheckVersion(profile: HeaderProfile) {
   aiCheckingId.value = profile.id
+  updateClaudeCli.value = false
+  updateClaudeDesktop.value = false
   try {
     const res = await aiFetchLatestVersion(profile.id)
     if (!res.success) {
@@ -257,7 +270,8 @@ async function handleAiCheckVersion(profile: HeaderProfile) {
 async function handleApplyAiVersion() {
   const result = aiResult.value
   const profile = profiles.value.find((p) => p.id === aiProfileId.value)
-  if (!result?.changed || !result.proposedHeadersJson || !profile) return
+  const proposed = isClaudeDesktopResult.value ? claudeProposedHeaders.value : result?.proposedHeadersJson
+  if (!result || !proposed || !profile || (isClaudeDesktopResult.value ? !(updateClaudeCli.value || updateClaudeDesktop.value) : !result.changed)) return
 
   aiApplying.value = true
   try {
@@ -265,11 +279,11 @@ async function handleApplyAiVersion() {
       key: profile.key,
       name: profile.name,
       description: profile.description || null,
-      headersJson: result.proposedHeadersJson,
+      headersJson: proposed,
       isEnabled: profile.isEnabled,
       sortOrder: profile.sortOrder
     })
-    message.success(`已把「${profile.name}」User-Agent 版本更新为 ${result.latestVersion}`)
+    message.success(`已更新「${profile.name}」请求头方案`)
     showAiModal.value = false
     await loadProfiles()
   } catch (err: any) {
@@ -488,7 +502,19 @@ onMounted(() => {
       :title="`AI 版本查询结果 [${aiProfileName}]`"
       style="width: 760px; max-width: 95vw;"
     >
-      <template v-if="aiResult">
+      <template v-if="aiResult && isClaudeDesktopResult">
+        <p>查询时间：{{ aiResult.checkedAt ? new Date(aiResult.checkedAt).toLocaleString() : '未知' }}</p>
+        <p v-for="source in aiResult.sources" :key="source.key">
+          {{ source.label }}：<code>{{ source.version || source.error || '无法确认' }}</code>
+        </p>
+        <NAlert v-if="aiResult.cliConflict" type="warning">官方更新日志与 npm 版本不一致，暂不提供 CLI 更新。</NAlert>
+        <NAlert type="warning">Desktop 来源为第三方，Windows 版本未核实。SDK、Node、Stainless 和 beta 不会自动改变，更新版本号不代表整套请求头经过真实验证。</NAlert>
+        <p v-if="aiResult.summary">AI 说明：{{ aiResult.summary }}</p>
+        <p><NSwitch v-model:value="updateClaudeCli" :disabled="!isNewerVersion(aiResult.latestVersion, aiResult.currentVersion) || aiResult.cliConflict" /> 更新 Claude Code：{{ aiResult.currentVersion }} → {{ aiResult.latestVersion || '无法确认' }}</p>
+        <p><NSwitch v-model:value="updateClaudeDesktop" :disabled="!isNewerVersion(aiResult.latestDesktopVersion, aiResult.currentDesktopVersion)" /> 更新 Desktop：{{ aiResult.currentDesktopVersion || '未配置' }} → {{ aiResult.latestDesktopVersion || '无法确认' }}</p>
+        <JsonDiffView v-if="updateClaudeCli || updateClaudeDesktop" :before="aiResult.currentHeadersJson || ''" :after="claudeProposedHeaders" />
+      </template>
+      <template v-else-if="aiResult">
         <div class="ai-version-summary">
           <!-- AI 表示不确定时 latestVersion 为空且 upToDate=true，须与「真是最新」区分展示 -->
           <NTag :type="aiResultTagType" :bordered="false">
@@ -514,12 +540,12 @@ onMounted(() => {
         <NSpace justify="end">
           <NButton @click="showAiModal = false">关闭</NButton>
           <NButton
-            v-if="aiResult?.changed"
+            v-if="isClaudeDesktopResult ? (updateClaudeCli || updateClaudeDesktop) : aiResult?.changed"
             type="primary"
             :loading="aiApplying"
             @click="handleApplyAiVersion"
           >
-            应用更新（更新为 {{ aiResult?.latestVersion }}）
+            应用所选更新
           </NButton>
         </NSpace>
       </template>

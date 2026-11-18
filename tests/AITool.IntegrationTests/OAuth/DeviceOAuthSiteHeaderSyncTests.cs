@@ -2,6 +2,10 @@ using AITool.Application.OAuth;
 using AITool.Domain.OAuth;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.OAuth;
+using AITool.Infrastructure.Common;
+using AITool.Domain.SiteCatalog;
+using AITool.Domain.Models;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,6 +20,105 @@ namespace AITool.IntegrationTests.OAuth;
 /// </summary>
 public sealed class DeviceOAuthSiteHeaderSyncTests : IDisposable
 {
+    [Fact]
+    public async Task Claude_startup_sync_waits_for_relogin_and_reads_fresh_account_headers()
+    {
+        var vendor = new ClaudeOAuthVendor(new HttpClient());
+        _vendors.Add(vendor);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var provisioner = new DeviceOAuthAccountProvisioner(db,
+            new ProxyRequestMetadataCache(_services.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(), new ServiceScopeFactoryAdapter(_services)),
+            new SiteCascadeDeleter(db), NullLogger<DeviceOAuthAccountProvisioner>.Instance);
+        var account = await provisioner.ProvisionAsync(vendor, "Claude", null, "locking-claude", new DeviceOAuthTokenSet { AccessToken = "stub" }, null, CancellationToken.None);
+        var field = typeof(DeviceOAuthAccountProvisioner).GetField("ProvisionLocks", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+        var locks = (KeyedAsyncLock)field!.GetValue(null)!;
+        using var lease = await locks.WaitAsync("claude", CancellationToken.None);
+        var sync = CreateRefreshService().SyncManagedSiteHeadersAsync(CancellationToken.None);
+        (await Task.WhenAny(sync, Task.Delay(1000))).Should().NotBeSameAs(sync, "startup must wait until relogin finishes");
+        account.ExtraJson = """{"chatHeaders":{"X-Account-Revision":"new"}}""";
+        await db.Client.Updateable(account).UpdateColumns(a => new { a.ExtraJson }).ExecuteCommandAsync();
+        lease.Dispose();
+        await sync;
+        ReadSiteHeaders(account.LinkedSiteId)["X-Account-Revision"].Should().Be("new");
+    }
+    [Fact]
+    public async Task Claude_relogin_before_startup_migration_assigns_unconfigured_models()
+    {
+        var vendor = new ClaudeOAuthVendor(new HttpClient());
+        _vendors.Add(vendor);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var provisioner = new DeviceOAuthAccountProvisioner(db,
+            new ProxyRequestMetadataCache(_services.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(), new ServiceScopeFactoryAdapter(_services)),
+            new SiteCascadeDeleter(db), NullLogger<DeviceOAuthAccountProvisioner>.Instance);
+        var tokens = new DeviceOAuthTokenSet { AccessToken = "stub" };
+        var account = await provisioner.ProvisionAsync(vendor, "Claude", null, "old-claude", tokens, null, CancellationToken.None);
+        var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+        site!.ExtraHeadersJson = """{"User-Agent":"custom/1.0","anthropic-beta":"oauth-2025-04-20","X-Custom":"keep"}""";
+        await db.Client.Updateable(site).UpdateColumns(s => new { s.ExtraHeadersJson }).ExecuteCommandAsync();
+        var item = new ModelLibraryItem { ModelName = "old-model", DisplayName = "old-model" };
+        await db.Client.Insertable(item).ExecuteCommandAsync();
+        var mapping = new SiteModelMapping { SiteId = site.Id, ModelLibraryItemId = item.Id, RemoteModelName = "old-model" };
+        await db.Client.Insertable(mapping).ExecuteCommandAsync();
+
+        await provisioner.ProvisionAsync(vendor, "Claude", null, "old-claude", tokens, null, CancellationToken.None);
+        await CreateRefreshService().SyncManagedSiteHeadersAsync(CancellationToken.None);
+        (await db.SiteModelMappings.InSingleAsync(mapping.Id))!.ClientEmulation.Should().Be(ClientEmulationConstants.ClaudeCodeDesktop);
+        var headers = ReadSiteHeaders(site.Id);
+        headers["User-Agent"].Should().Be("custom/1.0");
+        headers["X-Custom"].Should().Be("keep");
+        headers.Should().NotContainKey("anthropic-beta");
+    }
+    [Fact]
+    public async Task Claude_import_assigns_desktop_profile_to_new_model_mapping()
+    {
+        var vendor = new ClaudeOAuthVendor(new HttpClient());
+        _vendors.Add(vendor);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var provisioner = new DeviceOAuthAccountProvisioner(db,
+            new ProxyRequestMetadataCache(_services.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(), new ServiceScopeFactoryAdapter(_services)),
+            new SiteCascadeDeleter(db), NullLogger<DeviceOAuthAccountProvisioner>.Instance);
+        var account = await provisioner.ProvisionAsync(vendor, "Claude", null, "claude-import", new DeviceOAuthTokenSet { AccessToken = "stub" }, null, CancellationToken.None);
+        await provisioner.SyncSelectedModelsAsync(account.Id, [("model-a", "model-a", true)], CancellationToken.None);
+        var mapping = (await db.SiteModelMappings.Where(m => m.SiteId == account.LinkedSiteId).ToListAsync()).Should().ContainSingle().Subject;
+        mapping.ClientEmulation.Should().Be(ClientEmulationConstants.ClaudeCodeDesktop);
+    }
+    [Fact]
+    public async Task Claude_upgrade_preserves_custom_settings_and_assigns_only_unconfigured_mappings_once()
+    {
+        var vendor = new ClaudeOAuthVendor(new HttpClient());
+        _vendors.Add(vendor);
+        await using var scope = _services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var provisioner = new DeviceOAuthAccountProvisioner(db,
+            new ProxyRequestMetadataCache(_services.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(), new ServiceScopeFactoryAdapter(_services)),
+            new SiteCascadeDeleter(db), NullLogger<DeviceOAuthAccountProvisioner>.Instance);
+        var account = await provisioner.ProvisionAsync(vendor, "Claude", null, "claude-test", new DeviceOAuthTokenSet { AccessToken = "stub" }, null, CancellationToken.None);
+        var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+        site!.ExtraHeadersJson = """{"User-Agent":"claude-cli/2.0.14 (external, cli)","anthropic-beta":"oauth-2025-04-20","X-Custom":"keep"}""";
+        await db.Client.Updateable(site).UpdateColumns(s => new { s.ExtraHeadersJson }).ExecuteCommandAsync();
+        var a = new ModelLibraryItem { ModelName = "test-a", DisplayName = "a" };
+        var b = new ModelLibraryItem { ModelName = "test-b", DisplayName = "b" };
+        await db.Client.Insertable(new[] { a, b }).ExecuteCommandAsync();
+        var first = new SiteModelMapping { SiteId = site.Id, ModelLibraryItemId = a.Id, RemoteModelName = "test-a" };
+        var second = new SiteModelMapping { SiteId = site.Id, ModelLibraryItemId = b.Id, RemoteModelName = "test-b", ClientEmulation = "custom" };
+        await db.Client.Insertable(new[] { first, second }).ExecuteCommandAsync();
+
+        await CreateRefreshService().SyncManagedSiteHeadersAsync(CancellationToken.None);
+        var headers = ReadSiteHeaders(site.Id);
+        headers.Should().NotContainKey("User-Agent").And.NotContainKey("anthropic-beta");
+        headers["X-Custom"].Should().Be("keep");
+        headers["X-AITool-Claude-OAuth"].Should().Be("true");
+        (await db.SiteModelMappings.InSingleAsync(first.Id))!.ClientEmulation.Should().Be(ClientEmulationConstants.ClaudeCodeDesktop);
+        (await db.SiteModelMappings.InSingleAsync(second.Id))!.ClientEmulation.Should().Be("custom");
+
+        first.ClientEmulation = "None";
+        await db.Client.Updateable(first).UpdateColumns(m => new { m.ClientEmulation }).ExecuteCommandAsync();
+        await CreateRefreshService().SyncManagedSiteHeadersAsync(CancellationToken.None);
+        (await db.SiteModelMappings.InSingleAsync(first.Id))!.ClientEmulation.Should().Be("None");
+    }
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-device-oauth-header-sync-{Guid.NewGuid():N}.db");
     private readonly ServiceProvider _services;
     private readonly List<IDeviceOAuthVendor> _vendors = [];

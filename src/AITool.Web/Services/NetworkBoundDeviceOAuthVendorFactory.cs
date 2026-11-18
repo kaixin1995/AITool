@@ -1,5 +1,6 @@
 using AITool.Application.Networking;
 using AITool.Application.OAuth;
+using AITool.Application.Proxy;
 using AITool.Domain.OAuth;
 using AITool.Domain.Operations;
 using AITool.Infrastructure.OAuth;
@@ -14,7 +15,8 @@ public sealed class NetworkBoundDeviceOAuthVendorFactory(
     AccountNetworkClientFactory clients,
     IAccountNetworkPolicyResolver resolver,
     DeviceOAuthVendorRegistry registry,
-    ILogger<MiniMaxOAuthVendor> miniMaxLogger)
+    ILogger<MiniMaxOAuthVendor> miniMaxLogger,
+    IHeaderProfileCatalogService? profiles = null)
 {
     private readonly TimeSpan _requestTimeout = TimeSpan.FromSeconds(20);
 
@@ -75,7 +77,7 @@ public sealed class NetworkBoundDeviceOAuthVendorFactory(
                 "trae-global" => new TraeOAuthVendor(client, global: true),
                 "kiro" => new KiroOAuthVendor(client),
                 "copilot" => new CopilotOAuthVendor(client),
-                "claude" => new ClaudeOAuthVendor(client),
+                "claude" => new ClaudeOAuthVendor(client, profiles),
                 "zcode" => new ZCodeOAuthVendor(client),
                 _ => throw new NetworkPolicyException("unsupported_bound_vendor", "The OAuth vendor has no network-bound implementation.")
             };

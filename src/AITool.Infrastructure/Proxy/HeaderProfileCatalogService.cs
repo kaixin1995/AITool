@@ -383,6 +383,18 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
         [
             new HeaderProfile
             {
+                Id = Guid.Parse("10000000-0000-0000-0000-000000000009"),
+                Key = ClientEmulationConstants.ClaudeCodeDesktop,
+                Name = "Claude Code Desktop",
+                Description = "Claude Code Desktop 客户端请求头（基于实际请求）",
+                HeadersJson = JsonSerializer.Serialize(ClientEmulationEngine.ClaudeDesktopHeaders(), JsonOptions),
+                IsBuiltIn = true,
+                IsEnabled = true,
+                SortOrder = 2,
+                CreatedAt = DateTimeOffset.UtcNow
+            },
+            new HeaderProfile
+            {
                 Id = Guid.Parse("10000000-0000-0000-0000-000000000001"),
                 Key = ClientEmulationConstants.OpenCode,
                 Name = "OpenCode CLI 终端",

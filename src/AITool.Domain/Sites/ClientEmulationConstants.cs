@@ -9,6 +9,7 @@ public static class ClientEmulationConstants
     public const string None = "None";
     public const string OpenCode = "OpenCode";
     public const string ClaudeCode = "ClaudeCode";
+    public const string ClaudeCodeDesktop = "ClaudeCodeDesktop";
     public const string CodexCli = "CodexCli";
     public const string CodexVsCode = "CodexVsCode";
     public const string ZCode = "ZCode";
@@ -39,6 +40,7 @@ public static class ClientEmulationConstants
         var cleaned = trimmed.Replace("-", string.Empty).Replace("_", string.Empty);
         if (string.Equals(cleaned, OpenCode, StringComparison.OrdinalIgnoreCase)) return OpenCode;
         if (string.Equals(cleaned, ClaudeCode, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "claude", StringComparison.OrdinalIgnoreCase)) return ClaudeCode;
+        if (string.Equals(cleaned, ClaudeCodeDesktop, StringComparison.OrdinalIgnoreCase)) return ClaudeCodeDesktop;
         if (string.Equals(cleaned, CodexCli, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "codex", StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "codexdesktop", StringComparison.OrdinalIgnoreCase)) return CodexCli;
         if (string.Equals(cleaned, CodexVsCode, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "codexvscode", StringComparison.OrdinalIgnoreCase)) return CodexVsCode;
         if (string.Equals(cleaned, ZCode, StringComparison.OrdinalIgnoreCase)) return ZCode;

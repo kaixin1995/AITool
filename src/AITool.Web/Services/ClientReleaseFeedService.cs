@@ -16,6 +16,67 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed partial class ClientReleaseFeedService
 {
+    public sealed record DesktopVersionSource(string Key, string Label, string? Version, string? Error);
+
+    /// <summary>Independent sources: a failure in one does not hide the others.</summary>
+    public async Task<IReadOnlyList<DesktopVersionSource>> LookupClaudeDesktopAsync(CancellationToken ct)
+    {
+        var sources = new[]
+        {
+            (Key: "cli", Label: "Claude Code 官方更新日志", Url: "https://code.claude.com/docs/en/changelog"),
+            (Key: "npm", Label: "Claude Code npm latest", Url: "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"),
+            (Key: "desktop", Label: "aiticker Desktop（第三方，平台需核实）", Url: "https://aiticker.site/tools/claude-desktop/releases/")
+        };
+        var client = _httpClientFactory.CreateClient("ReleaseFeed");
+        async Task<DesktopVersionSource> Read((string Key, string Label, string Url) source)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, source.Url);
+                request.Headers.UserAgent.ParseAdd("Mozilla/5.0 AI-Tool-Admin");
+                using var response = await client.SendAsync(request, ct);
+                response.EnsureSuccessStatusCode();
+                var body = await response.Content.ReadAsStringAsync(ct);
+                var version = source.Key switch
+                {
+                    "cli" => ParseClaudeChangelogVersion(body),
+                    "npm" => ParseNpmVersion(body),
+                    _ => ParseClaudeDesktopVersion(body)
+                };
+                return new(source.Key, source.Label, version, version is null ? "未能从来源识别版本" : null);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Fetch Claude release source failed: {Source}", source.Key);
+                return new(source.Key, source.Label, null, "来源查询失败");
+            }
+        }
+        return await Task.WhenAll(sources.Select(Read));
+    }
+
+    public static string? ParseClaudeChangelogVersion(string html)
+    {
+        var match = Regex.Match(html, "<div\\b[^>]*\\bclass=\"[^\"]*\\bupdate-container\\b[^\"]*\"[^>]*\\bid=\"(?<v>\\d+-\\d+-\\d+)\"", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups["v"].Value.Replace('-', '.') : null;
+    }
+
+    public static string? ParseClaudeDesktopVersion(string html)
+    {
+        var match = Regex.Match(html, "<ul\\b[^>]*class=\"[^\"]*\\brel-list\\b[^\"]*\"[^>]*>\\s*<li>\\s*<a\\b[^>]*>\\s*<code>v(?<v>\\d+\\.\\d+\\.\\d+)</code>", RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups["v"].Value : null;
+    }
+
+    private static string? ParseNpmVersion(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String
+                && Regex.IsMatch(v.GetString() ?? "", "^\\d+\\.\\d+\\.\\d+$") ? v.GetString() : null;
+        }
+        catch (JsonException) { return null; }
+    }
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
 
     /// <summary>档案 Key → 官方发布源清单（大小写不敏感；有序，前者优先）。</summary>

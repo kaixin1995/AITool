@@ -10,6 +10,16 @@ namespace AITool.ApplicationTests.Proxy;
 public sealed class ClientEmulationEngineTests
 {
     [Fact]
+    public void ClaudeDesktop_uses_only_configured_template_headers()
+    {
+        var disabled = ClientEmulationEngine.ResolveHeaders(ClientEmulationConstants.ClaudeCodeDesktop, null);
+        Assert.Empty(disabled);
+        var edited = ClientEmulationEngine.ResolveHeaders(ClientEmulationConstants.ClaudeCodeDesktop,
+            new Dictionary<string, string> { ["User-Agent"] = "custom/1.0" });
+        Assert.Single(edited);
+        Assert.Equal("custom/1.0", edited["User-Agent"]);
+    }
+    [Fact]
     public void EvaluatePlaceholders_ReplacesGuidAndNanoIdAndTimestamp()
     {
         var template = "req_${guid}_ses_${nanoid:10}_time_${timestamp}_hex_${random_hex:8}_model_${model}";

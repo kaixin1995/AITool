@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text;
 using AITool.Application.OAuth;
+using AITool.Application.Proxy;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.OAuth;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -13,6 +15,51 @@ namespace AITool.IntegrationTests.OAuth;
 /// </summary>
 public sealed class OAuthRemoteModelFetchTests
 {
+    [Fact]
+    public async Task Claude_disabled_profile_does_not_send_its_fingerprint_to_public_catalog()
+    {
+        var handler = new StubHandler((_, _) => Task.FromResult(JsonResponse("""{"anthropic":{"models":{"claude":{"name":"Claude"}}}}""")));
+        using var client = new HttpClient(handler);
+        var profile = new HeaderProfile { Key = "ClaudeCodeDesktop", IsEnabled = false,
+            HeadersJson = """{"User-Agent":"claude-cli/9.9.9"}""" };
+        await new ClaudeOAuthVendor(client, new SingleProfileCatalog(profile)).FetchModelsAsync(Token, null, CancellationToken.None);
+        handler.Requests.Should().ContainSingle().Subject.Headers["User-Agent"].Should().Be("AITool");
+    }
+
+    [Fact]
+    public async Task Claude_profile_with_removed_user_agent_does_not_restore_the_default()
+    {
+        var handler = new StubHandler((_, _) => Task.FromResult(JsonResponse("""{"anthropic":{"models":{"claude":{"name":"Claude"}}}}""")));
+        using var client = new HttpClient(handler);
+        var profile = new HeaderProfile { Key = "ClaudeCodeDesktop", IsEnabled = true, HeadersJson = "{}" };
+        await new ClaudeOAuthVendor(client, new SingleProfileCatalog(profile)).FetchModelsAsync(Token, null, CancellationToken.None);
+        handler.Requests.Should().ContainSingle().Subject.Headers["User-Agent"].Should().Be("AITool");
+    }
+    [Fact]
+    public async Task Claude_public_catalog_uses_profile_user_agent_without_forwarding_sensitive_profile_headers()
+    {
+        var handler = new StubHandler((_, _) => Task.FromResult(JsonResponse("""{"anthropic":{"models":{"claude":{"name":"Claude"}}}}""")));
+        using var client = new HttpClient(handler);
+        var profile = new HeaderProfile { Key = "ClaudeCodeDesktop", IsEnabled = true,
+            HeadersJson = """{"User-Agent":"claude-cli/2.9.9 (external, local-agent)","Authorization":"Bearer secret","X-Custom":"secret"}""" };
+        var vendor = new ClaudeOAuthVendor(client, new SingleProfileCatalog(profile));
+        await vendor.FetchModelsAsync(Token, null, CancellationToken.None);
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Headers["User-Agent"].Should().Contain("claude-cli/2.9.9");
+        request.Headers.Should().NotContainKey("Authorization").And.NotContainKey("X-Custom").And.NotContainKey("x-api-key");
+    }
+
+    private sealed class SingleProfileCatalog(HeaderProfile profile) : IHeaderProfileCatalogService
+    {
+        public Task<HeaderProfile?> GetByKeyAsync(string key, CancellationToken ct = default) => Task.FromResult<HeaderProfile?>(profile);
+        public Task<IReadOnlyList<HeaderProfile>> GetAllAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<HeaderProfile?> GetByIdAsync(Guid id, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyDictionary<string, string>> GetActiveProfilesDictionaryAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<HeaderProfile> CreateAsync(HeaderProfile value, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<HeaderProfile?> UpdateAsync(Guid id, Action<HeaderProfile> update, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<HeaderProfile>> ResetBuiltInsAsync(CancellationToken ct = default) => throw new NotSupportedException();
+    }
     private static readonly DeviceOAuthTokenSet Token = new()
     {
         AccessToken = "stub-session-token",
@@ -233,7 +280,7 @@ public sealed class OAuthRemoteModelFetchTests
         request.Method.Should().Be(HttpMethod.Get);
         request.Uri.Should().Be("https://models.dev/api.json");
         request.Headers["Accept"].Should().Contain("application/json");
-        request.Headers["User-Agent"].Should().Be("AITool");
+        request.Headers["User-Agent"].Should().Contain("claude-cli/2.1.326").And.Contain("local-agent");
         request.Headers.Should().NotContainKey("Authorization");
         request.Headers.Should().NotContainKey("x-api-key");
     }

@@ -2,6 +2,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.OAuth;
+using AITool.Application.Proxy;
+using AITool.Domain.Sites;
+using AITool.Infrastructure.Proxy;
 
 namespace AITool.Infrastructure.OAuth;
 
@@ -25,10 +28,12 @@ public sealed class ClaudeOAuthVendor : IDeviceOAuthVendor
     private const string Scopes = "oauth:openid profile offline_access";
 
     private readonly HttpClient _httpClient;
+    private readonly IHeaderProfileCatalogService? _profiles;
 
-    public ClaudeOAuthVendor(HttpClient httpClient)
+    public ClaudeOAuthVendor(HttpClient httpClient, IHeaderProfileCatalogService? profiles = null)
     {
         _httpClient = httpClient;
+        _profiles = profiles;
     }
 
     public string VendorKey => "claude";
@@ -54,9 +59,8 @@ public sealed class ClaudeOAuthVendor : IDeviceOAuthVendor
         new Dictionary<string, string>
         {
             ["anthropic-version"] = "2023-06-01",
-            ["anthropic-beta"] = "oauth-2025-04-20",
             ["X-AITool-Auth-Mode"] = "bearer",
-            ["User-Agent"] = "claude-cli/2.0.14 (external, cli)",
+            ["X-AITool-Claude-OAuth"] = "true",
             ["x-app"] = "cli",
         });
 
@@ -147,7 +151,27 @@ public sealed class ClaudeOAuthVendor : IDeviceOAuthVendor
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://models.dev/api.json");
         request.Headers.TryAddWithoutValidation("Accept", "application/json");
-        request.Headers.TryAddWithoutValidation("User-Agent", "AITool");
+        // This is a third-party public catalog: never send the account token or arbitrary
+        // editable profile headers. Only the client User-Agent is shared with this host.
+        var userAgent = ClientEmulationEngine.ClaudeDesktopHeaders()["User-Agent"];
+        if (_profiles is not null)
+        {
+            try
+            {
+                var profile = await _profiles.GetByKeyAsync(ClientEmulationConstants.ClaudeCodeDesktop, cancellationToken);
+                if (profile is not null) userAgent = "AITool";
+                if (profile is { IsEnabled: true, HeadersJson: not null })
+                {
+                    var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(profile.HeadersJson);
+                    var configured = headers?.FirstOrDefault(x => string.Equals(x.Key, "User-Agent", StringComparison.OrdinalIgnoreCase)).Value;
+                    if (!string.IsNullOrWhiteSpace(configured) && !configured.Contains('\r') && !configured.Contains('\n'))
+                        userAgent = configured;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception) { /* bad or unavailable catalog: use the captured default */ }
+        }
+        request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)

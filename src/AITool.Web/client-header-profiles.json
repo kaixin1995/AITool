@@ -1,5 +1,17 @@
 [
   {
+    "Id": "10000000-0000-0000-0000-000000000009",
+    "Key": "ClaudeCodeDesktop",
+    "Name": "Claude Code Desktop",
+    "Description": "Claude Code Desktop 客户端请求头（基于实际请求）",
+    "HeadersJson": "{\"User-Agent\":\"claude-cli/2.1.326 (external, local-agent, agent-sdk/0.3.326)\",\"Anthropic-Client-Platform\":\"desktop_app\",\"Anthropic-Client-Version\":\"6.6395.0\",\"Anthropic-Beta\":\"claude-code-20250219,interleaved-thinking-2025-05-14,tool-search-tool-2025-10-19,effort-2025-11-24\",\"Anthropic-Dangerous-Direct-Browser-Access\":\"true\",\"Anthropic-Version\":\"2023-06-01\",\"X-App\":\"cli\",\"X-Claude-Code-Session-Id\":\"${guid}\",\"X-Stainless-Arch\":\"x64\",\"X-Stainless-Lang\":\"js\",\"X-Stainless-Os\":\"Windows\",\"X-Stainless-Package-Version\":\"0.128.0\",\"X-Stainless-Retry-Count\":\"0\",\"X-Stainless-Runtime\":\"node\",\"X-Stainless-Runtime-Version\":\"v26.12.1\",\"X-Stainless-Timeout\":\"900\"}",
+    "IsBuiltIn": true,
+    "IsEnabled": true,
+    "SortOrder": 2,
+    "CreatedAt": "2026-11-18T00:00:00Z",
+    "UpdatedAt": null
+  },
+  {
     "Id": "10000000-0000-0000-0000-000000000001",
     "Key": "OpenCode",
     "Name": "OpenCode CLI 终端",

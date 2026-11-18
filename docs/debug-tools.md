@@ -1,5 +1,7 @@
 # 调试工具（/developer/invocations 六页签）
 
+Claude Code Desktop 请求头方案以实际抓取的客户端头为初始值。版本查询分别读取 Claude Code 官方更新日志、npm 和第三方 Desktop 发布目录，展示来源并由用户选择应用；Desktop 来源的平台可能与本机不同，SDK、Node、Stainless 与 beta 不能由版本号自动推断。Claude 订阅账号新导入模型默认使用该方案；旧账号首次升级时迁移未配置方案的映射。公开模型目录只使用模板的 User-Agent，不发送账号凭据。上游 Claude 订阅转发保留 Bearer 鉴权并补充 OAuth beta。
+
 > 本文是 [README.md](../README.md) 的调试工具细节篇。入口：管理后台「监控运维 → 调试工具」（`/developer/invocations`，需系统设置开启 `DeveloperFeaturesEnabled`，路由守卫与后端 API 双重 gating——后端 `DeveloperInvocationsApiController` / `SqlMigrationsApiController` 在开关关闭时返回 404）。
 > 页签支持 hash 深链：`#developerInvocationsPane`、`#developerSimulatorPane`、`#developerConcurrencyPane`、`#developerCircuitBreakerPane`、`#developerProtocolDiagnosticsPane`、`#developerSqlMigrationsPane`。
 

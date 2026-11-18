@@ -200,6 +200,26 @@ public static partial class ClientEmulationEngine
         }
     }
 
+    public static Dictionary<string, string> ClaudeDesktopHeaders() => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["User-Agent"] = "claude-cli/2.1.326 (external, local-agent, agent-sdk/0.3.326)",
+        ["Anthropic-Client-Platform"] = "desktop_app",
+        ["Anthropic-Client-Version"] = "6.6395.0",
+        ["Anthropic-Beta"] = "claude-code-20250219,interleaved-thinking-2025-05-14,tool-search-tool-2025-10-19,effort-2025-11-24",
+        ["Anthropic-Dangerous-Direct-Browser-Access"] = "true",
+        ["Anthropic-Version"] = "2023-06-01",
+        ["X-App"] = "cli",
+        ["X-Claude-Code-Session-Id"] = "${guid}",
+        ["X-Stainless-Arch"] = "x64",
+        ["X-Stainless-Lang"] = "js",
+        ["X-Stainless-Os"] = "Windows",
+        ["X-Stainless-Package-Version"] = "0.128.0",
+        ["X-Stainless-Retry-Count"] = "0",
+        ["X-Stainless-Runtime"] = "node",
+        ["X-Stainless-Runtime-Version"] = "v26.12.1",
+        ["X-Stainless-Timeout"] = "900"
+    };
+
     /// <summary>
     /// 对字符串中的占位符进行动态求值替换。
     /// </summary>

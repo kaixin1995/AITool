@@ -18,6 +18,31 @@ namespace AITool.IntegrationTests.OAuth;
 /// <summary>Real SQLite and the real device gate; upstream sends are fake only.</summary>
 public sealed class ForwardCredentialSnapshotTests : IDisposable
 {
+    [Fact]
+    public async Task Claude_authentication_is_derived_from_database_vendor_not_untrusted_markers()
+    {
+        _account.VendorKey = "claude";
+        await _db.UpdateAsync(_account);
+        var handler = new Handler(message =>
+        {
+            message.Headers.Authorization!.ToString().Should().Be("Bearer latest");
+            message.Headers.Should().NotContain(h => h.Key.Equals("x-api-key", StringComparison.OrdinalIgnoreCase));
+            message.Headers.GetValues("anthropic-beta").Single().Should().Contain("oauth-2025-04-20").And.Contain("claude-code-20250219");
+            message.Headers.Should().NotContain(h => h.Key.Equals("X-AITool-Claude-OAuth", StringComparison.OrdinalIgnoreCase));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("{\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}") });
+        });
+        var request = Request();
+        request.ProtocolType = "Anthropic";
+        request.ForwardHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["X-AITool-Auth-Mode"] = "api-key", ["X-AITool-Claude-OAuth"] = "false",
+            ["anthropic-beta"] = "claude-code-20250219"
+        };
+        var result = await CreateService(handler, new Network()).ForwardAsync(request);
+        result.Success.Should().BeTrue(result.ErrorMessage);
+        handler.Calls.Should().Be(1);
+    }
     private readonly string _path = Path.Combine(Path.GetTempPath(), $"aitool-forward-snapshot-{Guid.NewGuid():N}.db");
     private readonly ServiceProvider _services;
     private readonly IServiceScope _scope;

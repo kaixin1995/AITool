@@ -429,7 +429,7 @@ builder.Services.AddHttpClient("device-oauth-trae-global", c => c.Timeout = Time
 builder.Services.AddHttpClient("device-oauth-workbuddy-cn", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient("device-oauth-workbuddy-global", c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.ClaudeOAuthVendor(
-    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-claude")));
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-claude"), sp.GetRequiredService<IHeaderProfileCatalogService>()));
 builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.KiroOAuthVendor(
     sp.GetRequiredService<IHttpClientFactory>().CreateClient("device-oauth-kiro")));
 builder.Services.AddTransient<IDeviceOAuthVendor>(sp => new AITool.Infrastructure.OAuth.TraeOAuthVendor(

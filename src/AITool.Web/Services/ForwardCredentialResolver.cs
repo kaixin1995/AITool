@@ -45,7 +45,7 @@ public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory)
             // The statement and connection finish before the caller starts network I/O.
             cancellationToken.ThrowIfCancellationRequested();
             var rows = await db.Ado.SqlQueryAsync<DeviceCredentialSnapshot>("""
-                SELECT s.ManagedSource, s.BaseUrl,
+                SELECT s.ManagedSource, s.BaseUrl, d.VendorKey AS DeviceVendorKey,
                     CASE @provider
                         WHEN 'codex' THEN (SELECT c.AccessToken FROM CodexAccounts c WHERE c.Id=@accountId AND c.LinkedSiteId=s.Id)
                         WHEN 'google' THEN (SELECT g.AccessToken FROM GoogleAccounts g WHERE g.Id=@accountId AND g.LinkedSiteId=s.Id)
@@ -89,7 +89,7 @@ public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory)
                 throw Blocked();
             return new ForwardCredentialLease(isDevice ? snapshot.AccessToken! : request.TargetApiKey, isDevice, gate,
                 credentialSnapshot: new ForwardOAuthCredentialSnapshot(identity.ProviderKey, identity.AccountId, siteId,
-                    snapshot.AccessToken, snapshot.RefreshToken, snapshot.LastRefreshAt));
+                    snapshot.AccessToken, snapshot.RefreshToken, snapshot.LastRefreshAt), deviceVendorKey: snapshot.DeviceVendorKey);
         }
         catch
         {
@@ -102,6 +102,7 @@ public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory)
     {
         public string? ManagedSource { get; set; }
         public string BaseUrl { get; set; } = string.Empty;
+        public string? DeviceVendorKey { get; set; }
         public string? AccessToken { get; set; }
         public string? RefreshToken { get; set; }
         public DateTimeOffset? LastRefreshAt { get; set; }
