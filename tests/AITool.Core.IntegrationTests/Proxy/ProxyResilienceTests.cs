@@ -2,18 +2,15 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
-using AITool.Core.IntegrationTests;
 using AITool.Application.Proxy;
 using AITool.Application.UsageLogs;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
-using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -74,7 +71,7 @@ public sealed class ProxyResilienceTests
 /// <summary>
 /// 用于构建 ProxyResilienceWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
 /// </summary>
-internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFactory<AITool.Core.CoreProgramMarker>
 {
     /// <summary>
     /// 保存当前测试使用的临时数据库路径。
@@ -102,20 +99,13 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
         builder.ConfigureServices(services =>
         {
             IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
+                // split 双宿主：Core 宿主默认快照模式；测试用 DB 支撑提供器让 master 的 DB 种子直通。
+                services.RemoveAll<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+                services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider, AITool.Infrastructure.CoreRuntime.DbBackedRuntimeConfigProvider>();
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
             services.RemoveAll<AITool.Application.UsageLogs.IUsageLogService>();
             services.AddSingleton<AITool.Application.UsageLogs.IUsageLogService, ThrowingUsageLogService>();
-
-            // 重新注册元数据缓存，不传入 ICoreRuntimeConfigProvider，
-            // 使缓存回退到数据库查询路径，确保测试 seed 的密钥数据能被正确读取。
-            services.RemoveAll<ProxyRequestMetadataCache>();
-            services.AddSingleton<ProxyRequestMetadataCache>(sp =>
-            {
-                var memoryCache = sp.GetRequiredService<IMemoryCache>();
-                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
-            });
         });
     }
 
@@ -133,9 +123,9 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
     /// </summary>
     private async Task SeedAsync()
     {
-        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var openAiSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
         var anthropicSiteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -206,6 +196,12 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
                 IsEnabled = true
             });
 
+        // 单例表 Id=1 可能已被启动逻辑创建，先删除避免唯一约束冲突。
+
+
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
+
+
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,
@@ -219,6 +215,8 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
+
+        await db.SaveChangesAsync();
     }
 }
 

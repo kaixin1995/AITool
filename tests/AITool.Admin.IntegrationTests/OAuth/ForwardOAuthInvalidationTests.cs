@@ -23,6 +23,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AITool.Admin.IntegrationTests.OAuth;
 
 /// <summary>Exercises real resolver snapshots and persistence against a private SQLite file, without network access.</summary>
+[Collection("NetworkStoreSerialized")]
 public sealed class ForwardOAuthInvalidationTests : IDisposable
 {
     private const string AccessToken = "original-access";

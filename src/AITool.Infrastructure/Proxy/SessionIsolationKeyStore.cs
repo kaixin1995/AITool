@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using System.Security.Cryptography;
 using System.Text;
 using AITool.Domain.Operations;
@@ -7,7 +8,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// Owns the deployment's independent random 256-bit derivation key. By default it writes

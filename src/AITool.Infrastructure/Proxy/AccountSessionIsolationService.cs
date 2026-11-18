@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,7 +9,7 @@ using AITool.Domain.OAuth;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>Original client inputs captured before any protocol conversion or emulation.</summary>
 public sealed class AccountSessionIsolationContext

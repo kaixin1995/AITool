@@ -1,19 +1,27 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using AITool.Core.IntegrationTests;
+using AITool.Application.Kimi;
 using AITool.Application.Proxy;
+using AITool.Application.Networking;
+using AITool.Domain.Kimi;
 using AITool.Domain.Models;
+using AITool.Domain.OAuth;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
+using AITool.Domain.Xai;
 using AITool.Infrastructure.Persistence;
+using AITool.Core.Controllers.Admin;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using System.Reflection;
 using AITool.Infrastructure.Proxy;
+using AITool.Core.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Net.Http.Headers;
@@ -53,6 +61,12 @@ public sealed class ChatApiTests
         document.RootElement.GetProperty("content").GetString().Should().Be("anthropic-ok");
         document.RootElement.GetProperty("inputTokens").GetInt32().Should().Be(3);
         document.RootElement.GetProperty("outputTokens").GetInt32().Should().Be(5);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].HttpStatusCode.Should().Be(200);
     }
 
     /// <summary>
@@ -131,6 +145,205 @@ public sealed class ChatApiTests
         fakeForwardService.Requests[0].RequestBody.Should().Contain(ChatWebApplicationFactory.SecondSiteModelName);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Managed_chat_401_disables_account_for_route_and_selected_target(bool streaming, bool selected)
+    {
+        var fakeForward = new ChatFakeProxyForwardService();
+        var fakeHttp = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("401"));
+        await using var factory = new ChatWebApplicationFactory(fakeForward, fakeHttp, "OpenAI", directNetwork: true);
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = await db.Sites.InSingleAsync(ChatWebApplicationFactory.SiteId);
+        site.ManagedSource = "device_oauth";
+        site.ApiKey = "test-token";
+        await db.UpdateAsync(site);
+        var account = new DeviceOAuthAccount { LinkedSiteId = site.Id, VendorKey = "test", AccessToken = "test-token" };
+        await db.InsertAsync(account);
+        scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRouteTargets();
+        var mapping = selected ? $",\"mappingId\":\"{ChatWebApplicationFactory.MappingId}\"" : "";
+        var endpoint = streaming ? "send-stream" : "send";
+        var response = await client.PostAsync($"/api/admin/chat/{endpoint}", new StringContent(
+            $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hi\"{mapping}}}", Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        if (!streaming)
+        {
+            fakeForward.Requests.Should().ContainSingle();
+            var sent = fakeForward.Requests[0];
+            sent.RefreshTargetApiKeyAsync.Should().NotBeNull();
+            sent.InvalidateTargetCredentialAsync.Should().NotBeNull();
+        }
+        else
+        {
+            var updated = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
+            updated.IsEnabled.Should().BeFalse();
+            updated.RequiresReauth.Should().BeTrue();
+            (await db.Sites.InSingleAsync(site.Id)).IsEnabled.Should().BeFalse();
+        }
+    }
+
+    [Theory]
+    [InlineData("407")]
+    [InlineData("network")]
+    public async Task Managed_chat_stream_transport_failures_do_not_disable_account(string failure)
+    {
+        var fakeHttp = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler(failure));
+        await using var factory = new ChatWebApplicationFactory(new ChatFakeProxyForwardService(), fakeHttp, "OpenAI", directNetwork: true);
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = await db.Sites.InSingleAsync(ChatWebApplicationFactory.SiteId);
+        site.ManagedSource = "device_oauth";
+        site.ApiKey = "test-token";
+        await db.UpdateAsync(site);
+        var account = new DeviceOAuthAccount { LinkedSiteId = site.Id, VendorKey = "test", AccessToken = "test-token" };
+        await db.InsertAsync(account);
+        scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRouteTargets();
+        using var response = await client.PostAsync("/api/admin/chat/send-stream", new StringContent(
+            $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"mappingId\":\"{ChatWebApplicationFactory.MappingId}\",\"message\":\"hi\"}}", Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        fakeHttp.Handler.Requests.Should().ContainSingle();
+        var current = await db.DeviceOAuthAccounts.InSingleAsync(account.Id);
+        current.IsEnabled.Should().BeTrue();
+        current.RequiresReauth.Should().BeFalse();
+        (await db.Sites.InSingleAsync(site.Id)).IsEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Managed_chat_stream_401_refresh_times_out_and_does_not_retry_upstream()
+    {
+        var fakeOAuth = new FakeTimingOutKimiOAuthClient();
+        var fakeHttp = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("401"));
+        await using var factory = new ChatWebApplicationFactory(
+            new ChatFakeProxyForwardService(),
+            fakeHttp,
+            "OpenAI",
+            directNetwork: true,
+            configureServices: services =>
+            {
+                services.RemoveAll<IKimiOAuthClient>();
+                services.AddSingleton<IKimiOAuthClient>(fakeOAuth);
+            });
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var runtime = await db.SystemRuntimeSettings.InSingleAsync(1);
+        runtime.ProxyRequestTimeoutSeconds = 1;
+        await db.UpdateAsync(runtime);
+
+        var site = await db.Sites.InSingleAsync(ChatWebApplicationFactory.SiteId);
+        site.ManagedSource = "kimi_oauth";
+        site.ApiKey = "test-token";
+        await db.UpdateAsync(site);
+
+        var account = new KimiAccount
+        {
+            LinkedSiteId = site.Id,
+            DisplayName = "kimi-test",
+            AccessToken = "test-token",
+            RefreshToken = "test-refresh-token",
+            DeviceId = "device-1"
+        };
+        await db.InsertAsync(account);
+        scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRouteTargets();
+        scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send-stream",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"mappingId\":\"{ChatWebApplicationFactory.MappingId}\",\"message\":\"hi\"}}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadAsStringAsync();
+
+        body.Should().Contain("Request timed out after 1s");
+        fakeOAuth.CancellationTokenObservedCancelled.Should().BeTrue();
+        fakeHttp.Handler.Requests.Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("client")]
+    [InlineData("persistence")]
+    [InlineData("unrelated-cancellation")]
+    public async Task Managed_chat_stream_invalidation_respects_cancellation_and_preserves_upstream_response(string scenario)
+    {
+        FakeChatInvalidationService? invalidation = null;
+        var fakeHttp = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("401"));
+        await using var factory = new ChatWebApplicationFactory(
+            new ChatFakeProxyForwardService(), fakeHttp, "OpenAI", directNetwork: true,
+            configureServices: services =>
+            {
+                services.RemoveAll<ForwardOAuthInvalidationService>();
+                services.AddScoped<ForwardOAuthInvalidationService>(sp => invalidation = new FakeChatInvalidationService(
+                    sp.GetRequiredService<AppDbContext>(), sp.GetRequiredService<ProxyRequestMetadataCache>(), scenario));
+            });
+        using var client = factory.CreateClient(); // Seeds the test database.
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var site = await db.Sites.InSingleAsync(ChatWebApplicationFactory.SiteId);
+        site.ManagedSource = "xai_oauth"; // xAI has invalidation but no 401 refresh callback.
+        site.ApiKey = "test-token";
+        await db.UpdateAsync(site);
+        var account = new XaiAccount { LinkedSiteId = site.Id, AccessToken = "test-token" };
+        await db.InsertAsync(account);
+
+        var controller = ActivatorUtilities.CreateInstance<ChatApiController>(scope.ServiceProvider);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider }
+        };
+        using var clientCancellation = new CancellationTokenSource();
+        _ = scope.ServiceProvider.GetRequiredService<ForwardOAuthInvalidationService>();
+        var method = typeof(ChatApiController).GetMethod("ForwardStreamAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var forward = (Task)method.Invoke(controller, new object?[]
+        {
+            "OpenAI", site.BaseUrl, site.EndpointPathMode, "test-token", "test-model", "hi", false, "",
+            (Func<string, Task>)(_ => Task.CompletedTask), (Func<string, Task>)(_ => Task.CompletedTask),
+            scenario == "timeout" ? 1 : 10, null, clientCancellation.Token, null, null,
+            new AccountIdentity("xai", account.Id), site.Id, "xai_oauth"
+        })!;
+        invalidation.Should().NotBeNull();
+        await invalidation!.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (scenario == "client") clientCancellation.Cancel();
+
+        if (scenario == "client")
+        {
+            Func<Task> act = async () => await forward.WaitAsync(TimeSpan.FromSeconds(5));
+            await act.Should().ThrowAsync<OperationCanceledException>();
+        }
+        else
+        {
+            await forward.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = forward.GetType().GetProperty("Result")!.GetValue(forward)!;
+            var resultType = result.GetType();
+            resultType.GetProperty("Success")!.GetValue(result).Should().Be(false);
+            var error = (string)resultType.GetProperty("ErrorMessage")!.GetValue(result)!;
+            if (scenario == "timeout")
+            {
+                error.Should().Contain("Request timed out after 1s");
+            }
+            else
+            {
+                error.Should().Be("unauthorized");
+                resultType.GetProperty("StatusCode")!.GetValue(result).Should().Be(401);
+                resultType.GetProperty("ResponseBody")!.GetValue(result).Should().Be("unauthorized");
+            }
+        }
+
+        invalidation.SentToken.Should().Be("test-token");
+        invalidation.Snapshot.Should().NotBeNull();
+        if (scenario is "timeout" or "client") invalidation.ObservedCancellation.Should().BeTrue();
+        fakeHttp.Handler.Requests.Should().ContainSingle();
+    }
+
     /// <summary>
     /// 验证流式聊天会使用 Anthropic SSE 协议，并返回解析后的事件流。
     /// </summary>
@@ -168,6 +381,75 @@ public sealed class ChatApiTests
     }
 
     /// <summary>
+    /// 验证 OpenAI 流式分片中的 usage:null 不会中断聊天页的正文和推理解析。
+    /// </summary>
+    [Fact]
+    public async Task Post_send_stream_ignores_null_usage_from_openai_chunks()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        var fakeHttpFactory = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("OpenAI"));
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService, fakeHttpFactory, "OpenAI");
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send-stream",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hello-stream\",\"enableReasoning\":true,\"enableStreaming\":true}}",
+                Encoding.UTF8,
+                "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("event: reasoning");
+        body.Should().Contain("openai-ponder");
+        body.Should().Contain("event: token");
+        body.Should().Contain("openai-stream-ok");
+        body.Should().Contain("event: meta");
+        body.Should().Contain("\"success\":true");
+        body.Should().Contain("\"inputTokens\":4");
+        body.Should().Contain("\"outputTokens\":6");
+        body.Should().Contain("event: done");
+    }
+
+    /// <summary>
+    /// 验证 Gemini/Antigravity 最后一块同时带正文、finishReason 和 usageMetadata 时，
+    /// 聊天结果及 usage log 不会因为转换器没有再生成 usage chunk 而归零。
+    /// </summary>
+    [Fact]
+    public async Task Post_send_stream_gemini_merges_usage_from_final_content_chunk()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        var fakeHttpFactory = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("Gemini"));
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService, fakeHttpFactory, "Gemini");
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send-stream",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hello-antigravity\",\"enableReasoning\":false,\"enableStreaming\":true}}",
+                Encoding.UTF8,
+                "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeHttpFactory.Handler.Requests.Should().ContainSingle();
+        fakeHttpFactory.Handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/v1internal:streamGenerateContent");
+        body.Should().Contain("antigravity-stream-ok");
+        body.Should().Contain("\"inputTokens\":16");
+        body.Should().Contain("\"cachedTokens\":4");
+        body.Should().Contain("\"outputTokens\":5");
+        body.Should().Contain("event: done");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(16);
+        logs[0].CachedTokens.Should().Be(4);
+        logs[0].OutputTokens.Should().Be(5);
+    }
+
+    /// <summary>
     /// 验证流式聊天命中 Responses-only 目标时，会打到 responses 路径并把 Responses SSE 转回聊天流。
     /// </summary>
     [Fact]
@@ -190,12 +472,14 @@ public sealed class ChatApiTests
         response.Content.Headers.ContentType!.MediaType.Should().Be("text/event-stream");
         fakeHttpFactory.Handler.Requests.Should().HaveCount(1);
         fakeHttpFactory.Handler.Requests[0].RequestUri!.AbsoluteUri.Should().EndWith("/v1/responses");
-        fakeHttpFactory.Handler.Requests[0].Content!.ReadAsStringAsync().GetAwaiter().GetResult().Should().Contain("\"input\"");
+        var forwardedBody = await fakeHttpFactory.Handler.Requests[0].Content!.ReadAsStringAsync();
+        forwardedBody.Should().Contain("\"input\"");
         body.Should().Contain("event: token");
         body.Should().Contain("responses-stream-ok");
         body.Should().Contain("event: meta");
         body.Should().Contain("\"success\":true");
-        body.Should().Contain("\"inputTokens\":5");
+        // 上游 input_tokens=5 已含缓存（cached=1），meta 的输入统一为不含缓存的新输入。
+        body.Should().Contain("\"inputTokens\":4");
         body.Should().Contain("\"outputTokens\":7");
         body.Should().Contain("event: done");
     }
@@ -238,11 +522,6 @@ public sealed class ChatApiTests
 
     /// <summary>
     /// 后台修改并发上限后，应立即影响后续新请求，而不必等待缓存自然过期。
-    /// <para>
-    /// 原始测试通过 /api/admin/models/mappings/{id}/concurrency 端点修改并发限制，
-    /// 该控制器已迁移到 Admin 宿主。现改为直接调用 ModelConcurrencyLimiter.UpdateLimit
-    /// 方法来修改并发限制，并同步更新数据库中的 MaxConcurrency 字段。
-    /// </para>
     /// </summary>
     [Fact]
     public async Task Put_concurrency_applies_new_limit_immediately()
@@ -270,19 +549,12 @@ public sealed class ChatApiTests
             CancellationToken.None);
         blockedHandle.Acquired.Should().BeFalse();
 
-        // 直接通过 ModelConcurrencyLimiter 和数据库修改并发限制，
-        // 替代已迁移到 Admin 的 /api/admin/models/mappings/{id}/concurrency 端点
-        await using (var scope = factory.Services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var mapping = await db.SiteModelMappings.InSingleAsync(ChatWebApplicationFactory.MappingId);
-            mapping!.MaxConcurrency = 2;
-            await db.UpdateAsync(mapping);
-            // 数据库修改后需手动刷新并发限制缓存，否则 AcquireAsync 仍从缓存读取旧值并覆盖 UpdateLimit 的结果
-            var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-            metadataCache.InvalidateRuntimeRouteTargets();
-        }
-        limiter.UpdateLimit(ChatWebApplicationFactory.SiteId, ChatWebApplicationFactory.SiteModelName, 2);
+        using var response = await client.PutAsync(
+            $"/api/admin/models/mappings/{ChatWebApplicationFactory.MappingId}/concurrency",
+            new StringContent("{\"maxConcurrency\":2}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
 
         using var secondHandle = await limiter.AcquireAsync(
             factory.Services,
@@ -298,7 +570,7 @@ public sealed class ChatApiTests
 /// <summary>
 /// 用于构建 ChatWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
 /// </summary>
-internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class ChatWebApplicationFactory : WebApplicationFactory<AITool.AllInOne.AllInOneProgramMarker>
 {
     /// <summary>
     /// 当前测试使用的模型标识。
@@ -341,6 +613,8 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// 保存当前测试站点声明的协议类型。
     /// </summary>
     private readonly string _siteProtocol;
+    private readonly bool _directNetwork;
+    private readonly Action<IServiceCollection>? _configureServices;
 
     /// <summary>
     /// 创建聊天接口测试宿主，并使用默认的 HTTP 客户端工厂。
@@ -353,11 +627,18 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// <summary>
     /// 创建聊天接口测试宿主，并注入模拟转发服务和可选的 HTTP 客户端工厂。
     /// </summary>
-    public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService, IHttpClientFactory? httpClientFactory, string siteProtocol = "Anthropic")
+    public ChatWebApplicationFactory(
+        ChatFakeProxyForwardService fakeForwardService,
+        IHttpClientFactory? httpClientFactory,
+        string siteProtocol = "Anthropic",
+        bool directNetwork = false,
+        Action<IServiceCollection>? configureServices = null)
     {
         _fakeForwardService = fakeForwardService;
         _httpClientFactory = httpClientFactory;
         _siteProtocol = siteProtocol;
+        _directNetwork = directNetwork;
+        _configureServices = configureServices;
     }
 
     /// <summary>
@@ -371,21 +652,17 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
             IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
+            if (_directNetwork)
+            {
+                services.RemoveAll<IForwardNetworkPolicyResolver>();
+                services.AddSingleton<IForwardNetworkPolicyResolver, ChatDirectNetworkPolicy>();
+            }
             if (_httpClientFactory is not null)
             {
                 services.RemoveAll<IHttpClientFactory>();
                 services.AddSingleton(_httpClientFactory);
             }
-
-            // 重新注册元数据缓存，不传入 ICoreRuntimeConfigProvider，
-            // 使缓存回退到数据库查询路径，确保测试 seed 的密钥数据能被正确读取。
-            services.RemoveAll<ProxyRequestMetadataCache>();
-            services.AddSingleton<ProxyRequestMetadataCache>(sp =>
-            {
-                var memoryCache = sp.GetRequiredService<IMemoryCache>();
-                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
-            });
+            _configureServices?.Invoke(services);
         });
     }
 
@@ -403,9 +680,9 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// </summary>
     private async Task SeedAsync()
     {
-        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         db.Sites.AddRange(
             new Site
@@ -471,6 +748,12 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
                 MaxConcurrency = 2
             });
 
+        // 单例表 Id=1 可能已被启动逻辑创建，先删除避免唯一约束冲突。
+
+
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
+
+
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,
@@ -484,7 +767,15 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
+
+        await db.SaveChangesAsync();
     }
+}
+
+internal sealed class ChatDirectNetworkPolicy : IForwardNetworkPolicyResolver
+{
+    public Task<ForwardNetworkPolicyResolution> ResolveAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+        => Task.FromResult(new ForwardNetworkPolicyResolution(ResolvedNetworkConfiguration.Legacy, "chat-test", true));
 }
 
 /// <summary>
@@ -521,6 +812,8 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
             EnableStreaming = request.EnableStreaming,
             RequestTimeoutSeconds = request.RequestTimeoutSeconds,
             RetryCount = request.RetryCount,
+            RefreshTargetApiKeyAsync = request.RefreshTargetApiKeyAsync,
+            InvalidateTargetCredentialAsync = request.InvalidateTargetCredentialAsync,
             TargetPath = request.TargetPath
         });
 
@@ -634,8 +927,33 @@ internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests.Add(CloneRequest(request));
+        if (_siteProtocol == "401")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("unauthorized") });
+        if (_siteProtocol == "407")
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ProxyAuthenticationRequired) { Content = new StringContent("proxy rejected") });
+        if (_siteProtocol == "network") throw new HttpRequestException("simulated network failure");
 
-        var payload = string.Equals(_siteProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
+        var payload = string.Equals(_siteProtocol, "Gemini", StringComparison.OrdinalIgnoreCase)
+            ? string.Join(
+                "\n",
+                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"antigravity-\"}]} }],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":1}}}",
+                string.Empty,
+                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"stream-ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"cachedContentTokenCount\":4,\"candidatesTokenCount\":3,\"thoughtsTokenCount\":2}}}",
+                string.Empty)
+            : string.Equals(_siteProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
+            ? string.Join(
+                "\n",
+                "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"\"}}],\"usage\":null}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"openai-ponder\"}}],\"usage\":null}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{\"content\":\"openai-stream-ok\",\"reasoning_content\":null}}],\"usage\":null}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":0}}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty)
+            : string.Equals(_siteProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
             ? string.Join(
                 "\n",
                 "event: response.created",
@@ -696,5 +1014,63 @@ internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
         }
 
         return clone;
+    }
+}
+
+internal sealed class FakeChatInvalidationService(AppDbContext db, ProxyRequestMetadataCache cache, string scenario)
+    : ForwardOAuthInvalidationService(db, cache)
+{
+    public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public string? SentToken { get; private set; }
+    public object? Snapshot { get; private set; }
+    public bool ObservedCancellation { get; private set; }
+
+    public override async Task InvalidateAsync(string sentToken, object? state, CancellationToken ct)
+    {
+        SentToken = sentToken;
+        Snapshot = state;
+        Entered.TrySetResult();
+        if (scenario == "persistence") throw new InvalidOperationException("persistence failed");
+        if (scenario == "unrelated-cancellation") throw new OperationCanceledException("unrelated cancellation");
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            ObservedCancellation = ct.IsCancellationRequested;
+            throw;
+        }
+    }
+}
+
+internal sealed class FakeTimingOutKimiOAuthClient : IKimiOAuthClient
+{
+    public bool CancellationTokenObservedCancelled { get; private set; }
+
+    public Task<KimiDeviceCodeResponse> StartDeviceFlowAsync(string? deviceId, CancellationToken ct) =>
+        throw new NotSupportedException();
+
+    public Task<KimiTokenExchangeResult> ExchangeDeviceCodeAsync(string deviceCode, string? deviceId, CancellationToken ct) =>
+        throw new NotSupportedException();
+
+    public async Task<KimiTokenSet> RefreshTokenAsync(string refreshToken, string? deviceId, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+        }
+        catch (OperationCanceledException)
+        {
+            CancellationTokenObservedCancelled = true;
+            throw;
+        }
+
+        return new KimiTokenSet
+        {
+            AccessToken = "refreshed-token",
+            RefreshToken = "new-refresh-token",
+            ExpiresAt = DateTimeOffset.UtcNow.AddHours(1)
+        };
     }
 }

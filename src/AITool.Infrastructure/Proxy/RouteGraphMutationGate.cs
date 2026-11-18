@@ -1,4 +1,4 @@
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>Serializes complete route graph reads/checks/writes across mutable configuration paths.</summary>
 public static class RouteGraphMutationGate

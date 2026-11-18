@@ -1,10 +1,11 @@
+using Microsoft.Extensions.DependencyInjection;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using AITool.Domain.Operations;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 public sealed record SessionIsolationDerivation(string Value, string KeyGeneration);
 

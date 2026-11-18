@@ -32,16 +32,18 @@ public sealed class RouteModelItem
 /// </summary>
 public sealed class RouteEntryListItem
 {
+    public Guid? EntryId { get; set; }
+    public Guid? ManagedByPoolId { get; set; }
+    public bool IsDisabled { get; set; }
+    public bool HasRouteReferences { get; set; }
     /// <summary>
     /// 主入口名称。
     /// </summary>
     public string EntryName { get; set; } = string.Empty;
-
     /// <summary>
     /// 模型显示名称（入口名匹配模型库 ModelName 时回填，供展示层优先显示；否则为空）。
     /// </summary>
     public string? DisplayName { get; set; }
-
     /// <summary>
     /// 候选实例数量。
     /// </summary>
@@ -110,66 +112,58 @@ public sealed class DiscoveredSiteItem
 /// </summary>
 public sealed class RouteRuleListItem
 {
+    public string TargetKind { get; set; } = "Site";
+    public Guid? TargetRouteEntryId { get; set; }
+    public string? TargetRouteEntryName { get; set; }
+    public string? ReferenceStatus { get; set; }
     /// <summary>
     /// 规则标识。
     /// </summary>
     public Guid RuleId { get; set; }
-
     /// <summary>
     /// 站点标识。
     /// </summary>
     public Guid SiteId { get; set; }
-
     /// <summary>
     /// 站点名称。
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
-
     /// <summary>
     /// 上游模型名称。
     /// </summary>
     public string UpstreamModelName { get; set; } = string.Empty;
-
     /// <summary>
     /// 上游模型的显示名称（按 UpstreamModelName 匹配模型库取 DisplayName，供展示层优先显示对外名）。
     /// </summary>
     public string ModelDisplayName { get; set; } = string.Empty;
-
     /// <summary>
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
-
     /// <summary>
     /// 全局优先级。
     /// </summary>
     public int Priority { get; set; }
-
     /// <summary>
     /// 模型优先级。
     /// </summary>
     public int ModelPriority { get; set; }
-
     /// <summary>
     /// 实例优先级。
     /// </summary>
     public int InstancePriority { get; set; }
-
     /// <summary>
     /// 是否启用。
     /// </summary>
     public bool IsEnabled { get; set; }
-
     /// <summary>
     /// 站点是否启用，用于在管理页面区分已禁用站点。
     /// </summary>
     public bool SiteEnabled { get; set; } = true;
-
     /// <summary>
     /// 时间可用性模式，旧规则为空时按全天可用处理。
     /// </summary>
     public string AvailabilityMode { get; set; } = "AllDay";
-
     /// <summary>
     /// 每日时间范围 JSON，空值表示不限制。
     /// </summary>

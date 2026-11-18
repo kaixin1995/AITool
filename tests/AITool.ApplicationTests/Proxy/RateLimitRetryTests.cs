@@ -25,6 +25,7 @@ public sealed class RateLimitRetryTests
     private static ProxyForwardRequest BasicRequest(int rateLimitRetryCount) => new()
     {
         TargetBaseUrl = "https://upstream.example.com",
+        AllowNonSiteTarget = true,
         TargetEndpointPathMode = "standard-root",
         TargetApiKey = "sk-test",
         ProtocolType = "OpenAI",

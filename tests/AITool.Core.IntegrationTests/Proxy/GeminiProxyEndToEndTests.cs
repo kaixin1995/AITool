@@ -1,7 +1,8 @@
-using AITool.Infrastructure.Proxy;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using AITool.Application.Networking;
+using AITool.Application.Proxy;
 using AITool.Domain.Google;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
@@ -121,21 +122,210 @@ public sealed class GeminiProxyEndToEndTests
         logs[0].CachedTokens.Should().Be(6);
         logs[0].OutputTokens.Should().Be(7);
     }
-    private sealed class GeminiProxyWebApplicationFactory : WebApplicationFactory<AITool.Core.CoreProgramMarker>
+
+    [Fact]
+    public async Task Chat_stream_reads_final_usage_after_finish_reason_until_eof()
+    {
+        const string geminiSse =
+            "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}]}}\n\n" +
+            "data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":30,\"cachedContentTokenCount\":6,\"candidatesTokenCount\":9,\"thoughtsTokenCount\":2}}}\n\n";
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(geminiSse, Encoding.UTF8, "text/event-stream")
+            });
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsync("/v1/chat/completions",
+            new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        body.Should().Contain("hello").And.Contain("data: [DONE]");
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("success");
+        logs[0].InputTokens.Should().Be(24);
+        logs[0].CachedTokens.Should().Be(6);
+        logs[0].OutputTokens.Should().Be(11);
+    }
+
+    [Theory]
+    [InlineData(false, false, "canceled", 7)]
+    [InlineData(true, false, "canceled", 11)]
+    [InlineData(true, true, "success", 11)]
+    public async Task Chat_stream_cancel_is_only_settled_after_upstream_done(
+        bool includeFinalUsage, bool includeDone, string expectedStatus, int expectedOutputTokens)
+    {
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            CancelAfterStreamingCallbacks = true,
+            StreamingLines =
+            [
+                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":30,\"cachedContentTokenCount\":6,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":2}}}", ""
+            ]
+        };
+        if (includeFinalUsage)
+        {
+            forwarder.StreamingLines.Add("data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":30,\"cachedContentTokenCount\":6,\"candidatesTokenCount\":9,\"thoughtsTokenCount\":2}}}");
+            forwarder.StreamingLines.Add("");
+        }
+        if (includeDone)
+        {
+            forwarder.StreamingLines.Add("data: [DONE]");
+            forwarder.StreamingLines.Add("");
+        }
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            _ => throw new InvalidOperationException("The fake forwarder must handle the request."),
+            forwarder: forwarder);
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsync("/v1/chat/completions",
+            new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        forwarder.Requests.Should().ContainSingle().Which.ProtocolType.Should().Be("Gemini");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be(expectedStatus);
+        logs[0].InputTokens.Should().Be(24);
+        logs[0].CachedTokens.Should().Be(6);
+        logs[0].OutputTokens.Should().Be(expectedOutputTokens);
+    }
+
+    [Fact]
+    public async Task Refresh_quota_for_antigravity_account_returns_bucket_windows()
+    {
+        // Antigravity 额度链路：refresh-quota → fetchAvailableModels → 按前缀聚合为
+        // Claude/GPT-OSS 与 Gemini 两个额度桶，持久化并在账号列表回显。
+        const string quotaJson =
+            "{\"models\":{\"gemini-3-pro-preview\":{\"quotaInfo\":{\"remainingFraction\":0.85,\"resetTime\":\"2026-08-20T02:30:00Z\"}},\"claude-sonnet-4-6\":{\"quotaInfo\":{\"remainingFraction\":0.05,\"resetTime\":\"2026-08-19T10:00:00Z\"}}}}";
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            request => request.RequestUri!.AbsolutePath.Contains("fetchAvailableModels")
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(quotaJson, Encoding.UTF8, "application/json")
+                }
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(GeminiUpstreamJson, Encoding.UTF8, "application/json")
+                },
+            accountKind: "Antigravity",
+            baseUrl: "https://daily-cloudcode-pa.googleapis.com");
+        using var client = factory.CreateClient();
+
+        using var refreshResponse = await client.PostAsync(
+            $"/api/admin/google-accounts/accounts/{GoogleAccountId}/refresh-quota",
+            content: null);
+        var refreshBody = await refreshResponse.Content.ReadAsStringAsync();
+        refreshResponse.StatusCode.Should().Be(HttpStatusCode.OK, refreshBody);
+        refreshBody.Should().Contain("\"gemini\"", "额度响应应包含 Gemini 桶窗口");
+
+        using var listResponse = await client.GetAsync("/api/admin/google-accounts/accounts");
+        var listBody = await listResponse.Content.ReadAsStringAsync();
+        listResponse.StatusCode.Should().Be(HttpStatusCode.OK, listBody);
+        using var listDoc = System.Text.Json.JsonDocument.Parse(listBody);
+        var account = listDoc.RootElement.EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == GoogleAccountId.ToString());
+        var windows = account.GetProperty("windows");
+        windows.GetArrayLength().Should().Be(2, "额度结果应持久化并在账号列表解析为两桶窗口");
+        var geminiWindow = windows.EnumerateArray().Single(w => w.GetProperty("id").GetString() == "gemini");
+        geminiWindow.GetProperty("usedPercent").GetDouble().Should().BeApproximately(15d, 0.01);
+        var claudeWindow = windows.EnumerateArray().Single(w => w.GetProperty("id").GetString() == "claude-gpt-oss");
+        claudeWindow.GetProperty("usedPercent").GetDouble().Should().BeApproximately(95d, 0.01);
+        account.GetProperty("lastQuotaCheckedAt").GetString().Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task Import_selected_antigravity_models_disables_unselected_and_stale_mappings()
+    {
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(GeminiUpstreamJson, Encoding.UTF8, "application/json")
+            },
+            accountKind: "Antigravity",
+            baseUrl: "https://daily-cloudcode-pa.googleapis.com");
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var staleModel = new ModelLibraryItem
+            {
+                ModelName = "stale-antigravity-model",
+                DisplayName = "Stale Antigravity Model"
+            };
+            db.ModelLibraryItems.Add(staleModel);
+            db.SiteModelMappings.Add(new SiteModelMapping
+            {
+                SiteId = SiteId,
+                ModelLibraryItemId = staleModel.Id,
+                RemoteModelName = staleModel.ModelName,
+                IsEnabled = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsync(
+            $"/api/admin/google-accounts/accounts/{GoogleAccountId}/import-selected-models",
+            new StringContent(
+                """
+                {"models":[
+                  {"remoteModelName":"gemini-2.5-pro","displayName":"Gemini 2.5 Pro","selected":false},
+                  {"remoteModelName":"new-antigravity-model","displayName":"New Antigravity Model","selected":true}
+                ]}
+                """,
+                Encoding.UTF8,
+                "application/json"));
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, responseBody);
+
+        await using var verifyScope = factory.Services.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var siteId = SiteId;
+        var mappings = await verifyDb.SiteModelMappings
+            .Where(mapping => mapping.SiteId == siteId)
+            .ToListAsync();
+
+        mappings.Single(mapping => mapping.RemoteModelName == "gemini-2.5-pro").IsEnabled.Should().BeFalse();
+        mappings.Single(mapping => mapping.RemoteModelName == "stale-antigravity-model").IsEnabled.Should().BeFalse();
+        mappings.Single(mapping => mapping.RemoteModelName == "new-antigravity-model").IsEnabled.Should().BeTrue();
+    }
+
+    private sealed class StubNetworkTransport(Func<HttpRequestMessage, HttpResponseMessage> responder) : INetworkTransport
+    {
+        public ValueTask<INetworkTransportLease> AcquireAsync(ResolvedNetworkConfiguration configuration,
+            string isolationScope, string purpose, CancellationToken cancellationToken = default)
+            => ValueTask.FromResult<INetworkTransportLease>(new Lease(new HttpClient(new StubHandler(responder))));
+
+        private sealed class Lease(HttpClient client) : INetworkTransportLease
+        {
+            public HttpClient Client => client;
+            public ValueTask DisposeAsync() { client.Dispose(); return ValueTask.CompletedTask; }
+        }
+    }
+
+    private sealed class GeminiProxyWebApplicationFactory : WebApplicationFactory<AITool.AllInOne.AllInOneProgramMarker>
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
         private readonly string _accountKind;
         private readonly string _baseUrl;
+        private readonly IProxyForwardService? _forwarder;
         private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-gemini-e2e-{Guid.NewGuid():N}.db");
 
         public GeminiProxyWebApplicationFactory(
             Func<HttpRequestMessage, HttpResponseMessage> responder,
             string accountKind = "Antigravity",
-            string baseUrl = "https://daily-cloudcode-pa.googleapis.com")
+            string baseUrl = "https://daily-cloudcode-pa.googleapis.com",
+            IProxyForwardService? forwarder = null)
         {
             _responder = responder;
             _accountKind = accountKind;
             _baseUrl = baseUrl;
+            _forwarder = forwarder;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -144,21 +334,24 @@ public sealed class GeminiProxyEndToEndTests
             builder.ConfigureServices(services =>
             {
                 IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
+                    // split 双宿主：Core 宿主默认快照模式；测试用 DB 支撑提供器让 master 的 DB 种子直通。
+                    services.RemoveAll<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+                    services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider, AITool.Infrastructure.CoreRuntime.DbBackedRuntimeConfigProvider>();
+                if (_forwarder is not null)
+                {
+                    services.RemoveAll<IProxyForwardService>();
+                    services.AddSingleton(_forwarder);
+                }
 
                 // 真实 ProxyForwardService + 可控 handler（替换 IHttpClientFactory）。
                 var handler = new StubHandler(_responder);
                 var httpClient = new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
-                                // split 双宿主：Core 测试宿主默认给缓存传入 ICoreRuntimeConfigProvider（空快照），
-                // 重新注册为数据库查询路径，使测试 seed 的数据可被读取。
-                services.RemoveAll<ProxyRequestMetadataCache>();
-                services.AddSingleton<ProxyRequestMetadataCache>(sp =>
-                {
-                    var memoryCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>();
-                    var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                    return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
-                });
-services.RemoveAll<IHttpClientFactory>();
+                services.RemoveAll<IHttpClientFactory>();
                 services.AddSingleton<IHttpClientFactory>(new SingletonHttpClientFactory(httpClient));
+                // Account management uses the policy-bound transport, not the old typed-client factory.
+                // Keep policy resolution real while every transport send stays in this fixture's stub.
+                services.RemoveAll<INetworkTransport>();
+                services.AddSingleton<INetworkTransport>(new StubNetworkTransport(_responder));
             });
         }
 
@@ -173,8 +366,7 @@ services.RemoveAll<IHttpClientFactory>();
         {
             await using var scope = Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            // split 统一测试初始化（建表 + 基础种子）
-            await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
+            SqlSugarSetup.InitializeDatabase(db.Client);
 
             db.Sites.Add(new Site
             {

@@ -1,4 +1,5 @@
-using System.Collections.Concurrent;
+using AITool.Infrastructure.Common;
+using AITool.Application.Networking;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -26,72 +27,111 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// 日志记录器，用于记录转发超时和异常
     /// </summary>
     private readonly ILogger<ProxyForwardService> _logger;
-    /// <summary>
-    /// 站点专属出口网络代理客户端缓存（Key: 代理 URL，如 http://127.0.0.1:7890）
-    /// </summary>
-    private readonly ConcurrentDictionary<string, ProxyClientEntry> _proxyClients = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>
-    /// 已从缓存淘汰、等待延迟销毁的客户端（含淘汰时间），由 <see cref="_retireLock"/> 保护
-    /// </summary>
-    private readonly List<RetiredProxyClient> _retiredClients = [];
-    private readonly object _retireLock = new();
+    private readonly INetworkTransport? _networkTransport;
+    private readonly IForwardNetworkPolicyResolver? _networkPolicyResolver;
+    private readonly IForwardCredentialResolver? _credentialResolver;
+    private readonly IStreamEnhancementPolicy? _streamPolicy;
 
-    /// <summary>
-    /// 出口代理客户端缓存上限：每个客户端独享一套 SocketsHttpHandler + 连接池，
-    /// 无上限时异常配置（如映射里误填变量拼出的 URL）会让缓存无限增长。16 覆盖所有合理配置规模。
-    /// </summary>
-    private const int MaxProxyClients = 16;
-
-    /// <summary>
-    /// 淘汰客户端的延迟销毁宽限期：保证淘汰瞬间仍在途的请求（拿到旧客户端引用的转发）
-    /// 能自然完成，之后才真正 Dispose 连接池。取 30 分钟以覆盖超长流式响应
-    /// （流式空闲超时只在无数据时触发，持续输出的流可远超请求级超时）。
-    /// </summary>
-    private static readonly TimeSpan RetiredClientDisposeDelay = TimeSpan.FromMinutes(30);
-
-    /// <summary>
-    /// 注入 HTTP 客户端和日志记录器
-    /// </summary>
-    public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger)
+    // A single public constructor keeps typed HttpClient activation unambiguous while
+    // optional dependencies preserve existing source calls using just client and logger.
+    public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger,
+        INetworkTransport? networkTransport = null, IForwardNetworkPolicyResolver? networkPolicyResolver = null,
+        IForwardCredentialResolver? credentialResolver = null, IStreamEnhancementPolicy? streamPolicy = null)
     {
-        // 真实超时统一交给每次请求的 CancellationToken 控制，避免 HttpClient 默认 100 秒提前截断。
         httpClient.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         _httpClient = httpClient;
         _logger = logger;
+        _networkTransport = networkTransport;
+        _networkPolicyResolver = networkPolicyResolver;
+        _credentialResolver = credentialResolver;
+        _streamPolicy = streamPolicy;
     }
 
-    /// <summary>
-    /// 根据请求中的 EgressProxyUrl 获取对应的 HttpClient（配置了代理则走代理池，否则走默认直连）。
-    /// </summary>
-    private HttpClient GetClientForRequest(ProxyForwardRequest request)
+    private async Task<ForwardCredentialLease> ResolveCredentialAsync(ProxyForwardRequest request, string fallbackKey, CancellationToken ct)
     {
+        if (_credentialResolver is null)
+        {
+            if (!request.AllowNonSiteTarget || request.SiteId is not null || request.AccountIdentity is not null || !string.IsNullOrWhiteSpace(request.ManagedSource))
+                throw new NetworkPolicyException("forward_credential_resolver_unavailable", "Forward credential resolver is unavailable.");
+            return new ForwardCredentialLease(fallbackKey);
+        }
+        try { return await _credentialResolver.ResolveAsync(request, ct); }
+        catch (OperationCanceledException) { throw new OperationCanceledException(ct); }
+        catch (NetworkPolicyException ex) when (IsSafePolicyCode(ex.Code)) { throw new NetworkPolicyException(ex.Code, "Forward credential validation failed."); }
+        catch (Exception) { throw new NetworkPolicyException("forward_credential_invalid", "Forward credential validation failed."); }
+    }
+
+    private async Task<ForwardNetworkPolicyResolution> ResolveNetworkAsync(ProxyForwardRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_networkPolicyResolver is not null)
+        {
+            try { return await _networkPolicyResolver.ResolveAsync(request, cancellationToken); }
+            catch (OperationCanceledException) { throw new OperationCanceledException(cancellationToken); }
+            catch (NetworkPolicyException ex) when (IsSafePolicyCode(ex.Code)) { throw new NetworkPolicyException(ex.Code, "Forward network policy validation failed."); }
+            catch (Exception) { throw new NetworkPolicyException("forward_network_policy_failed", "Forward network policy validation failed."); }
+        }
+        if (request.AccountIdentity is not null || request.NetworkContext is not null)
+            throw new NetworkPolicyException("forward_network_resolver_unavailable", "The account forwarding network policy resolver is unavailable.");
         if (string.IsNullOrWhiteSpace(request.EgressProxyUrl))
-        {
-            return _httpClient;
-        }
+            return new(ResolvedNetworkConfiguration.Legacy, "ordinary-forward", true);
+        throw new NetworkPolicyException("forward_network_resolver_unavailable", "An explicit egress selection requires a forwarding network policy resolver.");
+    }
 
-        var proxyUrl = request.EgressProxyUrl.Trim();
-        if (!EgressProxyValidator.TryValidate(proxyUrl, out var validateError))
-        {
-            _logger.LogWarning("无效的出口网络代理格式 '{ProxyUrl}' ({Error})，将回退默认直连", proxyUrl, validateError);
-            return _httpClient;
-        }
+    private async ValueTask<INetworkTransportLease?> AcquireNetworkAsync(ForwardNetworkPolicyResolution policy,
+        CancellationToken cancellationToken)
+    {
+        if (policy.UseDefaultClient) return null;
+        if (_networkTransport is null)
+            throw new NetworkPolicyException("forward_network_transport_unavailable", "The selected forwarding network transport is unavailable.");
+        try { return await _networkTransport.AcquireAsync(policy.Configuration, policy.IsolationKey, "proxy-forward", cancellationToken); }
+        catch (OperationCanceledException) { throw new OperationCanceledException(cancellationToken); }
+        catch (NetworkPolicyException ex) when (IsSafePolicyCode(ex.Code)) { throw new NetworkPolicyException(ex.Code, "Forward network transport acquisition failed."); }
+        catch (Exception) { throw new NetworkPolicyException("forward_network_transport_failed", "Forward network transport acquisition failed."); }
+    }
 
+    private static bool IsSafePolicyCode(string? code) => code is
+        "forward_credential_invalid" or "forward_credential_resolver_unavailable" or
+        "account_network_revision_conflict" or "account_network_identity_conflict" or "account_not_found" or
+        "ambiguous_account_owner" or "invalid_account_identity" or "invalid_isolation_key" or
+        "invalid_network_selection" or "invalid_profile_revision" or "invalid_proxy_profile" or
+        "invalid_proxy_profile_reference" or "invalid_egress_proxy" or "proxy_credentials_unavailable" or
+        "proxy_profile_disabled" or "proxy_profile_not_found" or "proxy_profile_revision_conflict" or
+        "proxy_profiles_disabled" or "forward_network_transport_unavailable" or "forward_network_resolver_unavailable";
+
+    private sealed class StartedForward(HttpRequestMessage request, Task<HttpResponseMessage> response,
+        INetworkTransportLease? networkLease, string apiKey, object? credentialSnapshot) : IAsyncDisposable
+    {
+        public Task<HttpResponseMessage> Response { get; } = response;
+        public string ApiKey { get; } = apiKey;
+        public object? CredentialSnapshot { get; } = credentialSnapshot;
+        public async ValueTask DisposeAsync()
+        {
+            request.Dispose();
+            if (networkLease is not null) await networkLease.DisposeAsync();
+        }
+    }
+
+    private async Task<StartedForward> StartForwardAsync(ProxyForwardRequest request, string requestBody,
+        string currentApiKey, CancellationToken ct)
+    {
+        using var credential = await ResolveCredentialAsync(request, currentApiKey, ct);
+        // The gate can have been queued behind refresh; policy must be read after that wait.
+        var policy = await ResolveNetworkAsync(request, ct);
+        var lease = await AcquireNetworkAsync(policy, ct);
+        HttpRequestMessage? message = null;
         try
         {
-            var entry = _proxyClients.GetOrAdd(proxyUrl, url => new ProxyClientEntry(
-                new HttpClient(CreateProxyHandler(url), disposeHandler: true)
-                {
-                    Timeout = global::System.Threading.Timeout.InfiniteTimeSpan
-                }));
-            entry.LastUsedUtc = DateTime.UtcNow;
-            EvictStaleClients();
-            return entry.Client;
+            var key = credential.UseResolvedApiKey ? credential.ApiKey : currentApiKey;
+            message = BuildRequestMessage(request, requestBody, key, credential.ProtectAuthenticationHeaders);
+            var response = (lease?.Client ?? _httpClient).SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct);
+            return new StartedForward(message, response, lease, key, credential.CredentialSnapshot);
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogWarning(ex, "初始化站点专属出口代理客户端失败，ProxyUrl: {ProxyUrl}，将回退默认直连", proxyUrl);
-            return _httpClient;
+            message?.Dispose();
+            if (lease is not null) await lease.DisposeAsync();
+            throw;
         }
     }
 
@@ -128,82 +168,32 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 构建走指定出口代理的 Handler（连接池参数与主客户端口径一致）。
+    /// 读取上游 Retry-After 原始秒数（不封顶，供分级冷却按真实指示休息；无头/非法为 null）。
     /// </summary>
-    private static SocketsHttpHandler CreateProxyHandler(string url)
+    internal static int? TryReadRetryAfterSeconds(HttpResponseMessage? response)
     {
-        return new SocketsHttpHandler
+        var retryAfter = response?.Headers?.RetryAfter;
+        if (retryAfter is null)
         {
-            Proxy = new WebProxy(new Uri(url)),
-            UseProxy = true,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(15),
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
-            KeepAlivePingDelay = TimeSpan.FromSeconds(30),
-            KeepAlivePingTimeout = TimeSpan.FromSeconds(5)
-        };
-    }
+            return null;
+        }
 
-    /// <summary>
-    /// 超过 <see cref="MaxProxyClients"/> 时淘汰最久未使用的客户端，并顺带销毁宽限期已过的退役客户端。
-    /// 并发窗口内可能误淘汰"刚被使用"的条目——后果只是下次请求重建客户端，无正确性影响。
-    /// </summary>
-    private void EvictStaleClients()
-    {
-        while (_proxyClients.Count > MaxProxyClients)
+        if (retryAfter.Delta is { } delta && delta > TimeSpan.Zero)
         {
-            var victim = _proxyClients.OrderBy(kvp => kvp.Value.LastUsedUtc).FirstOrDefault();
-            if (victim.Value is null)
-            {
-                break;
-            }
+            return (int)Math.Min(delta.TotalSeconds, int.MaxValue);
+        }
 
-            if (_proxyClients.TryRemove(victim.Key, out var removed))
+        if (retryAfter.Date is { } retryAt)
+        {
+            var seconds = (retryAt - DateTimeOffset.UtcNow).TotalSeconds;
+            if (seconds > 0)
             {
-                lock (_retireLock)
-                {
-                    _retiredClients.Add(new RetiredProxyClient(removed.Client, DateTime.UtcNow));
-                }
-                _logger.LogInformation("出口代理客户端缓存超过 {Limit}，已淘汰最久未使用的 {ProxyUrl}", MaxProxyClients, victim.Key);
+                return (int)Math.Min(seconds, int.MaxValue);
             }
         }
 
-        // 退役宽限期已过的客户端可以安全销毁：引用它的在途请求早已完成。
-        List<RetiredProxyClient>? expired = null;
-        lock (_retireLock)
-        {
-            var cutoff = DateTime.UtcNow - RetiredClientDisposeDelay;
-            for (var i = _retiredClients.Count - 1; i >= 0; i--)
-            {
-                if (_retiredClients[i].RetiredAtUtc <= cutoff)
-                {
-                    (expired ??= []).Add(_retiredClients[i]);
-                    _retiredClients.RemoveAt(i);
-                }
-            }
-        }
-
-        if (expired is not null)
-        {
-            foreach (var retired in expired)
-            {
-                retired.Client.Dispose();
-            }
-        }
+        return null;
     }
-
-    /// <summary>
-    /// 代理客户端缓存条目（LRU 用）。
-    /// </summary>
-    private sealed class ProxyClientEntry(HttpClient client)
-    {
-        public HttpClient Client { get; } = client;
-        public DateTime LastUsedUtc { get; set; } = DateTime.UtcNow;
-    }
-
-    /// <summary>
-    /// 已淘汰待延迟销毁的客户端。
-    /// </summary>
-    private sealed record RetiredProxyClient(HttpClient Client, DateTime RetiredAtUtc);
 
     /// <summary>
     /// 将请求转发到目标站点并解析响应中的 Token 用量。
@@ -214,6 +204,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         var attempts = Math.Max(0, request.RetryCount) + 1;
         var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
         var tokenRefreshAttempted = false;
+        var currentApiKey = request.TargetApiKey;
         var rateLimit429Count = 0;
         // 实际执行的 429 重试次数（不随连续计数归零），用于结果上报与 usage 链路展示。
         var rateLimit429Retries = 0;
@@ -221,8 +212,20 @@ public sealed class ProxyForwardService : IProxyForwardService
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
         var isStreaming = request.EnableStreaming || IsStreamingRequest(request.RequestBody);
+        // 站点标记驱动的内容适配（WorkBuddy 渠道校验 11128：请求体改写，详见 WorkBuddyChatAdapter）。
+        requestBody = ApplyChannelRewrite(request, requestBody);
 
-        await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: false);
+        // 站点标记强制上游流式（WorkBuddy code 11101 等）：客户端非流式时改写请求体加 stream:true，
+        // 响应 SSE 由下方聚合逻辑还原为完整 JSON，客户端无感知。
+        var forceUpstreamStream = !isStreaming
+            && request.ForwardHeaders.TryGetValue(ForceStreamHeader, out var forceStreamValue)
+            && string.Equals(forceStreamValue.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+        if (forceUpstreamStream)
+        {
+            requestBody = ForceStreamTrue(requestBody);
+        }
+
+        var credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -232,38 +235,51 @@ public sealed class ProxyForwardService : IProxyForwardService
 
             try
             {
-                using var httpRequest = BuildRequestMessage(request, requestBody);
-                var client = GetClientForRequest(request);
-                using var response = await client.SendAsync(
-                    httpRequest,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    timeoutCts.Token);
+                if (credentialPreparationPending)
+                {
+                    await ResolveNetworkAsync(request, timeoutCts.Token);
+                    await TryPrepareTargetCredentialAsync(request, currentApiKey, cancellationToken, request.EnableStreaming);
+                    credentialPreparationPending = false;
+                }
+                await using var started = await StartForwardAsync(request, requestBody, currentApiKey, timeoutCts.Token);
+                var sentApiKey = started.ApiKey;
+                using var response = await started.Response;
 
                 if (!response.IsSuccessStatusCode)
                 {
                     stopwatch.Stop();
-                    var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
                     if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                         && request.RefreshTargetApiKeyAsync is not null
                         && !tokenRefreshAttempted)
                     {
+                        await ResolveNetworkAsync(request, cancellationToken);
                         tokenRefreshAttempted = true;
-                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(
-                            request.TargetApiKey,
-                            cancellationToken);
+                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(sentApiKey, cancellationToken);
                         if (!string.IsNullOrWhiteSpace(refreshedApiKey))
                         {
-                            request.TargetApiKey = refreshedApiKey;
-                            await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: false);
+                            currentApiKey = refreshedApiKey;
+                            credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
                             attempt--;
                             continue;
                         }
                     }
 
-                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden
-                        && request.DisableTargetCredentialAsync is not null)
+                    if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                        && request.InvalidateTargetCredentialAsync is not null)
                     {
-                        await TryDisableTargetCredentialAsync(request, cancellationToken);
+                        try { await request.InvalidateTargetCredentialAsync(sentApiKey, started.CredentialSnapshot, cancellationToken); }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Unable to invalidate rejected forwarding credential"); }
+                    }
+                    var disable = response.StatusCode == System.Net.HttpStatusCode.Forbidden && request.DisableTargetCredentialAsync is not null;
+                    if (disable) await TryDisableTargetCredentialAsync(request, cancellationToken);
+                    var authError = response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden;
+                    var errorBody = authError
+                        ? await HttpErrorBodyReader.ReadAsync(response.Content, cancellationToken)
+                        : await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    var errorMessage = authError && string.IsNullOrWhiteSpace(errorBody) ? $"上游返回 HTTP {(int)response.StatusCode}" : errorBody;
+                    if (disable)
+                    {
                         return new ProxyForwardResult
                         {
                             Success = false,
@@ -271,7 +287,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
-                            ErrorMessage = errorBody
+                            ErrorMessage = errorMessage
                         };
                     }
 
@@ -304,7 +320,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
                             ErrorMessage = errorBody,
-                            RateLimitRetryCount = rateLimit429Retries
+                            RateLimitRetryCount = rateLimit429Retries,
+                            RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
                     }
                     else
@@ -321,8 +338,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = isStreaming,
-                            ErrorMessage = errorBody,
-                            RateLimitRetryCount = rateLimit429Retries
+                            ErrorMessage = errorMessage,
+                            RateLimitRetryCount = rateLimit429Retries,
+                            RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
                     }
                     continue;
@@ -358,14 +376,21 @@ public sealed class ProxyForwardService : IProxyForwardService
                 if (!isStreaming && IsSseContent(response, responseBody))
                 {
                     var aggregated = TryExtractResponsesCompletion(responseBody);
+                    if (string.IsNullOrEmpty(aggregated))
+                    {
+                        // OpenAI Chat Completions 格式的 SSE（WorkBuddy 等强制流式上游）：
+                        // 聚合 chat.completion.chunk 为完整 chat.completion 对象。
+                        aggregated = TryAggregateChatCompletionSse(responseBody);
+                    }
+
                     if (!string.IsNullOrEmpty(aggregated))
                     {
                         responseBody = aggregated;
                     }
                     else
                     {
-                        _logger.LogWarning("Failed to aggregate upstream SSE into response.completed JSON. Body head: {Head}",
-                            responseBody.Length > 800 ? responseBody[..800] : responseBody);
+                        _logger.LogWarning("Failed to aggregate upstream SSE into response JSON.");
+                        return new ProxyForwardResult { Success = false, StatusCode = 502, ErrorMessage = "Upstream stream was incomplete or invalid.", IsStreaming = false, TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds) };
                     }
                 }
 
@@ -404,6 +429,21 @@ public sealed class ProxyForwardService : IProxyForwardService
                         RateLimitRetryCount = rateLimit429Retries
                     };
                 }
+            }
+            catch (UpstreamReferenceException)
+            {
+                // A failed pre-exposure ownership commit is terminal, even before first content.
+                throw;
+            }
+            catch (NetworkPolicyException ex)
+            {
+                return new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 503,
+                    IsStreaming = request.EnableStreaming,
+                    ErrorMessage = $"Network policy blocked forwarding ({ex.Code})."
+                };
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
@@ -488,14 +528,17 @@ public sealed class ProxyForwardService : IProxyForwardService
         var attempts = Math.Max(0, request.RetryCount) + 1;
         var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
         var tokenRefreshAttempted = false;
+        var currentApiKey = request.TargetApiKey;
         var rateLimit429Count = 0;
         // 实际执行的 429 重试次数（不随连续计数归零），用于结果上报与 usage 链路展示。
         var rateLimit429Retries = 0;
         var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
+        // 站点标记驱动的内容适配（WorkBuddy 渠道校验 11128：请求体改写，详见 WorkBuddyChatAdapter）。
+        requestBody = ApplyChannelRewrite(request, requestBody);
 
-        await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: true);
+        var credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -505,38 +548,51 @@ public sealed class ProxyForwardService : IProxyForwardService
 
             try
             {
-                using var httpRequest = BuildRequestMessage(request, requestBody);
-                var client = GetClientForRequest(request);
-                using var response = await client.SendAsync(
-                    httpRequest,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    timeoutCts.Token);
+                if (credentialPreparationPending)
+                {
+                    await ResolveNetworkAsync(request, timeoutCts.Token);
+                    await TryPrepareTargetCredentialAsync(request, currentApiKey, cancellationToken, request.EnableStreaming);
+                    credentialPreparationPending = false;
+                }
+                await using var started = await StartForwardAsync(request, requestBody, currentApiKey, timeoutCts.Token);
+                var sentApiKey = started.ApiKey;
+                using var response = await started.Response;
 
                 if (!response.IsSuccessStatusCode)
                 {
                     stopwatch.Stop();
-                    var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
                     if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
                         && request.RefreshTargetApiKeyAsync is not null
                         && !tokenRefreshAttempted)
                     {
+                        await ResolveNetworkAsync(request, cancellationToken);
                         tokenRefreshAttempted = true;
-                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(
-                            request.TargetApiKey,
-                            cancellationToken);
+                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(sentApiKey, cancellationToken);
                         if (!string.IsNullOrWhiteSpace(refreshedApiKey))
                         {
-                            request.TargetApiKey = refreshedApiKey;
-                            await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: true);
+                            currentApiKey = refreshedApiKey;
+                            credentialPreparationPending = request.PrepareTargetCredentialAsync is not null;
                             attempt--;
                             continue;
                         }
                     }
 
-                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden
-                        && request.DisableTargetCredentialAsync is not null)
+                    if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                        && request.InvalidateTargetCredentialAsync is not null)
                     {
-                        await TryDisableTargetCredentialAsync(request, cancellationToken);
+                        try { await request.InvalidateTargetCredentialAsync(sentApiKey, started.CredentialSnapshot, cancellationToken); }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                        catch (Exception ex) { _logger.LogWarning(ex, "Unable to invalidate rejected forwarding credential"); }
+                    }
+                    var disable = response.StatusCode == System.Net.HttpStatusCode.Forbidden && request.DisableTargetCredentialAsync is not null;
+                    if (disable) await TryDisableTargetCredentialAsync(request, cancellationToken);
+                    var authError = response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden;
+                    var errorBody = authError
+                        ? await HttpErrorBodyReader.ReadAsync(response.Content, cancellationToken)
+                        : await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    var errorMessage = authError && string.IsNullOrWhiteSpace(errorBody) ? $"上游返回 HTTP {(int)response.StatusCode}" : errorBody;
+                    if (disable)
+                    {
                         return new ProxyForwardResult
                         {
                             Success = false,
@@ -544,7 +600,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
-                            ErrorMessage = errorBody
+                            ErrorMessage = errorMessage
                         };
                     }
 
@@ -576,7 +632,8 @@ public sealed class ProxyForwardService : IProxyForwardService
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
                             ErrorMessage = errorBody,
-                            RateLimitRetryCount = rateLimit429Retries
+                            RateLimitRetryCount = rateLimit429Retries,
+                            RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
                     }
                     else
@@ -593,8 +650,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                             ResponseBody = errorBody,
                             TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                             IsStreaming = true,
-                            ErrorMessage = errorBody,
-                            RateLimitRetryCount = rateLimit429Retries
+                            ErrorMessage = errorMessage,
+                            RateLimitRetryCount = rateLimit429Retries,
+                            RetryAfterSeconds = TryReadRetryAfterSeconds(response)
                         };
                     }
 
@@ -619,6 +677,25 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
 
                 continue;
+            }
+            catch (UpstreamReferenceException ex)
+            {
+                if (ex.PartialResult is not null)
+                {
+                    ex.PartialResult.RateLimitRetryCount = rateLimit429Retries;
+                }
+                // A failed pre-exposure ownership commit is terminal, even before first content.
+                throw;
+            }
+            catch (NetworkPolicyException ex)
+            {
+                return new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 503,
+                    IsStreaming = request.EnableStreaming,
+                    ErrorMessage = $"Network policy blocked forwarding ({ex.Code})."
+                };
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
@@ -710,6 +787,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
     private async Task TryPrepareTargetCredentialAsync(
         ProxyForwardRequest request,
+        string apiKey,
         CancellationToken cancellationToken,
         bool isStreaming)
     {
@@ -720,9 +798,13 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         try
         {
-            await request.PrepareTargetCredentialAsync(request.TargetApiKey, cancellationToken);
+            await request.PrepareTargetCredentialAsync(apiKey, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (NetworkPolicyException)
         {
             throw;
         }
@@ -772,6 +854,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         try
         {
+            var loopDetector = _streamPolicy?.LoopDetectionEnabled == true ? new ReplyLoopDetector() : null;
             while (true)
             {
                 string? line;
@@ -838,6 +921,30 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     receivedDoneEvent = true;
                     continue;
+                }
+
+                if (loopDetector?.Observe(jsonText) == true)
+                {
+                    // The tripping frame can carry the final usage snapshot. Preserve it
+                    // before stopping; cancellation of the response then closes upstream.
+                    try
+                    {
+                        using var loopDoc = JsonDocument.Parse(jsonText);
+                        var loopRoot = loopDoc.RootElement;
+                        var loopUsage = loopRoot.TryGetProperty("usage", out var u) && u.ValueKind == JsonValueKind.Object ? u
+                            : loopRoot.TryGetProperty("response", out var r) && r.ValueKind == JsonValueKind.Object
+                                && r.TryGetProperty("usage", out var ru) && ru.ValueKind == JsonValueKind.Object ? ru : default;
+                        if (loopUsage.ValueKind == JsonValueKind.Object)
+                        {
+                            var counts = ExtractUsageFromElement(loopUsage, request.ProtocolType);
+                            inputTokens = counts.InputTokens; cachedTokens = counts.CachedTokens; outputTokens = counts.OutputTokens;
+                        }
+                    }
+                    catch (JsonException) { }
+                    return new ProxyForwardResult { Success = false, StatusCode = 502, ResponseBody = sb.ToString(),
+                        InputTokens = inputTokens, CachedTokens = cachedTokens, OutputTokens = outputTokens,
+                        IsStreaming = true, HasStartedStreaming = hasFirstContent, IsStreamInterrupted = true,
+                        TotalDurationMs = (int)stopwatch.ElapsedMilliseconds, ErrorMessage = "reply_loop: Repeated model output was stopped." };
                 }
 
                 // 首次收到有效内容时记录首字延迟
@@ -944,6 +1051,34 @@ public sealed class ProxyForwardService : IProxyForwardService
                     // 非 JSON 的 data 行忽略
                 }
             }
+        }
+        catch (UpstreamReferenceException ex)
+        {
+            stopwatch.Stop();
+            totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+            var snapshot = new ProxyForwardResult
+            {
+                Success = false,
+                StatusCode = (int)response.StatusCode,
+                InputTokens = inputTokens,
+                CachedTokens = cachedTokens,
+                OutputTokens = outputTokens,
+                IsStreaming = isStreaming,
+                HasStartedStreaming = ex.HasExposedOutput,
+                IsStreamInterrupted = ex.HasExposedOutput,
+                FirstTokenLatencyMs = firstTokenLatencyMs,
+                StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
+                TotalDurationMs = totalDurationMs,
+                ErrorMessage = ex.Message
+            };
+            ex.AttachPartialResult(snapshot);
+            // Preserve the terminal guard exception for the controller; never expose or retry output.
+            throw;
+        }
+        catch (NetworkPolicyException)
+        {
+            // Let the outer attempt return its blocked-policy result without retrying this stream.
+            throw;
         }
         catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
@@ -1056,7 +1191,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// <summary>
     /// 构建发送到上游的 HTTP 请求对象
     /// </summary>
-    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody)
+    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody, string apiKey, bool trustedDeviceCredential)
     {
         var targetPath = string.IsNullOrWhiteSpace(request.TargetPath)
             ? request.ProtocolType == "Anthropic"
@@ -1075,10 +1210,14 @@ public sealed class ProxyForwardService : IProxyForwardService
         // 根据协议类型设置认证头
         if (request.ProtocolType == "Anthropic")
         {
-            if (!string.IsNullOrEmpty(request.TargetApiKey))
+            if (!string.IsNullOrEmpty(apiKey))
             {
-                httpRequest.Headers.Add("x-api-key", request.TargetApiKey);
+                foreach (var (name, value) in ResolveAnthropicAuthHeaders(apiKey, request.ForwardHeaders))
+                {
+                    httpRequest.Headers.TryAddWithoutValidation(name, value);
+                }
             }
+
             httpRequest.Headers.Add(
                 "anthropic-version",
                 request.ForwardHeaders.TryGetValue("anthropic-version", out var anthropicVersion) && !string.IsNullOrWhiteSpace(anthropicVersion)
@@ -1087,18 +1226,40 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
         else
         {
-            if (!string.IsNullOrEmpty(request.TargetApiKey))
+            if (!string.IsNullOrEmpty(apiKey))
             {
-                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.TargetApiKey);
+                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             }
         }
 
         foreach (var header in request.ForwardHeaders)
         {
+            if (trustedDeviceCredential && (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(header.Key, "x-api-key", StringComparison.OrdinalIgnoreCase)))
+                continue;
             if (string.Equals(header.Key, "anthropic-version", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
+
+            // 内部标记头（鉴权形态选择），不透传给上游。
+            if (string.Equals(header.Key, AuthModeHeader, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // 内部标记头（强制上游流式），不透传给上游。
+            if (string.Equals(header.Key, ForceStreamHeader, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // 内部标记头（渠道校验内容适配），不透传给上游。
+            if (string.Equals(header.Key, RewriteChannelHeader, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase))
             {
                 httpRequest.Headers.Remove("Authorization");
@@ -1108,6 +1269,58 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
 
         return httpRequest;
+    }
+
+    /// <summary>
+    /// 站点侧通过 ExtraHeadersJson 携带 <c>X-AITool-Auth-Mode</c> 选择 Anthropic 鉴权形态：
+    /// 默认 x-api-key；<c>bearer</c> 时改发 Authorization Bearer（Claude OAuth 订阅、
+    /// MiniMax Code、Z.ai /api/anthropic 等以 Bearer 为准的上游）。
+    /// </summary>
+    public const string AuthModeHeader = "X-AITool-Auth-Mode";
+
+    /// <summary>
+    /// 站点侧通过 ExtraHeadersJson 携带 <c>X-AITool-Force-Stream</c> 强制上游流式请求：
+    /// WorkBuddy 等上游只接受 stream:true（code 11101），客户端非流式时由转发层改写请求体
+    /// 强制 stream:true，并将返回的 SSE 聚合回完整 JSON。
+    /// </summary>
+    public const string ForceStreamHeader = "X-AITool-Force-Stream";
+
+    /// <summary>
+    /// 站点侧通过 ExtraHeadersJson 携带 <c>X-AITool-Rewrite-Channel: workbuddy</c> 驱动
+    /// 转发层做 WorkBuddy 渠道校验内容适配（code 11128）：已知官方客户端提示词整行改写 +
+    /// 请求体拼写修正（max_completion_tokens→max_tokens、developer→system、首消息补 system），
+    /// 详见 <see cref="WorkBuddyChatAdapter"/>。内部标记头，不透传给上游。
+    /// </summary>
+    public const string RewriteChannelHeader = "X-AITool-Rewrite-Channel";
+
+    /// <summary>按 RewriteChannelHeader 标记对请求体做渠道内容适配；无标记或无改动时原样返回。</summary>
+    internal static string ApplyChannelRewrite(ProxyForwardRequest request, string requestBody)
+    {
+        if (!request.ForwardHeaders.TryGetValue(RewriteChannelHeader, out var channel))
+        {
+            return requestBody;
+        }
+
+        return string.Equals(channel.Trim(), "workbuddy", StringComparison.OrdinalIgnoreCase)
+            ? WorkBuddyChatAdapter.Rewrite(requestBody)
+            : requestBody;
+    }
+
+    /// <summary>解析 Anthropic 协议的鉴权头集合（key 形态：默认 x-api-key / bearer 形态：Authorization Bearer）。</summary>
+    public static IEnumerable<(string Name, string Value)> ResolveAnthropicAuthHeaders(
+        string apiKey,
+        IReadOnlyDictionary<string, string> forwardHeaders)
+    {
+        var bearerMode = forwardHeaders.TryGetValue(AuthModeHeader, out var mode)
+                         && string.Equals(mode.Trim(), "bearer", StringComparison.OrdinalIgnoreCase);
+        if (bearerMode)
+        {
+            yield return ("Authorization", "Bearer " + apiKey);
+        }
+        else
+        {
+            yield return ("x-api-key", apiKey);
+        }
     }
 
     /// <summary>
@@ -1158,6 +1371,355 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
+    /// 强制改写请求体为 stream:true（保留其余字段不变），并要求上游在流尾附带 usage
+    /// （stream_options.include_usage，OpenAI 规范下流式默认不带 usage，聚合侧会拿不到计量）。
+    /// 请求体不是合法 JSON 时返回原文（上游自行报错）。
+    /// </summary>
+    private static string ForceStreamTrue(string requestBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(requestBody);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return requestBody;
+            }
+
+            if (root.TryGetProperty("stream", out var streamEl)
+                && (streamEl.ValueKind == JsonValueKind.True
+                    || (streamEl.ValueKind == JsonValueKind.String && streamEl.GetString() == "true")))
+            {
+                return requestBody;
+            }
+
+            var node = System.Text.Json.Nodes.JsonNode.Parse(requestBody) as System.Text.Json.Nodes.JsonObject;
+            if (node is null)
+            {
+                return requestBody;
+            }
+
+            node["stream"] = true;
+            // 兼容已有 stream_options：只补 include_usage，不覆盖其他选项。
+            if (node["stream_options"] is System.Text.Json.Nodes.JsonObject options)
+            {
+                options["include_usage"] = true;
+            }
+            else
+            {
+                node["stream_options"] = new System.Text.Json.Nodes.JsonObject { ["include_usage"] = true };
+            }
+            return node.ToJsonString();
+        }
+        catch (JsonException)
+        {
+            return requestBody;
+        }
+    }
+
+    /// <summary>
+    /// 把 OpenAI Chat Completions 的 SSE 流聚合回完整 chat.completion JSON：
+    /// 逐行解析 data: 前缀的 chat.completion.chunk，累积 delta 文本/role/tool_calls/usage，
+    /// 构造完整响应对象。无法解析时返回 null。
+    /// </summary>
+    internal static string? TryAggregateChatCompletionSse(string sseBody)
+    {
+        try
+        {
+            string? id = null, model = null, systemFingerprint = null;
+            long? promptTokens = null, completionTokens = null;
+            // 多 choice（客户端 n>1）按 choice.index 分桶聚合，不能只取 choices[0]。
+            var choicesByIndex = new SortedDictionary<int, ChoiceAccumulator>();
+            var hasAnyChunk = false;
+            var sawDone = false;
+
+            foreach (var rawLine in sseBody.Split('\n'))
+            {
+                var line = rawLine.TrimEnd('\r');
+                if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var payload = line["data:".Length..].Trim();
+                if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                {
+                    sawDone = true;
+                    break;
+                }
+
+                if (payload.Length == 0) continue;
+                // 非空 data 解析失败可能是丢失的回答或工具调用片段，不能当作噪声跳过。
+                JsonDocument doc;
+                try
+                {
+                    doc = JsonDocument.Parse(payload);
+                }
+                catch (JsonException)
+                {
+                    return null;
+                }
+
+                using (doc)
+                {
+                    var chunk = doc.RootElement;
+                    // 上游显式下发的 error 事件（对象顶层含 error 属性）才是确定性失败信号。
+                    if (chunk.ValueKind == JsonValueKind.Object && chunk.TryGetProperty("error", out _)) return null;
+                    if (chunk.ValueKind != JsonValueKind.Object
+                        || !chunk.TryGetProperty("object", out var objectEl)
+                        || !string.Equals(objectEl.GetString(), "chat.completion.chunk", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    hasAnyChunk = true;
+                    if (chunk.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String) id ??= idEl.GetString();
+                    if (chunk.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String) model ??= modelEl.GetString();
+                    if (chunk.TryGetProperty("system_fingerprint", out var fpEl) && fpEl.ValueKind == JsonValueKind.String) systemFingerprint ??= fpEl.GetString();
+
+                    if (chunk.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (usageEl.TryGetProperty("prompt_tokens", out var pt) && pt.TryGetInt64(out var ptv)) promptTokens = ptv;
+                        if (usageEl.TryGetProperty("completion_tokens", out var ct) && ct.TryGetInt64(out var ctv)) completionTokens = ctv;
+                    }
+
+                    if (!chunk.TryGetProperty("choices", out var choicesEl) || choicesEl.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
+                    foreach (var choice in choicesEl.EnumerateArray())
+                    {
+                        if (choice.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        var choiceIndex = choice.TryGetProperty("index", out var cIdxEl)
+                                          && cIdxEl.ValueKind == JsonValueKind.Number
+                                          && cIdxEl.TryGetInt32(out var cIdx)
+                            ? cIdx
+                            : 0;
+                        if (!choicesByIndex.TryGetValue(choiceIndex, out var acc))
+                        {
+                            acc = new ChoiceAccumulator();
+                            choicesByIndex[choiceIndex] = acc;
+                        }
+
+                        if (choice.TryGetProperty("finish_reason", out var frEl) && frEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(frEl.GetString()))
+                        {
+                            acc.FinishReason ??= frEl.GetString();
+                        }
+
+                        if (!choice.TryGetProperty("delta", out var deltaEl) || deltaEl.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        if (deltaEl.TryGetProperty("role", out var roleEl) && roleEl.ValueKind == JsonValueKind.String)
+                        {
+                            acc.Role ??= roleEl.GetString();
+                        }
+
+                        if (deltaEl.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.String)
+                        {
+                            acc.Content.Append(contentEl.GetString());
+                        }
+
+                        if (deltaEl.TryGetProperty("reasoning_content", out var rcEl) && rcEl.ValueKind == JsonValueKind.String)
+                        {
+                            acc.Reasoning.Append(rcEl.GetString());
+                        }
+
+                        if (deltaEl.TryGetProperty("refusal", out var refusalEl) && refusalEl.ValueKind == JsonValueKind.String)
+                        {
+                            acc.HasRefusal = true;
+                            acc.Refusal.Append(refusalEl.GetString());
+                        }
+
+                        if (deltaEl.TryGetProperty("function_call", out var functionCallEl) && functionCallEl.ValueKind == JsonValueKind.Object)
+                        {
+                            acc.HasFunctionCall = true;
+                            if (functionCallEl.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String)
+                            {
+                                acc.FunctionName.Append(nameEl.GetString());
+                            }
+                            if (functionCallEl.TryGetProperty("arguments", out var argumentsEl) && argumentsEl.ValueKind == JsonValueKind.String)
+                            {
+                                acc.FunctionArguments.Append(argumentsEl.GetString());
+                            }
+                        }
+
+                        if (deltaEl.TryGetProperty("tool_calls", out var tcEl) && tcEl.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var tc in tcEl.EnumerateArray())
+                            {
+                                if (tc.ValueKind != JsonValueKind.Object)
+                                {
+                                    continue;
+                                }
+
+                                var callIndex = tc.TryGetProperty("index", out var idxEl)
+                                                && idxEl.ValueKind == JsonValueKind.Number
+                                                && idxEl.TryGetInt32(out var idx)
+                                    ? idx
+                                    : 0;
+                                if (!acc.ToolCallsByIndex.TryGetValue(callIndex, out var tcAcc))
+                                {
+                                    tcAcc = new ToolCallAccumulator();
+                                    acc.ToolCallsByIndex[callIndex] = tcAcc;
+                                }
+
+                                // id/type/name 只在首个分片出现，取首个非空；arguments 逐段拼接。
+                                if (tc.TryGetProperty("id", out var tcId) && tcId.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tcId.GetString()))
+                                {
+                                    tcAcc.Id ??= tcId.GetString();
+                                }
+                                if (tc.TryGetProperty("type", out var tcType) && tcType.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(tcType.GetString()))
+                                {
+                                    tcAcc.Type ??= tcType.GetString();
+                                }
+                                if (tc.TryGetProperty("function", out var fnEl) && fnEl.ValueKind == JsonValueKind.Object)
+                                {
+                                    if (fnEl.TryGetProperty("name", out var fnName) && fnName.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(fnName.GetString()))
+                                    {
+                                        tcAcc.Name ??= fnName.GetString();
+                                    }
+                                    if (fnEl.TryGetProperty("arguments", out var fnArgs) && fnArgs.ValueKind == JsonValueKind.String)
+                                    {
+                                        tcAcc.Arguments.Append(fnArgs.GetString());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 空 choices 的用量块不能单独构成有效结果。[DONE] 是全流结束信号；
+            // 没有 [DONE] 时，必须每个 choice 都有结束原因，才能排除回答被截断。
+            if (!hasAnyChunk || choicesByIndex.Count == 0
+                || (!sawDone && choicesByIndex.Values.Any(acc => acc.FinishReason is null)))
+            {
+                return null;
+            }
+
+            // 只有全流的 [DONE] 可为缺失结束原因的 choice 兜底。
+            var fallbackFinishReason = sawDone ? "stop" : null;
+
+            var result = new System.Text.Json.Nodes.JsonObject
+            {
+                ["id"] = id ?? $"chatcmpl-{Guid.NewGuid():N}",
+                ["object"] = "chat.completion",
+                ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                ["model"] = model ?? "unknown",
+            };
+            if (!string.IsNullOrEmpty(systemFingerprint))
+            {
+                result["system_fingerprint"] = systemFingerprint;
+            }
+
+            var choicesArray = new System.Text.Json.Nodes.JsonArray();
+            foreach (var (choiceIndex, acc) in choicesByIndex)
+            {
+                var message = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["role"] = acc.Role ?? "assistant",
+                    ["content"] = acc.Content.Length > 0 ? acc.Content.ToString() : null,
+                };
+                if (acc.Reasoning.Length > 0)
+                {
+                    message["reasoning_content"] = acc.Reasoning.ToString();
+                }
+                if (acc.HasRefusal)
+                {
+                    message["refusal"] = acc.Refusal.ToString();
+                }
+                if (acc.HasFunctionCall)
+                {
+                    message["function_call"] = new System.Text.Json.Nodes.JsonObject
+                    {
+                        ["name"] = acc.FunctionName.ToString(),
+                        ["arguments"] = acc.FunctionArguments.ToString(),
+                    };
+                }
+                if (acc.ToolCallsByIndex.Count > 0)
+                {
+                    // 对齐非流式 chat.completion 的 tool_calls 形态（id/type/function，无 index 字段）。
+                    var mergedToolCalls = new System.Text.Json.Nodes.JsonArray();
+                    foreach (var tcAcc in acc.ToolCallsByIndex.Values)
+                    {
+                        var call = new System.Text.Json.Nodes.JsonObject();
+                        if (tcAcc.Id is not null)
+                        {
+                            call["id"] = tcAcc.Id;
+                        }
+                        if (tcAcc.Type is not null)
+                        {
+                            call["type"] = tcAcc.Type;
+                        }
+                        call["function"] = new System.Text.Json.Nodes.JsonObject
+                        {
+                            ["name"] = tcAcc.Name ?? string.Empty,
+                            ["arguments"] = tcAcc.Arguments.ToString(),
+                        };
+                        mergedToolCalls.Add(call);
+                    }
+                    message["tool_calls"] = mergedToolCalls;
+                }
+
+                choicesArray.Add(new System.Text.Json.Nodes.JsonObject
+                {
+                    ["index"] = choiceIndex,
+                    ["message"] = message,
+                    ["finish_reason"] = acc.FinishReason ?? fallbackFinishReason,
+                });
+            }
+            result["choices"] = choicesArray;
+
+            if (promptTokens.HasValue || completionTokens.HasValue)
+            {
+                result["usage"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["prompt_tokens"] = promptTokens ?? 0,
+                    ["completion_tokens"] = completionTokens ?? 0,
+                    ["total_tokens"] = (promptTokens ?? 0) + (completionTokens ?? 0),
+                };
+            }
+
+            return result.ToJsonString();
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>单 choice 的流式聚合累积器：delta 文本/reasoning/role 与按 index 合并的 tool_calls。</summary>
+    private sealed class ChoiceAccumulator
+    {
+        public string? Role { get; set; }
+        public string? FinishReason { get; set; }
+        public StringBuilder Content { get; } = new();
+        public StringBuilder Reasoning { get; } = new();
+        public bool HasRefusal { get; set; }
+        public StringBuilder Refusal { get; } = new();
+        public bool HasFunctionCall { get; set; }
+        public StringBuilder FunctionName { get; } = new();
+        public StringBuilder FunctionArguments { get; } = new();
+        public SortedDictionary<int, ToolCallAccumulator> ToolCallsByIndex { get; } = new();
+    }
+
+    /// <summary>流式 tool_calls 分片累积器：id/type/name 取首个非空，arguments 逐段拼接。</summary>
+    private sealed class ToolCallAccumulator
+    {
+        public string? Id { get; set; }
+        public string? Type { get; set; }
+        public string? Name { get; set; }
+        public StringBuilder Arguments { get; } = new();
+    }
+
+    /// <summary>
     /// 判断上游响应是否为 SSE 流（content-type 为 text/event-stream，或正文以 event:/data: 开头）。
     /// 用于识别 Codex /responses 等强制 stream=true 的上游在客户端非流式请求下返回的 SSE。
     /// </summary>
@@ -1192,6 +1754,25 @@ public sealed class ProxyForwardService : IProxyForwardService
         // 累积 response.output_text.delta 的文本片段，用于在 response.completed.output 为空时重建 message。
         // Codex 上游的 response.completed.response.output 始终为 []，内容只在 delta 事件里。
         var deltaBuilder = new StringBuilder();
+        var completedItems = new SortedDictionary<int, JsonObject>();
+
+        void CaptureCompletedItem(JsonElement root)
+        {
+            if (!root.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("output_index", out var index) || index.ValueKind != JsonValueKind.Number || !index.TryGetInt32(out var order) || order < 0
+                || !item.TryGetProperty("type", out var kind) || kind.ValueKind != JsonValueKind.String) return;
+            var type = kind.GetString();
+            // Only restore complete, forwardable items. A partial tool invocation must never be fabricated.
+            var valid = type == "message" && item.TryGetProperty("content", out var content)
+                && content.ValueKind == JsonValueKind.Array && content.EnumerateArray().Any(part =>
+                    part.ValueKind == JsonValueKind.Object && part.TryGetProperty("type", out var contentType)
+                    && contentType.ValueKind == JsonValueKind.String && contentType.GetString() is "output_text" or "text" or "refusal");
+            if (type == "function_call")
+                valid = item.TryGetProperty("call_id", out var callId) && callId.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(callId.GetString())
+                    && item.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(name.GetString())
+                    && item.TryGetProperty("arguments", out var arguments) && arguments.ValueKind == JsonValueKind.String;
+            if (valid && JsonNode.Parse(item.GetRawText()) is JsonObject completed) completedItems[order] = completed;
+        }
 
         string? TryParsePayload(string payload)
         {
@@ -1207,6 +1788,12 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                 var eventType = typeEl.GetString();
 
+                if (string.Equals(eventType, "response.output_item.done", StringComparison.OrdinalIgnoreCase))
+                {
+                    CaptureCompletedItem(root);
+                    return null;
+                }
+
                 if (!string.Equals(eventType, "response.completed", StringComparison.OrdinalIgnoreCase)
                     || !root.TryGetProperty("response", out var response)
                     || response.ValueKind != JsonValueKind.Object)
@@ -1218,11 +1805,6 @@ public sealed class ProxyForwardService : IProxyForwardService
                 // 若 output 为空但有 delta 文本，从 delta 重建 message 项塞进 output，
                 // 否则上层 HasUsableResponse 会判为空响应（"no usable choices"）。
                 var responseText = response.GetRawText();
-                if (deltaBuilder.Length == 0)
-                {
-                    return responseText;
-                }
-
                 var hasOutput = response.TryGetProperty("output", out var outputEl)
                     && outputEl.ValueKind == JsonValueKind.Array
                     && outputEl.GetArrayLength() > 0;
@@ -1230,6 +1812,16 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     return responseText;
                 }
+
+                if (completedItems.Count > 0 && JsonNode.Parse(responseText) is JsonObject completedResponse)
+                {
+                    var items = new JsonArray();
+                    foreach (var item in completedItems.Values) items.Add(item.DeepClone());
+                    completedResponse["output"] = items;
+                    return completedResponse.ToJsonString();
+                }
+
+                if (deltaBuilder.Length == 0) return responseText;
 
                 return RebuildResponseWithDeltaMessage(responseText, deltaBuilder.ToString());
             }

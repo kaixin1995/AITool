@@ -2,17 +2,14 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using AITool.Core.IntegrationTests;
 using AITool.Application.Proxy;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
-using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -324,10 +321,6 @@ public sealed class AnthropicProxyControllerTests
 
     /// <summary>
     /// 验证访问密钥被禁用后，Messages 请求会返回未授权。
-    /// <para>
-    /// 原始测试通过 /api/admin/access-keys/toggle 端点禁用密钥，该控制器已迁移到 Admin 宿主。
-    /// 现改为直接通过数据库修改 ProxyAccessKey.IsEnabled 状态来准备测试数据。
-    /// </para>
     /// </summary>
     [Fact]
     public async Task Post_messages_returns_unauthorized_after_access_key_is_disabled()
@@ -339,17 +332,8 @@ public sealed class AnthropicProxyControllerTests
         var initialResponse = await SendMessagesAsync(client);
         initialResponse.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        // 直接通过数据库禁用访问密钥，替代已迁移到 Admin 的 access-keys/toggle 端点
-        await using (var scope = factory.Services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var accessKey = await db.ProxyAccessKeys.SingleAsync();
-            accessKey.IsEnabled = false;
-            await db.UpdateAsync(accessKey);
-            // 数据库修改后需手动刷新代理访问密钥缓存，否则代理仍使用旧缓存
-            var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-            metadataCache.InvalidateAccessKeys();
-        }
+        var toggleResponse = await client.PostAsync("/api/admin/access-keys/toggle/99999999-9999-9999-9999-999999999999", null);
+        toggleResponse.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var disabledResponse = await SendMessagesAsync(client);
         disabledResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -357,10 +341,6 @@ public sealed class AnthropicProxyControllerTests
 
     /// <summary>
     /// 验证删除路由入口后，再次请求会返回找不到可用路由。
-    /// <para>
-    /// 原始测试通过 /api/admin/route-rules/entries/delete 端点删除入口，该控制器已迁移到 Admin 宿主。
-    /// 现改为直接通过数据库删除 ProxyRouteEntry 和 ProxyRouteRule 记录来准备测试数据。
-    /// </para>
     /// </summary>
     [Fact]
     public async Task Post_messages_returns_not_found_after_route_entry_is_deleted()
@@ -372,18 +352,10 @@ public sealed class AnthropicProxyControllerTests
         var initialResponse = await SendMessagesAsync(client);
         initialResponse.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        // 直接通过数据库删除路由入口和规则，替代已迁移到 Admin 的 route-rules/entries/delete 端点
-        await using (var scope = factory.Services.CreateAsyncScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var entry = await db.ProxyRouteEntries.SingleAsync(x => x.EntryName == "claude-proxy");
-            var rules = await db.ProxyRouteRules.Where(x => x.ExternalModelName == "claude-proxy").ToListAsync();
-            await db.DeleteRangeAsync(rules);
-            await db.DeleteAsync(entry);
-            // 数据库修改后需手动刷新运行时路由缓存，否则代理仍使用旧路由快照
-            var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-            metadataCache.InvalidateRouteTargets();
-        }
+        var deleteResponse = await client.PostAsync(
+            "/api/admin/route-rules/entries/delete",
+            new StringContent("{\"entryName\":\"claude-proxy\"}", Encoding.UTF8, "application/json"));
+        deleteResponse.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var afterDeleteResponse = await SendMessagesAsync(client);
         var body = await afterDeleteResponse.Content.ReadAsStringAsync();
@@ -1005,7 +977,7 @@ public sealed class AnthropicProxyControllerTests
 /// <summary>
 /// 构建 Anthropic 代理集成测试的 WebApplicationFactory，使用隔离数据库和伪造转发服务。
 /// </summary>
-internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactory<AITool.AllInOne.AllInOneProgramMarker>
 {
     /// <summary>
     /// 保存当前测试使用的临时数据库文件路径。
@@ -1038,18 +1010,11 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
         builder.ConfigureServices(services =>
         {
             IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
+                // split 双宿主：Core 宿主默认快照模式；测试用 DB 支撑提供器让 master 的 DB 种子直通。
+                services.RemoveAll<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+                services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider, AITool.Infrastructure.CoreRuntime.DbBackedRuntimeConfigProvider>();
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
-
-            // 重新注册元数据缓存，不传入 ICoreRuntimeConfigProvider，
-            // 使缓存回退到数据库查询路径，确保测试 seed 的密钥数据能被正确读取。
-            services.RemoveAll<ProxyRequestMetadataCache>();
-            services.AddSingleton<ProxyRequestMetadataCache>(sp =>
-            {
-                var memoryCache = sp.GetRequiredService<IMemoryCache>();
-                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
-            });
         });
     }
 
@@ -1067,9 +1032,9 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
     /// </summary>
     private async Task SeedAsync()
     {
-        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var siteId = Guid.Parse("77777777-7777-7777-7777-777777777777");
         var accessKeyRaw = "anthropic-test-key";
@@ -1115,6 +1080,12 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
             IsEnabled = true
         });
 
+        // 单例表 Id=1 可能已被启动逻辑创建，先删除避免唯一约束冲突。
+
+
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
+
+
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,
@@ -1128,13 +1099,15 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
+
+        await db.SaveChangesAsync();
     }
 }
 
 /// <summary>
 /// 构建混合路由回退场景的 WebApplicationFactory，先配一条 OpenAI 站点再配一条 Anthropic 站点。
 /// </summary>
-internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicationFactory<AITool.AllInOne.AllInOneProgramMarker>
 {
     /// <summary>
     /// 保存当前测试使用的临时数据库文件路径。
@@ -1164,16 +1137,6 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
             IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
-
-            // 重新注册元数据缓存，不传入 ICoreRuntimeConfigProvider，
-            // 使缓存回退到数据库查询路径，确保测试 seed 的密钥数据能被正确读取。
-            services.RemoveAll<ProxyRequestMetadataCache>();
-            services.AddSingleton<ProxyRequestMetadataCache>(sp =>
-            {
-                var memoryCache = sp.GetRequiredService<IMemoryCache>();
-                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
-            });
         });
     }
 
@@ -1191,9 +1154,9 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
     /// </summary>
     private async Task SeedAsync()
     {
-        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var openAiSiteId = Guid.Parse("71717171-7171-7171-7171-717171717171");
         var anthropicSiteId = Guid.Parse("72727272-7272-7272-7272-727272727272");
@@ -1265,6 +1228,12 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
                 IsEnabled = true
             });
 
+        // 单例表 Id=1 可能已被启动逻辑创建，先删除避免唯一约束冲突。
+
+
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
+
+
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,
@@ -1278,6 +1247,8 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
+
+        await db.SaveChangesAsync();
     }
 }
 

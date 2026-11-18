@@ -6,7 +6,7 @@ using AITool.Infrastructure.Proxy;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace AITool.AllInOne;
+namespace AITool.Infrastructure.CoreRuntime;
 
 /// <summary>
 /// AllInOne 单进程形态的 <see cref="ICoreRuntimeConfigProvider"/> 实现：
@@ -17,16 +17,18 @@ namespace AITool.AllInOne;
 public sealed class DbBackedRuntimeConfigProvider : ICoreRuntimeConfigProvider
 {
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly ProxyRequestMetadataCache _metadataCache;
+    // 缓存改为惰性解析：快照模式的 ProxyRequestMetadataCache 依赖 ICoreRuntimeConfigProvider，
+    // 构造期直取会形成 DI 环（测试宿主接入本提供器时崩溃）；失效只在回写路径用，按需取即可。
+    private readonly IServiceProvider _rootProvider;
     private readonly ILogger<DbBackedRuntimeConfigProvider> _logger;
 
     public DbBackedRuntimeConfigProvider(
         IServiceScopeFactory scopeFactory,
-        ProxyRequestMetadataCache metadataCache,
+        IServiceProvider rootProvider,
         ILogger<DbBackedRuntimeConfigProvider> logger)
     {
         _scopeFactory = scopeFactory;
-        _metadataCache = metadataCache;
+        _rootProvider = rootProvider;
         _logger = logger;
     }
 
@@ -36,60 +38,28 @@ public sealed class DbBackedRuntimeConfigProvider : ICoreRuntimeConfigProvider
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            EnsureSchema(db);
 
-            var snapshot = new CoreRuntimeConfigSnapshot
-            {
-                ConfigVersion = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                GeneratedAt = DateTimeOffset.UtcNow,
-                Sites = db.Sites.ToList().Select(s => new CoreRuntimeSite
-                {
-                    Id = s.Id,
-                    Name = s.Name,
-                    BaseUrl = s.BaseUrl,
-                    ApiKey = s.ApiKey,
-                    IsEnabled = s.IsEnabled
-                }).ToList()
-            };
-
-            foreach (var account in db.CodexAccounts.ToList())
-            {
-                snapshot.AccountCredentials.Add(new CoreRuntimeAccountCredential
-                {
-                    Provider = "Codex",
-                    AccountId = account.Id,
-                    LinkedSiteId = account.LinkedSiteId,
-                    RefreshToken = account.RefreshToken,
-                    AccountKind = "Codex",
-                    IsEnabled = account.IsEnabled
-                });
-            }
-
-            foreach (var account in db.GoogleAccounts.ToList())
-            {
-                snapshot.AccountCredentials.Add(new CoreRuntimeAccountCredential
-                {
-                    Provider = "Google",
-                    AccountId = account.Id,
-                    LinkedSiteId = account.LinkedSiteId,
-                    RefreshToken = account.RefreshToken,
-                    AccountKind = account.AccountKind,
-                    IsEnabled = account.IsEnabled
-                });
-            }
-
-            foreach (var account in db.KimiAccounts.ToList())
-            {
-                snapshot.AccountCredentials.Add(new CoreRuntimeAccountCredential
-                {
-                    Provider = "Kimi",
-                    AccountId = account.Id,
-                    LinkedSiteId = account.LinkedSiteId,
-                    RefreshToken = account.RefreshToken,
-                    AccountKind = "Kimi",
-                    IsEnabled = account.IsEnabled
-                });
-            }
-
+            // 全量构建：测试/AllInOne 形态下缓存走快照分支，密钥/路由/映射/设置都从这里读。
+            var settings = db.SystemRuntimeSettings.ToList().FirstOrDefault();
+            var snapshot = CoreRuntimeConfigSnapshotBuilder.Build(
+                db.Sites.ToList(),
+                db.ModelLibraryItems.ToList(),
+                db.SiteModelMappings.ToList(),
+                db.ProxyRouteEntries.ToList(),
+                db.ProxyRouteRules.ToList(),
+                db.ProxyAccessKeys.ToList(),
+                settings ?? new Domain.Operations.SystemRuntimeSettings(),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                DateTimeOffset.UtcNow,
+                compatibilityProfiles: null,
+                siteKeys: db.SiteKeys.ToList(),
+                codexAccounts: db.CodexAccounts.ToList(),
+                googleAccounts: db.GoogleAccounts.ToList(),
+                kimiAccounts: db.KimiAccounts.ToList(),
+                proxyProfiles: db.ProxyProfiles.ToList(),
+                activeHeaderProfiles: null,
+                accountNetworkPolicies: db.AccountNetworkPolicies.ToList());
             return snapshot;
         }
         catch (Exception ex)
@@ -138,16 +108,40 @@ public sealed class DbBackedRuntimeConfigProvider : ICoreRuntimeConfigProvider
                 }
             }
 
-            // 失效凭证与路由缓存，让新凭证立即对元数据缓存生效。
-            _metadataCache.InvalidateAccessKeys();
-            _metadataCache.InvalidateCodexAccounts();
-            _metadataCache.InvalidateGoogleAccounts();
-            _metadataCache.InvalidateKimiAccounts();
-            _metadataCache.InvalidateRouteTargets();
+            // 失效凭证与路由缓存，让新凭证立即对元数据缓存生效（惰性解析，避免构造期 DI 环）。
+            var metadataCache = _rootProvider.GetService<ProxyRequestMetadataCache>();
+            metadataCache?.InvalidateAccessKeys();
+            metadataCache?.InvalidateCodexAccounts();
+            metadataCache?.InvalidateGoogleAccounts();
+            metadataCache?.InvalidateKimiAccounts();
+            metadataCache?.InvalidateRouteTargets();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "DbBacked 配置快照回写失败（刷新后的凭证将等待下轮同步）");
+        }
+    }
+
+    /// <summary>
+    /// DB 支撑形态的自愈：宿主启动初期（CodeFirst 建表前）读库会报 no such table——
+    /// 此时补一次 Schema 初始化再继续，避免把空快照固化进元数据缓存（AllInOne 首启竞态同理）。
+    /// </summary>
+    private static void EnsureSchema(AppDbContext db)
+    {
+        try
+        {
+            db.Client.Queryable<Site>().Take(1).ToList();
+        }
+        catch (Exception)
+        {
+            try
+            {
+                Persistence.SqlSugarSetup.InitializeDatabase(db.Client);
+            }
+            catch
+            {
+                // 初始化失败交由外层 catch 记日志返回 null。
+            }
         }
     }
 

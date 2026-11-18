@@ -1,8 +1,10 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using AITool.Application.Networking;
 using AITool.Application.Proxy;
 using Microsoft.Extensions.Primitives;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>Bridges auxiliary operations to the account session isolator without web dependencies in infrastructure.</summary>
 public sealed class AuxiliarySessionPreparation(AccountSessionIsolationService isolation) : IAuxiliarySessionPreparation

@@ -211,7 +211,11 @@ public static partial class ProxyProtocolBridge
         else if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
             && string.Equals(targetProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
         {
-            result = ConvertResponsesRequestToChat(requestBody, targetModelName, enableStreaming);
+            var keepReasoning = compatibilityRules is { Count: > 0 } && compatibilityRules.Any(r =>
+                string.Equals((r.Op ?? "").Trim(), "keep_reasoning", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals((r.Scope ?? "all").Trim(), "all", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals((r.Scope ?? "all").Trim(), "bridge", StringComparison.OrdinalIgnoreCase)));
+            result = ConvertResponsesRequestToChat(requestBody, targetModelName, enableStreaming, keepReasoning);
         }
         else if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
             && string.Equals(targetProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))

@@ -6,7 +6,8 @@ using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using AITool.Protocol;
-
+using AITool.Core.Services;
+using AITool.Infrastructure.Proxy;
 
 namespace AITool.Core.Controllers.Proxy;
 
@@ -35,6 +36,7 @@ public sealed partial class OpenAiProxyController
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
+        var receivedDoneEvent = false;
         var state = new ProxyProtocolBridge.GeminiToOpenAiStreamState();
         var responseId = $"chatcmpl-{Guid.NewGuid():N}";
 
@@ -46,9 +48,11 @@ public sealed partial class OpenAiProxyController
             }
 
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
-            await Response.WriteAsync(chunk, token);
-            await Response.Body.FlushAsync(token);
+            await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
+            await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
+            await Response.Body.FlushAsync(token);
         }
 
         async Task FlushGeminiBlockAsync(CancellationToken token)
@@ -62,6 +66,7 @@ public sealed partial class OpenAiProxyController
             pendingSseLines.Clear();
             if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
             {
+                receivedDoneEvent = true;
                 return;
             }
 
@@ -88,7 +93,7 @@ public sealed partial class OpenAiProxyController
             await FlushGeminiBlockAsync(cancellationToken);
         }
 
-        // Gemini 流没有 [DONE] 标记：finishReason 出现即视为正常完成，由收尾块统一结束。
+        // Gemini 通常以 EOF 结束；finishReason 只表示候选结束，不证明后续用量已收齐。
         if (result.Success)
         {
             await WriteChunkAsync(ProxyProtocolBridge.CompleteGeminiToOpenAiStream(modelName, responseId, state) ?? string.Empty, cancellationToken);
@@ -110,9 +115,8 @@ public sealed partial class OpenAiProxyController
                 : "stream ended before any gemini candidate";
         }
 
-        if (state.FinishReason is not null)
+        if (result.Success && !result.IsStreamInterrupted && state.FinishReason is not null)
         {
-            result.IsStreamInterrupted = false;
             result.ErrorMessage = null;
         }
 
@@ -121,20 +125,21 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        if (result.IsStreamInterrupted && startedWriting)
+        // 正常收尾的 CompleteGeminiToOpenAiStream 已包含 [DONE]；未执行收尾时才补发，
+        // 避免正常完成重复发送，同时让中断或完成后取消的客户端不再等待终止符。
+        if (startedWriting && !state.Completed)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
+                await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null,
+            // 只有上游明确的流终止符能在取消结果中证明整个响应已结束。
+            UpstreamCompleted = receivedDoneEvent
         };
     }
 
@@ -163,6 +168,7 @@ public sealed partial class OpenAiProxyController
         {
             Model = forwardRequest.TargetModelName
         };
+        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, forwardRequest.RequestBody);
 
         async Task WriteChunkAsync(string chunk, CancellationToken token)
         {
@@ -172,9 +178,11 @@ public sealed partial class OpenAiProxyController
             }
 
             if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
-            await Response.WriteAsync(chunk, token);
-            await Response.Body.FlushAsync(token);
+            await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
+            await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
+            await Response.Body.FlushAsync(token);
         }
 
         async Task FlushGeminiBlockAsync(CancellationToken token)
@@ -283,18 +291,13 @@ public sealed partial class OpenAiProxyController
 
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            await Response.TryWriteTerminatorAsync(ResponsesStreamFailure(responsesState), cancellationToken);
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null
         };
     }
 
@@ -317,6 +320,7 @@ public sealed partial class OpenAiProxyController
         {
             Model = forwardRequest.TargetModelName
         };
+        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, forwardRequest.RequestBody);
 
         async Task WriteAnthropicEventsAsResponsesAsync(string anthropicSse, CancellationToken token)
         {
@@ -343,8 +347,10 @@ public sealed partial class OpenAiProxyController
                     }
 
                     if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(wsPayload); }
-                    await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
+                    await CommitReferenceOutputAsync(wsPayload, token);
                     startedWriting = true;
+                    await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
+                    _referenceOutputExposed = true;
                 }
             }
         }
@@ -417,7 +423,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting,
+            CanFallback = !startedWriting && _referenceOutputError is null,
             CompletedOutputJson = completedOutputJson
         };
     }

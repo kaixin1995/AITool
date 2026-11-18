@@ -102,7 +102,7 @@ public sealed class ChatRealForwardResponsesTests
         return body;
     }
 
-    private sealed class RealForwardFactory : WebApplicationFactory<AITool.Core.CoreProgramMarker>
+    private sealed class RealForwardFactory : WebApplicationFactory<AITool.AllInOne.AllInOneProgramMarker>
     {
         private readonly string _baseUrl;
         private readonly string _upstreamBody;
@@ -122,6 +122,9 @@ public sealed class ChatRealForwardResponsesTests
             builder.ConfigureServices(services =>
             {
                 IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _dbPath);
+                    // split 双宿主：Core 宿主默认快照模式；测试用 DB 支撑提供器让 master 的 DB 种子直通。
+                    services.RemoveAll<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+                    services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider, AITool.Infrastructure.CoreRuntime.DbBackedRuntimeConfigProvider>();
 
                 // 注入 mock HttpClientFactory，让真实 ProxyForwardService 拿到可控 handler
                 var contentType = _isSse ? "text/event-stream" : "application/json";

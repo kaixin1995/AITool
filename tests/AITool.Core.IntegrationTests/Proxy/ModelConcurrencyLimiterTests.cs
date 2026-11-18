@@ -1,7 +1,8 @@
-using AITool.Core.IntegrationTests;
 using AITool.Domain.SiteCatalog;
 using AITool.Infrastructure.Persistence;
+using AITool.Core.Services;
 using AITool.Infrastructure.Proxy;
+using AITool.Infrastructure.Networking;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -39,13 +40,41 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddSqlSugar($"Data Source={_databasePath}");
+        services.AddSqlSugar($"Data Source={_databasePath};Pooling=False");
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<ModelConcurrencyLimiter>();
         _serviceProvider = services.BuildServiceProvider();
-        IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider).GetAwaiter().GetResult();
         _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
+        SqlSugarSetup.InitializeDatabase(_serviceProvider.GetRequiredService<SqlSugar.ISqlSugarClient>());
         _limiter = _serviceProvider.GetRequiredService<ModelConcurrencyLimiter>();
+    }
+
+    [Fact]
+    public async Task Slots_are_unique_across_physical_keys_and_old_slot_cannot_release_new_snapshot()
+    {
+        var cache = _serviceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var firstKey = Guid.NewGuid();
+        var secondKey = Guid.NewGuid();
+        using var first = await _limiter.AcquireAsync(_serviceProvider, firstKey, "shared-model", ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(1), CancellationToken.None);
+        using var second = await _limiter.AcquireAsync(_serviceProvider, secondKey, "shared-model", ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(1), CancellationToken.None);
+        var firstSlot = _limiter.ListActiveSlotIds(firstKey, "shared-model").Single();
+        var secondSlot = _limiter.ListActiveSlotIds(secondKey, "shared-model").Single();
+        firstSlot.Should().NotBe(secondSlot);
+        var oldRoutes = new[] { new CachedProxyRouteTarget { ExternalModelName = "frozen", SiteModelName = "old", SiteId = secondKey } };
+        _limiter.TryDeferRuntimeRouteTargetsRefresh("frozen", new[] { new RouteTargetIdentity(secondKey, "shared-model") }, oldRoutes).Should().BeTrue();
+        first.Dispose();
+        cache.CompleteDeferredRuntimeRouteTarget(firstKey, "shared-model", secondSlot);
+        (await cache.CaptureEffectiveRouteTargetsAsync("frozen", CancellationToken.None)).Single().SiteModelName.Should().Be("old");
+        second.Dispose();
+        (await cache.CaptureEffectiveRouteTargetsAsync("frozen", CancellationToken.None)).Should().BeEmpty();
+        using var next = await _limiter.AcquireAsync(_serviceProvider, secondKey, "shared-model", ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(1), CancellationToken.None);
+        var nextSlot = _limiter.ListActiveSlotIds(secondKey, "shared-model").Single();
+        nextSlot.Should().BeGreaterThan(secondSlot);
+        _limiter.TryDeferRuntimeRouteTargetsRefresh("frozen", new[] { new RouteTargetIdentity(secondKey, "shared-model") }, oldRoutes).Should().BeTrue();
+        cache.CompleteDeferredRuntimeRouteTarget(secondKey, "shared-model", secondSlot);
+        (await cache.CaptureEffectiveRouteTargetsAsync("frozen", CancellationToken.None)).Should().ContainSingle();
+        next.Dispose();
+        (await cache.CaptureEffectiveRouteTargetsAsync("frozen", CancellationToken.None)).Should().BeEmpty();
     }
 
     /// <summary>
@@ -434,6 +463,31 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     }
 
     /// <summary>
+    /// 空闲 state 被 ListRecent 清理后，新请求仍必须创建可正常释放的 state。
+    /// </summary>
+    [Fact]
+    public async Task AcquireAsync_recreates_state_after_idle_cleanup()
+    {
+        var siteId = Guid.NewGuid();
+
+        using (var firstHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "cleanup-model",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None))
+        {
+            firstHandle.Acquired.Should().BeTrue();
+        }
+
+        _limiter.ListRecent(TimeSpan.Zero).Should().BeEmpty();
+
+        using var secondHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "cleanup-model",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        secondHandle.Acquired.Should().BeTrue();
+        _limiter.ListActive().Should().ContainSingle(x =>
+            x.SiteId == siteId && x.SiteModelName == "cleanup-model" && x.ActiveCount == 1);
+    }
+
+    /// <summary>
     /// ConcurrencyAcquireResult.Dispose 无论获取成功或失败都不应抛异常。
     /// </summary>
     [Fact]
@@ -535,7 +589,7 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     /// </summary>
     private async Task SeedMappingAsync(Guid siteId, string remoteModelName, int maxConcurrency)
     {
-        await _dbContext.InsertAsync(new SiteModelMapping
+        _dbContext.SiteModelMappings.Add(new SiteModelMapping
         {
             Id = Guid.NewGuid(),
             SiteId = siteId,
@@ -543,6 +597,7 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
             IsEnabled = true,
             MaxConcurrency = maxConcurrency
         });
+        await _dbContext.SaveChangesAsync();
     }
 
     /// <summary>

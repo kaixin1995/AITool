@@ -1,9 +1,10 @@
+using Microsoft.Extensions.DependencyInjection;
 using AITool.Application.Proxy;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using SqlSugar;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// Independent connections and SQLite writer-first transactions arbitrate across store instances/processes.

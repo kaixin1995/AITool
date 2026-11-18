@@ -2,10 +2,13 @@ using System.Text;
 using System.Text.Json.Nodes;
 using AITool.Application.Proxy;
 using AITool.Infrastructure.Persistence;
+using AITool.Core.Services;
 using AITool.Infrastructure.Proxy;
+using AITool.Infrastructure.Networking;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -178,6 +181,65 @@ public class ProxyDiagnosticServiceTests : IDisposable
         Assert.True(cleared >= 0);
     }
 
+    [Fact]
+    public async Task EndToEnd_failing_and_successful_proxy_requests_automatically_record_diagnostics_and_samples()
+    {
+        var fakeForwardService = new FakeProxyForwardServiceForDiagnostics { ReturnSuccess = false };
+        await using var factory = new DiagnosticTestWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var diagnosticService = factory.Services.GetRequiredService<IProxyDiagnosticService>();
+
+        try
+        {
+            // 1. Act: Send failing request -> automatically dumped even if sampling is disabled
+            var failRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+            {
+                Content = new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"will fail\"}]}", Encoding.UTF8, "application/json")
+            };
+            failRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "openai-cross-key");
+
+            var failResponse = await client.SendAsync(failRequest);
+            Assert.Equal(System.Net.HttpStatusCode.BadRequest, failResponse.StatusCode);
+
+            // Wait for background async file write
+            var failItem = await WaitForDumpAsync(diagnosticService, x => x.Category == "failure" && x.RouteName == "auto", TimeSpan.FromSeconds(3));
+            Assert.NotNull(failItem);
+            Assert.Equal("Anthropic Only Site", failItem.SiteName);
+            Assert.Equal(400, failItem.StatusCode);
+            Assert.False(failItem.Success);
+
+            // 2. Act: Enable sampling for successful requests
+            diagnosticService.EnableSuccessSampling(10);
+            fakeForwardService.ReturnSuccess = true;
+
+            var okRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+            {
+                Content = new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"will succeed\"}]}", Encoding.UTF8, "application/json")
+            };
+            okRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "openai-cross-key");
+
+            var okResponse = await client.SendAsync(okRequest);
+            Assert.Equal(System.Net.HttpStatusCode.OK, okResponse.StatusCode);
+
+            // Wait for background async file write
+            var successItem = await WaitForDumpAsync(diagnosticService, x => x.Category == "sample" && x.RouteName == "auto", TimeSpan.FromSeconds(3));
+            Assert.NotNull(successItem);
+            Assert.Equal("Anthropic Only Site", successItem.SiteName);
+            Assert.True(successItem.Success);
+
+            // 3. Verify dump content retrieval
+            var dumpJson = diagnosticService.ReadDumpContent(failItem.FileName);
+            Assert.NotNull(dumpJson);
+            Assert.Contains("Mock invalid parameter", dumpJson);
+            Assert.Contains("will fail", dumpJson);
+        }
+        finally
+        {
+            diagnosticService.ClearAllDumps();
+        }
+    }
+
     private static async Task<ProxyDiagnosticDumpItem?> WaitForDumpAsync(
         IProxyDiagnosticService service,
         Func<ProxyDiagnosticDumpItem, bool> predicate,
@@ -191,6 +253,34 @@ public class ProxyDiagnosticServiceTests : IDisposable
             await Task.Delay(30);
         }
         return service.ListRecentDumps(50).FirstOrDefault(predicate);
+    }
+
+    [Fact]
+    public async Task EndToEnd_failure_dumps_are_skipped_when_developer_features_disabled()
+    {
+        // 开发者功能关闭时（与查看转储的管理端点门控对齐），失败请求不落盘、不进内存清单。
+        var fakeForwardService = new FakeProxyForwardServiceForDiagnostics { ReturnSuccess = false };
+        await using var factory = new DiagnosticTestWebApplicationFactory(fakeForwardService, developerFeaturesEnabled: false);
+        using var client = factory.CreateClient();
+
+        var diagnosticService = factory.Services.GetRequiredService<IProxyDiagnosticService>();
+
+        var failRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"dev off\"}]}", Encoding.UTF8, "application/json")
+        };
+        failRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "openai-cross-key");
+
+        var failResponse = await client.SendAsync(failRequest);
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, failResponse.StatusCode);
+
+        // 轮询一小段时间确认没有异步落盘（避免"尚未写完"的假阴性）。
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(2);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            Assert.Empty(diagnosticService.ListRecentDumps(50));
+            await Task.Delay(100);
+        }
     }
 
     private sealed class FakeProxyForwardServiceForDiagnostics : IProxyForwardService
@@ -249,6 +339,9 @@ public class ProxyDiagnosticServiceTests : IDisposable
             builder.ConfigureServices(services =>
             {
                 IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
+                    // split 双宿主：Core 宿主默认快照模式；测试用 DB 支撑提供器让 master 的 DB 种子直通。
+                    services.RemoveAll<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+                    services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider, AITool.Infrastructure.CoreRuntime.DbBackedRuntimeConfigProvider>();
                 Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.RemoveAll<IProxyForwardService>(services);
                 services.AddSingleton<IProxyForwardService>(_fakeForwardService);
             });

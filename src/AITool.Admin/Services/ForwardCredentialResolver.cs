@@ -1,12 +1,10 @@
+using AITool.Infrastructure.Proxy;
 using AITool.Application.Networking;
 using AITool.Application.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 
 namespace AITool.Admin.Services;
-
-internal sealed record ForwardOAuthCredentialSnapshot(string Provider, Guid AccountId, Guid SiteId,
-    string? AccessToken, string? RefreshToken, DateTimeOffset? LastRefreshAt);
 
 /// <summary>Revalidates site ownership and device OAuth credentials at the send boundary.</summary>
 public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory) : IForwardCredentialResolver
@@ -26,7 +24,10 @@ public sealed class ForwardCredentialResolver(IServiceScopeFactory scopeFactory)
         var site = await db.Queryable<Site>().InSingleAsync(siteId);
         if (site is null) throw Blocked();
         if (!string.Equals(site.ManagedSource?.Trim() ?? string.Empty, request.ManagedSource?.Trim() ?? string.Empty,
-                StringComparison.OrdinalIgnoreCase)) throw Blocked();
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw Blocked();
+        }
         if (string.IsNullOrWhiteSpace(site.ManagedSource))
         {
             if (request.AccountIdentity is not null) throw Blocked();

@@ -1,7 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Protocol;
+using AITool.Core.Services;
 using AITool.Infrastructure.Proxy;
+using AITool.Infrastructure.Networking;
 using FluentAssertions;
 
 namespace AITool.Core.IntegrationTests.Proxy;

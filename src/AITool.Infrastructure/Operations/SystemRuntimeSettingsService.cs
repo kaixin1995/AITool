@@ -149,6 +149,8 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         var kimiAccounts = await _dbContext.KimiAccounts.ToListAsync(cancellationToken);
         // 客户端特征模拟档案：出口代理池（表）+ 请求头模板（JSON 目录，经目录服务读取）。
         var proxyProfiles = await _dbContext.ProxyProfiles.ToListAsync(cancellationToken);
+        // 账号网络策略（Core 发送边界三态解析来源）。
+        var accountNetworkPolicies = await _dbContext.AccountNetworkPolicies.ToListAsync(cancellationToken);
         var activeHeaderProfiles = _headerProfileCatalog is not null
             ? await _headerProfileCatalog.GetActiveProfilesDictionaryAsync(cancellationToken)
             : null;
@@ -170,7 +172,8 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
             googleAccounts,
             kimiAccounts,
             proxyProfiles,
-            activeHeaderProfiles);
+            activeHeaderProfiles,
+            accountNetworkPolicies);
     }
 
     /// <summary>

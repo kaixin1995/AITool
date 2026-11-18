@@ -2,7 +2,7 @@ using AITool.Infrastructure.Proxy;
 using System.Security.Cryptography;
 using System.Text.Json;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>引用队列的请求内去重：仅在真正取得并发许可、开始准备转发时认领等价候选。</summary>
 public sealed class RouteAttemptTracker

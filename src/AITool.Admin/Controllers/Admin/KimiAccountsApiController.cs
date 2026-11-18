@@ -1,3 +1,4 @@
+using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Common;
 using System.Collections.Concurrent;
 using AITool.Application.Networking;

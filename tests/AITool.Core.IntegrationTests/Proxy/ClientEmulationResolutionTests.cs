@@ -1,5 +1,7 @@
 using AITool.Domain.Sites;
+using AITool.Core.Services;
 using AITool.Infrastructure.Proxy;
+using AITool.Infrastructure.Networking;
 using FluentAssertions;
 
 namespace AITool.Core.IntegrationTests.Proxy;

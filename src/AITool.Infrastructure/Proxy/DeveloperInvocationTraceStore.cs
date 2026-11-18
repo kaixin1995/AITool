@@ -7,33 +7,23 @@ namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// 开发者调用跟踪存储。
-/// <para>
-/// 当追踪记录完成时（状态从 pending 变为 success / error 等），
-/// 会触发 <see cref="OnTraceCompleted"/> 事件，供外部订阅者（如事件发布器）消费。
-/// 事件触发是 fire-and-forget 方式，不会阻塞调用追踪的主流程。
-/// </para>
 /// </summary>
-public sealed class DeveloperInvocationTraceStore
+public sealed partial class DeveloperInvocationTraceStore
 {
     /// <summary>
     /// 最大保留记录数。
     /// </summary>
     private const int MaxEntryCount = 40;
     /// <summary>
+    /// 调用记录保留时长。
+    /// </summary>
+    private static readonly TimeSpan EntryRetention = TimeSpan.FromMinutes(20);
+    /// <summary>
     /// 单个报文在跟踪存储中的最大字符数（约 256KB 内存）。
     /// 大上下文请求可达数 MB，40 条记录 × 多个报文不封顶时是无界内存项；
     /// 截断仅影响调用追踪页展示，完整报文始终由诊断 dump 落盘兜底。
     /// </summary>
     private const int MaxStoredBodyChars = 128 * 1024;
-    /// <summary>
-    /// 调用记录保留时长。
-    /// </summary>
-    private static readonly TimeSpan EntryRetention = TimeSpan.FromMinutes(20);
-    /// <summary>
-    /// 过期清理检查的最小间隔。锁内每次操作都无条件调用 PurgeExpiredUnsafe 会放大锁竞争，
-    /// 节流为每 PurgeThrottleInterval 最多执行一次清理，过期项最多多存活这段时间，功能不变。
-    /// </summary>
-    private static readonly TimeSpan PurgeThrottleInterval = TimeSpan.FromSeconds(30);
     /// <summary>
     /// 并发访问锁对象。
     /// </summary>
@@ -43,20 +33,13 @@ public sealed class DeveloperInvocationTraceStore
     /// </summary>
     private readonly LinkedList<DeveloperInvocationTraceEntry> _entries = [];
     /// <summary>
+    /// split：跟踪进入最终状态时触发，供事件发布器消费（跨宿主 developer-trace 事件链）。
+    /// </summary>
+    public event Action<DeveloperInvocationTraceEntry>? OnTraceCompleted;
+    /// <summary>
     /// 调用跟踪节点索引。
     /// </summary>
     private readonly Dictionary<Guid, LinkedListNode<DeveloperInvocationTraceEntry>> _nodes = [];
-    /// <summary>
-    /// 上次执行过期清理的时间（UTC），用于节流。
-    /// </summary>
-    private DateTimeOffset _lastPurgeTime = DateTimeOffset.UtcNow;
-
-    /// <summary>
-    /// 当追踪记录状态从 pending 变为最终状态时触发。
-    /// 订阅者可以将已完成的追踪发布为 Core 事件。
-    /// 参数为已完成的追踪记录的深拷贝，线程安全。
-    /// </summary>
-    public event Action<DeveloperInvocationTraceEntry>? OnTraceCompleted;
 
     /// <summary>
     /// 添加调用请求记录。
@@ -77,14 +60,12 @@ public sealed class DeveloperInvocationTraceStore
             RequestModel = request.RequestModel,
             RequestBody = CapBody(request.RequestBody),
             RequestHeaders = request.RequestHeaders,
-            AccessKeyId = request.AccessKeyId,
-            ReasoningEffort = request.ReasoningEffort,
             Status = "pending"
         };
 
         lock (_gate)
         {
-            MaybePurgeExpiredUnsafe();
+            PurgeExpiredUnsafe();
             var node = _entries.AddFirst(entry);
             _nodes[entry.TraceId] = node;
             TrimUnsafe();
@@ -99,7 +80,7 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
-            MaybePurgeExpiredUnsafe();
+            PurgeExpiredUnsafe();
             if (!_nodes.TryGetValue(traceId, out var node))
             {
                 return Guid.Empty;
@@ -115,6 +96,10 @@ public sealed class DeveloperInvocationTraceStore
                 ForwardingMode = attempt.ForwardingMode,
                 TargetSiteId = attempt.TargetSiteId,
                 TargetSiteName = attempt.TargetSiteName,
+                SourceRouteEntryId = attempt.SourceRouteEntryId,
+                SourceRouteEntryName = attempt.SourceRouteEntryName,
+                SourcePoolId = attempt.SourcePoolId,
+                FallbackGroupId = attempt.FallbackGroupId,
                 // 格式化转换后请求体，便于在调用追踪页与原始请求体并排对比，定位上游参数错误。
                 PreparedRequestBody = CapBody(FormatBody(attempt.PreparedRequestBody)),
                 PreparedRequestHeaders = attempt.PreparedRequestHeaders != null
@@ -135,15 +120,13 @@ public sealed class DeveloperInvocationTraceStore
 
     /// <summary>
     /// 完成一次调用尝试并回写结果。
-    /// 当追踪记录状态从 pending 变为最终状态时，触发 <see cref="OnTraceCompleted"/> 事件。
     /// </summary>
     public void CompleteAttempt(Guid traceId, Guid attemptId, DeveloperInvocationResult result)
     {
-        DeveloperInvocationTraceEntry? completedEntry = null;
-
+        DeveloperInvocationTraceEntry? lockCompleted = null;
         lock (_gate)
         {
-            MaybePurgeExpiredUnsafe();
+            PurgeExpiredUnsafe();
             if (!_nodes.TryGetValue(traceId, out var node))
             {
                 return;
@@ -155,8 +138,6 @@ public sealed class DeveloperInvocationTraceStore
                 return;
             }
 
-            var wasPending = string.Equals(node.Value.Status, "pending", StringComparison.OrdinalIgnoreCase);
-
             attempt.Status = result.Status;
             attempt.StatusCode = result.StatusCode;
             attempt.ErrorMessage = result.ErrorMessage;
@@ -167,6 +148,7 @@ public sealed class DeveloperInvocationTraceStore
             attempt.CachedTokens = result.CachedTokens;
             attempt.OutputTokens = result.OutputTokens;
             attempt.TotalDurationMs = result.TotalDurationMs;
+            // split 遥测契约字段贯通。
             attempt.FirstTokenLatencyMs = result.FirstTokenLatencyMs;
             attempt.StreamDurationMs = result.StreamDurationMs;
             attempt.IsStreamInterrupted = result.IsStreamInterrupted;
@@ -186,73 +168,18 @@ public sealed class DeveloperInvocationTraceStore
             node.Value.CachedTokens = result.CachedTokens;
             node.Value.OutputTokens = result.OutputTokens;
             node.Value.TotalDurationMs = result.TotalDurationMs;
-            node.Value.FirstTokenLatencyMs = result.FirstTokenLatencyMs;
-            node.Value.StreamDurationMs = result.StreamDurationMs;
-            node.Value.IsStreamInterrupted = result.IsStreamInterrupted;
+            // split 遥测契约字段贯通（条目级）。
             node.Value.RetryCount = result.RetryCount;
             node.Value.IsFinalResult = result.IsFinalResult;
             node.Value.FallbackTriggered = result.FallbackTriggered;
             node.Value.UpdatedAt = DateTimeOffset.UtcNow;
-
-            // 状态从 pending 变为最终状态时，克隆一份给事件订阅者
-            if (wasPending && !string.Equals(result.Status, "pending", StringComparison.OrdinalIgnoreCase))
-            {
-                completedEntry = Clone(node.Value);
-            }
+            // split：跟踪进入最终状态，在锁外通知订阅者（事件发布器 fire-and-forget）。
+            var completed = Clone(node.Value);
+            lockCompleted = completed;
         }
-
-        // 在锁外部触发事件，避免死锁风险
-        if (completedEntry is not null)
+        if (lockCompleted is not null)
         {
-            OnTraceCompleted?.Invoke(completedEntry);
-        }
-    }
-
-    /// <summary>
-    /// 客户端断开时强制将 pending 状态的追踪记录标记为 error。
-    /// 仅在记录仍处于 pending 状态时生效，已完成的记录不会被覆盖。
-    /// </summary>
-    /// <param name="traceId">要取消的追踪标识。</param>
-    /// <param name="reason">取消原因，写入 ErrorMessage 字段。</param>
-    public void CancelPending(Guid traceId, string reason)
-    {
-        DeveloperInvocationTraceEntry? completedEntry = null;
-
-        lock (_gate)
-        {
-            MaybePurgeExpiredUnsafe();
-            if (!_nodes.TryGetValue(traceId, out var node))
-            {
-                return;
-            }
-
-            // 仅 pending 状态的记录才收尾，防止覆盖已完成的正常状态
-            if (!string.Equals(node.Value.Status, "pending", StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            // 将所有 pending 的 attempt 也标记为 error
-            foreach (var attempt in node.Value.Attempts)
-            {
-                if (string.Equals(attempt.Status, "pending", StringComparison.OrdinalIgnoreCase))
-                {
-                    attempt.Status = "error";
-                    attempt.ErrorMessage = reason;
-                    attempt.UpdatedAt = DateTimeOffset.UtcNow;
-                }
-            }
-
-            node.Value.Status = "error";
-            node.Value.ErrorMessage = reason;
-            node.Value.UpdatedAt = DateTimeOffset.UtcNow;
-
-            completedEntry = Clone(node.Value);
-        }
-
-        if (completedEntry is not null)
-        {
-            OnTraceCompleted?.Invoke(completedEntry);
+            OnTraceCompleted?.Invoke(lockCompleted);
         }
     }
 
@@ -263,7 +190,7 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
-            MaybePurgeExpiredUnsafe();
+            PurgeExpiredUnsafe();
             return _entries.Select(Clone).ToList();
         }
     }
@@ -275,31 +202,15 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
-            MaybePurgeExpiredUnsafe();
+            PurgeExpiredUnsafe();
             return _nodes.TryGetValue(traceId, out var node) ? Clone(node.Value) : null;
         }
     }
 
     /// <summary>
-    /// 清理过期记录（带节流）。
-    /// 仅在距上次清理超过 <see cref="PurgeThrottleInterval"/> 时才真正执行，
-    /// 避免每次锁内操作都做 O(过期数) 扫描放大锁竞争。必须在持锁状态下调用。
+    /// 清理过期记录。
     /// </summary>
-    private void MaybePurgeExpiredUnsafe()
-    {
-        var now = DateTimeOffset.UtcNow;
-        if (now - _lastPurgeTime < PurgeThrottleInterval)
-        {
-            return;
-        }
-        _lastPurgeTime = now;
-        PurgeExpiredUnsafeCore();
-    }
-
-    /// <summary>
-    /// 清理过期记录的实际实现（无节流）。
-    /// </summary>
-    private void PurgeExpiredUnsafeCore()
+    private void PurgeExpiredUnsafe()
     {
         var expireBefore = DateTimeOffset.UtcNow - EntryRetention;
         while (_entries.Last is { } last && last.Value.CreatedAt < expireBefore)
@@ -363,14 +274,6 @@ public sealed class DeveloperInvocationTraceStore
             CachedTokens = entry.CachedTokens,
             OutputTokens = entry.OutputTokens,
             TotalDurationMs = entry.TotalDurationMs,
-            AccessKeyId = entry.AccessKeyId,
-            ReasoningEffort = entry.ReasoningEffort,
-            FirstTokenLatencyMs = entry.FirstTokenLatencyMs,
-            StreamDurationMs = entry.StreamDurationMs,
-            IsStreamInterrupted = entry.IsStreamInterrupted,
-            RetryCount = entry.RetryCount,
-            IsFinalResult = entry.IsFinalResult,
-            FallbackTriggered = entry.FallbackTriggered,
             Attempts = entry.Attempts.Select(CloneAttempt).ToList()
         };
     }
@@ -390,6 +293,10 @@ public sealed class DeveloperInvocationTraceStore
             ForwardingMode = attempt.ForwardingMode,
             TargetSiteId = attempt.TargetSiteId,
             TargetSiteName = attempt.TargetSiteName,
+            SourceRouteEntryId = attempt.SourceRouteEntryId,
+            SourceRouteEntryName = attempt.SourceRouteEntryName,
+            SourcePoolId = attempt.SourcePoolId,
+            FallbackGroupId = attempt.FallbackGroupId,
             PreparedRequestBody = attempt.PreparedRequestBody,
             PreparedRequestHeaders = attempt.PreparedRequestHeaders != null
                 ? new Dictionary<string, string>(attempt.PreparedRequestHeaders, StringComparer.OrdinalIgnoreCase)
@@ -403,10 +310,7 @@ public sealed class DeveloperInvocationTraceStore
             InputTokens = attempt.InputTokens,
             CachedTokens = attempt.CachedTokens,
             OutputTokens = attempt.OutputTokens,
-            TotalDurationMs = attempt.TotalDurationMs,
-            FirstTokenLatencyMs = attempt.FirstTokenLatencyMs,
-            StreamDurationMs = attempt.StreamDurationMs,
-            IsStreamInterrupted = attempt.IsStreamInterrupted
+            TotalDurationMs = attempt.TotalDurationMs
         };
     }
 
@@ -562,13 +466,9 @@ public sealed class DeveloperInvocationTraceRequest
     /// 请求头。
     /// </summary>
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
-    /// <summary>
-    /// 访问密钥标识，用于关联使用日志。
-    /// </summary>
+    /// <summary>访问密钥标识（split 遥测契约：密钥维度聚合）。</summary>
     public Guid AccessKeyId { get; set; }
-    /// <summary>
-    /// 推理深度参数。
-    /// </summary>
+    /// <summary>请求的推理力度（split 遥测契约）。</summary>
     public string ReasoningEffort { get; set; } = string.Empty;
 }
 
@@ -597,6 +497,11 @@ public sealed class DeveloperInvocationAttempt
     /// 目标站点名称。
     /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
+    /// <summary>Referenced route entry identity, without forwarding credentials.</summary>
+    public Guid? SourceRouteEntryId { get; set; }
+    public string? SourceRouteEntryName { get; set; }
+    public Guid? SourcePoolId { get; set; }
+    public Guid? FallbackGroupId { get; set; }
     /// <summary>
     /// 转换后实际发给上游的请求体（兼容中转场景的最终 payload）。
     /// 透传场景下与原始请求体基本一致；转换场景下是协议转换后的结果，排查上游参数错误（如 1210）的关键。
@@ -653,29 +558,17 @@ public sealed class DeveloperInvocationResult
     /// 总耗时（毫秒）。
     /// </summary>
     public int TotalDurationMs { get; set; }
-    /// <summary>
-    /// 首 Token 延迟（毫秒）。
-    /// </summary>
+    /// <summary>首 token 延迟（毫秒）；非流式为 0（split 遥测契约）。</summary>
     public int FirstTokenLatencyMs { get; set; }
-    /// <summary>
-    /// 流式响应持续时长（毫秒）。
-    /// </summary>
+    /// <summary>流式持续时长（毫秒）；非流式为 0（split 遥测契约）。</summary>
     public int StreamDurationMs { get; set; }
-    /// <summary>
-    /// 流式传输是否被中断。
-    /// </summary>
+    /// <summary>流是否被中断（split 遥测契约：canceled/断流画像）。</summary>
     public bool IsStreamInterrupted { get; set; }
-    /// <summary>
-    /// 重试次数。
-    /// </summary>
+    /// <summary>本次调用的重试次数（split 遥测契约）。</summary>
     public int RetryCount { get; set; }
-    /// <summary>
-    /// 是否为最终结果。
-    /// </summary>
-    public bool IsFinalResult { get; set; }
-    /// <summary>
-    /// 是否触发了降级。
-    /// </summary>
+    /// <summary>是否为最终结果（分段完成语义，split 遥测契约）。</summary>
+    public bool IsFinalResult { get; set; } = true;
+    /// <summary>是否触发了兜底切换（split 遥测契约）。</summary>
     public bool FallbackTriggered { get; set; }
 }
 
@@ -688,6 +581,22 @@ public sealed class DeveloperInvocationTraceEntry
     /// 跟踪标识。
     /// </summary>
     public Guid TraceId { get; set; }
+    /// <summary>访问密钥标识（split 遥测契约：密钥维度聚合）。</summary>
+    public Guid AccessKeyId { get; set; }
+    /// <summary>重试次数（split 遥测契约）。</summary>
+    public int RetryCount { get; set; }
+    /// <summary>是否最终结果（split 遥测契约，默认 true）。</summary>
+    public bool IsFinalResult { get; set; } = true;
+    /// <summary>是否触发兜底切换（split 遥测契约）。</summary>
+    public bool FallbackTriggered { get; set; }
+    /// <summary>首 token 延迟毫秒（split 遥测契约）。</summary>
+    public int FirstTokenLatencyMs { get; set; }
+    /// <summary>流持续毫秒（split 遥测契约）。</summary>
+    public int StreamDurationMs { get; set; }
+    /// <summary>流被中断（split 遥测契约：canceled/断流画像）。</summary>
+    public bool IsStreamInterrupted { get; set; }
+    /// <summary>请求的推理力度（split 遥测契约）。</summary>
+    public string ReasoningEffort { get; set; } = string.Empty;
     /// <summary>
     /// 请求标识。
     /// </summary>
@@ -749,14 +658,6 @@ public sealed class DeveloperInvocationTraceEntry
     /// </summary>
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
     /// <summary>
-    /// 访问密钥标识，用于关联使用日志。
-    /// </summary>
-    public Guid AccessKeyId { get; set; }
-    /// <summary>
-    /// 推理深度参数。
-    /// </summary>
-    public string ReasoningEffort { get; set; } = string.Empty;
-    /// <summary>
     /// 重写/模拟后发往上游的请求头（取自最新尝试）。
     /// </summary>
     public Dictionary<string, string> PreparedRequestHeaders { get; set; } = [];
@@ -801,30 +702,6 @@ public sealed class DeveloperInvocationTraceEntry
     /// </summary>
     public int TotalDurationMs { get; set; }
     /// <summary>
-    /// 首 Token 延迟（毫秒）。
-    /// </summary>
-    public int FirstTokenLatencyMs { get; set; }
-    /// <summary>
-    /// 流式响应持续时长（毫秒）。
-    /// </summary>
-    public int StreamDurationMs { get; set; }
-    /// <summary>
-    /// 流式传输是否被中断。
-    /// </summary>
-    public bool IsStreamInterrupted { get; set; }
-    /// <summary>
-    /// 重试次数。
-    /// </summary>
-    public int RetryCount { get; set; }
-    /// <summary>
-    /// 是否为最终结果。
-    /// </summary>
-    public bool IsFinalResult { get; set; }
-    /// <summary>
-    /// 是否触发了降级。
-    /// </summary>
-    public bool FallbackTriggered { get; set; }
-    /// <summary>
     /// 尝试记录列表。
     /// </summary>
     public List<DeveloperInvocationTraceAttempt> Attempts { get; set; } = [];
@@ -839,6 +716,12 @@ public sealed class DeveloperInvocationTraceAttempt
     /// 调用尝试标识。
     /// </summary>
     public Guid AttemptId { get; set; }
+    /// <summary>首 token 延迟毫秒（split 遥测契约）。</summary>
+    public int FirstTokenLatencyMs { get; set; }
+    /// <summary>流持续毫秒（split 遥测契约）。</summary>
+    public int StreamDurationMs { get; set; }
+    /// <summary>流被中断（split 遥测契约：canceled/断流画像）。</summary>
+    public bool IsStreamInterrupted { get; set; }
     /// <summary>
     /// 创建时间。
     /// </summary>
@@ -867,6 +750,11 @@ public sealed class DeveloperInvocationTraceAttempt
     /// 目标站点名称。
     /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
+    /// <summary>Referenced route entry identity, without forwarding credentials.</summary>
+    public Guid? SourceRouteEntryId { get; set; }
+    public string? SourceRouteEntryName { get; set; }
+    public Guid? SourcePoolId { get; set; }
+    public Guid? FallbackGroupId { get; set; }
     /// <summary>
     /// 转换后实际发给上游的请求体（兼容中转场景的最终 payload）。
     /// 透传场景下与原始请求体基本一致；转换场景下是协议转换后的结果，排查上游参数错误（如 1210）的关键。
@@ -916,16 +804,42 @@ public sealed class DeveloperInvocationTraceAttempt
     /// 总耗时（毫秒）。
     /// </summary>
     public int TotalDurationMs { get; set; }
-    /// <summary>
-    /// 首 Token 延迟（毫秒）。
-    /// </summary>
-    public int FirstTokenLatencyMs { get; set; }
-    /// <summary>
-    /// 流式响应持续时长（毫秒）。
-    /// </summary>
-    public int StreamDurationMs { get; set; }
-    /// <summary>
-    /// 流式传输是否被中断。
-    /// </summary>
-    public bool IsStreamInterrupted { get; set; }
+}
+
+public sealed partial class DeveloperInvocationTraceStore
+{
+    /// <summary>split 遥测契约：取消挂起的追踪（终态保留，防 406）。</summary>
+    public void CancelPending(Guid traceId, string reason)
+    {
+        DeveloperInvocationTraceEntry? canceled = null;
+        lock (_gate)
+        {
+            PurgeExpiredUnsafe();
+            if (!_nodes.TryGetValue(traceId, out var node))
+            {
+                return;
+            }
+            var entry = node.Value;
+            foreach (var attempt in entry.Attempts)
+            {
+                if (string.Equals(attempt.Status, "pending", StringComparison.Ordinal))
+                {
+                    attempt.Status = "canceled";
+                    attempt.ErrorMessage = reason;
+                    attempt.UpdatedAt = DateTimeOffset.UtcNow;
+                }
+            }
+            if (string.Equals(entry.Status, "pending", StringComparison.Ordinal))
+            {
+                entry.Status = "canceled";
+                entry.ErrorMessage = reason;
+            }
+            entry.UpdatedAt = DateTimeOffset.UtcNow;
+            canceled = Clone(entry);
+        }
+        if (canceled is not null)
+        {
+            OnTraceCompleted?.Invoke(canceled);
+        }
+    }
 }

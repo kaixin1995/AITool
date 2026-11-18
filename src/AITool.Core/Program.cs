@@ -88,6 +88,9 @@ builder.Services.AddProxyRuntimeInfrastructure(
 // 注册并发控制查询服务（Core 独有，用于管理端点查询当前并发状态）。
 // Core 宿主独有服务注册（抽取至 CoreProgramServices，供 AllInOne 复用）。
 builder.AddCoreProxyHostServices();
+// Core 宿主独占的发送边界解析（快照形态；AllInOne 走 DB 形态，见 AdminProgramServices）。
+builder.Services.AddSingleton<AITool.Application.Proxy.IForwardCredentialResolver, AITool.Core.Services.SnapshotForwardCredentialResolver>();
+builder.Services.AddSingleton<AITool.Application.Proxy.IForwardNetworkPolicyResolver, AITool.Core.Services.SnapshotForwardNetworkPolicyResolver>();
 
 var app = builder.Build();
 
@@ -140,6 +143,10 @@ app.UseCors("AdminCors");
 // 跨宿主共享密钥鉴权：/api/core/* 管理端点要求 X-Core-Auth（Testing 环境放行；
 // 未配置密钥时退化为仅本机回环可访问）。/v1/*、/health 不经过本中间件。
 app.UseMiddleware<AITool.Infrastructure.Security.CoreApiAuthMiddleware>();
+
+// 网关增强中间件（master 同步）：keep-alive 稳定性、密钥预算闸、共享工具/MCP 出口
+// （网关特性全部默认关闭，gateway-enhancements.json 按宿主本地配置）。
+app.UseMiddleware<AITool.Infrastructure.Proxy.GatewayEnhancementMiddleware>();
 
 // Core 宿主仅映射 API 控制器，不映射 Razor Pages。
 // 代理端点 /v1/* 和 Core 管理端点 /api/core/* 由控制器提供。

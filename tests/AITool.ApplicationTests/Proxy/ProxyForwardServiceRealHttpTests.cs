@@ -13,6 +13,25 @@ namespace AITool.ApplicationTests.Proxy;
 /// </summary>
 public sealed class ProxyForwardServiceRealHttpTests
 {
+    [Fact]
+    public async Task ForwardAsync_non_streaming_codex_sse_restores_completed_tool_call()
+    {
+        const string sse = """
+            event: response.output_item.done
+            data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{\"q\":\"test\"}","status":"completed"}}
+
+            event: response.completed
+            data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":120,"output_tokens":7}}}
+
+            """;
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new StringContent(sse, Encoding.UTF8, "text/event-stream") });
+        var result = await service.ForwardAsync(ResponsesRequest());
+        result.Success.Should().BeTrue();
+        result.ResponseBody.Should().Contain("call_1").And.Contain("lookup");
+        result.InputTokens.Should().Be(120);
+        result.OutputTokens.Should().Be(7);
+    }
     // 真实 CPA 上游非流式 Responses 返回的 JSON（已脱敏，结构保真）
     private const string UpstreamResponsesJson = """
     {"id":"resp_023316174082d7a9016a7cc4e382748199847d20d120dd066d","object":"response","created_at":1786561763,"status":"completed","error":null,"model":"gpt-5.6-luna","output":[{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"text":"Hi! How can I help?"}],"phase":"final_answer","role":"assistant"}],"usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":1},"output_tokens":2,"total_tokens":7}}
@@ -47,6 +66,7 @@ public sealed class ProxyForwardServiceRealHttpTests
     private static ProxyForwardRequest ResponsesRequest(string baseUrl = "https://cpa.example/v1/responses") => new()
     {
         TargetBaseUrl = baseUrl,
+        AllowNonSiteTarget = true,
         TargetEndpointPathMode = "standard-root",
         TargetApiKey = "sk-test",
         ProtocolType = "Responses",

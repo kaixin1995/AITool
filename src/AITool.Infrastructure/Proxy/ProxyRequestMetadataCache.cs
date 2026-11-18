@@ -300,7 +300,8 @@ public sealed partial class ProxyRequestMetadataCache
                         var snapshot = _configProvider.GetCurrent();
                         var s = snapshot?.RuntimeSettings;
 
-                        // 快照中未包含运行时设置时使用默认值
+                        // 快照中未包含运行时设置时使用默认值（DB 支撑提供器建表前读到空：短 TTL 防固化）
+                        if (s is null) entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(1);
                         return Task.FromResult(s is null
                             ? new CachedProxyRuntimeSettings()
                             : new CachedProxyRuntimeSettings
@@ -1011,6 +1012,8 @@ public sealed partial class ProxyRequestMetadataCache
                         var snapshot = _configProvider.GetCurrent();
                         if (snapshot?.AccessKeys is null)
                         {
+                            // DB 支撑提供器在建表前会读到空快照：短 TTL 防止空结果被 300s 缓存固化。
+                            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(1);
                             return Task.FromResult(new Dictionary<string, CachedProxyAccessKey>(StringComparer.Ordinal));
                         }
 
@@ -1070,6 +1073,8 @@ public sealed partial class ProxyRequestMetadataCache
                         var snapshot = _configProvider.GetCurrent();
                         if (snapshot?.RouteRules is null || snapshot.Sites is null)
                         {
+                            // DB 支撑提供器在建表前会读到空快照：短 TTL 防止空结果被 300s 缓存固化。
+                            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(1);
                             return Task.FromResult<IReadOnlyList<CachedProxyRouteTarget>>([]);
                         }
 
@@ -1429,6 +1434,7 @@ public sealed partial class ProxyRequestMetadataCache
                         var snapshot = _configProvider.GetCurrent();
                         if (snapshot?.Models is null)
                         {
+                            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(1);
                             return Task.FromResult(new Dictionary<Guid, CachedEnabledModel>());
                         }
 

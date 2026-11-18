@@ -43,7 +43,8 @@ public static class CoreRuntimeConfigSnapshotBuilder
         IEnumerable<Domain.Google.GoogleAccount>? googleAccounts = null,
         IEnumerable<Domain.Kimi.KimiAccount>? kimiAccounts = null,
         IEnumerable<Domain.Sites.ProxyProfile>? proxyProfiles = null,
-        IReadOnlyDictionary<string, string>? activeHeaderProfiles = null)
+        IReadOnlyDictionary<string, string>? activeHeaderProfiles = null,
+        IEnumerable<Domain.Operations.AccountNetworkPolicy>? accountNetworkPolicies = null)
     {
         // 预解析兼容规则集：构建 Id→规则列表字典（仅启用的），供路由规则投影时查（避免 N+1）。
         var profileRules = compatibilityProfiles is null
@@ -119,6 +120,20 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     Key = x.Key,
                     ProxyUrl = x.ProxyUrl,
                     IsEnabled = x.IsEnabled
+                })
+                .ToList(),
+            // 账号网络策略快照投影：ProxyProfile 模式在 Admin 侧预解析为明文代理地址。
+            AccountNetworkPolicies = (accountNetworkPolicies ?? [])
+                .Select(p => new CoreRuntimeAccountNetworkPolicy
+                {
+                    ProviderKey = p.ProviderKey,
+                    AccountId = p.AccountId,
+                    Mode = p.Mode.ToString(),
+                    ProxyUrl = p.Mode == Domain.Operations.NetworkMode.ProxyProfile && p.ProxyProfileId is { } profileId
+                        ? (proxyProfiles ?? []).FirstOrDefault(x => x.Id == profileId && x.IsEnabled)?.ProxyUrl ?? string.Empty
+                        : string.Empty,
+                    IsEnabled = true,
+                    Revision = p.UpdatedAtUtcTicks
                 })
                 .ToList(),
             Models = modelList

@@ -3,17 +3,14 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using AITool.Core.IntegrationTests;
 using AITool.Application.Proxy;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
-using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -348,7 +345,7 @@ public sealed class OpenAiCrossProtocolProxyTests
 /// <summary>
 /// 用于构建 OpenAiCrossProtocolWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
 /// </summary>
-internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationFactory<AITool.Core.CoreProgramMarker>
 {
     /// <summary>
     /// 保存当前测试使用的临时数据库文件路径。
@@ -381,18 +378,11 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
         builder.ConfigureServices(services =>
         {
             IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
+                // split 双宿主：Core 宿主默认快照模式；测试用 DB 支撑提供器让 master 的 DB 种子直通。
+                services.RemoveAll<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+                services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider, AITool.Infrastructure.CoreRuntime.DbBackedRuntimeConfigProvider>();
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
-
-            // 重新注册元数据缓存，不传入 ICoreRuntimeConfigProvider，
-            // 使缓存回退到数据库查询路径，确保测试 seed 的密钥数据能被正确读取。
-            services.RemoveAll<ProxyRequestMetadataCache>();
-            services.AddSingleton<ProxyRequestMetadataCache>(sp =>
-            {
-                var memoryCache = sp.GetRequiredService<IMemoryCache>();
-                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
-            });
         });
     }
 
@@ -410,9 +400,9 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
     /// </summary>
     private async Task SeedAsync()
     {
-        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var siteId = Guid.Parse("12121212-1212-1212-1212-121212121212");
         var accessKeyRaw = "openai-cross-key";
@@ -453,6 +443,12 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
             IsEnabled = true
         });
 
+        // 单例表 Id=1 可能已被启动逻辑创建，先删除避免唯一约束冲突。
+
+
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
+
+
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,
@@ -466,6 +462,8 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
+
+        await db.SaveChangesAsync();
     }
 }
 

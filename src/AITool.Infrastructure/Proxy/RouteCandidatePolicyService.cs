@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using AITool.Infrastructure.Persistence;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,7 +9,7 @@ using AITool.Application.Sites;
 using AITool.Infrastructure.Proxy;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// 路由候选策略服务：集中承载三项可独立开关的路由增强策略（全部默认关闭，不影响既有行为）。

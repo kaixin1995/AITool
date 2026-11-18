@@ -4,17 +4,16 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using AITool.Core.IntegrationTests;
+using System.Text.Json.Nodes;
 using AITool.Application.Proxy;
+using AITool.Protocol;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
-using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -97,9 +96,11 @@ public sealed class ResponsesProxyTests
         forwarded["X-Codex-Turn-Metadata"].Should().Be("{\"turn_id\":\"turn-1\"}");
         forwarded["X-Client-Request-Id"].Should().Be("request-id-1");
         forwarded["X-Codex-Window-Id"].Should().Be("window-1");
-        forwarded["Thread-Id"].Should().Be("thread-1");
-        forwarded["Session-Id"].Should().Be("cache-key-from-body");
-        forwarded["Conversation_id"].Should().Be("conversation-1");
+        forwarded["Thread-Id"].Should().MatchRegex("^[0-9a-f]{64}$").And.NotBe("thread-1");
+        forwarded["Session-Id"].Should().MatchRegex("^[0-9a-f]{64}$").And.NotBe("cache-key-from-body");
+        forwarded["Conversation_id"].Should().MatchRegex("^[0-9a-f]{64}$").And.NotBe("conversation-1");
+        using var isolatedBody = JsonDocument.Parse(fakeForwardService.Requests[0].PreparedRequestBody!);
+        isolatedBody.RootElement.GetProperty("prompt_cache_key").GetString().Should().Be(forwarded["Session-Id"]);
         forwarded["X-Openai-Internal-Codex-Responses-Lite"].Should().Be("1");
         forwarded.Should().NotContainKey("Authorization");
         forwarded.Should().NotContainKey("Originator");
@@ -164,6 +165,168 @@ public sealed class ResponsesProxyTests
         fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses/compact");
         fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
         fakeForwardService.Requests[0].EnableStreaming.Should().BeFalse("压缩端点不支持流式");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Compact_on_chat_or_anthropic_returns_a_replayable_summary(bool anthropic)
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsAnthropicOnly = anthropic, IsOpenAiChatOnly = !anthropic };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+        {
+            Content = new StringContent("""{"model":"auto","input":"hello"}""", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        var compact = JsonNode.Parse(body)!["output"]![0]!;
+        compact["type"]!.ToString().Should().Be("compaction");
+        fake.Requests[0].PreparedRequestBody.Should().Contain("Summarize the conversation");
+        var replay = new JsonObject { ["input"] = new JsonArray(compact.DeepClone()) };
+        ProxyProtocolBridge.ExpandLocalCompactions(replay.ToJsonString()).Should().Contain(anthropic ? "anthropic-responses-ok" : "chat-bridge-ok");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Responses_compaction_trigger_returns_compaction_in_client_stream(bool anthropic)
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsAnthropicOnly = anthropic, IsOpenAiChatOnly = !anthropic };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent("""{"model":"auto","stream":true,"input":[{"type":"message","role":"user","content":"fix this"},{"type":"additional_tools","id":"at_1","role":"developer","tools":[]},{"type":"compaction_trigger"}]}""", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        response.Content.Headers.ContentType!.MediaType.Should().Be("text/event-stream");
+        body.Should().Contain("response.completed").And.Contain("\"type\":\"compaction\"");
+        fake.Requests.Should().ContainSingle();
+        fake.Requests[0].EnableStreaming.Should().BeFalse();
+        JsonNode.Parse(fake.Requests[0].RequestBody)!["stream"]!.GetValue<bool>().Should().BeFalse();
+        fake.Requests[0].PreparedRequestBody.Should().Contain("Summarize the conversation").And.NotContain("additional_tools").And.NotContain("compaction_trigger");
+    }
+
+    [Fact]
+    public async Task Responses_native_route_compaction_trigger_returns_synthetic_summary_events()
+    {
+        var fake = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        { Content = new StringContent("""{"model":"auto","stream":true,"input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}""", Encoding.UTF8, "application/json") };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("response.completed").And.Contain("\"type\":\"compaction\"");
+        fake.Requests[0].TargetPath.Should().Be("/v1/responses");
+        fake.Requests[0].PreparedRequestBody.Should().NotContain("compaction_trigger").And.Contain("Summarize the conversation");
+    }
+
+    [Fact]
+    public async Task Compact_retries_invalid_shape_as_plain_transcript()
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsOpenAiChatOnly = true };
+        fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = false, StatusCode = 422, ErrorMessage = "unsupported input" });
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+        {
+            Content = new StringContent("""{"model":"auto","input":[{"type":"message","role":"user","content":"fix bug"},{"type":"function_call","call_id":"c","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"c","output":"file.cs"}]}""", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fake.Requests.Should().HaveCount(2);
+        fake.Requests[1].PreparedRequestBody.Should().Contain("Conversation to summarize").And.Contain("fix bug").And.Contain("file.cs");
+        JsonNode.Parse(body)!["output"]![0]!["type"]!.ToString().Should().Be("compaction");
+    }
+
+    [Fact]
+    public async Task Compact_retries_truncated_summary_and_does_not_mask_auth_error()
+    {
+        foreach (var failAuth in new[] { false, true })
+        {
+            var fake = new ResponsesFakeProxyForwardService { IsOpenAiChatOnly = true };
+            fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = true, StatusCode = 200,
+                ResponseBody = """{"choices":[{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}]}""" });
+            if (failAuth) for (var i = 0; i < 10; i++) fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = false, StatusCode = 401, ErrorMessage = "unauthorized" });
+            await using var factory = new ResponsesWebApplicationFactory(fake);
+            using var client = factory.CreateClient();
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+            { Content = new StringContent("""{"model":"auto","input":"keep my task"}""", Encoding.UTF8, "application/json") };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+            var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+            if (failAuth) response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+            else
+            {
+                response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+                var replay = new JsonObject { ["input"] = JsonNode.Parse(body)!["output"]!.DeepClone() };
+                ProxyProtocolBridge.ExpandLocalCompactions(replay.ToJsonString()).Should().Contain("chat-bridge-ok").And.NotContain("partial");
+            }
+            fake.Requests[1].PreparedRequestBody.Should().Contain("Conversation to summarize");
+        }
+    }
+
+    [Fact]
+    public async Task Compact_retry_counts_usage_from_both_upstream_attempts()
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsOpenAiChatOnly = true };
+        fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = true, StatusCode = 200, InputTokens = 30, CachedTokens = 5, OutputTokens = 8,
+            ResponseBody = """{"choices":[{"message":{"role":"assistant","content":"partial"},"finish_reason":"length"}]}""" });
+        fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = true, StatusCode = 200, InputTokens = 20, CachedTokens = 3, OutputTokens = 6,
+            ResponseBody = """{"choices":[{"message":{"role":"assistant","content":"summary"},"finish_reason":"stop"}]}""" });
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+        { Content = new StringContent("""{"model":"auto","input":"hello"}""", Encoding.UTF8, "application/json") };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(50);
+        logs[0].CachedTokens.Should().Be(8);
+        logs[0].OutputTokens.Should().Be(14);
+        logs[0].TotalTokens.Should().Be(72);
+    }
+
+    [Fact]
+    public async Task Compact_falls_back_locally_after_shape_retry_fails_but_not_on_auth_failure()
+    {
+        foreach (var auth in new[] { false, true })
+        {
+            var fake = new ResponsesFakeProxyForwardService { IsOpenAiChatOnly = true };
+            fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = false, StatusCode = auth ? 401 : 422, ErrorMessage = auth ? "unauthorized" : "unsupported input" });
+            if (auth) for (var i = 0; i < 10; i++) fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = false, StatusCode = 401, ErrorMessage = "failed" });
+            if (!auth) fake.ForwardResults.Enqueue(new ProxyForwardResult { Success = false, StatusCode = 422, ErrorMessage = "failed again" });
+            await using var factory = new ResponsesWebApplicationFactory(fake);
+            using var client = factory.CreateClient();
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+            { Content = new StringContent("""{"model":"auto","input":[{"type":"message","role":"user","content":"keep this goal"}]}""", Encoding.UTF8, "application/json") };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+            var response = await client.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+            if (auth) { response.StatusCode.Should().Be(HttpStatusCode.Unauthorized); fake.Requests.Should().OnlyContain(r => !r.PreparedRequestBody!.Contains("Conversation to summarize")); }
+            else
+            {
+                response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+                var replay = new JsonObject { ["input"] = JsonNode.Parse(body)!["output"]!.DeepClone() };
+                ProxyProtocolBridge.ExpandLocalCompactions(replay.ToJsonString()).Should().Contain("keep this goal").And.Contain("No model-generated summary");
+                fake.Requests.Should().HaveCount(2);
+            }
+        }
     }
 
     /// <summary>
@@ -584,7 +747,7 @@ public sealed class ResponsesProxyTests
     }
 
     /// <summary>
-    /// 无效的模型名应返回 403 带明确提示。
+    /// 无效的模型名应返回 404。
     /// </summary>
     [Fact]
     public async Task Post_responses_returns_403_when_no_route_matches()
@@ -979,6 +1142,122 @@ public sealed class ResponsesProxyTests
         fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("messages");
     }
 
+    [Fact]
+    public async Task Chat_websocket_append_replays_previous_assistant_output_and_tools()
+    {
+        var fake = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            StreamingLines =
+            [
+                "data: {\"id\":\"chatcmpl_ws\",\"choices\":[{\"delta\":{\"content\":\"first answer\"}}]}", "",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}", "", "data: [DONE]", ""
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        _ = factory.CreateClient();
+        var client = factory.Server.CreateWebSocketClient();
+        client.ConfigureRequest = request => request.Headers["Authorization"] = "Bearer responses-test-key";
+        using var socket = await client.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(socket, """{"type":"response.create","model":"auto","input":[{"type":"message","role":"user","content":"first"}],"tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}""");
+        _ = await ReceiveWebSocketMessagesUntilAsync(socket, "response.completed");
+        await SendWebSocketTextAsync(socket, """{"type":"response.append","input":[{"type":"message","role":"user","content":"second"}]}""");
+        _ = await ReceiveWebSocketMessagesUntilAsync(socket, "response.completed");
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        fake.Requests.Should().HaveCount(2);
+        fake.Requests[1].PreparedRequestBody.Should().Contain("first answer").And.Contain("second").And.Contain("read");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Chat_bridge_delivers_usage_after_finish_and_records_matching_usage(bool websocket)
+    {
+        var fake = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            StreamingLines = ["data: {\"id\":\"chat_1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}", "",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}", "",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":40}}}", "", "data: [DONE]", ""]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        var client = factory.CreateClient();
+        string body;
+        if (websocket)
+        {
+            var wsClient = factory.Server.CreateWebSocketClient();
+            wsClient.ConfigureRequest = r => r.Headers["Authorization"] = "Bearer responses-test-key";
+            using var socket = await wsClient.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+            await SendWebSocketTextAsync(socket, """{"type":"response.create","model":"auto","input":"hi"}""");
+            var messages = await ReceiveWebSocketMessagesUntilAsync(socket, "response.completed");
+            body = messages.Single(m => m.Contains("response.completed"));
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        }
+        else
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+            { Content = new StringContent("""{"model":"auto","stream":true,"input":"hi"}""", Encoding.UTF8, "application/json") };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+            var response = await client.SendAsync(request);
+            var sse = await response.Content.ReadAsStringAsync();
+            body = sse.Split('\n').First(x => x.StartsWith("data: ") && x.Contains("response.completed"))[6..];
+        }
+        var usage = JsonNode.Parse(body)!["response"]!["usage"]!;
+        usage["input_tokens"]!.GetValue<int>().Should().Be(100);
+        usage["output_tokens"]!.GetValue<int>().Should().Be(12);
+        usage["input_tokens_details"]!["cached_tokens"]!.GetValue<int>().Should().Be(40);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(60);
+        logs[0].CachedTokens.Should().Be(40);
+        logs[0].OutputTokens.Should().Be(12);
+    }
+
+    [Fact]
+    public async Task Chat_websocket_upstream_error_is_logged_as_failure()
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsOpenAiChatOnly = true,
+            StreamingLines = ["data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}", "",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"error\"}]}", "", "data: [DONE]", ""] };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        _ = factory.CreateClient();
+        var client = factory.Server.CreateWebSocketClient();
+        client.ConfigureRequest = r => r.Headers["Authorization"] = "Bearer responses-test-key";
+        using var socket = await client.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(socket, """{"type":"response.create","model":"auto","input":"hello"}""");
+        var messages = await ReceiveWebSocketMessagesUntilAsync(socket, "response.failed");
+        messages.Should().NotContain(m => m.Contains("response.completed"));
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("fail");
+    }
+
+    [Fact]
+    public async Task Websocket_compaction_trigger_returns_summary_and_next_turn_replays_it()
+    {
+        var fake = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            StreamingLines = ["data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}", "", "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}", "", "data: [DONE]", ""]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        _ = factory.CreateClient();
+        var client = factory.Server.CreateWebSocketClient();
+        client.ConfigureRequest = request => request.Headers["Authorization"] = "Bearer responses-test-key";
+        using var socket = await client.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(socket, """{"type":"response.create","model":"auto","input":[{"type":"message","role":"user","content":"original request"},{"type":"compaction_trigger"}]}""");
+        var first = await ReceiveWebSocketMessagesUntilAsync(socket, "response.completed");
+        first.Should().Contain(x => x.Contains("\"type\":\"compaction\""));
+        await SendWebSocketTextAsync(socket, """{"type":"response.append","input":[{"type":"message","role":"user","content":"continue"}]}""");
+        _ = await ReceiveWebSocketMessagesUntilAsync(socket, "response.completed");
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        fake.Requests.Should().HaveCount(2);
+        fake.Requests[1].PreparedRequestBody.Should().Contain("chat-bridge-ok").And.Contain("continue").And.NotContain("original request");
+    }
+
     /// <summary>
     /// WebSocket 的 Anthropic 上游应把 Anthropic SSE 事件直转为 Responses JSON 消息：
     /// thinking 块映射为 reasoning 输出项并携带签名桥接载体，tool_use 映射为 function_call。
@@ -1269,7 +1548,7 @@ public sealed class ResponsesProxyTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
 
-        // 返回体应包含 usage，Responses←Anthropic 直转桥统一为 Anthropic 口径：input_tokens / output_tokens
+        // 返回体应包含 usage，Responses 格式用 input_tokens / output_tokens
         using var doc = JsonDocument.Parse(body);
         doc.RootElement.TryGetProperty("usage", out var usage).Should().BeTrue();
         usage.TryGetProperty("input_tokens", out _).Should().BeTrue();
@@ -1318,14 +1597,18 @@ public sealed class ResponsesProxyTests
 /// <summary>
 /// Responses 端点集成测试的 WebApplicationFactory。
 /// </summary>
-internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<AITool.AllInOne.AllInOneProgramMarker>
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-responses-test-{Guid.NewGuid():N}.db");
     private readonly ResponsesFakeProxyForwardService _fakeForwardService;
+    private readonly IUpstreamReferenceGuard? _referenceGuard;
+    private readonly Action<IServiceCollection>? _configureServices;
 
-    public ResponsesWebApplicationFactory(ResponsesFakeProxyForwardService fakeForwardService)
+    public ResponsesWebApplicationFactory(ResponsesFakeProxyForwardService fakeForwardService, IUpstreamReferenceGuard? referenceGuard = null, Action<IServiceCollection>? configureServices = null)
     {
         _fakeForwardService = fakeForwardService;
+        _referenceGuard = referenceGuard;
+        _configureServices = configureServices;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -1334,18 +1617,17 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
         builder.ConfigureServices(services =>
         {
             IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
+                // split 双宿主：Core 宿主默认快照模式；测试用 DB 支撑提供器让 master 的 DB 种子直通。
+                services.RemoveAll<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+                services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider, AITool.Infrastructure.CoreRuntime.DbBackedRuntimeConfigProvider>();
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
-
-            // 重新注册元数据缓存，不传入 ICoreRuntimeConfigProvider，
-            // 使缓存回退到数据库查询路径，确保测试 seed 的密钥数据能被正确读取。
-            services.RemoveAll<ProxyRequestMetadataCache>();
-            services.AddSingleton<ProxyRequestMetadataCache>(sp =>
+            if (_referenceGuard is not null)
             {
-                var memoryCache = sp.GetRequiredService<IMemoryCache>();
-                var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-                return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
-            });
+                services.RemoveAll<IUpstreamReferenceGuard>();
+                services.AddSingleton<IUpstreamReferenceGuard>(_referenceGuard);
+            }
+            _configureServices?.Invoke(services);
         });
     }
 
@@ -1357,12 +1639,18 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
 
     private async Task SeedAsync()
     {
-        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var openAiSiteId = Guid.Parse("a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1");
         var anthropicSiteId = Guid.Parse("b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2");
+        if (string.Equals(_fakeForwardService.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase))
+            db.Client.Insertable(new AITool.Domain.Codex.CodexAccount
+            {
+                Id = Guid.Parse("acacacac-acac-acac-acac-acacacacacac"),
+                DisplayName = "Isolation fixture", LinkedSiteId = openAiSiteId, IsEnabled = true
+            }).ExecuteCommand();
         var accessKeyRaw = "responses-test-key";
         var accessKeyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(accessKeyRaw)));
 
@@ -1372,12 +1660,12 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
             {
                 Id = openAiSiteId,
                 Name = "OpenAI Site",
-                BaseUrl = "https://openai.example.com",
+                BaseUrl = _fakeForwardService.BaseUrl ?? "https://openai.example.com",
                 ApiKey = "openai-key",
-                ProtocolType = _fakeForwardService.IsOpenAiChatOnly ? "OpenAI" : "Responses",
-                SupportsOpenAi = _fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
+                ProtocolType = _fakeForwardService.IsGeminiOnly ? "Gemini" : _fakeForwardService.IsOpenAiChatOnly ? "OpenAI" : "Responses",
+                SupportsOpenAi = !_fakeForwardService.IsGeminiOnly && (_fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses),
                 SupportsAnthropic = false,
-                SupportsResponses = !_fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
+                SupportsResponses = !_fakeForwardService.IsGeminiOnly && (!_fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses),
                 ManagedSource = _fakeForwardService.ManagedSource,
                 IsEnabled = true
             });
@@ -1431,11 +1719,18 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
             IsEnabled = true
         });
 
+        // 单例表 Id=1 可能已被启动逻辑创建，先删除避免唯一约束冲突。
+
+
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
+
+
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,
             ProxyRequestTimeoutSeconds = 12,
             ProxyRetryCount = 0,
+            StreamHeadBufferEnabled = _fakeForwardService.StreamHeadBufferEnabled,
             DetectionRequestTimeoutSeconds = 60,
             DetectionRetryCount = 0,
             DetectionConcurrency = 1,
@@ -1444,6 +1739,8 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
+
+        await db.SaveChangesAsync();
     }
 }
 
@@ -1456,13 +1753,23 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
     public List<string>? StreamingLines { get; set; }
     public List<List<string>>? StreamingLinesByCall { get; set; }
     public bool IsAnthropicOnly { get; set; }
+    public bool IsGeminiOnly { get; set; }
     public bool IsOpenAiChatOnly { get; set; }
     public bool SupportsOpenAiAndResponses { get; set; }
     public string? ManagedSource { get; set; }
+    public string? BaseUrl { get; set; }
+    public bool StreamHeadBufferEnabled { get; set; }
+    public bool CancelAfterStreamingCallbacks { get; set; }
+    /// <summary>回调全部回放后以 Success=false（非取消）收尾，模拟上游在流尾非取消中断。</summary>
+    public bool FailStreamingAfterCallbacks { get; set; }
+    public bool FailStreamingBeforeCallbacks { get; set; }
+    public Func<int, string, Task>? AfterStreamingLineAsync { get; set; }
+    public Queue<ProxyForwardResult> ForwardResults { get; } = new();
 
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(CloneRequest(request));
+        if (ForwardResults.TryDequeue(out var queued)) return Task.FromResult(queued);
 
         if (string.Equals(request.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
         {
@@ -1495,6 +1802,8 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
         CancellationToken cancellationToken = default)
     {
         Requests.Add(CloneRequest(request));
+        if (FailStreamingBeforeCallbacks)
+            return new ProxyForwardResult { Success = false, StatusCode = 503, IsStreaming = true, ErrorMessage = "Network policy blocked forwarding (network_policy_unavailable)." };
 
         var callIndex = Requests.Count - 1;
         var lines = StreamingLinesByCall is not null && callIndex >= 0 && callIndex < StreamingLinesByCall.Count
@@ -1507,21 +1816,47 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
                 string.Empty
             ];
 
-        foreach (var line in lines)
+        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
-            await onSseDataAsync(line, cancellationToken);
+            var line = lines[lineIndex];
+            try
+            {
+                await onSseDataAsync(line, cancellationToken);
+            }
+            catch (UpstreamReferenceException ex)
+            {
+                // 模拟真实转发层：遇到守卫异常时附加已累计的状态码与 token 统计
+                ex.AttachPartialResult(new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = 200,
+                    InputTokens = 10,
+                    CachedTokens = 2,
+                    OutputTokens = 5,
+                    IsStreaming = true,
+                    HasStartedStreaming = true,
+                    IsStreamInterrupted = true,
+                    TotalDurationMs = 42,
+                    ErrorMessage = ex.Message
+                });
+                throw;
+            }
+            if (AfterStreamingLineAsync is not null)
+                await AfterStreamingLineAsync(lineIndex, line);
         }
 
         return new ProxyForwardResult
         {
-            Success = true,
+            Success = !CancelAfterStreamingCallbacks && !FailStreamingAfterCallbacks,
+            IsCanceled = CancelAfterStreamingCallbacks,
             StatusCode = 200,
             ResponseBody = string.Join("\n", lines),
             InputTokens = 10,
             CachedTokens = 2,
             OutputTokens = 5,
             IsStreaming = true,
-            HasStartedStreaming = true
+            HasStartedStreaming = true,
+            ErrorMessage = FailStreamingAfterCallbacks ? "upstream connection reset after callbacks" : null
         };
     }
 
@@ -1531,6 +1866,8 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
         {
             TargetBaseUrl = request.TargetBaseUrl,
             TargetApiKey = request.TargetApiKey,
+            AccountIdentity = request.AccountIdentity,
+            EgressProxyUrl = request.EgressProxyUrl,
             ProtocolType = request.ProtocolType,
             TargetModelName = request.TargetModelName,
             RequestBody = request.RequestBody,

@@ -1,15 +1,20 @@
+// 本分部承载 Admin 查询族方法（聊天模型/路由入口/规则/开发者视图）。
+// master 同步：方法体取 master 最新版（master 留在主文件；split 挪到分部以便主文件三方融合）。
+// 聊天三方法保留 split 双源版（快照/DB 双分支，Core 独立运行依赖），并补齐 master 新投影字段。
+using AITool.Application.Common;
 using AITool.Application.Proxy;
+using AITool.Application.Networking;
+using AITool.Domain.Codex;
+using AITool.Domain.Models;
+using AITool.Domain.Proxy;
+using AITool.Domain.SiteCatalog;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Infrastructure.Proxy;
 
-/// <summary>
-/// ProxyRequestMetadataCache 中偏 Admin 查询侧的只读元数据访问入口。
-/// 方法体已对齐 master（含 ClientEmulation 三层解析的 GetChatTargetsAsync）；
-/// Core 宿主不加载本分部相关缓存（无数据库，聊天页只在 Admin 侧使用）。
-/// </summary>
 public sealed partial class ProxyRequestMetadataCache
 {
     /// <summary>
@@ -112,6 +117,13 @@ public sealed partial class ProxyRequestMetadataCache
                                 select new { mapping, site, model })
                             .ToList();
 
+                        // 托管账号身份：按 LinkedSiteId 从快照凭证段反查（master 同步——聊天直发 401 刷新依赖）。
+                        var snapshotAccountOwners = (snapshot?.AccountCredentials ?? [])
+                            .Where(a => a.LinkedSiteId != Guid.Empty)
+                            .GroupBy(a => a.LinkedSiteId)
+                            .ToDictionary(g => g.Key, g => new AccountIdentity(
+                                NormalizeSnapshotProviderKey(g.First().Provider), g.First().AccountId));
+
                         // 按 SiteKey 展开：每个启用 Key 产出一条候选，使聊天/调试页也享受多 Key 调度。
                         var expanded = new List<CachedChatTarget>(baseTargets.Count);
                         foreach (var item in baseTargets)
@@ -151,6 +163,7 @@ public sealed partial class ProxyRequestMetadataCache
                                     EndpointPathMode = item.site.EndpointPathMode,
                                     ApiKey = candidate.ApiKey,
                                     ManagedSource = item.site.ManagedSource ?? string.Empty,
+                                    AccountIdentity = snapshotAccountOwners.TryGetValue(item.site.Id, out var chatOwner) ? chatOwner : null,
                                     ExtraHeaders = chatHeaders.Count > 0 ? chatHeaders : TryParseExtraHeaders(item.site.ExtraHeadersJson),
                                     ClientEmulation = chatEmulation,
                                     GoogleProjectId = chatGoogleProjects.TryGetValue(item.site.Id, out var chatGoogleProject) ? chatGoogleProject : string.Empty,
@@ -217,6 +230,9 @@ public sealed partial class ProxyRequestMetadataCache
 
                     // 按 SiteKey 展开：每个启用 Key 产出一条候选，使聊天/调试页也享受多 Key 调度。
                     var expanded = new List<CachedChatTarget>(baseChatTargets.Count);
+                    // master 同步：托管账号身份按 LinkedSiteId 反查（聊天直发 401 即刷/凭证复验依赖）。
+                    var dbAccountOwners = await GetLinkedSiteOwnersAsync(scope.ServiceProvider,
+                        baseChatTargets.Select(x => x.site.Id), cancellationToken);
                     foreach (var item in baseChatTargets)
                     {
                         var mapping = item.mapping;
@@ -240,6 +256,8 @@ public sealed partial class ProxyRequestMetadataCache
                                 BaseUrl = site.BaseUrl,
                                 EndpointPathMode = site.EndpointPathMode,
                                 ApiKey = candidate.ApiKey,
+                                ManagedSource = site.ManagedSource ?? string.Empty,
+                                AccountIdentity = dbAccountOwners.GetValueOrDefault(site.Id),
                                 SiteModelName = mapping.RemoteModelName,
                                 ExtraHeaders = BuildEffectiveExtraHeaders(chatEmulation, headerProfileMap, site.ExtraHeadersJson, model.ExtraHeadersJson, mapping.ExtraHeadersJson),
                                 ClientEmulation = chatEmulation,
@@ -257,15 +275,6 @@ public sealed partial class ProxyRequestMetadataCache
                         .ToList();
                 }, cancellationToken)
             ?? [];
-    }
-
-    /// <summary>
-    /// 获取聊天页按模型筛选后的站点模型候选。
-    /// </summary>
-    public async Task<IReadOnlyList<CachedChatTarget>> GetChatTargetsAsync(Guid modelId, CancellationToken cancellationToken)
-    {
-        var targets = await GetChatTargetsAsync(cancellationToken);
-        return targets.Where(x => x.ModelId == modelId).ToList();
     }
 
     /// <summary>
@@ -409,19 +418,17 @@ public sealed partial class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var candidateCounts = (await dbContext.ProxyRouteRules.ToListAsync(cancellationToken))
+                    var allRules = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var candidateCounts = allRules
                         .GroupBy(x => x.ExternalModelName)
                         .Select(g => new { EntryName = g.Key, CandidateCount = g.Count() })
                         .ToList();
 
-                    var storedEntries = await dbContext.ProxyRouteEntries
-                        
-                        .OrderBy(x => x.EntryName)
-                        .Select(x => x.EntryName)
-                        .ToListAsync(cancellationToken);
+                    var storedEntries = await dbContext.ProxyRouteEntries.ToListAsync(cancellationToken);
+                    var entriesByName = storedEntries.ToDictionary(x => x.EntryName, StringComparer.Ordinal);
 
                     var countsByName = candidateCounts.ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
-                    var entryNames = storedEntries
+                    var entryNames = storedEntries.Select(x => x.EntryName)
                         .Concat(candidateCounts.Select(x => x.EntryName))
                         .Distinct(StringComparer.Ordinal)
                         .OrderBy(x => x, StringComparer.Ordinal)
@@ -436,6 +443,10 @@ public sealed partial class ProxyRequestMetadataCache
                         .Select(entryName => new RouteEntryListItem
                         {
                             EntryName = entryName,
+                            EntryId = entriesByName.GetValueOrDefault(entryName)?.Id,
+                            ManagedByPoolId = entriesByName.GetValueOrDefault(entryName)?.ManagedByPoolId,
+                            IsDisabled = entriesByName.GetValueOrDefault(entryName)?.IsDisabled ?? false,
+                            HasRouteReferences = allRules.Any(r => r.ExternalModelName == entryName && IsRouteEntryReference(r)),
                             DisplayName = displayNameByEntry.GetValueOrDefault(entryName),
                             CandidateCount = countsByName.GetValueOrDefault(entryName, 0)
                         })
@@ -645,24 +656,8 @@ public sealed partial class ProxyRequestMetadataCache
                             .Select(m => new { m.ModelName })
                             .ToListAsync(cancellationToken))
                         .ToDictionary(x => x.ModelName, x => x.ModelName, StringComparer.Ordinal);
-                    var rules = await dbContext.ProxyRouteRules
-                        
-                        .OrderBy(r => r.Priority)
-                        .Select(r => new
-                        {
-                            r.ExternalModelName,
-                            r.Id,
-                            r.SiteId,
-                            r.UpstreamModelName,
-                            r.SiteModelName,
-                            r.Priority,
-                            r.ModelPriority,
-                            r.InstancePriority,
-                            r.IsEnabled,
-                            r.AvailabilityMode,
-                            r.TimeRangesJson
-                        })
-                        .ToListAsync(cancellationToken);
+                    var rules = await dbContext.ProxyRouteRules.OrderBy(r => r.Priority).ToListAsync(cancellationToken);
+                    var entries = (await dbContext.ProxyRouteEntries.ToListAsync(cancellationToken)).ToDictionary(x => x.Id);
 
                     return rules
                         .GroupBy(r => r.ExternalModelName, StringComparer.Ordinal)
@@ -671,6 +666,10 @@ public sealed partial class ProxyRequestMetadataCache
                             g => g.Select(r => new RouteRuleListItem
                             {
                                 RuleId = r.Id,
+                                TargetKind = IsRouteEntryReference(r) ? "RouteEntry" : (string.IsNullOrWhiteSpace(r.TargetKind) ? "Site" : r.TargetKind),
+                                TargetRouteEntryId = r.TargetRouteEntryId,
+                                TargetRouteEntryName = r.TargetRouteEntryId is Guid targetId && entries.TryGetValue(targetId, out var targetEntry) ? targetEntry.EntryName : r.TargetRouteEntryName,
+                                ReferenceStatus = GetReferenceStatus(r, entries, rules),
                                 SiteId = r.SiteId,
                                 SiteName = sites.TryGetValue(r.SiteId, out var siteName) ? siteName : "(已删除站点)",
                                 SiteEnabled = siteEnabledMap.TryGetValue(r.SiteId, out var enabled) && enabled,
@@ -757,22 +756,23 @@ public sealed partial class ProxyRequestMetadataCache
     }
 
     /// <summary>
-    /// 清除聊天页模型/站点候选缓存（split：Admin 查询侧专用失效入口）。
+    /// 获取聊天页按模型筛选后的站点模型候选。
     /// </summary>
-    public void InvalidateAdminChatMetadata()
+    public async Task<IReadOnlyList<CachedChatTarget>> GetChatTargetsAsync(Guid modelId, CancellationToken cancellationToken)
     {
-        _memoryCache.Remove(ChatModelsCacheKey);
-        _memoryCache.Remove(ChatTargetsCacheKey);
+        var targets = await GetChatTargetsAsync(cancellationToken);
+        return targets.Where(x => x.ModelId == modelId).ToList();
     }
 
-    /// <summary>
-    /// 清除开发者页和站点名称等辅助查询缓存。
-    /// 这部分目前仍与运行时服务同类暴露，但职责已经偏向 Admin 查询层。
-    /// </summary>
-    public void InvalidateAdminDeveloperMetadata()
+
+    /// <summary>快照凭证段的 Provider 归一化为账号身份小写键（Codex→codex 等，与 AccountNetworkPolicyStore 同口径）。</summary>
+    private static string NormalizeSnapshotProviderKey(string provider) => provider.Trim().ToLowerInvariant() switch
     {
-        _memoryCache.Remove(EnabledSiteNamesCacheKey);
-        _memoryCache.Remove(DeveloperDefaultAccessKeyCacheKey);
-        _memoryCache.Remove(DeveloperDebugModelsCacheKey);
-    }
+        "codex" => "codex",
+        "google" => "google",
+        "kimi" or "kimi_oauth" => "kimi",
+        "xai" or "xai_oauth" => "xai",
+        "device-oauth" or "device_oauth" => "device-oauth",
+        _ => provider.Trim().ToLowerInvariant()
+    };
 }

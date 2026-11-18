@@ -164,7 +164,7 @@ public sealed class ProxyDiagnosticEndToEndTests
     /// 双宿主测试工厂：Admin 宿主 + Core 代理控制器（/v1）同进程挂载，
     /// 补注册 Core 控制器所需的凭证刷新门面与事件发布器。
     /// </summary>
-    private sealed class DiagnosticDualHostFactory : WebApplicationFactory<AITool.Admin.AdminProgramMarker>
+    private sealed class DiagnosticDualHostFactory : WebApplicationFactory<AITool.AllInOne.AllInOneProgramMarker>
     {
         private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-diag-{Guid.NewGuid():N}.db");
         private readonly IProxyForwardService _fakeForwardService;

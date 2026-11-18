@@ -4,11 +4,12 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
-using AITool.Infrastructure.Hosting;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using AITool.Protocol;
+using AITool.Core.Services;
+using AITool.Infrastructure.Proxy;
 
 namespace AITool.Core.Controllers.Proxy;
 
@@ -24,12 +25,14 @@ public sealed partial class OpenAiProxyController
     /// <param name="forwardRequest">已经完成路由选择和请求体准备的上游转发请求。</param>
     /// <param name="cancellationToken">用于中断当前 WebSocket 转发的取消令牌。</param>
     /// <param name="payloadConverter">可选的上游 SSE 数据转换器，用于将 Chat Completions 事件转换为 Responses 事件。</param>
+    /// <param name="responsesState">可选的 Chat 转换状态，用于流结束时输出已等待用量的终态。</param>
     /// <returns>返回本轮 WebSocket 流式转发结果和可用于续传的输出内容。</returns>
     private async Task<StreamForwardOutcome> ForwardOpenAiResponsesAsWebSocketAsync(
         WebSocket webSocket,
         ProxyForwardRequest forwardRequest,
         CancellationToken cancellationToken,
-        Func<string, string>? payloadConverter = null)
+        Func<string, string>? payloadConverter = null,
+        ChatToResponsesStreamState? responsesState = null)
     {
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
@@ -50,7 +53,7 @@ public sealed partial class OpenAiProxyController
 
             if (TryExtractSseDataPayload(pendingSseLines, out var payload))
             {
-                if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase) && payloadConverter is null)
                 {
                     receivedDoneEvent = true;
                 }
@@ -58,6 +61,8 @@ public sealed partial class OpenAiProxyController
                 {
                     UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
                     var responsePayload = payloadConverter is null ? payload : payloadConverter(payload);
+                    if (payloadConverter is not null && responsePayload.Contains("event: response.failed", StringComparison.Ordinal))
+                        receivedDoneEvent = false;
                     if (string.IsNullOrWhiteSpace(responsePayload))
                     {
                         pendingSseLines.Clear();
@@ -77,15 +82,11 @@ public sealed partial class OpenAiProxyController
                         }
 
                         if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(convertedPayload); }
-                        await SendWebSocketJsonPayloadAsync(webSocket, convertedPayload, token);
+                        await CommitReferenceOutputAsync(convertedPayload, token);
                         startedWriting = true;
+                        await SendWebSocketJsonPayloadAsync(webSocket, convertedPayload, token);
+                        _referenceOutputExposed = true;
                     }
-                    if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
-                    {
-                        responseBuilder.AppendLine(payload);
-                    }
-                    await SendWebSocketJsonPayloadAsync(webSocket, payload, token);
-                    startedWriting = true;
                 }
             }
 
@@ -111,12 +112,34 @@ public sealed partial class OpenAiProxyController
             await FlushSseBlockAsync(cancellationToken);
         }
 
+        if (!result.IsCanceled && !cancellationToken.IsCancellationRequested && responsesState?.ConversionFailed == false
+            && (result.Success || result.IsStreamInterrupted) && responsesState.PendingChatCompletion is not null)
+        {
+            foreach (var payload in ExtractWebSocketJsonPayloadsFromSseText(ProxyProtocolBridge.FlushChatResponsesCompletion(responsesState)))
+            {
+                if (TryExtractResponsesCompletedOutput(payload, out var outputJson)) { completedOutputJson = outputJson; receivedDoneEvent = true; }
+                await CommitReferenceOutputAsync(payload, cancellationToken);
+                await SendWebSocketJsonPayloadAsync(webSocket, payload, cancellationToken);
+                if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) responseBuilder.AppendLine(payload);
+                startedWriting = true;
+                _referenceOutputExposed = true;
+            }
+        }
+
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
         result.InputTokens = inputTokens;
         result.CachedTokens = cachedTokens;
         result.OutputTokens = outputTokens;
+
+        if (responsesState is not null && (responsesState.ConversionFailed || responsesState.StopReason == "error"))
+        {
+            receivedDoneEvent = false;
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= "The upstream response did not finish successfully.";
+        }
 
         if (result.Success && !receivedDoneEvent)
         {
@@ -136,7 +159,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting,
+            CanFallback = !startedWriting && _referenceOutputError is null,
             CompletedOutputJson = completedOutputJson
         };
     }
@@ -166,6 +189,7 @@ public sealed partial class OpenAiProxyController
         {
             Model = forwardRequest.TargetModelName
         };
+        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, forwardRequest.RequestBody);
 
         async Task FlushAnthropicBlockAsync(CancellationToken token)
         {
@@ -205,12 +229,11 @@ public sealed partial class OpenAiProxyController
                     completedOutputJson = outputJson;
                 }
 
-                if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
-                {
-                    responseBuilder.AppendLine(wsPayload);
-                }
-                await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
+                if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(wsPayload); }
+                await CommitReferenceOutputAsync(wsPayload, token);
                 startedWriting = true;
+                await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
+                _referenceOutputExposed = true;
             }
         }
 
@@ -258,7 +281,7 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting,
+            CanFallback = !startedWriting && _referenceOutputError is null,
             CompletedOutputJson = completedOutputJson
         };
     }
@@ -279,12 +302,13 @@ public sealed partial class OpenAiProxyController
         {
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+        // split 流式韧性：SSE 心跳注释帧 + 断线续传缓冲（X-Stream-Request-Id/X-Stream-Resume）。
         Response.Headers.Append("X-Accel-Buffering", "no");
-        Response.Headers.Append("Cache-Control", "no-cache");
         ArmSseHeartbeat();
         await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
-
-        }
 
         // 先走 Anthropic → OpenAI 的流式转换，收集完整响应后转为 Responses 事件
         var responseBuilder = new StringBuilder();
@@ -299,6 +323,7 @@ public sealed partial class OpenAiProxyController
         {
             Model = forwardRequest.TargetModelName
         };
+        ProxyProtocolBridge.ConfigureResponsesTools(responsesState, forwardRequest.RequestBody);
 
         async Task FlushAnthropicSseBlockAsync(CancellationToken token)
         {
@@ -319,13 +344,12 @@ public sealed partial class OpenAiProxyController
             var responsesChunk = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
             if (!string.IsNullOrEmpty(responsesChunk))
             {
-                if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
-                {
-                    responseBuilder.Append(responsesChunk);
-                }
-                await Response.WriteAsync(responsesChunk, token);
-                await Response.Body.FlushAsync(token);
+                if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(responsesChunk); }
+                await CommitReferenceOutputAsync(responsesChunk, token);
                 startedWriting = true;
+                await Response.WriteAsync(responsesChunk, token);
+                _referenceOutputExposed = true;
+                await Response.Body.FlushAsync(token);
             }
 
             // 提取用量
@@ -388,18 +412,13 @@ public sealed partial class OpenAiProxyController
         // 流中断但已开始写入时，向客户端补发终止信号避免挂起
         if (result.IsStreamInterrupted && startedWriting)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            await Response.TryWriteTerminatorAsync(ResponsesStreamFailure(responsesState), cancellationToken);
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null
         };
     }
 
@@ -484,22 +503,25 @@ public sealed partial class OpenAiProxyController
     /// <param name="forwardRequest">已经完成路由选择和协议准备的上游转发请求。</param>
     /// <param name="cancellationToken">用于中断当前流式转发的取消令牌。</param>
     /// <param name="sseBlockConverter">可选的 SSE 块转换器，用于在写入客户端前改写单个数据块。</param>
+    /// <param name="responsesState">Responses 转换状态，用于识别未完成或失败的上游流。</param>
     /// <returns>返回流式转发结果，并标记是否还能继续 fallback 到下一条路由。</returns>
     private async Task<StreamForwardOutcome> ForwardOpenAiStreamPassthroughAsync(
         ProxyForwardRequest forwardRequest,
         CancellationToken cancellationToken,
-        Func<string, string>? sseBlockConverter = null)
+        Func<string, string>? sseBlockConverter = null,
+        ChatToResponsesStreamState? responsesState = null)
     {
         if (!Response.HasStarted)
         {
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+        // split 流式韧性：SSE 心跳注释帧 + 断线续传缓冲（X-Stream-Request-Id/X-Stream-Resume）。
         Response.Headers.Append("X-Accel-Buffering", "no");
-        Response.Headers.Append("Cache-Control", "no-cache");
         ArmSseHeartbeat();
         await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
-
-        }
 
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
@@ -508,6 +530,18 @@ public sealed partial class OpenAiProxyController
         var inputTokens = 0;
         var cachedTokens = 0;
         var outputTokens = 0;
+        // 首包蓄流（默认关闭）：扣住开头的热身块，出现内容块才写客户端，扩大可回退窗口。
+        var headBuffer = await TryCreateSseHeadBufferAsync(cancellationToken);
+
+        async Task WriteChunkDirectAsync(string chunk, CancellationToken token)
+        {
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await CommitReferenceOutputAsync(chunk, token);
+            startedWriting = true;
+            await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
+            await Response.Body.FlushAsync(token);
+        }
 
         async Task WriteRawSseBlockAsync(List<string> lines, CancellationToken token)
         {
@@ -529,14 +563,25 @@ public sealed partial class OpenAiProxyController
                 // legacy Completions 复用同一透传链路，只在写出前转换单个 SSE 块。
                 chunk = sseBlockConverter(chunk);
             }
+            if (string.IsNullOrEmpty(chunk)) return;
 
-            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            if (headBuffer is not null)
             {
-                responseBuilder.Append(chunk);
+                if (headBuffer.TryHold(chunk))
+                {
+                    // 扣住：诊断捕获照记，但不写客户端、不置 startedWriting（保留回退窗口）。
+                    if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+                    return;
+                }
+
+                headBuffer.Release();
+                foreach (var held in headBuffer.Drain())
+                {
+                    await WriteChunkDirectAsync(held, token);
+                }
             }
-            await Response.WriteAsync(chunk, token);
-            await Response.Body.FlushAsync(token);
-            startedWriting = true;
+
+            await WriteChunkDirectAsync(chunk, token);
         }
 
         async Task FlushOpenAiSseBlockAsync(CancellationToken token)
@@ -604,12 +649,27 @@ public sealed partial class OpenAiProxyController
             await FlushOpenAiSseBlockAsync(cancellationToken);
         }
 
+        if (!result.IsCanceled && !cancellationToken.IsCancellationRequested && responsesState?.ConversionFailed == false
+            && (result.Success || result.IsStreamInterrupted) && responsesState.PendingChatCompletion is not null)
+        {
+            var finalEvent = ProxyProtocolBridge.FlushChatResponsesCompletion(responsesState);
+            if (!string.IsNullOrEmpty(finalEvent)) await WriteChunkDirectAsync(finalEvent, cancellationToken);
+            receivedDoneEvent = responsesState.Done;
+        }
+
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
         result.InputTokens = inputTokens;
         result.CachedTokens = cachedTokens;
         result.OutputTokens = outputTokens;
+
+        if (responsesState is not null && (!responsesState.Done || responsesState.ConversionFailed || responsesState.StopReason == "error"))
+        {
+            receivedDoneEvent = false;
+            result.Success = false;
+            result.ErrorMessage ??= "The upstream response did not finish successfully.";
+        }
 
         if (result.Success && !receivedDoneEvent)
         {
@@ -632,22 +692,56 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        // 流中断但已开始写入时，向客户端补发终止信号避免挂起
-        if (result.IsStreamInterrupted && startedWriting)
+        // 首包蓄流收尾：流最终成功时冲刷扣住的热身块；失败时丢弃——它们从未写给客户端，
+        // startedWriting 保持 false，上层 CanFallback 仍为 true，可无感换下一候选。
+        if (headBuffer is not null && !headBuffer.Released)
         {
-            try
+            headBuffer.Release();
+            if (result.Success)
             {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
+                foreach (var held in headBuffer.Drain())
+                {
+                    await WriteChunkDirectAsync(held, cancellationToken);
+                }
             }
-            catch { /* 客户端可能已断开，忽略 */ }
+            else
+            {
+                headBuffer.Drain();
+            }
+        }
+
+        // 流中断但已开始写入时，向客户端补发终止信号避免挂起。
+        // 上游 [DONE] 已透传（receivedDoneEvent）后不再补发（其后中断会双发）；
+        // IsCanceled（客户端已断开）补发无意义。
+        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent)
+        {
+            if (responsesState is not null)
+            {
+                if (responsesState.StopReason != "error")
+                    await Response.TryWriteTerminatorAsync(ResponsesStreamFailure(responsesState), cancellationToken);
+            }
+            else await Response.TryWriteTerminatorAsync(result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true
+                ? "data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\ndata: [DONE]\n\n"
+                : "data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null,
+            // 客户端在完成事件后才断开（Codex/DSH 等 CLI 的常态）：上游已按完整输出计费。
+            UpstreamCompleted = receivedDoneEvent
         };
+    }
+
+    private static string ResponsesStreamFailure(ChatToResponsesStreamState state)
+    {
+        var failure = new JsonObject { ["type"] = "response.failed", ["response"] = new JsonObject
+        {
+            ["id"] = state.ResponseId, ["object"] = "response", ["status"] = "failed",
+            ["error"] = new JsonObject { ["code"] = "upstream_stream_interrupted", ["message"] = "The upstream stream ended before completion." }
+        } };
+        return $"event: response.failed\ndata: {failure.ToJsonString()}\n\n";
     }
 
     /// <summary>
@@ -661,8 +755,7 @@ public sealed partial class OpenAiProxyController
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .ToList();
-        if (!TryExtractSseDataPayload(lines, out var payload)
-            || string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+        if (!TryExtractSseDataPayload(lines, out var payload))
         {
             return string.Empty;
         }
@@ -725,12 +818,13 @@ public sealed partial class OpenAiProxyController
         {
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+        // split 流式韧性：SSE 心跳注释帧 + 断线续传缓冲（X-Stream-Request-Id/X-Stream-Resume）。
         Response.Headers.Append("X-Accel-Buffering", "no");
-        Response.Headers.Append("Cache-Control", "no-cache");
         ArmSseHeartbeat();
         await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
-
-        }
 
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
@@ -752,13 +846,12 @@ public sealed partial class OpenAiProxyController
                 return;
             }
 
-            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
-            {
-                responseBuilder.Append(chunk);
-            }
-            await Response.WriteAsync(chunk, token);
-            await Response.Body.FlushAsync(token);
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
+            await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
+            await Response.Body.FlushAsync(token);
         }
 
         async Task FlushResponsesSseBlockAsync(CancellationToken token)
@@ -844,22 +937,22 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        if (result.IsStreamInterrupted && startedWriting)
+        // Responses→Chat 的转换块在 response.completed 时已自带 [DONE]（Protocol 2278）：
+        // completed 已到就不再补发（即使其后上游非取消中断，也会双发）；
+        // IsCanceled（客户端已断开，多数是读完 [DONE] 正常关闭）补发无意义。
+        // 仅「completed 未到 + 非取消的中断」补终止符防客户端挂起。
+        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch
-            {
-            }
+            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
+                await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null,
+            UpstreamCompleted = receivedDoneEvent
         };
     }
 
@@ -881,12 +974,13 @@ public sealed partial class OpenAiProxyController
         {
             Response.StatusCode = StatusCodes.Status200OK;
             Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+        // split 流式韧性：SSE 心跳注释帧 + 断线续传缓冲（X-Stream-Request-Id/X-Stream-Resume）。
         Response.Headers.Append("X-Accel-Buffering", "no");
-        Response.Headers.Append("Cache-Control", "no-cache");
         ArmSseHeartbeat();
         await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
-
-        }
 
         var state = new AnthropicToOpenAiStreamState();
         var responseBuilder = new StringBuilder();
@@ -906,13 +1000,12 @@ public sealed partial class OpenAiProxyController
                 chunk = sseBlockConverter(chunk);
             }
 
-            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
-            {
-                responseBuilder.Append(chunk);
-            }
-            await Response.WriteAsync(chunk, token);
-            await Response.Body.FlushAsync(token);
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await CommitReferenceOutputAsync(chunk, token);
             startedWriting = true;
+            await Response.WriteAsync(chunk, token);
+            _referenceOutputExposed = true;
+            await Response.Body.FlushAsync(token);
         }
 
         async Task EnsureRoleChunkAsync(CancellationToken token)
@@ -1162,21 +1255,22 @@ public sealed partial class OpenAiProxyController
             result.IsStreamInterrupted = true;
         }
 
-        // 流中断但已开始写入时，向客户端补发终止信号避免挂起
-        if (result.IsStreamInterrupted && startedWriting)
+        // Anthropic→Chat 的转换块在 message_stop 时已自带 [DONE]（见 FlushAnthropicSseBlockAsync）：
+        // message_stop 已到就不再补发（即使其后上游非取消中断，也会双发）；
+        // IsCanceled（客户端已断开，多数是读完 [DONE] 正常关闭）补发无意义。
+        // 仅「message_stop 未到 + 非取消的中断」补终止符防客户端挂起。
+        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !state.ReceivedMessageStop)
         {
-            try
-            {
-                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
-                await Response.Body.FlushAsync(CancellationToken.None);
-            }
-            catch { /* 客户端可能已断开，忽略 */ }
+            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
+                await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
+            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting && _referenceOutputError is null,
+            UpstreamCompleted = state.ReceivedMessageStop
         };
     }
 

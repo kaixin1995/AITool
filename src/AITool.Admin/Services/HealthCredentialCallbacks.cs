@@ -1,3 +1,4 @@
+using AITool.Infrastructure.Proxy;
 using AITool.Application.Proxy;
 
 namespace AITool.Admin.Services;

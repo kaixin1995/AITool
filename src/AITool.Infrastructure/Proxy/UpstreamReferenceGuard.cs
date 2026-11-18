@@ -1,10 +1,11 @@
+using Microsoft.Extensions.DependencyInjection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
 using AITool.Domain.Proxy;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>Parses only supported reference-bearing protocol fields; never stores a transcript.</summary>
 public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) : IUpstreamReferenceGuard

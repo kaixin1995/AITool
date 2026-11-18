@@ -210,3 +210,19 @@ public sealed class KimiCredentialRefreshService(CoreCredentialRefreshEngine eng
     public Task<string?> RefreshAsync(Guid siteId, string? staleToken, CancellationToken cancellationToken)
         => engine.RefreshAsync(KimiConstants.ManagedSource, siteId, staleToken, cancellationToken);
 }
+
+/// <summary>
+/// 设备 OAuth 账号的 Core 侧 401 即刷占位（master 同步适配）。
+/// v1 设计：Core 不直接轮换设备账号 refresh token——设备厂商普遍轮换 refresh token，
+/// Core 与 Admin 双端各自轮换会产生分叉导致账号失效；由 Admin 的
+/// DeviceOAuthTokenRefreshService 统一轮换并经 Sites 补丁把新 access token 推给 Core。
+/// 因此这里返回 null（让本次转发按 401 失败并回退下一路由），Admin/AllInOne 用真实现。
+/// </summary>
+public sealed class DeviceOAuthCredentialRefreshService
+{
+    public Task<string?> RefreshAsync(Guid linkedSiteId, string staleAccessToken, CancellationToken cancellationToken)
+        => Task.FromResult<string?>(null);
+
+    public Task<string?> RefreshForAccountAsync(Guid accountId, string staleAccessToken, CancellationToken cancellationToken)
+        => Task.FromResult<string?>(null);
+}

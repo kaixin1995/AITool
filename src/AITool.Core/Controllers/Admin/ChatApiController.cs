@@ -1,12 +1,17 @@
+using AITool.Application.Networking;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
-using AITool.Core.Services;
-using AITool.Infrastructure.Hosting;
+using AITool.Application.UsageLogs;
+using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
+using AITool.Protocol;
+using AITool.Core.Services;
+using AITool.Infrastructure.Proxy;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Core.Controllers.Admin;
@@ -136,7 +141,7 @@ public sealed class ChatSendRequest
     /// <summary>
     /// 支持的思考强度选项。
     /// </summary>
-    public static readonly string[] ValidReasoningEfforts = ["low", "medium", "high", "xhigh", "max"];
+    public static readonly string[] ValidReasoningEfforts = ["low", "medium", "high", "xhigh","max"];
 
     /// <summary>
     /// 模型标识。
@@ -245,10 +250,6 @@ internal sealed class ChatStreamForwardResult
     /// </summary>
     public bool HadAnyContent { get; set; }
     /// <summary>
-    /// Responses 上游 SSE → Chat 的桥接状态（master 同步：对象化状态机，聚合 output_text.delta 等事件）。
-    /// </summary>
-    public AITool.Protocol.ResponsesToChatStreamState? ResponsesState { get; set; }
-    /// <summary>
     /// 返回内容。
     /// </summary>
     public string Content { get; set; } = string.Empty;
@@ -296,13 +297,15 @@ internal sealed class ChatStreamForwardResult
 
 /// <summary>
 /// 调试对话控制器，提供模型选择和非流式/流式调试请求功能。
-/// 从 AITool.Web 迁移到 Core，移除了仅 Web 端使用的幽灵依赖（AppDbContext、ConversationExtractionService），
-/// 所有查询通过 AdminQueryMetadataService 从缓存获取，不直接访问数据库。
 /// </summary>
 [ApiController]
 [Route("api/admin/chat")]
 public sealed class ChatApiController : ControllerBase
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
+    private readonly AppDbContext _dbContext;
     /// <summary>
     /// 代理转发服务。
     /// </summary>
@@ -312,13 +315,13 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private readonly RouteCircuitStateStore _circuitStore;
     /// <summary>
-    /// 代理调用统一记录服务，收口 UsageLog、ConversationLog 等多套写入逻辑。
+    /// 用量日志服务。
     /// </summary>
-    private readonly IProxyCallRecorder _proxyCallRecorder;
+    private readonly IUsageLogService _usageLogService;
     /// <summary>
-    /// 后台查询元数据服务，统一承载模型、运行时设置和路由目标的只读查询。
+    /// 代理元数据缓存。
     /// </summary>
-    private readonly AdminQueryMetadataService _adminQueryMetadataService;
+    private readonly ProxyRequestMetadataCache _metadataCache;
     /// <summary>
     /// HttpClient 工厂。
     /// </summary>
@@ -327,95 +330,85 @@ public sealed class ChatApiController : ControllerBase
     /// 模型并发限制器。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
-    /// <summary>master 同步：聊天转发 Google 托管凭证 403 禁用回调。</summary>
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
-    /// <summary>
-    /// SSE 心跳配置（静默超阈值注入 `: ping` 注释帧防中间设备回收连接；0 = 关闭）。
-    /// </summary>
-    private readonly SseHeartbeatOptions _heartbeat;
-    /// <summary>
-    /// 流式响应可恢复缓冲存储与选项（断线续传；纯增量，普通客户端零感知）。
-    /// </summary>
-    private readonly StreamResumeStore _resumeStore;
-    private readonly StreamResumeOptions _resume;
-
-    /// <summary>
-    /// 流式响应就绪后调用：心跳开启时包裹响应体输出流。
-    /// </summary>
-    private void ArmSseHeartbeat()
-    {
-        if (_heartbeat.Enabled)
-        {
-            Response.Body = new SseHeartbeatStream(Response.Body, _heartbeat.Seconds);
-        }
-    }
-
-    /// <summary>
-    /// 流式响应就绪后调用：可恢复缓冲开启时登记本响应、处理断线续传（X-Stream-Resume 头），
-    /// 并通过 X-Stream-Request-Id 响应头对外公布本响应的恢复标识。
-    /// </summary>
-    private async Task ArmStreamResumeAsync(string? resumeHeader)
-    {
-        if (!_resume.Enabled)
-        {
-            return;
-        }
-
-        var resumeId = Guid.NewGuid().ToString("N");
-
-        // 1. 先登记缓冲并公布恢复标识（响应头必须在任何响应体写入之前设置）。
-        if (_resumeStore.TryBegin(resumeId))
-        {
-            Response.Headers.Append("X-Stream-Request-Id", resumeId);
-            Response.Body = new StreamResumeCaptureStream(Response.Body, _resumeStore, resumeId);
-        }
-
-        // 2. 断线续传重放：旧缓冲的帧在新流开始前补发（重放帧不进入新缓冲）。
-        if (!string.IsNullOrWhiteSpace(resumeHeader))
-        {
-            var parts = resumeHeader.Split(':');
-            if (parts.Length == 2 && int.TryParse(parts[1], out var lastSeq)
-                && _resumeStore.TryResume(parts[0], lastSeq) is { } frames)
-            {
-                foreach (var frame in frames)
-                {
-                    await Response.Body.WriteAsync(frame);
-                }
-            }
-        }
-    }
+    private readonly IForwardNetworkPolicyResolver? _networkPolicies;
+    private readonly INetworkTransport? _networkTransport;
+    private readonly AccountSessionIsolationService? _sessionIsolation;
+    private AccountSessionIsolationContext? _sessionContext;
 
     /// <summary>
     /// 创建调试对话控制器。
     /// </summary>
     public ChatApiController(
+        AppDbContext dbContext,
         IProxyForwardService forwardService,
         RouteCircuitStateStore circuitStore,
-        IProxyCallRecorder proxyCallRecorder,
-        AdminQueryMetadataService adminQueryMetadataService,
+        IUsageLogService usageLogService,
+        ProxyRequestMetadataCache metadataCache,
         IHttpClientFactory httpClientFactory,
         ModelConcurrencyLimiter concurrencyLimiter,
         GoogleCredentialRefreshService googleCredentialRefreshService,
-        SseHeartbeatOptions heartbeat,
-        StreamResumeStore resumeStore,
-        StreamResumeOptions resumeOptions)
+        IForwardNetworkPolicyResolver? networkPolicies = null,
+        INetworkTransport? networkTransport = null,
+        AccountSessionIsolationService? sessionIsolation = null)
     {
+        _dbContext = dbContext;
         _forwardService = forwardService;
         _circuitStore = circuitStore;
-        _proxyCallRecorder = proxyCallRecorder;
-        _adminQueryMetadataService = adminQueryMetadataService;
+        _usageLogService = usageLogService;
+        _metadataCache = metadataCache;
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
         _googleCredentialRefreshService = googleCredentialRefreshService;
-        _heartbeat = heartbeat;
-        _resumeStore = resumeStore;
-        _resume = resumeOptions;
+        _networkPolicies = networkPolicies;
+        _networkTransport = networkTransport;
+        _sessionIsolation = sessionIsolation;
     }
 
+    private void CaptureSession(string originalBody)
+    {
+        var scope = "admin:" + (User?.FindFirst("sub")?.Value
+            ?? User?.FindFirst(global::System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "admin");
+        _sessionContext = AccountSessionIsolationService.Capture(scope,
+            HttpContext?.Request.Headers ?? new HeaderDictionary(), originalBody, Guid.NewGuid().ToString("N"));
+    }
 
-    /// <summary>
-    /// master 同步：托管凭证 403 禁用回调（当前仅 Google；Codex/Kimi 由额度体系处理）。
-    /// </summary>
+    private async Task<ProxyForwardRequest> PrepareForwardAsync(ProxyForwardRequest request, CancellationToken ct)
+    {
+        request.RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(request.ManagedSource, request.SiteId);
+        request.InvalidateTargetCredentialAsync = CreateCredentialInvalidationCallback(request.ManagedSource);
+        if (_sessionIsolation is null) return request;
+        if (_sessionContext is null) CaptureSession(request.RequestBody);
+        var isolated = await _sessionIsolation.ApplyAsync(_sessionContext!, request.AccountIdentity,
+            request.ProtocolType, ProxyProtocolBridge.IsAntigravityTarget(request.TargetBaseUrl),
+            request.PreparedRequestBody ?? request.RequestBody, request.ForwardHeaders, ct);
+        request.PreparedRequestBody = isolated.PreparedRequestBody;
+        request.ForwardHeaders = isolated.ForwardHeaders;
+        return request;
+    }
+
+    private Func<string, CancellationToken, Task<string?>>? CreateCredentialRefreshCallback(string? source, Guid? siteId)
+    {
+        if (siteId is not { } id || id == Guid.Empty) return null;
+        if (string.Equals(source, "Codex", StringComparison.OrdinalIgnoreCase))
+            return (token, ct) => HttpContext.RequestServices.GetRequiredService<CodexCredentialRefreshService>().RefreshAsync(id, token, ct);
+        if (string.Equals(source, "Google", StringComparison.OrdinalIgnoreCase))
+            return (token, ct) => _googleCredentialRefreshService.RefreshAsync(id, token, ct);
+        if (string.Equals(source, "kimi_oauth", StringComparison.OrdinalIgnoreCase))
+            return (token, ct) => HttpContext.RequestServices.GetRequiredService<KimiCredentialRefreshService>().RefreshAsync(id, token, ct);
+        if (string.Equals(source, "device_oauth", StringComparison.OrdinalIgnoreCase))
+            return (token, ct) => HttpContext.RequestServices.GetRequiredService<DeviceOAuthCredentialRefreshService>().RefreshAsync(id, token, ct);
+        return null;
+    }
+
+    private Func<string, object?, CancellationToken, Task>? CreateCredentialInvalidationCallback(string? source)
+    {
+        if (!new[] { "Codex", "Google", "kimi_oauth", "xai_oauth", "device_oauth" }
+            .Contains(source, StringComparer.OrdinalIgnoreCase)) return null;
+        return (token, snapshot, ct) => HttpContext.RequestServices.GetRequiredService<ForwardOAuthInvalidationService>()
+            .InvalidateAsync(token, snapshot, ct);
+    }
+
     private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
         string managedSource,
         Guid siteId)
@@ -437,7 +430,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
-        var models = await _adminQueryMetadataService.GetChatModelsAsync(cancellationToken);
+        var models = await _metadataCache.GetChatModelsAsync(cancellationToken);
         return Ok(models);
     }
 
@@ -447,7 +440,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpGet("targets")]
     public async Task<IActionResult> GetTargets(CancellationToken cancellationToken)
     {
-        var targets = await _adminQueryMetadataService.GetChatTargetsAsync(cancellationToken);
+        var targets = await _metadataCache.GetChatTargetsAsync(cancellationToken);
         return Ok(targets.Select(x => new ChatModelTargetItem
         {
             MappingId = x.MappingId,
@@ -464,7 +457,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpGet("models/{modelId:guid}/targets")]
     public async Task<IActionResult> GetModelTargets(Guid modelId, CancellationToken cancellationToken)
     {
-        var targets = await _adminQueryMetadataService.GetChatTargetsAsync(modelId, cancellationToken);
+        var targets = await _metadataCache.GetChatTargetsAsync(modelId, cancellationToken);
         return Ok(targets.Select(x => new ChatModelTargetItem
         {
             MappingId = x.MappingId,
@@ -481,6 +474,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpPost("send")]
     public async Task<IActionResult> Send([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
+        CaptureSession(JsonSerializer.Serialize(request));
         if (string.IsNullOrWhiteSpace(request.Message))
             return BadRequest(new { message = "消息不能为空" });
 
@@ -488,13 +482,13 @@ public sealed class ChatApiController : ControllerBase
             return BadRequest(new { message = "请选择模型" });
 
         var sw = Stopwatch.StartNew();
-        var model = await _adminQueryMetadataService.GetEnabledModelAsync(request.ModelId, cancellationToken);
+        var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
 
         if (model is null)
             return Ok(new ChatSendResult { Success = false, Error = "模型不存在或已禁用", ReasoningEnabled = request.EnableReasoning });
 
-        var runtimeSettings = await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken);
-        var allRoutes = await _adminQueryMetadataService.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
@@ -513,16 +507,17 @@ public sealed class ChatApiController : ControllerBase
         {
             var requestId = Guid.NewGuid();
             var attemptIndex = 0;
+            var routeIndex = -1;
             var attempts = new List<ChatAttemptResult>();
 
             foreach (var route in allRoutes)
             {
+                routeIndex++;
                 if (_circuitStore.IsBlocked(route.CircuitKey))
                     continue;
 
                 attemptIndex++;
                 // 调试对话与代理主链路共用同一套并发占用统计，确保调试页看到的是全局真实占用。
-                // 多 Key 场景：并发计数按 SiteKey 维度隔离（route.SiteKeyId），用真实站点 Id 作为调试展示身份。
                 using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                     HttpContext.RequestServices,
                     route.SiteKeyId ?? route.SiteId,
@@ -538,9 +533,10 @@ public sealed class ChatApiController : ControllerBase
                 }
 
                 var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
-                // master 同步：Normalize 后 Codex 请求体的 stream 会被强制改成 true（上游要求），
+                // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数。
+                // 注意：Normalize 后 Codex 请求体的 stream 会被强制改成 true（上游要求），
                 // 但客户端是非流式调用。RequestBody 必须保留 Normalize 前的原始请求体（stream=false），
-                // 否则 ForwardAsync 的 IsStreamingRequest 会误判为流式，非流式调用拿不到聚合结果。
+                // 否则 ForwardAsync 的 IsStreamingRequest 会误判为流式，走流式路径导致非流式调用拿不到聚合结果。
                 string preparedRequestBody = requestBody;
                 var isGeminiRoute = string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
                 if (string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
@@ -549,13 +545,25 @@ public sealed class ChatApiController : ControllerBase
                 }
                 else if (isGeminiRoute)
                 {
-                    // master 同步：Gemini 上游经协议桥转 v1internal 封套（project 取自 Google 托管账号）。
+                    // Gemini 上游：OpenAI 形态请求体经协议桥转换为 v1internal 封套。
                     preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                         "OpenAI", "Gemini", requestBody, route.SiteModelName, false,
                         null, route.BaseUrl, null, isPassthrough: false, isCompact: false,
                         geminiProjectId: route.GoogleProjectId);
                 }
-                var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+                var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);
+                var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+                    ? route.ClientEmulation
+                    : (isGeminiRoute ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.None);
+
+                var chatForwardHeaders = ClientEmulationEngine.ResolveHeaders(
+                    effectiveEmulation,
+                    route.ExtraHeaders,
+                    route.SiteModelName,
+                    route.GoogleProjectId,
+                    isAntigravity);
+
+                var forwardResult = await _forwardService.ForwardAsync(await PrepareForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
                     TargetEndpointPathMode = route.EndpointPathMode,
@@ -568,67 +576,59 @@ public sealed class ChatApiController : ControllerBase
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount,
                     RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
-                    ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(route.ExtraHeaders),
+                    ForwardHeaders = chatForwardHeaders,
                     EgressProxyUrl = route.EgressProxyUrl,
+                    AccountIdentity = route.AccountIdentity,
+                    SiteId = route.SiteId, ManagedSource = route.ManagedSource,
                     DisableTargetCredentialAsync = CreateCredentialDisableCallback(route.ManagedSource, route.SiteId),
                     TargetPath = isGeminiRoute
                         ? "/v1internal:generateContent"
                         : string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                             ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
                             : null
-                }, cancellationToken);
+                }, cancellationToken), cancellationToken);
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
+                var canFallback = !forwardResult.Success
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.CircuitKey));
 
-                // 通过统一记录服务写入用量日志
-                var usageContext = new ProxyCallContext
+                await _usageLogService.LogAsync(new UsageLogEntry
                 {
                     RequestId = requestId,
                     ProtocolType = route.ProtocolType,
-                    Source = "chat",
+                    ForwardingMode = "direct",
                     RequestModel = model.ModelName,
-                    ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
-                    IsStreaming = false,
-                    RequestBody = requestBody,
-                    RequestPath = "/api/admin/chat",
-                    RequestedAt = DateTimeOffset.UtcNow,
-                    RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        ["X-AITool-Source"] = "chat"
-                    },
-                    // 尝试级字段
                     AttemptedModel = route.UpstreamModelName,
                     TargetSiteId = route.SiteId,
-                    ForwardingMode = "direct",
-                    Success = forwardResult.Success,
-                    ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+                    Status = forwardResult.Success ? "success" : "fail",
+                    Source = "chat",
                     RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
                     RateLimitRetries = forwardResult.RateLimitRetryCount,
                     AttemptIndex = attemptIndex,
-                    IsFinalResult = forwardResult.Success,
-                    FallbackTriggered = !forwardResult.Success,
+                    IsFinalResult = forwardResult.Success || !canFallback,
+                    FallbackTriggered = canFallback,
+                    ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+                    HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
                     InputTokens = forwardResult.InputTokens,
                     CachedTokens = forwardResult.CachedTokens,
                     OutputTokens = forwardResult.OutputTokens,
+                    IsStreaming = false,
                     FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
                     StreamDurationMs = forwardResult.StreamDurationMs,
-                    TotalDurationMs = forwardResult.TotalDurationMs
-                };
-                await _proxyCallRecorder.RecordUsageAsync(usageContext, cancellationToken);
+                    TotalDurationMs = forwardResult.TotalDurationMs,
+                    ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+                    RequestedAt = DateTimeOffset.UtcNow
+                }, cancellationToken);
 
                 if (forwardResult.Success)
                 {
                     sw.Stop();
                     _circuitStore.Succeed(route.CircuitKey);
                     var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, route.ProtocolType);
-                    // 标记成功并填充预提取内容，让统一记录服务直接使用
-                    usageContext.Success = true;
-                    usageContext.PreExtractedUserInputText = request.Message;
-                    usageContext.PreExtractedAssistantOutput = payload.Content;
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
 
-                _circuitStore.Block(route.CircuitKey);
+                _circuitStore.Block(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             }
 
             sw.Stop();
@@ -653,12 +653,14 @@ public sealed class ChatApiController : ControllerBase
     [HttpPost("send-stream")]
     public async Task SendStream([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
-        Response.StatusCode = 200;
-        Response.ContentType = "text/event-stream";
-        Response.Headers.Append("X-Accel-Buffering", "no");
-        Response.Headers.Append("Cache-Control", "no-cache");
-        ArmSseHeartbeat();
-        await ArmStreamResumeAsync(Request.Headers["X-Stream-Resume"]);
+        CaptureSession(JsonSerializer.Serialize(request));
+        Response.StatusCode = StatusCodes.Status200OK;
+        Response.ContentType = "text/event-stream; charset=utf-8";
+        Response.Headers.CacheControl = "no-cache, no-transform";
+        Response.Headers["X-Accel-Buffering"] = "no";
+        HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        await Response.StartAsync(cancellationToken);
+        await Response.Body.FlushAsync(cancellationToken);
 
         if (string.IsNullOrWhiteSpace(request.Message))
         {
@@ -672,7 +674,7 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        var model = await _adminQueryMetadataService.GetEnabledModelAsync(request.ModelId, cancellationToken);
+        var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
 
         if (model is null)
         {
@@ -680,8 +682,8 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        var runtimeSettings = await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken);
-        var allRoutes = await _adminQueryMetadataService.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
@@ -706,16 +708,17 @@ public sealed class ChatApiController : ControllerBase
 
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
+        var routeIndex = -1;
         var attempts = new List<ChatAttemptResult>();
 
         foreach (var route in allRoutes)
         {
+            routeIndex++;
             if (_circuitStore.IsBlocked(route.CircuitKey))
                 continue;
 
             attemptIndex++;
             // 调试对话与代理主链路共用同一套并发占用统计，确保调试页看到的是全局真实占用。
-            // 多 Key 场景：并发计数按 SiteKey 维度隔离（route.SiteKeyId），用真实站点 Id 作为调试展示身份。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices,
                 route.SiteKeyId ?? route.SiteId,
@@ -742,9 +745,15 @@ public sealed class ChatApiController : ControllerBase
                 async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
                 async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
                 runtimeSettings.ProxyRequestTimeoutSeconds,
-                route.ExtraHeaders,
+                ClientEmulationEngine.ResolveHeaders(
+                    route.ClientEmulation,
+                    route.ExtraHeaders,
+                    route.SiteModelName,
+                    route.GoogleProjectId,
+                    ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)),
                 cancellationToken,
-                googleProjectId: route.GoogleProjectId);
+                googleProjectId: route.GoogleProjectId,
+                egressProxyUrl: route.EgressProxyUrl, accountIdentity: route.AccountIdentity, siteId: route.SiteId, managedSource: route.ManagedSource);
 
             var attemptResult = BuildAttemptResult(
                 attemptIndex,
@@ -767,41 +776,35 @@ public sealed class ChatApiController : ControllerBase
                 streamResult.RequestBody,
                 streamResult.ResponseBody);
             attempts.Add(attemptResult);
+            var canFallback = !streamResult.Success
+                && !streamResult.HadAnyContent
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.CircuitKey));
 
-            // 通过统一记录服务写入用量日志
-            var streamUsageContext = new ProxyCallContext
+            await _usageLogService.LogAsync(new UsageLogEntry
             {
                 RequestId = requestId,
                 ProtocolType = route.ProtocolType,
-                Source = "chat",
                 RequestModel = model.ModelName,
-                ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
-                IsStreaming = true,
-                RequestBody = streamResult.RequestBody ?? string.Empty,
-                RequestPath = "/api/admin/chat",
-                RequestedAt = DateTimeOffset.UtcNow,
-                RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["X-AITool-Source"] = "chat"
-                },
-                // 尝试级字段
                 AttemptedModel = route.UpstreamModelName,
                 TargetSiteId = route.SiteId,
-                ForwardingMode = "direct",
-                Success = streamResult.Success,
-                ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+                Status = streamResult.Success ? "success" : "fail",
+                Source = "chat",
                 RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
-                IsFinalResult = streamResult.Success,
-                FallbackTriggered = !streamResult.Success,
+                IsFinalResult = streamResult.Success || !canFallback,
+                FallbackTriggered = canFallback,
+                ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+                HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
                 InputTokens = streamResult.InputTokens,
                 CachedTokens = streamResult.CachedTokens,
                 OutputTokens = streamResult.OutputTokens,
+                IsStreaming = true,
                 FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
                 StreamDurationMs = 0,
-                TotalDurationMs = streamResult.TotalDurationMs
-            };
-            await _proxyCallRecorder.RecordUsageAsync(streamUsageContext, cancellationToken);
+                TotalDurationMs = streamResult.TotalDurationMs,
+                ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+                RequestedAt = DateTimeOffset.UtcNow
+            }, cancellationToken);
 
             if (streamResult.Success)
             {
@@ -822,17 +825,13 @@ public sealed class ChatApiController : ControllerBase
                     TotalDurationMs = streamResult.TotalDurationMs,
                     Attempts = attempts
                 };
-                // 标记成功并填充预提取内容，让统一记录服务直接使用
-                streamUsageContext.Success = true;
-                streamUsageContext.PreExtractedUserInputText = request.Message;
-                streamUsageContext.PreExtractedAssistantOutput = streamResult.Content;
                 await WriteSseEventAsync("meta", finalResult, cancellationToken);
                 await WriteSseEventAsync("done", new { requestId }, cancellationToken);
                 _circuitStore.Succeed(route.CircuitKey);
                 return;
             }
 
-            _circuitStore.Block(route.CircuitKey);
+            _circuitStore.Block(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             if (streamResult.HadAnyContent)
             {
                 await WriteSseEventAsync("error", new { message = streamResult.ErrorMessage }, cancellationToken);
@@ -854,7 +853,7 @@ public sealed class ChatApiController : ControllerBase
         TimeSpan concurrencyQueueTimeout,
         CancellationToken cancellationToken)
     {
-        var mapping = await _adminQueryMetadataService.GetFallbackTargetAsync(request.ModelId, cancellationToken);
+        var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
 
         if (mapping is null)
             return Ok(new ChatSendResult { Success = false, Error = "该模型没有可用的站点映射", ReasoningEnabled = request.EnableReasoning });
@@ -873,7 +872,7 @@ public sealed class ChatApiController : ControllerBase
         TimeSpan concurrencyQueueTimeout,
         CancellationToken cancellationToken)
     {
-        var mapping = await _adminQueryMetadataService.GetFallbackTargetAsync(request.ModelId, cancellationToken);
+        var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
 
         if (mapping is null)
         {
@@ -889,7 +888,7 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private async Task<CachedFallbackTarget?> ResolveSelectedTargetAsync(Guid modelId, Guid mappingId, CancellationToken cancellationToken)
     {
-        var targets = await _adminQueryMetadataService.GetChatTargetsAsync(modelId, cancellationToken);
+        var targets = await _metadataCache.GetChatTargetsAsync(modelId, cancellationToken);
         var selectedTarget = targets.FirstOrDefault(x => x.MappingId == mappingId);
         if (selectedTarget is null)
         {
@@ -900,7 +899,7 @@ public sealed class ChatApiController : ControllerBase
         {
             ModelId = modelId,
             SiteId = selectedTarget.SiteId,
-            // 多 Key：携带选中候选的 SiteKeyId/CircuitKey，直发时也按 Key 维度计并发与熔断。
+            // 复制多 Key 身份：直发也要用选中 Key 的独立并发额度和熔断身份键。
             SiteKeyId = selectedTarget.SiteKeyId,
             CircuitKey = selectedTarget.CircuitKey,
             SiteName = selectedTarget.SiteName,
@@ -913,6 +912,11 @@ public sealed class ChatApiController : ControllerBase
             SiteModelName = selectedTarget.SiteModelName,
             // ExtraHeaders 必须复制：Codex 的 Originator / Chatgpt-Account-Id / User-Agent，
             // 缺失会让上游请求不带任何 Codex 专属头，触发 Cloudflare 拦截页。
+            ClientEmulation = selectedTarget.ClientEmulation,
+            EgressProxyUrl = selectedTarget.EgressProxyUrl,
+            AccountIdentity = selectedTarget.AccountIdentity,
+            GoogleProjectId = selectedTarget.GoogleProjectId,
+            ManagedSource = selectedTarget.ManagedSource,
             ExtraHeaders = selectedTarget.ExtraHeaders
         };
     }
@@ -933,7 +937,6 @@ public sealed class ChatApiController : ControllerBase
         var requestId = Guid.NewGuid();
 
         // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
-        // 多 Key 场景：按选中候选的 SiteKeyId 计并发，用真实 SiteId 作调试展示身份。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
             mapping.SiteKeyId ?? mapping.SiteId,
@@ -957,9 +960,9 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
-        // master 同步：Normalize 后 Codex 请求体的 stream 会被强制改成 true（上游要求），
-        // 但客户端是非流式调用。RequestBody 必须保留 Normalize 前的原始请求体（stream=false），
-        // 否则 ForwardAsync 的 IsStreamingRequest 会误判为流式，非流式调用拿不到聚合结果。
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等），
+        // 否则会返回 {"detail":"Unsupported parameter: xxx"}（400）。
+        // RequestBody 保留 Normalize 前的原始请求体（stream=false），避免 ForwardAsync 误判为流式。
         string preparedRequestBody = requestBody;
         var isGeminiMapping = string.Equals(mapping.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
         if (string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
@@ -968,13 +971,24 @@ public sealed class ChatApiController : ControllerBase
         }
         else if (isGeminiMapping)
         {
-            // master 同步：Gemini 上游经协议桥转 v1internal 封套（project 取自 Google 托管账号）。
             preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI", "Gemini", requestBody, mapping.SiteModelName, false,
                 null, mapping.BaseUrl, null, isPassthrough: false, isCompact: false,
                 geminiProjectId: mapping.GoogleProjectId);
         }
-        var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+        var isMappingAntigravity = ProxyProtocolBridge.IsAntigravityTarget(mapping.BaseUrl);
+        var effectiveMappingEmulation = !string.IsNullOrWhiteSpace(mapping.ClientEmulation) && !string.Equals(mapping.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+            ? mapping.ClientEmulation
+            : (isGeminiMapping ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.None);
+
+        var mappingForwardHeaders = ClientEmulationEngine.ResolveHeaders(
+            effectiveMappingEmulation,
+            mapping.ExtraHeaders,
+            mapping.SiteModelName,
+            mapping.GoogleProjectId,
+            isMappingAntigravity);
+
+        var forwardResult = await _forwardService.ForwardAsync(await PrepareForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = mapping.BaseUrl,
             TargetEndpointPathMode = mapping.EndpointPathMode,
@@ -986,53 +1000,47 @@ public sealed class ChatApiController : ControllerBase
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount,
-            RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
-            ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(mapping.ExtraHeaders),
+                    RateLimitRetryCount = runtimeSettings.RateLimitRetryCount,
+            ForwardHeaders = mappingForwardHeaders,
             EgressProxyUrl = mapping.EgressProxyUrl,
+            AccountIdentity = mapping.AccountIdentity,
+            SiteId = mapping.SiteId, ManagedSource = mapping.ManagedSource,
             DisableTargetCredentialAsync = CreateCredentialDisableCallback(mapping.ManagedSource, mapping.SiteId),
             TargetPath = isGeminiMapping
                 ? "/v1internal:generateContent"
                 : string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                     ? SiteEndpointPathResolver.ResolvePath(mapping.EndpointPathMode, "responses")
                     : null
-        }, cancellationToken);
+        }, cancellationToken), cancellationToken);
 
         sw.Stop();
 
-        // 通过统一记录服务写入用量日志
-        var singleUsageContext = new ProxyCallContext
+        await _usageLogService.LogAsync(new UsageLogEntry
         {
             RequestId = requestId,
             ProtocolType = mapping.ProtocolType,
-            Source = "chat",
+            ForwardingMode = "direct",
             RequestModel = model.ModelName,
-            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
-            IsStreaming = false,
-            RequestBody = requestBody,
-            RequestPath = "/api/admin/chat",
-            RequestedAt = DateTimeOffset.UtcNow,
-            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["X-AITool-Source"] = "chat"
-            },
-            // 尝试级字段
             AttemptedModel = mapping.SiteModelName,
             TargetSiteId = mapping.SiteId,
-            ForwardingMode = "direct",
-            Success = forwardResult.Success,
-            ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+            Status = forwardResult.Success ? "success" : "fail",
+            Source = "chat",
             RetryCount = 0,
             AttemptIndex = 1,
             IsFinalResult = true,
             FallbackTriggered = false,
+            ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+            HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
             InputTokens = forwardResult.InputTokens,
             CachedTokens = forwardResult.CachedTokens,
             OutputTokens = forwardResult.OutputTokens,
+            IsStreaming = false,
             FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
             StreamDurationMs = forwardResult.StreamDurationMs,
-            TotalDurationMs = forwardResult.TotalDurationMs
-        };
-        await _proxyCallRecorder.RecordUsageAsync(singleUsageContext, cancellationToken);
+            TotalDurationMs = forwardResult.TotalDurationMs,
+            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+            RequestedAt = DateTimeOffset.UtcNow
+        }, cancellationToken);
 
         var attempts = new List<ChatAttemptResult>
         {
@@ -1054,10 +1062,6 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, mapping.ProtocolType);
-        // 标记成功并填充预提取内容，让统一记录服务直接使用
-        singleUsageContext.Success = true;
-        singleUsageContext.PreExtractedUserInputText = request.Message;
-        singleUsageContext.PreExtractedAssistantOutput = payload.Content;
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
@@ -1076,7 +1080,6 @@ public sealed class ChatApiController : ControllerBase
         var requestId = Guid.NewGuid();
 
         // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
-        // 多 Key 场景：按选中候选的 SiteKeyId 计并发，用真实 SiteId 作调试展示身份。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
             mapping.SiteKeyId ?? mapping.SiteId,
@@ -1104,9 +1107,15 @@ public sealed class ChatApiController : ControllerBase
             async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
             async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
             runtimeSettings.ProxyRequestTimeoutSeconds,
-            mapping.ExtraHeaders,
+            ClientEmulationEngine.ResolveHeaders(
+                mapping.ClientEmulation,
+                mapping.ExtraHeaders,
+                mapping.SiteModelName,
+                mapping.GoogleProjectId,
+                ProxyProtocolBridge.IsAntigravityTarget(mapping.BaseUrl)),
             cancellationToken,
-            googleProjectId: mapping.GoogleProjectId);
+            googleProjectId: mapping.GoogleProjectId,
+                egressProxyUrl: mapping.EgressProxyUrl, accountIdentity: mapping.AccountIdentity, siteId: mapping.SiteId, managedSource: mapping.ManagedSource);
 
         var attemptResult = BuildAttemptResult(
             1,
@@ -1130,40 +1139,32 @@ public sealed class ChatApiController : ControllerBase
             streamResult.ResponseBody);
         var attempts = new List<ChatAttemptResult> { attemptResult };
 
-        // 通过统一记录服务写入用量日志
-        var singleStreamUsageContext = new ProxyCallContext
+        await _usageLogService.LogAsync(new UsageLogEntry
         {
             RequestId = requestId,
             ProtocolType = mapping.ProtocolType,
-            Source = "chat",
+            ForwardingMode = "direct",
             RequestModel = model.ModelName,
-            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
-            IsStreaming = true,
-            RequestBody = streamResult.RequestBody ?? string.Empty,
-            RequestPath = "/api/admin/chat",
-            RequestedAt = DateTimeOffset.UtcNow,
-            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["X-AITool-Source"] = "chat"
-            },
-            // 尝试级字段
             AttemptedModel = mapping.SiteModelName,
             TargetSiteId = mapping.SiteId,
-            ForwardingMode = "direct",
-            Success = streamResult.Success,
-            ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+            Status = streamResult.Success ? "success" : "fail",
+            Source = "chat",
             RetryCount = 0,
             AttemptIndex = 1,
             IsFinalResult = true,
             FallbackTriggered = false,
+            ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+            HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
             InputTokens = streamResult.InputTokens,
             CachedTokens = streamResult.CachedTokens,
             OutputTokens = streamResult.OutputTokens,
+            IsStreaming = true,
             FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
             StreamDurationMs = 0,
-            TotalDurationMs = streamResult.TotalDurationMs
-        };
-        await _proxyCallRecorder.RecordUsageAsync(singleStreamUsageContext, cancellationToken);
+            TotalDurationMs = streamResult.TotalDurationMs,
+            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+            RequestedAt = DateTimeOffset.UtcNow
+        }, cancellationToken);
 
         if (!streamResult.Success)
         {
@@ -1171,10 +1172,6 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        // 标记成功并填充预提取内容，让统一记录服务直接使用
-        singleStreamUsageContext.Success = true;
-        singleStreamUsageContext.PreExtractedUserInputText = request.Message;
-        singleStreamUsageContext.PreExtractedAssistantOutput = streamResult.Content;
 
         var finalResult = new ChatSendResult
         {
@@ -1215,14 +1212,15 @@ public sealed class ChatApiController : ControllerBase
         int requestTimeoutSeconds,
         Dictionary<string, string>? extraHeaders,
         CancellationToken cancellationToken,
-        string? googleProjectId = null)
+        string? googleProjectId = null,
+        string? egressProxyUrl = null, AccountIdentity? accountIdentity = null, Guid? siteId = null, string? managedSource = null)
     {
         // 提前构建请求体，供调用方记录到尝试详情
         // BuildChatRequestBody 内部已按协议类型完成转换（Responses 会调用 ConvertChatRequestToResponses），
         // 这里不能再二次转换——否则传入的已是 Responses 体（无 messages 字段），二次转换会得到空 input 数组，
         // 导致上游返回 "One of input or previous_response_id ... must be provided."。
         var requestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
-        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等）。
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数。
         var isGeminiStream = string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
         if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
@@ -1230,22 +1228,63 @@ public sealed class ChatApiController : ControllerBase
         }
         else if (isGeminiStream)
         {
-            // master 同步：Gemini 上游经协议桥转 v1internal 封套（流式端点）。
+            // Gemini 上游：OpenAI 形态请求体经协议桥转换为 v1internal 封套（流式端点）。
             requestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI", "Gemini", requestBody, targetModelName, true,
                 null, baseUrl, null, isPassthrough: false, isCompact: false,
                 geminiProjectId: googleProjectId);
         }
 
-        var client = _httpClientFactory.CreateClient();
-        // 这里同样交给运行时设置控制超时，避免落回 HttpClient 默认 100 秒。
-        client.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, requestTimeoutSeconds)));
         var stopwatch = Stopwatch.StartNew();
+        var refreshAttempted = false;
 
         try
         {
+          while (true)
+          {
+            var networkRequest = await PrepareForwardAsync(new ProxyForwardRequest
+            {
+                TargetBaseUrl = baseUrl, TargetEndpointPathMode = endpointPathMode,
+                TargetApiKey = apiKey, ProtocolType = protocolType, TargetModelName = targetModelName,
+                RequestBody = requestBody, PreparedRequestBody = requestBody, EnableStreaming = true,
+                EgressProxyUrl = egressProxyUrl, AccountIdentity = accountIdentity,
+                SiteId = siteId, ManagedSource = managedSource,
+                ForwardHeaders = extraHeaders ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            }, timeoutCts.Token);
+            requestBody = networkRequest.PreparedRequestBody!;
+            extraHeaders = networkRequest.ForwardHeaders;
+            var credentialResolver = HttpContext.RequestServices.GetService<IForwardCredentialResolver>()
+                ?? throw new InvalidOperationException("Forward credential resolver is unavailable.");
+            ForwardCredentialLease credential;
+            try { credential = await credentialResolver.ResolveAsync(networkRequest, timeoutCts.Token); }
+            catch (OperationCanceledException) { throw new OperationCanceledException(timeoutCts.Token); }
+            using var ownedCredential = credential;
+            INetworkTransportLease? acquired = null;
+            HttpClient? defaultClient = null;
+            try
+            {
+                if (_networkPolicies is not null)
+                {
+                    var policy = await _networkPolicies.ResolveAsync(networkRequest, timeoutCts.Token);
+                    if (!policy.UseDefaultClient)
+                        acquired = await (_networkTransport ?? throw new InvalidOperationException("Network transport is unavailable."))
+                            .AcquireAsync(policy.Configuration, policy.IsolationKey, "admin-chat-stream", timeoutCts.Token);
+                }
+                else if (accountIdentity is not null || !string.IsNullOrWhiteSpace(egressProxyUrl))
+                    throw new InvalidOperationException("Network policy resolver is unavailable.");
+            }
+            catch (OperationCanceledException) { throw new OperationCanceledException(timeoutCts.Token); }
+            catch (Exception) { throw new NetworkPolicyException("forward_network_policy_failed", "Forward network policy validation failed."); }
+            await using var lease = acquired;
+            if (lease is null)
+            {
+                defaultClient = _httpClientFactory.CreateClient();
+                defaultClient.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
+            }
+            using var ownedClient = defaultClient;
+            var client = lease?.Client ?? defaultClient!;
             var targetUrl = isGeminiStream
                 ? $"{baseUrl.TrimEnd('/')}/v1internal:streamGenerateContent?alt=sse"
                 : string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
@@ -1258,30 +1297,63 @@ public sealed class ChatApiController : ControllerBase
                 Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
             };
 
-            if (protocolType == "Anthropic")
+            Task<HttpResponseMessage> sendTask;
+            var sendKey = credential.UseResolvedApiKey ? credential.ApiKey : apiKey;
             {
-                httpRequest.Headers.Add("x-api-key", apiKey);
-                httpRequest.Headers.Add("anthropic-version", "2023-06-01");
-            }
-            else
-            {
-                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
-            }
-
-            // 注入 Site.ExtraHeadersJson 中的自定义请求头（Codex 的 Originator / Chatgpt-Account-Id / User-Agent 等）
-            if (extraHeaders != null && extraHeaders.Count > 0)
-            {
-                foreach (var header in extraHeaders)
+                if (protocolType == "Anthropic")
                 {
-                    httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    foreach (var (name, value) in ProxyForwardService.ResolveAnthropicAuthHeaders(sendKey, networkRequest.ForwardHeaders))
+                        httpRequest.Headers.TryAddWithoutValidation(name, value);
+                    httpRequest.Headers.Add("anthropic-version", "2023-06-01");
                 }
-            }
+                else
+                {
+                    httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", sendKey);
+                }
 
-            using var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                if (extraHeaders != null)
+                {
+                    foreach (var header in extraHeaders)
+                    {
+                        if (credential.IsDeviceOAuth && (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(header.Key, "x-api-key", StringComparison.OrdinalIgnoreCase))) continue;
+                        httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    }
+                }
+                sendTask = client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            }
+            credential.Dispose(); // The gate protects initiation, not response or SSE consumption.
+            using var response = await sendTask;
             if (!response.IsSuccessStatusCode)
             {
                 stopwatch.Stop();
-                var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                string errorBody;
+                try { errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token); }
+                catch (Exception ex) when (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && ex is not OperationCanceledException && !timeoutCts.Token.IsCancellationRequested) { errorBody = string.Empty; }
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    if (!refreshAttempted && networkRequest.RefreshTargetApiKeyAsync is not null)
+                    {
+                        // Revalidate the network selection before refresh performs its own I/O.
+                        if (_networkPolicies is not null)
+                            await _networkPolicies.ResolveAsync(networkRequest, timeoutCts.Token);
+                        refreshAttempted = true;
+                        // 401 刷新必须与后续重试共享原始请求超时预算，不能传仅代表客户端断开的 cancellationToken。
+                        var refreshed = await networkRequest.RefreshTargetApiKeyAsync(sendKey, timeoutCts.Token);
+                        if (!string.IsNullOrWhiteSpace(refreshed))
+                        {
+                            apiKey = refreshed;
+                            stopwatch.Start();
+                            continue;
+                        }
+                    }
+                    if (networkRequest.InvalidateTargetCredentialAsync is not null)
+                    {
+                        try { await networkRequest.InvalidateTargetCredentialAsync(sendKey, credential.CredentialSnapshot, timeoutCts.Token); }
+                        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested) { throw; }
+                        catch (Exception) { /* Preserve the upstream response if persistence fails. */ }
+                    }
+                }
                 return new ChatStreamForwardResult
                 {
                     Success = false,
@@ -1355,8 +1427,9 @@ public sealed class ChatApiController : ControllerBase
                     timeoutCts.Token);
             }
 
-            // master 同步：Gemini 收尾块的 usage 存于跨块状态，不一定再产出带 usage 的 OpenAI chunk，
-            // 流结束前显式合并，避免聊天页 usage 恒为 0。
+            // Gemini 的最后一块常见为“文本 + finishReason + usageMetadata”：转换器会把
+            // usage 放在跨块状态中，但不一定再产生一个带 usage 的 OpenAI chunk。
+            // 流结束前显式合并，避免聊天页和 chat 来源 usage log 仍然是全 0。
             if (state.GeminiState is { } geminiState)
             {
                 state.InputTokens = Math.Max(state.InputTokens, geminiState.InputTokens);
@@ -1386,6 +1459,11 @@ public sealed class ChatApiController : ControllerBase
                 RequestBody = requestBody,
                 ResponseBody = responseBodySummary
             };
+          }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -1584,10 +1662,14 @@ public sealed class ChatApiController : ControllerBase
         /// 是否收到过有效内容。
         /// </summary>
         public bool HadAnyContent { get; set; }
-        /// <summary>Responses 上游 SSE → Chat 桥接状态（master：对象化状态机聚合 output_text.delta）。</summary>
-        public AITool.Protocol.ResponsesToChatStreamState? ResponsesState { get; set; }
-        /// <summary>master 同步：Gemini 上游流 → OpenAI chunk 的桥接状态。</summary>
-        public AITool.Protocol.ProxyProtocolBridge.GeminiToOpenAiStreamState? GeminiState { get; set; }
+        /// <summary>
+        /// Responses 流式转换的跨事件状态。
+        /// </summary>
+        public ResponsesToChatStreamState? ResponsesState { get; set; }
+        /// <summary>
+        /// Gemini 流式转换的跨事件状态（usage 与收尾判定）。
+        /// </summary>
+        public ProxyProtocolBridge.GeminiToOpenAiStreamState? GeminiState { get; set; }
     }
 
     /// <summary>
@@ -1616,17 +1698,18 @@ public sealed class ChatApiController : ControllerBase
             return true;
         }
 
-        // master 同步：Gemini 上游流块先转 OpenAI chunk 再复用 OpenAI 解析（收尾块带 usage/finish_reason）。
+        // Gemini 上游流块：先转为 OpenAI chunk 再复用 OpenAI 解析逻辑（收尾块带 usage/finish_reason）。
         if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
         {
-            state.GeminiState ??= new AITool.Protocol.ProxyProtocolBridge.GeminiToOpenAiStreamState();
-            var geminiConverted = AITool.Protocol.ProxyProtocolBridge.ConvertGeminiSseChunkToOpenAi(
+            state.GeminiState ??= new ProxyProtocolBridge.GeminiToOpenAiStreamState();
+            var geminiConverted = ProxyProtocolBridge.ConvertGeminiSseChunkToOpenAi(
                 data, string.Empty, "chatcmpl-debug", state.GeminiState);
             if (string.IsNullOrEmpty(geminiConverted)
                 && state.GeminiState.FinishReason is not null
                 && !state.GeminiState.Completed)
             {
-                geminiConverted = AITool.Protocol.ProxyProtocolBridge.CompleteGeminiToOpenAiStream(
+                // 无内容增量但已收到 finishReason 的收尾块：补发 finish_reason + usage 完成信号。
+                geminiConverted = ProxyProtocolBridge.CompleteGeminiToOpenAiStream(
                     string.Empty, "chatcmpl-debug", state.GeminiState);
             }
 
@@ -1646,14 +1729,38 @@ public sealed class ChatApiController : ControllerBase
             protocolType = "OpenAI";
         }
 
-        using var doc = JsonDocument.Parse(data);
-        var root = doc.RootElement;
+        // 部分上游会发送非 JSON 的保活帧（空 data、注释行、纯文本 ping 等），
+        // 解析失败只跳过该块继续读流，不能让整次尝试被标记失败（内容可能已正常推给用户）。
+        var doc = TryParseSseJson(data);
+        if (doc is null)
+        {
+            return false;
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
 
         if (protocolType == "Anthropic")
         {
             if (eventName == "message_start" && root.TryGetProperty("message", out var message) && message.TryGetProperty("usage", out var usage))
             {
-                state.InputTokens = usage.TryGetProperty("input_tokens", out var input) ? input.GetInt32() : state.InputTokens;
+                // Anthropic 的 input_tokens 已含缓存（cache_read + cache_creation 是其子集），
+                // 减去缓存才是"新输入"，缓存单独记入 CachedTokens，避免重复统计。
+                var inputTokens = usage.TryGetProperty("input_tokens", out var input) ? input.GetInt32() : state.InputTokens;
+                var cachedTokens = 0;
+                if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
+                {
+                    cachedTokens += readCache.GetInt32();
+                }
+
+                if (usage.TryGetProperty("cache_creation_input_tokens", out var createCache))
+                {
+                    cachedTokens += createCache.GetInt32();
+                }
+
+                state.InputTokens = Math.Max(0, inputTokens - cachedTokens);
+                state.CachedTokens = cachedTokens;
                 state.OutputTokens = usage.TryGetProperty("output_tokens", out var output) ? output.GetInt32() : state.OutputTokens;
             }
             else if (eventName == "message_delta" && root.TryGetProperty("usage", out var deltaUsage))
@@ -1698,8 +1805,7 @@ public sealed class ChatApiController : ControllerBase
 
         if (protocolType == "Responses")
         {
-            // master 同步：对象化状态机聚合（output_text.delta 重建内容 + usage 还原）。
-            state.ResponsesState ??= new AITool.Protocol.ResponsesToChatStreamState
+            state.ResponsesState ??= new ResponsesToChatStreamState
             {
                 Model = string.Empty,
                 InputTokens = state.InputTokens,
@@ -1740,6 +1846,22 @@ public sealed class ChatApiController : ControllerBase
 
         await ProcessOpenAiChunkAsync(root, stopwatch, onContentChunk, onReasoningChunk, contentBuilder, reasoningBuilder, state, cancellationToken);
         return false;
+        }
+    }
+
+    /// <summary>
+    /// 安全解析 SSE data 块为 JSON；非 JSON 文本（保活帧等）返回 null，由调用方跳过。
+    /// </summary>
+    private static JsonDocument? TryParseSseJson(string data)
+    {
+        try
+        {
+            return JsonDocument.Parse(data);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -1750,6 +1872,19 @@ public sealed class ChatApiController : ControllerBase
         if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
             responseBody = ProxyProtocolBridge.ConvertResponsesResponseToChat(responseBody, string.Empty, 0, 0, 0);
+            protocolType = "OpenAI";
+        }
+
+        if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            // Gemini 响应先转为 OpenAI 形态，再复用 OpenAI 解析。
+            var converted = ProxyProtocolBridge.BuildOpenAiResponseFromGemini(responseBody, string.Empty);
+            if (string.IsNullOrEmpty(converted))
+            {
+                return (responseBody, string.Empty);
+            }
+
+            responseBody = converted;
             protocolType = "OpenAI";
         }
 
@@ -1833,7 +1968,9 @@ public sealed class ChatApiController : ControllerBase
         SseBlockProcessState state,
         CancellationToken cancellationToken)
     {
-        if (root.TryGetProperty("usage", out var rootUsage))
+        // OpenAI 兼容流通常在非统计分片中返回 usage:null，不能对 null 调用 TryGetProperty。
+        if (root.TryGetProperty("usage", out var rootUsage)
+            && rootUsage.ValueKind == JsonValueKind.Object)
         {
             (state.InputTokens, state.CachedTokens, state.OutputTokens) = ExtractUsageMetrics(rootUsage, state.InputTokens, state.CachedTokens, state.OutputTokens);
         }
@@ -1904,7 +2041,9 @@ public sealed class ChatApiController : ControllerBase
             cachedTokens = cached.GetInt32();
         }
 
-        return (inputTokens, cachedTokens, outputTokens);
+        // OpenAI 的 prompt_tokens 已含缓存命中部分，返回的输入统一为"不含缓存的新输入"，
+        // 保证 新输入 + 缓存 + 输出 = 总 token 且缓存不重复统计。
+        return (Math.Max(0, inputTokens - cachedTokens), cachedTokens, outputTokens);
     }
 
     /// <summary>
@@ -1938,6 +2077,11 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private static string ExtractReasoningText(JsonElement element)
     {
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return string.Empty;
+        }
+
         var directText = ExtractElementText(element, "reasoning_content", "reasoning", "thinking", "summary_text", "output_text", "text");
         if (!string.IsNullOrWhiteSpace(directText))
         {
@@ -1970,6 +2114,11 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private static string ExtractElementText(JsonElement element, params string[] propertyNames)
     {
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return string.Empty;
+        }
+
         foreach (var propertyName in propertyNames)
         {
             if (!element.TryGetProperty(propertyName, out var value))
@@ -2018,5 +2167,4 @@ public sealed class ChatApiController : ControllerBase
             values.Add(value.Trim());
         }
     }
-
 }

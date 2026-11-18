@@ -76,6 +76,11 @@ builder.Services.AddHostedService<InProcessCoreEventConsumerHostedService>();
 
 var app = builder.Build();
 
+// 执行管理后台启动初始化：数据库创建、Schema 迁移（与 Admin 宿主一致——
+// AllInOne 同样承载管理面，测试宿主与首启都需要建表）。
+var aioInitLogger = app.Services.GetRequiredService<ILogger<Program>>();
+await AITool.Infrastructure.Persistence.AdminStartupInitializer.InitializeAsync(app.Services, aioInitLogger);
+
 // 代理事件接线：追踪完成/熔断事件 → Core 事件总线（AllInOne 由进程内消费者入库）。
 
 // ===================== 管道 =====================
@@ -118,6 +123,9 @@ if (!app.Environment.IsEnvironment("Testing") && (builder.Configuration.GetValue
 // 认证与授权（与 Admin 宿主同款 JWT 管道；代理端点 /v1/* 不走 ASP.NET 认证）。
 app.UseAuthentication();
 app.UseAuthorization();
+
+// 网关增强中间件（master 同步）：keep-alive 稳定性、密钥预算闸、共享工具/MCP 出口。
+app.UseMiddleware<AITool.Infrastructure.Proxy.GatewayEnhancementMiddleware>();
 
 // 健康检查端点匿名放行。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();

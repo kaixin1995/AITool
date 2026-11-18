@@ -31,11 +31,9 @@ public static partial class ClientEmulationEngine
         string? projectId = null,
         bool isAntigravity = false)
     {
-        var normalizedPreset = ClientEmulationConstants.Normalize(emulationPreset);
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        // 1. 载入预设客户端的基础特征头
-        ApplyPresetHeaders(result, normalizedPreset, modelName, projectId, isAntigravity);
+        // Keep the unevaluated source of preset headers available to reference ownership
+        // verification. Both paths must use the same templates, not a name-only allowlist.
+        var result = GetPresetHeaderTemplates(emulationPreset, modelName, projectId, isAntigravity);
 
         // 2. 覆盖/叠加用户自定义的 ExtraHeaders
         if (extraHeaders != null && extraHeaders.Count > 0)
@@ -57,6 +55,15 @@ public static partial class ClientEmulationEngine
         }
 
         return evaluated;
+    }
+
+    /// <summary>Returns the built-in, unevaluated templates for the selected preset.</summary>
+    public static Dictionary<string, string> GetPresetHeaderTemplates(
+        string? emulationPreset, string? modelName = null, string? projectId = null, bool isAntigravity = false)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        ApplyPresetHeaders(result, ClientEmulationConstants.Normalize(emulationPreset), modelName, projectId, isAntigravity);
+        return result;
     }
 
     /// <summary>
@@ -147,6 +154,43 @@ public static partial class ClientEmulationEngine
             case ClientEmulationConstants.Antigravity:
                 // Google Antigravity 官方 CLI 真实特征（对齐 agy 1.1.20 抓包，HTTP 请求头仅设置官方 User-Agent）
                 headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
+                break;
+
+            case ClientEmulationConstants.WorkBuddy:
+                // WorkBuddy（腾讯 CodeBuddy）官方客户端特征（对齐 5.9.3 / CLI 2.165.0 真实抓包，渠道校验通过形态）。
+                // 会话类 ID 每请求动态生成；X-User-Id / X-Domain / X-Machine-ID / X-Session-ID 为账号级身份头，
+                // 由设备 OAuth 托管站点按账号注入，或由站点自定义头（ExtraHeaders）覆盖。
+                headers["User-Agent"] = WorkBuddyClientConstants.ChatUserAgent("WorkBuddy");
+                headers["Accept-Language"] = "zh-CN";
+                headers["X-Requested-With"] = "XMLHttpRequest";
+                headers["X-Agent-Intent"] = "craft";
+                headers["X-Agent-Purpose"] = "conversation";
+                headers["X-Agent-Runtime"] = "local-agent";
+                headers["X-Agent-Type"] = "main";
+                headers["X-CodeBuddy-Request"] = "1";
+                headers["X-Conversation-ID"] = "${guid}";
+                headers["X-Conversation-Message-ID"] = "${guid}";
+                headers["X-Conversation-Request-ID"] = "${guid}";
+                headers["X-Root-Request-ID"] = "${guid}";
+                headers["acp-connection-id"] = "${guid}";
+                headers["X-IDE-Type"] = "WorkBuddy";
+                headers["X-IDE-Name"] = "WorkBuddy";
+                headers["X-IDE-Version"] = WorkBuddyClientConstants.ClientVersion;
+                headers["X-Product"] = "SaaS";
+                headers["X-Request-ID"] = "${guid}";
+                headers["x-stainless-arch"] = "x64";
+                headers["x-stainless-lang"] = "js";
+                headers["x-stainless-os"] = "Windows";
+                headers["x-stainless-package-version"] = WorkBuddyClientConstants.StainlessPackageVersion;
+                headers["x-stainless-retry-count"] = "0";
+                headers["x-stainless-runtime"] = "node";
+                headers["x-stainless-runtime-version"] = WorkBuddyClientConstants.StainlessRuntimeVersion;
+                // 内部标记（不透传）：转发层据此做 WorkBuddy 渠道校验 11128 的请求体内容适配。
+                headers[ProxyForwardService.RewriteChannelHeader] = "workbuddy";
+                // 内部标记（不透传）：WorkBuddy 上游只接受流式请求（code 11101「Non-stream chat request is currently not supported」）。
+                // 转发层据此把非流式请求体改写为 stream:true+include_usage，收到 SSE 后聚合回完整 JSON，客户端无感；
+                // 站点/模型/映射自定义头（ExtraHeaders）可通过显式设为 "false" 关闭该处理。
+                headers[ProxyForwardService.ForceStreamHeader] = "true";
                 break;
 
             case ClientEmulationConstants.None:

@@ -64,6 +64,12 @@ public sealed class CoreRuntimeConfigSnapshot
     public List<CoreRuntimeAccountCredential> AccountCredentials { get; set; } = [];
 
     /// <summary>
+    /// 账号网络策略（Legacy/Direct/ProxyProfile 三态的快照投影，master 同步）。
+    /// Core 无数据库，发送边界的账号级出站策略从这里读取；ProxyProfile 模式仅带已解析的明文代理地址。
+    /// </summary>
+    public List<CoreRuntimeAccountNetworkPolicy> AccountNetworkPolicies { get; set; } = [];
+
+    /// <summary>
     /// 请求头模板档案（HeaderProfile），Core 侧客户端特征模拟的模板来源。
     /// </summary>
     public List<CoreRuntimeHeaderProfile> HeaderProfiles { get; set; } = [];
@@ -588,4 +594,29 @@ public sealed class CoreRuntimeProxyProfile
 
     /// <summary>是否启用。</summary>
     public bool IsEnabled { get; set; } = true;
+}
+
+/// <summary>
+/// Core 运行时账号网络策略项（AccountNetworkPolicy 的快照投影，master 同步）。
+/// ProxyProfile 模式由 Admin 侧预解析为明文代理地址（快照文件即信任边界，与 refresh token 同级）。
+/// </summary>
+public sealed class CoreRuntimeAccountNetworkPolicy
+{
+    /// <summary>提供商标识（codex/google/kimi/xai/device-oauth）。</summary>
+    public string ProviderKey { get; set; } = string.Empty;
+
+    /// <summary>账号标识。</summary>
+    public Guid AccountId { get; set; }
+
+    /// <summary>策略模式：Legacy | Direct | ProxyProfile。</summary>
+    public string Mode { get; set; } = "Legacy";
+
+    /// <summary>ProxyProfile 模式下已解析的代理地址；其他模式为空。</summary>
+    public string ProxyUrl { get; set; } = string.Empty;
+
+    /// <summary>是否启用（禁用的策略按 Legacy 处理）。</summary>
+    public bool IsEnabled { get; set; } = true;
+
+    /// <summary>策略修订号（并发写检测）。</summary>
+    public long Revision { get; set; }
 }

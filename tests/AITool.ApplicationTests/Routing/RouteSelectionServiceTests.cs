@@ -35,6 +35,7 @@ public sealed class ProxyForwardServiceTests
 
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
+            AllowNonSiteTarget = true,
             TargetBaseUrl = "https://unit.test",
             TargetApiKey = "token",
             ProtocolType = "OpenAI",
@@ -72,6 +73,7 @@ public sealed class ProxyForwardServiceTests
 
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
+            AllowNonSiteTarget = true,
             TargetBaseUrl = "https://unit.test",
             TargetApiKey = "token",
             ProtocolType = "OpenAI",
@@ -113,6 +115,7 @@ public sealed class ProxyForwardServiceTests
 
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
+            AllowNonSiteTarget = true,
             TargetBaseUrl = "https://unit.test",
             TargetApiKey = "token",
             ProtocolType = "Anthropic",
@@ -149,6 +152,7 @@ public sealed class ProxyForwardServiceTests
 
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
+            AllowNonSiteTarget = true,
             TargetBaseUrl = "https://unit.test",
             TargetApiKey = "token",
             ProtocolType = "OpenAI",

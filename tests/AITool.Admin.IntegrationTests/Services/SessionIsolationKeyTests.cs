@@ -6,6 +6,7 @@ using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Admin.Services;
+using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Networking;
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;

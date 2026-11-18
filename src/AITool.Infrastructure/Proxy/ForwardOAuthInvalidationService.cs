@@ -7,7 +7,11 @@ using AITool.Domain.Sites;
 using AITool.Domain.Xai;
 using AITool.Infrastructure.Persistence;
 
-namespace AITool.Admin.Services;
+namespace AITool.Infrastructure.Proxy;
+
+/// <summary>发送边界捕获的凭证快照（master：401 后置失效对账用）。</summary>
+public sealed record ForwardOAuthCredentialSnapshot(string Provider, Guid AccountId, Guid SiteId,
+    string? AccessToken, string? RefreshToken, DateTimeOffset? LastRefreshAt);
 
 /// <summary>Persists only a rejection of the credential actually sent, not a stale response.</summary>
 public class ForwardOAuthInvalidationService(AppDbContext db, ProxyRequestMetadataCache cache)

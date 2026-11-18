@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using AITool.Core.Services;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Proxy;
@@ -13,6 +14,27 @@ public static class CoreProgramServices
     public static void AddCoreProxyHostServices(this WebApplicationBuilder builder)
     {
         builder.Services.AddSingleton<ModelConcurrencyQueryService>();
+
+        // —— 发送边界解析（master 同步：账号网络策略 + 凭证复验）——
+        // Core 无数据库，用配置快照形态实现；Admin/AllInOne 走 AdminProgramServices 注册的 DB 形态。
+        // 注意：本段由 Core 宿主独占（Program 直调），不放共享段以免 AllInOne 双注册覆盖 DB 形态。
+        // 出站传输：Core 形态同样需要（发送边界策略解析非 Legacy 时经传输出站）；测试按需覆写为 stub。
+        builder.Services.AddSingleton<AITool.Application.Networking.INetworkTransport, AITool.Infrastructure.Networking.NetworkTransport>();
+
+        // —— 网关增强（master：稳定性 keep-alive/预算闸/共享工具；文件型配置随宿主部署）——
+        builder.Services.AddDataProtection().SetApplicationName("AITool.NetworkSecurity.v1");
+        builder.Services.AddSingleton<GatewayEnhancementSettings>();
+        builder.Services.AddSingleton<GatewayBudgetGate>();
+        builder.Services.AddScoped<GatewayRequestContext>();
+        builder.Services.AddSingleton<AITool.Application.Proxy.IStreamEnhancementPolicy, GatewayStreamPolicy>();
+        builder.Services.AddSingleton<RouteAttemptTracker>();
+        // 路由候选策略（配额感知排序/会话亲和/分级冷却；开关默认全关）。
+        builder.Services.AddSingleton<SessionAffinityService>();
+        builder.Services.AddSingleton<RouteCandidatePolicyService>();
+        // 设备 OAuth 凭证刷新（Core 占位实现：真轮换在 Admin，见 SnapshotForwardResolvers 注释）。
+        builder.Services.AddSingleton<DeviceOAuthCredentialRefreshService>();
+        builder.Services.AddHttpClient("gateway-tools", c => c.Timeout = TimeSpan.FromSeconds(60))
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false });
 
         // —— 托管 OAuth 账号的 Core 侧无库能力（401 即刷 / 403 禁用，split 双宿主）——
         // OAuth 客户端是纯 HTTP 实现（Infrastructure），Core 可直接复用；刷新后经事件总线回传 Admin 落库。
