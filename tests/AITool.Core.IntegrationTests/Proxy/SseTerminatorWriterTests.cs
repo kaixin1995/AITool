@@ -9,6 +9,7 @@ using Xunit;
 
 namespace AITool.Core.IntegrationTests.Proxy;
 
+[Collection("HeavyIoSerialized")]
 public class SseTerminatorWriterTests
 {
     [Fact]

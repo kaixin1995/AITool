@@ -44,6 +44,8 @@ const showModal = ref(false)
 const isEditing = ref(false)
 const currentId = ref<string | null>(null)
 const modalSubmitting = ref(false)
+const currentHasCredentials = ref(false)
+const credentialActionOptions = [{ label: '保留现有凭据 (Keep)', value: 'Keep' }, { label: '替换凭据 (Replace)', value: 'Replace' }, { label: '清除凭据 (Clear)', value: 'Clear' }]
 
 const proxyScheme = ref('http')
 const proxyHost = ref('127.0.0.1')
@@ -64,6 +66,8 @@ function splitProxyUrl(proxyUrl: string): { scheme: string; host: string; port: 
     scheme = schemeMatch[1].toLowerCase()
     rest = schemeMatch[2].trim()
   }
+  // API endpoints are sanitized; credentials never belong in host inputs.
+  rest = rest.slice(rest.lastIndexOf('@') + 1)
   // 尾部 :端口（IPv6 除外：多个冒号视为原始主机地址不作端口切分）
   const portMatch = rest.match(/^(.+):(\d{1,5})$/)
   if (portMatch && rest.split(':').length === 2) {
@@ -110,6 +114,7 @@ async function loadProfiles() {
 function openCreateModal() {
   isEditing.value = false
   currentId.value = null
+  currentHasCredentials.value = false
   modalTestResult.value = null
   proxyScheme.value = 'http'
   proxyHost.value = '127.0.0.1'
@@ -120,6 +125,9 @@ function openCreateModal() {
     proxyUrl: buildProxyUrl(),
     description: '',
     isEnabled: true,
+    credentialAction: 'Keep',
+    username: '',
+    password: '',
     sortOrder: (profiles.value.length + 1) * 10
   }
   showModal.value = true
@@ -128,6 +136,7 @@ function openCreateModal() {
 function openEditModal(profile: ProxyProfile) {
   isEditing.value = true
   currentId.value = profile.id
+  currentHasCredentials.value = profile.hasCredentials
   modalTestResult.value = null
   const parsedProxy = splitProxyUrl(profile.proxyUrl)
   proxyScheme.value = parsedProxy.scheme
@@ -139,15 +148,20 @@ function openEditModal(profile: ProxyProfile) {
     proxyUrl: buildProxyUrl(),
     description: profile.description || '',
     isEnabled: profile.isEnabled,
-    sortOrder: profile.sortOrder
+    sortOrder: profile.sortOrder,
+    revision: profile.revision,
+    credentialAction: 'Keep',
+    username: '',
+    password: ''
   }
   showModal.value = true
 }
 
-async function handleTestNode(proxyUrl: string) {
+async function handleTestNode(profile: ProxyProfile) {
+  const proxyUrl = profile.id
   testStatus.value[proxyUrl] = { loading: true }
   try {
-    const res = await testProxyProfile({ proxyUrl })
+    const res = await testProxyProfile({ profileId: profile.id })
     if (res.isSuccess) {
       testStatus.value[proxyUrl] = { loading: false, success: true, latencyMs: res.latencyMs }
       message.success(`连接成功！延迟 ${res.latencyMs} ms`)
@@ -172,7 +186,7 @@ async function handleTestInModal() {
   modalTesting.value = true
   modalTestResult.value = null
   try {
-    const res = await testProxyProfile({ proxyUrl })
+    const res = await testProxyProfile(isEditing.value && currentId.value ? { profileId: currentId.value } : { proxyUrl })
     modalTestResult.value = {
       isSuccess: res.isSuccess,
       latencyMs: res.latencyMs,
@@ -215,7 +229,10 @@ async function handleSave() {
     proxyUrl,
     description: formModel.value.description?.trim() || null,
     isEnabled: formModel.value.isEnabled,
-    sortOrder: formModel.value.sortOrder
+    sortOrder: formModel.value.sortOrder,
+    revision: formModel.value.revision,
+    credentialAction: formModel.value.credentialAction ?? 'Keep',
+    ...(formModel.value.credentialAction === 'Replace' ? { username: formModel.value.username, password: formModel.value.password } : {})
   }
 
   modalSubmitting.value = true
@@ -254,9 +271,12 @@ async function handleToggle(profile: ProxyProfile) {
       proxyUrl: profile.proxyUrl,
       description: profile.description,
       isEnabled: profile.isEnabled,
-      sortOrder: profile.sortOrder
+      sortOrder: profile.sortOrder,
+      revision: profile.revision,
+      credentialAction: 'Keep'
     })
     message.success(`已${profile.isEnabled ? '启用' : '禁用'}方案「${profile.name}」`)
+    await loadProfiles()
   } catch (err: any) {
     profile.isEnabled = !profile.isEnabled
     message.error('切换状态失败')
@@ -349,26 +369,27 @@ onMounted(loadProfiles)
               <span class="url-text" :title="p.proxyUrl">{{ p.proxyUrl }}</span>
             </div>
 
+            <NTag size="small" :type="p.hasCredentials ? 'success' : 'default'">{{ p.hasCredentials ? '已配置认证凭据' : '无认证凭据' }}</NTag>
             <div class="card-desc" :title="p.description || '无备注说明'">
               {{ p.description || '无备注说明' }}
             </div>
 
             <!-- 测速结果显示 -->
             <div class="card-test-bar">
-              <template v-if="testStatus[p.proxyUrl]?.loading">
+              <template v-if="testStatus[p.id]?.loading">
                 <NTag size="tiny" type="info" :bordered="false">测速中...</NTag>
               </template>
-              <template v-else-if="testStatus[p.proxyUrl]?.success">
+              <template v-else-if="testStatus[p.id]?.success">
                 <NTag size="tiny" type="success" :bordered="false">
-                  ⚡ 延迟: {{ testStatus[p.proxyUrl]?.latencyMs }} ms
+                  ⚡ 延迟: {{ testStatus[p.id]?.latencyMs }} ms
                 </NTag>
               </template>
-              <template v-else-if="testStatus[p.proxyUrl]?.error">
+              <template v-else-if="testStatus[p.id]?.error">
                 <NTooltip trigger="hover">
                   <template #trigger>
                     <NTag size="tiny" type="error" :bordered="false">❌ 连接失败</NTag>
                   </template>
-                  {{ testStatus[p.proxyUrl]?.error }}
+                  {{ testStatus[p.id]?.error }}
                 </NTooltip>
               </template>
             </div>
@@ -380,8 +401,8 @@ onMounted(loadProfiles)
                 size="tiny"
                 secondary
                 type="info"
-                :loading="testStatus[p.proxyUrl]?.loading"
-                @click="handleTestNode(p.proxyUrl)"
+                :loading="testStatus[p.id]?.loading"
+                @click="handleTestNode(p)"
               >
                 连通性测试
               </NButton>
@@ -406,6 +427,7 @@ onMounted(loadProfiles)
 
     <!-- 新增 / 编辑弹窗 -->
     <NModal
+      @after-leave="formModel.password = ''; formModel.username = ''"
       v-model:show="showModal"
       preset="card"
       :title="isEditing ? '编辑代理方案' : '新增代理方案'"
@@ -445,6 +467,18 @@ onMounted(loadProfiles)
             </NButton>
           </div>
           <div class="proxy-url-preview">完整地址：{{ buildProxyUrl() || `${proxyScheme}://IP:端口` }}</div>
+        </NFormItem>
+
+        <NFormItem label="认证凭据">
+          <NSpace vertical style="width: 100%">
+            <span>{{ currentHasCredentials ? '已保存凭据（不会回显）' : '未保存凭据' }}</span>
+            <NSelect v-model:value="formModel.credentialAction" :options="credentialActionOptions" />
+            <template v-if="formModel.credentialAction === 'Replace'">
+              <NInput v-model:value="formModel.username" placeholder="代理用户名" autocomplete="off" />
+              <NInput v-model:value="formModel.password" type="password" show-password-on="click" placeholder="新代理密码（不会预填）" autocomplete="new-password" />
+            </template>
+            <small>测试已有方案使用已保存地址和凭据；修改后请先保存再测试。新凭据仅在保存时提交。</small>
+          </NSpace>
         </NFormItem>
 
         <!-- 弹窗内测速结果提示 -->

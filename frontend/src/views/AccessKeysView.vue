@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from 'vue'
-import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NPopconfirm, NAlert, NCheckbox, NCheckboxGroup, NEmpty, useMessage, type DataTableColumns } from 'naive-ui'
+import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NPopconfirm, NAlert, NCheckbox, NCheckboxGroup, NEmpty, useMessage, type DataTableColumns } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/accessKeys'
 import * as routesApi from '@/api/routes'
 import type { AccessKeyItem } from '@/api/accessKeys'
+import { httpGet, httpPost } from '@/api/http'
+
+type BudgetPeriod = 'day' | 'week' | 'month'
+interface KeyBudget { keyId: string; period: BudgetPeriod; tokenLimit: number; costLimitUsd: number }
+interface BudgetUsage { keyId: string; period: BudgetPeriod; usedTokens: number; usedCostUsd: number; hasUnpricedUsage: boolean }
+interface BudgetConfiguration { revision: string; budgets: KeyBudget[]; [key: string]: unknown }
 
 const message = useMessage()
 const loading = ref(false)
@@ -15,6 +21,105 @@ const newKeyPlain = ref('')
 const newKeyRoutes = ref<string[]>([])
 const saving = ref(false)
 const copyingKeyId = ref<string | null>(null)
+const deletingKeyId = ref<string | null>(null)
+const budgetVisible = ref(false)
+const budgetKey = ref<AccessKeyItem | null>(null)
+const budgets = ref<KeyBudget[]>([])
+const budgetUsage = ref<BudgetUsage[]>([])
+const budgetLoading = ref(false)
+const budgetSaving = ref(false)
+const budgetReady = ref(false)
+const budgetError = ref('')
+let originalBudgets = ''
+let budgetRequestSequence = 0
+const periodOptions = [{ label: '每天', value: 'day' }, { label: '每周（周一重置）', value: 'week' }, { label: '每月', value: 'month' }]
+
+function budgetSignature(rows: KeyBudget[]): string {
+  return JSON.stringify(rows.map(b => ({ period: b.period, tokenLimit: b.tokenLimit, costLimitUsd: b.costLimitUsd })).sort((a, b) => a.period.localeCompare(b.period)))
+}
+
+async function loadBudgets(): Promise<void> {
+  if (!budgetKey.value || !budgetVisible.value || budgetSaving.value) return
+  const keyId = budgetKey.value.id
+  const sequence = ++budgetRequestSequence
+  const isCurrent = () => sequence === budgetRequestSequence && budgetVisible.value && budgetKey.value?.id === keyId
+  budgetLoading.value = true
+  budgetReady.value = false
+  budgetError.value = ''
+  try {
+    const [configuration, usage, status] = await Promise.all([
+      httpGet<BudgetConfiguration>('/api/admin/gateway-enhancements'),
+      httpGet<BudgetUsage[]>('/api/admin/gateway-enhancements/budgets'),
+      httpGet<{ configurationError: string | null }>('/api/admin/gateway-enhancements/status')
+    ])
+    if (!isCurrent()) return
+    if (status.configurationError) throw new Error(status.configurationError)
+    budgets.value = configuration.budgets.filter(b => b.keyId === keyId).map(b => ({ ...b }))
+    originalBudgets = budgetSignature(budgets.value)
+    budgetUsage.value = usage.filter(b => b.keyId === keyId)
+    budgetReady.value = true
+  } catch (e) {
+    if (isCurrent()) budgetError.value = e instanceof Error ? e.message : '预算加载失败，请重试'
+  } finally { if (isCurrent()) budgetLoading.value = false }
+}
+
+async function openBudgets(row: AccessKeyItem): Promise<void> {
+  if (budgetSaving.value || deletingKeyId.value === row.id) return
+  budgetKey.value = row
+  budgets.value = []
+  budgetUsage.value = []
+  budgetVisible.value = true
+  await loadBudgets()
+}
+
+function addBudget(): void {
+  if (!budgetKey.value || !budgetReady.value || budgetSaving.value) return
+  const period = (['day', 'week', 'month'] as const).find(p => !budgets.value.some(b => b.period === p))
+  if (period) budgets.value.push({ keyId: budgetKey.value.id, period, tokenLimit: 0, costLimitUsd: 0 })
+}
+
+async function saveBudgets(): Promise<void> {
+  if (!budgetKey.value || !budgetVisible.value || !budgetReady.value || budgetLoading.value || budgetSaving.value || deletingKeyId.value === budgetKey.value.id) return
+  if (new Set(budgets.value.map(b => b.period)).size !== budgets.value.length) {
+    message.warning('同一密钥的每天、每周、每月预算各只能配置一项')
+    return
+  }
+  if (budgets.value.some(b => !Number.isSafeInteger(b.tokenLimit) || b.tokenLimit < 0 || !Number.isFinite(b.costLimitUsd) || b.costLimitUsd < 0)) {
+    message.warning('请填写有效的非负预算，Token 上限须为整数')
+    return
+  }
+  const keyId = budgetKey.value.id
+  const sequence = budgetRequestSequence
+  const pendingBudgets = budgets.value.map(b => ({ ...b, keyId }))
+  const expectedBudgets = originalBudgets
+  const isCurrent = () => sequence === budgetRequestSequence && budgetVisible.value && budgetKey.value?.id === keyId
+  budgetSaving.value = true
+  try {
+    // Read the latest snapshot before changing this key, preserving settings edited on other pages.
+    const latest = await httpGet<BudgetConfiguration>('/api/admin/gateway-enhancements')
+    if (!isCurrent()) return
+    if (budgetSignature(latest.budgets.filter(b => b.keyId === keyId)) !== expectedBudgets) {
+      message.warning('此密钥的预算已在其他页面修改，请重新加载后再保存')
+      return
+    }
+    latest.budgets = [...latest.budgets.filter(b => b.keyId !== keyId), ...pendingBudgets]
+    await httpPost('/api/admin/gateway-enhancements', latest)
+    if (!isCurrent()) return
+    message.success('密钥预算已保存')
+    budgetVisible.value = false
+  } catch (e) {
+    if (isCurrent()) message.error(e instanceof Error ? e.message : '预算保存失败')
+  } finally { budgetSaving.value = false }
+}
+
+watch(budgetVisible, visible => {
+  if (!visible) {
+    budgetRequestSequence++
+    budgetReady.value = false
+    budgetLoading.value = false
+  }
+}, { flush: 'sync' })
+onBeforeUnmount(() => { budgetRequestSequence++ })
 
 // 可用路由入口列表（供权限选择）
 const routeEntries = ref<string[]>([])
@@ -126,9 +231,14 @@ async function handleToggle(row: AccessKeyItem): Promise<void> {
   row.isEnabled = !row.isEnabled
 }
 async function handleDelete(row: AccessKeyItem): Promise<void> {
-  await api.deleteAccessKey(row.id)
-  message.success('已删除')
-  await load()
+  if (budgetSaving.value || deletingKeyId.value) return
+  deletingKeyId.value = row.id
+  try {
+    await api.deleteAccessKey(row.id)
+    if (budgetKey.value?.id === row.id) budgetVisible.value = false
+    message.success('已删除')
+    await load()
+  } finally { deletingKeyId.value = null }
 }
 
 // 编辑路由权限
@@ -184,11 +294,12 @@ const columns = computed<DataTableColumns<AccessKeyItem>>(() => [
     return arr.length > 0 ? h(NTag, { size: 'small', bordered: false }, () => arr.join(', ')) : '全部'
   } },
   { title: '状态', key: 'isEnabled', width: 80, render: (r) => h(NTag, { size: 'small', type: r.isEnabled ? 'success' : 'default', bordered: false }, () => r.isEnabled ? '启用' : '禁用') },
-  { title: '操作', key: 'actions', width: 292, fixed: 'right', render: (row) => h(NSpace, { size: 6, wrap: false }, () => [
+  { title: '操作', key: 'actions', width: 342, fixed: 'right', render: (row) => h(NSpace, { size: 6, wrap: false }, () => [
     h(NButton, { size: 'small', quaternary: true, loading: copyingKeyId.value === row.id, onClick: () => handleCopyPlain(row) }, () => '复制密钥'),
     h(NButton, { size: 'small', quaternary: true, disabled: !routeEntriesReady.value, onClick: () => openEditRoutes(row) }, () => '编辑路由'),
+    h(NButton, { size: 'small', quaternary: true, disabled: budgetSaving.value || deletingKeyId.value === row.id, onClick: () => openBudgets(row) }, () => '预算'),
     h(NButton, { size: 'small', quaternary: true, onClick: () => handleToggle(row) }, () => row.isEnabled ? '禁用' : '启用'),
-    h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, { trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, () => '删除'), default: () => `确认删除「${row.keyName}」？` })
+    h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, { trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error', disabled: budgetSaving.value || deletingKeyId.value !== null, loading: deletingKeyId.value === row.id }, () => '删除'), default: () => `确认删除「${row.keyName}」？` })
   ]) }
 ])
 
@@ -197,7 +308,7 @@ onMounted(load)
 
 <template>
   <div class="page-container">
-    <PageHeader title="访问密钥管理" subtitle="管理用于访问代理服务的密钥，可限定每个密钥只能访问指定路由">
+    <PageHeader title="访问密钥管理" subtitle="管理代理访问密钥、路由权限与每日 / 每周 / 每月用量预算">
       <template #actions>
         <NButton type="primary" :disabled="!routeEntriesReady" @click="openCreate">新建密钥</NButton>
       </template>
@@ -247,6 +358,36 @@ onMounted(load)
       </template>
     </NModal>
 
+    <NModal v-model:show="budgetVisible" :title="`密钥预算 - ${budgetKey?.keyName ?? ''}`" preset="card" style="width: 640px; max-width: 94vw" :mask-closable="!budgetSaving" :closable="!budgetSaving" :close-on-esc="!budgetSaving">
+      <NSpace vertical :size="16">
+        <NAlert type="info" :show-icon="true">0 表示不限；同一密钥的所有会话、模型和站点合并统计，任一上限达到后拒绝新请求，已开始的请求可能超出剩余额度。周期按 UTC 重置（北京时间每天 / 周一 / 每月 1 日 08:00）。</NAlert>
+        <NAlert type="warning" :show-icon="true">启用预算后，同一密钥的并发请求会排队结算。金额预算遇到未定价用量会暂停当前周期；补充价格后从新周期生效，也可改用 Token 预算。WebSocket 按轮次结算。</NAlert>
+        <NAlert v-if="budgetError" type="error">{{ budgetError }}</NAlert>
+        <NEmpty v-if="budgetReady && budgets.length === 0" description="此密钥未配置预算，用量不受预算限制" size="small" />
+        <NCard v-for="(budget, index) in budgets" :key="index" size="small">
+          <NSpace vertical :size="12">
+            <NSpace align="center" justify="space-between">
+              <NSelect v-model:value="budget.period" :options="periodOptions" style="width: 200px" :disabled="budgetSaving" />
+              <NButton size="small" type="error" quaternary :disabled="budgetSaving" @click="budgets.splice(index, 1)">删除</NButton>
+            </NSpace>
+            <div class="budget-limits">
+              <NFormItem label="Token 上限" :show-feedback="false"><NInputNumber v-model:value="budget.tokenLimit" :min="0" :max="Number.MAX_SAFE_INTEGER" :precision="0" :disabled="budgetSaving" style="width: 100%" /></NFormItem>
+              <NFormItem label="美元上限" :show-feedback="false"><NInputNumber v-model:value="budget.costLimitUsd" :min="0" :precision="4" :disabled="budgetSaving" style="width: 100%" /></NFormItem>
+            </div>
+            <div v-for="u in budgetUsage.filter(u => u.period === budget.period)" :key="u.period" class="budget-usage">当前已用 {{ u.usedTokens.toLocaleString() }} Token / ${{ u.usedCostUsd.toFixed(4) }}<span v-if="u.hasUnpricedUsage">（含未定价记录）</span></div>
+          </NSpace>
+        </NCard>
+        <NButton :disabled="!budgetReady || budgetSaving || budgets.length >= 3" @click="addBudget">添加预算</NButton>
+      </NSpace>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton :disabled="budgetSaving" :loading="budgetLoading" @click="loadBudgets">重新加载</NButton>
+          <NButton :disabled="budgetSaving" @click="budgetVisible = false">取消</NButton>
+          <NButton type="primary" :disabled="!budgetReady || budgetLoading" :loading="budgetSaving" @click="saveBudgets">保存预算</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
     <!-- 编辑路由权限弹窗 -->
     <NModal v-model:show="editRoutesVisible" :title="`编辑路由权限 - ${editKey?.keyName ?? ''}`" preset="card" style="width: 480px; max-width: 92vw">
       <NTag size="small" :bordered="false" style="margin-bottom: 12px">{{ editRoutesLabel }}</NTag>
@@ -291,6 +432,17 @@ onMounted(load)
   font-weight: 600;
 }
 
+.budget-limits {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.budget-usage {
+  color: var(--text-color-secondary);
+  font-size: 13px;
+}
+
 .route-checkbox-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -303,6 +455,9 @@ onMounted(load)
 }
 
 @media (max-width: 640px) {
+  .budget-limits {
+    grid-template-columns: 1fr;
+  }
   .route-checkbox-grid {
     grid-template-columns: 1fr;
   }

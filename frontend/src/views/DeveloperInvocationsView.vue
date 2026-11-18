@@ -28,6 +28,8 @@ import DiagnosticDumpsTab from './DiagnosticDumpsTab.vue'
 import HeaderProfilesTab from './HeaderProfilesTab.vue'
 import ProxyProfilesTab from './ProxyProfilesTab.vue'
 import SqlMigrationsTab from './SqlMigrationsTab.vue'
+import GatewayToolsTab from './GatewayToolsTab.vue'
+import SharedMcpTab from './SharedMcpTab.vue'
 import DeveloperAiDiagnosisDrawer from './DeveloperAiDiagnosisDrawer.vue'
 import JsonDiffView from '@/components/JsonDiffView.vue'
 import { analyzeProtocolError } from '@/utils/protocolErrorAnalyzer'
@@ -105,6 +107,8 @@ const activeTab = ref<DeveloperToolTab>(developerTabFromHash(route.hash))
 // header-presets 属转发配置页，不受调试分开关控制；proxy-profiles 受网络代理池开关控制。
 const developerTabs = computed(() => auth.status?.features?.developerTabs)
 function tabVisible(tab: DeveloperToolTab): boolean {
+  if (tab === 'search-tools' || tab === 'shared-mcp') return true
+  if (!auth.status?.features?.developerEnabled) return false
   const tabs = developerTabs.value
   if (!tabs) return true
   switch (tab) {
@@ -117,9 +121,10 @@ function tabVisible(tab: DeveloperToolTab): boolean {
     default: return true
   }
 }
-// 分开关关闭后：当前激活 Tab 若被隐藏则回落到始终可用的请求头模板页。
-watch(developerTabs, () => {
-  if (!tabVisible(activeTab.value)) activeTab.value = 'header-presets'
+// 开发者功能关闭时，共享工具仍可访问。
+watch(() => auth.status?.features, () => {
+  if (!auth.status) return
+  if (!tabVisible(activeTab.value)) activeTab.value = 'search-tools'
 }, { immediate: true })
 const prefillSignal = ref(0)
 provide('protocol-diagnostics-prefill', prefillSignal)
@@ -138,6 +143,7 @@ const details = ref<Record<string, DeveloperInvocationDetail>>({})
 const detailLoading = ref<Record<string, boolean>>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let invocationRequestRunning = false
+let pageDisposed = false
 const detailAbortControllers = new Map<string, AbortController>()
 
 function isPending(status: string): boolean {
@@ -152,12 +158,14 @@ function isSuccess(status: string): boolean {
 function statusLabel(status: string): string {
   if (isPending(status)) return '等待'
   if (isSuccess(status)) return '成功'
+  if (status?.toLowerCase() === 'canceled') return '已取消'
   return '失败'
 }
 
 function statusClass(status: string): string {
   if (isPending(status)) return 'pending'
   if (isSuccess(status)) return 'success'
+  if (status?.toLowerCase() === 'canceled') return 'warning'
   return 'danger'
 }
 
@@ -419,6 +427,7 @@ function configureAutoRefresh(): void {
 }
 
 async function loadInvocations(showSpinner = true, targetPage = page.value): Promise<void> {
+  if (!tabVisible('invocations')) return
   if (invocationRequestRunning) return
   invocationRequestRunning = true
   if (showSpinner) loading.value = true
@@ -546,16 +555,18 @@ watch(() => route.hash, (hash) => {
   if (activeTab.value !== tab) activeTab.value = tab
 })
 
-onMounted(() => {
+onMounted(async () => {
   // 直接深链进入本页时刷新登录态快照，避免按过期的分页开关状态渲染 Tab
   // （设置刚改过但本页仍是旧 store 时，会出现 Tab 可见而 API 404 的不一致）。
-  void auth.fetchStatus()
+  try { await auth.fetchStatus() } catch { /* 路由守卫负责登录状态；未取得状态时不请求开发者接口。 */ }
+  if (pageDisposed) return
   if (activeTab.value === 'invocations') void loadInvocations()
   configureAutoRefresh()
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onUnmounted(() => {
+  pageDisposed = true
   if (pollTimer) clearInterval(pollTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   for (const controller of detailAbortControllers.values()) controller.abort()
@@ -565,7 +576,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page-container developer-invocations-page">
-    <PageHeader title="调试工具" subtitle="调用调试、客户端模拟和开发者追踪" />
+    <PageHeader title="调试工具" subtitle="调用调试、会话用量和共享工具" />
 
     <NCard class="developer-tools-card" :content-style="{ padding: '16px' }">
       <NTabs v-model:value="activeTab" type="line" animated>
@@ -919,7 +930,7 @@ onUnmounted(() => {
           <ClientSimulator />
         </NTabPane>
 
-        <NTabPane name="header-presets" tab="请求头模板库">
+        <NTabPane v-if="tabVisible('header-presets')" name="header-presets" tab="请求头模板库">
           <HeaderProfilesTab />
         </NTabPane>
 
@@ -929,6 +940,12 @@ onUnmounted(() => {
 
         <NTabPane v-if="tabVisible('sql-migrations')" name="sql-migrations" tab="SQL 迁移">
           <SqlMigrationsTab />
+        </NTabPane>
+        <NTabPane name="search-tools" tab="搜索与识图" display-directive="show:lazy">
+          <GatewayToolsTab />
+        </NTabPane>
+        <NTabPane name="shared-mcp" tab="共享 MCP" display-directive="show:lazy">
+          <SharedMcpTab />
         </NTabPane>
       </NTabs>
     </NCard>

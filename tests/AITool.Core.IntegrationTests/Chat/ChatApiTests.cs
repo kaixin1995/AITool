@@ -31,6 +31,7 @@ namespace AITool.Core.IntegrationTests.Chat;
 /// <summary>
 /// 聊天测试接口集成测试，覆盖跨协议非流式发送的准确性。
 /// </summary>
+[Collection("HeavyIoSerialized")]
 public sealed class ChatApiTests
 {
     /// <summary>

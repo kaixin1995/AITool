@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NSpace,
-  NPopconfirm, NTooltip, NSpin, NSelect, useMessage
+  NPopconfirm, NTooltip, NSpin, NSelect, NAlert, useMessage
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
@@ -12,6 +12,7 @@ import { validateSystemSettingsNumbers } from './systemSettingsState'
 import { useAuthStore } from '@/stores/auth'
 import { useCurrency } from '@/composables/useCurrency'
 import type { SelectOption } from 'naive-ui'
+import { httpGet, httpPost } from '@/api/http'
 
 const message = useMessage()
 const auth = useAuthStore()
@@ -23,6 +24,78 @@ const currencyOptions: SelectOption[] = [
 ]
 const loading = ref(false)
 const saving = ref(false)
+const stabilityLoading = ref(false)
+const stabilitySaving = ref(false)
+const stabilityLoaded = ref(false)
+const stabilityError = ref('')
+let initialStabilitySnapshot = ''
+interface StabilitySettings {
+  keepAliveEnabled: boolean
+  keepAliveSeconds: number | null
+  loopDetectionEnabled: boolean
+  extendedHeadBufferEnabled: boolean
+}
+interface GatewaySettingsSnapshot extends StabilitySettings {
+  revision: string
+  [key: string]: unknown
+}
+const stability = reactive<StabilitySettings>({
+  keepAliveEnabled: false,
+  keepAliveSeconds: 15,
+  loopDetectionEnabled: false,
+  extendedHeadBufferEnabled: false
+})
+const stabilityFields = Object.keys(stability) as (keyof StabilitySettings)[]
+function stabilitySnapshot(value: StabilitySettings): string {
+  return JSON.stringify(stabilityFields.map(field => value[field]))
+}
+
+async function loadStability(): Promise<void> {
+  stabilityLoading.value = true
+  stabilityError.value = ''
+  try {
+    const health = await httpGet<{ configurationError: string | null }>('/api/admin/gateway-enhancements/status')
+    if (health.configurationError) throw new Error(health.configurationError)
+    const snapshot = await httpGet<GatewaySettingsSnapshot>('/api/admin/gateway-enhancements')
+    for (const field of stabilityFields) {
+      Object.assign(stability, { [field]: snapshot[field] })
+    }
+    initialStabilitySnapshot = stabilitySnapshot(snapshot)
+    stabilityLoaded.value = true
+  } catch (e) {
+    stabilityLoaded.value = false
+    stabilityError.value = e instanceof Error ? e.message : '稳定性设置加载失败，请重试'
+  } finally {
+    stabilityLoading.value = false
+  }
+}
+
+async function saveStability(): Promise<void> {
+  if (!stabilityLoaded.value) return
+  if (stability.keepAliveSeconds == null || !Number.isInteger(stability.keepAliveSeconds)
+    || stability.keepAliveSeconds < 5 || stability.keepAliveSeconds > 60) {
+    message.warning('保活间隔须为 5–60 秒的整数')
+    return
+  }
+  stabilitySaving.value = true
+  stabilityError.value = ''
+  try {
+    const health = await httpGet<{ configurationError: string | null }>('/api/admin/gateway-enhancements/status')
+    if (health.configurationError) throw new Error(health.configurationError)
+    // 保留其他页面管理的预算、搜索和 MCP 设置，用最新版本号检测保存期间的并发修改。
+    const latest = await httpGet<GatewaySettingsSnapshot>('/api/admin/gateway-enhancements')
+    if (stabilitySnapshot(latest) !== initialStabilitySnapshot) {
+      throw new Error('稳定性设置已在其他页面修改，当前输入已保留。请先记录需要保留的修改，重新加载后再保存')
+    }
+    await httpPost('/api/admin/gateway-enhancements', { ...latest, ...stability })
+    initialStabilitySnapshot = stabilitySnapshot(stability)
+    message.success('稳定性设置已保存')
+  } catch (e) {
+    stabilityError.value = e instanceof Error ? e.message : '稳定性设置保存失败，请重试'
+  } finally {
+    stabilitySaving.value = false
+  }
+}
 
 // Guid.Empty 形式：清除「默认 AI 站点/模型」时提交该值（后端 null 语义是保持现值，不能用于清除）。
 const EMPTY_GUID = '00000000-0000-0000-0000-000000000000'
@@ -101,6 +174,11 @@ const form = reactive<SystemSettings>({
   developerProxyProfilesEnabled: false,
   concurrencyMode: 0,
   concurrencyQueueTimeoutSeconds: 120,
+  routeQuotaOrderingEnabled: false,
+  sessionAffinityEnabled: false,
+  tieredRouteCooldownEnabled: false,
+  strictClientErrorFallbackEnabled: false,
+  streamHeadBufferEnabled: false,
   oauthFeaturesEnabled: false,
   oauthInspectionEnabled: false,
   oauthInspectionIntervalSeconds: 1800,
@@ -166,12 +244,13 @@ async function handleClearAllLogs(): Promise<void> {
 onMounted(() => {
   void loadSettings()
   void loadAiTargets()
+  void loadStability()
 })
 </script>
 
 <template>
   <div class="page-container settings-page">
-    <PageHeader title="系统设置" subtitle="配置检测、代理、日志保留与危险操作" />
+    <PageHeader title="系统设置" subtitle="配置检测、代理、稳定性、日志保留与危险操作" />
     <NSpin :show="loading">
       <div class="settings-stack">
         <NCard class="settings-card settings-body-card">
@@ -251,8 +330,48 @@ onMounted(() => {
                 <template #label><span class="form-label-tip">排队等待超时（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在“排队等待”模式下生效。超时后顺延到下一顺位。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.concurrencyQueueTimeoutSeconds" :min="1" :step="30" />
               </NFormItem>
+              <NFormItem>
+                <template #label><span class="form-label-tip">路由候选策略<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>对齐 magpie 的路由增强，全部默认关闭；开启前行为与旧版完全一致。</NTooltip></span></template>
+                <div class="settings-switch-column">
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.routeQuotaOrderingEnabled" />配额感知排序（额度窗口最快重置的候选优先）</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.sessionAffinityEnabled" />会话亲和（同一会话粘住上次成功候选，保住上游 prompt cache）</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.tieredRouteCooldownEnabled" />分级冷却（配额 429 休到重置点、限流按 Retry-After）</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.strictClientErrorFallbackEnabled" />客户端错误严格回退（400 词表命中才回退下一候选）</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.streamHeadBufferEnabled" />流式首包蓄流（扣住热身块，上游秒断时可无感回退）</label>
+                </div>
+              </NFormItem>
             </div>
           </NForm>
+        </NCard>
+
+        <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title">稳定性</h5>
+          <NAlert v-if="stabilityError" type="error" class="stability-alert">{{ stabilityError }}；保存失败时会保留当前输入，请确认后重试。</NAlert>
+          <NSpin :show="stabilityLoading">
+            <NForm label-placement="top" :disabled="!stabilityLoaded || stabilitySaving">
+              <div class="settings-grid">
+                <NFormItem>
+                  <template #label><span class="form-label-tip">流式保活<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>在已开始输出的 SSE 完整事件边界发送保活注释，减少空闲连接断开。首字输出前不发送，也不延长客户端自身超时；不适用于 WebSocket。</NTooltip></span></template>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="stability.keepAliveEnabled" />启用流式保活</label>
+                </NFormItem>
+                <NFormItem label="保活间隔（秒）">
+                  <NInputNumber v-model:value="stability.keepAliveSeconds" :min="5" :max="60" :precision="0" :disabled="!stability.keepAliveEnabled || !stabilityLoaded || stabilitySaving" />
+                </NFormItem>
+              </div>
+              <div class="settings-switch-column compact-row">
+                <label class="settings-switch-inline"><NSwitch v-model:value="stability.loopDetectionEnabled" /><span class="form-label-tip">检测并终止重复输出<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>流式回答出现大量重复文本时终止请求，避免持续消耗额度；刻意重复的超长内容也可能被截断。</NTooltip></span></label>
+                <label class="settings-switch-inline"><NSwitch v-model:value="stability.extendedHeadBufferEnabled" /><span class="form-label-tip">延长流式热身事件缓冲<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>延长 Responses、Chat 和 Claude 流式正文之前的准备事件缓冲，保留故障回退机会；正文、推理或工具内容开始后立即放行。</NTooltip></span></label>
+              </div>
+            </NForm>
+          </NSpin>
+          <NSpace class="stability-actions">
+            <NButton type="primary" secondary :loading="stabilitySaving" :disabled="!stabilityLoaded || stabilityLoading" @click="saveStability">保存稳定性设置</NButton>
+            <NButton v-if="!stabilityLoaded" :loading="stabilityLoading" @click="loadStability">重新加载</NButton>
+            <NPopconfirm v-else-if="stabilityError" @positive-click="loadStability">
+              <template #trigger><NButton :disabled="stabilitySaving || stabilityLoading">重新加载稳定性设置</NButton></template>
+              重新加载会用服务器上的最新设置替换当前未保存的输入，确认继续？
+            </NPopconfirm>
+          </NSpace>
         </NCard>
 
         <NCard class="settings-card settings-body-card">
@@ -275,7 +394,7 @@ onMounted(() => {
         <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title">开发者功能</h5>
           <div class="switch-stack">
-            <label class="switch-line"><NSwitch v-model:value="form.developerFeaturesEnabled" /><span class="form-label-tip">启用开发者功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后显示调试工具入口，并保留最近 100 条调用轨迹。</NTooltip></span></label>
+            <label class="switch-line"><NSwitch v-model:value="form.developerFeaturesEnabled" /><span class="form-label-tip">启用开发者功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后提供调用调试等开发者功能，并保留最近 100 条调用轨迹。</NTooltip></span></label>
             <div v-if="form.developerFeaturesEnabled" class="developer-tab-switch-row">
               <label class="settings-switch-inline"><NSwitch v-model:value="form.developerTraceEnabled" /><span class="form-label-tip">调用追踪<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后每个代理请求都会采集请求/响应报文用于调试（有内存与分配开销）；排查问题时再开。</NTooltip></span></label>
               <label class="settings-switch-inline"><NSwitch v-model:value="form.developerFailureDumpEnabled" /><span class="form-label-tip">诊断抓包<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后失败请求自动落盘完整报文 dump；关闭可省去失败时的 dump 构建开销。</NTooltip></span></label>
@@ -308,17 +427,17 @@ onMounted(() => {
         </NCard>
 
         <NCard class="settings-card settings-body-card">
-          <h5 class="settings-card-title form-label-tip">账号额度巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 OAuth 账号功能总开关开启时生效。巡检会周期性检查各账号的额度窗口。</NTooltip></h5>
+          <h5 class="settings-card-title form-label-tip">账号额度巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 OAuth 账号功能总开关和自动巡检开启时生效。启用账号按常规周期检查；额度自动禁用账号独立按随机 40–60 分钟真实复查，手动、功能开关、上游禁用和冷却中的账号不参与此恢复复查。</NTooltip></h5>
           <NForm label-placement="top">
             <div class="oauth-inspection-row">
               <NFormItem>
                 <div class="oauth-switch-pair">
                   <label class="settings-switch-inline"><NSwitch v-model:value="form.oauthInspectionEnabled" :disabled="!form.oauthFeaturesEnabled" />启用自动巡检</label>
-                  <label class="settings-switch-inline"><NSwitch v-model:value="form.oauthInspectionCacheEnabled" :disabled="!form.oauthFeaturesEnabled" /><span class="form-label-tip">启用巡检缓存<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后，未被使用的账号可命中近期缓存额度，减少上游请求；关闭（默认）后每次巡检都真实刷新额度，数据最准但会增加上游请求。</NTooltip></span></label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.oauthInspectionCacheEnabled" :disabled="!form.oauthFeaturesEnabled" /><span class="form-label-tip">启用巡检缓存<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后，常规巡检中未被使用的账号可命中近期缓存额度，减少上游请求；关闭（默认）后常规巡检真实刷新。额度自动禁用账号的随机恢复复查始终绕过缓存，失败后也重新随机等待 40–60 分钟。</NTooltip></span></label>
                 </div>
               </NFormItem>
               <NFormItem class="oauth-field">
-                <template #label><span class="form-label-tip">巡检周期（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>每隔多少秒执行一轮自动巡检，下限 30 秒。</NTooltip></span></template>
+                <template #label><span class="form-label-tip">巡检周期（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>常规账号巡检的间隔，下限 30 秒。额度自动禁用账号使用独立的随机 40–60 分钟恢复复查，不受本周期和缓存时长控制。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.oauthInspectionIntervalSeconds" :min="30" :step="30" :disabled="!form.oauthFeaturesEnabled" />
               </NFormItem>
               <NFormItem class="oauth-field">
@@ -579,5 +698,16 @@ onMounted(() => {
   .oauth-inspection-row .oauth-field {
     width: 100%;
   }
+}
+.settings-switch-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.stability-alert {
+  margin-bottom: 16px;
+}
+.stability-actions {
+  margin-top: 16px;
 }
 </style>

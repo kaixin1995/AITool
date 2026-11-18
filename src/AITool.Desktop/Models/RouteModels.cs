@@ -28,6 +28,9 @@ public sealed class SiteInstanceItem
 public partial class RouteEntry : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
 {
     public string EntryName { get; set; } = string.Empty;
+    public string? EntryId { get; set; }
+    public string? ManagedByPoolId { get; set; }
+    public bool HasRouteReferences { get; set; }
 
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
     private int _candidateCount;
@@ -42,10 +45,18 @@ public partial class RouteRuleItem : CommunityToolkit.Mvvm.ComponentModel.Observ
     public string SiteId { get; set; } = string.Empty;
     public string SiteName { get; set; } = string.Empty;
     public bool SiteEnabled { get; set; }
-    public bool IsSiteDisabled => !SiteEnabled;
+    public string TargetKind { get; set; } = "Site";
+    public string? TargetRouteEntryId { get; set; }
+    public string? TargetRouteEntryName { get; set; }
+    public string? ReferenceStatus { get; set; }
+    public bool IsRouteReference => string.Equals(TargetKind, "RouteEntry", StringComparison.OrdinalIgnoreCase);
+    public string TargetDisplayName => IsRouteReference ? $"路由引用：{TargetRouteEntryName ?? "未知入口"}" : SiteName;
+    public bool IsSiteDisabled => !IsRouteReference && !SiteEnabled;
     public string UpstreamModelName { get; set; } = string.Empty;
     public string SiteModelName { get; set; } = string.Empty;
-    public string InstanceSummary => $"{UpstreamModelName} · {SiteModelName}";
+    public string InstanceSummary => IsRouteReference
+        ? $"候选组 · 引用状态：{ReferenceStatus ?? "未知"} · 请在网页端管理"
+        : $"{UpstreamModelName} · {SiteModelName}";
     public int Priority { get; set; }
     public int ModelPriority { get; set; }
     public int InstancePriority { get; set; }

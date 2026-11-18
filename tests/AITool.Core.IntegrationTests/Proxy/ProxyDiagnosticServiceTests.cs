@@ -14,6 +14,7 @@ using Xunit;
 
 namespace AITool.Core.IntegrationTests.Proxy;
 
+[Collection("HeavyIoSerialized")]
 public class ProxyDiagnosticServiceTests : IDisposable
 {
     private readonly ProxyDiagnosticService _unitTestService;

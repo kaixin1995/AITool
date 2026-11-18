@@ -82,9 +82,6 @@
 | PUT | `/vendor-catalog` | 保存厂商目录 |
 | GET | `/pricing` | 模型价格表（本地 model-pricing.json；含 usdToCny 汇率与峰谷配置；首次访问从模板初始化） |
 | PUT | `/pricing` | 保存价格表（校验+写文件+立即刷新计价缓存；保存后统计/日志金额实时更新） |
-| POST | `/pricing/ai-fetch` | AI 补漏定价（未收录模型经 AI 助手查询并合并入库） |
-| POST | `/pricing/source-fetch` | 公开价格源匹配（models.dev/LiteLLM 双源并行；零 AI 调用秒级返回；单源失败容忍） |
-| POST | `/{id}/ai-latest-version` | 查客户端官方最新版本（GitHub Releases/npm 确定性数据 + AI 归纳；30 分钟缓存） |
 | POST | `/{id}/mappings` | 新增站点映射 |
 | DELETE | `/{id}/mappings/{mappingId}` | 删除映射 |
 | PUT | `/mappings/{mappingId}/concurrency` | 更新映射最大并发 |
@@ -136,8 +133,8 @@
 | POST | `/detection/probe-all` | 全量探测（异步） |
 | GET | `/detection/progress/{taskId}` | 增量进度（LastReportedCount） |
 | GET | `/detection-tasks` | 定时任务列表（含执行历史） |
-| POST | `/detection-tasks` | 创建（名称 + 间隔秒数 + 可选站点映射） |
-| POST | `/detection-tasks/{id}/toggle` | 启停（秒级调度器下一 tick 生效） |
+| POST | `/detection-tasks` | 创建（名称 + Cron + 可选模型） |
+| POST | `/detection-tasks/{id}/toggle` | 启停（重注册 Hangfire） |
 | POST | `/detection-tasks/{id}/execute` | 立即执行 |
 | DELETE | `/detection-tasks/{id}` | 删除 |
 
@@ -218,13 +215,14 @@
 | POST | `/import-credential` | 导入 CPA 格式凭证 JSON |
 | GET | `/accounts` | 账号列表（含额度窗口） |
 | POST | `/accounts/{id}/refresh-quota` | 主动刷新额度 |
-| POST | `/accounts/{id}/reset-quota` | 重置额度快照 |
+| POST | `/accounts/{id}/reset-quota` | 重置额度快照；返回 `completed`，未完成时附 `unconfirmedStep` 和 `coolingCleared`。`completed=false` 表示本地落盘超时后未能确认完成，需重试 |
 | POST | `/accounts/{id}/toggle` | 启停 |
 | PUT | `/accounts/{id}` | 编辑（改名/换 refresh_token） |
 | DELETE | `/accounts/{id}` | 删除（级联清理隐藏站点） |
 | POST | `/accounts/{id}/refresh-token` | 手动刷新 access_token |
 | GET | `/accounts/{id}/fetch-models` | 拉取账号可用模型 |
 | POST | `/accounts/{id}/import-selected-models` | 导入勾选模型 |
+| POST | `/accounts/batch-apply-models` | 批量应用模型到同套餐全部账号（组内拉一次、应用到全组；逐账号结果，单账号失败不中断） |
 | POST | `/inspection/run?force=` | 手动巡检（巡检开关关闭时 404） |
 | GET | `/inspection/status` / `/inspection/last-run` / `/inspection/logs` | 巡检状态/上次结果/日志 |
 | GET | `/accounts/{id}/reset-credits` | 查询剩余重置 credits |
@@ -232,6 +230,10 @@
 | POST | `/accounts/export-credentials` | 导出账号凭证（codex_credential_*.json） |
 
 > Codex 体系详见 [codex.md](codex.md)。
+
+### 通用设备 OAuth 厂商目录
+
+`GET /api/admin/device-oauth/vendors` 返回厂商能力，其中 `modelCatalogScope` 为 `account`（账号范围）或 `public`（公共目录）。公共目录不证明账号具有模型使用权限；Claude 使用 models.dev 公共目录。旧版后端可能不返回该字段。
 
 ## 18.1 xAI 账号 `api/admin/xai-accounts`（XaiAccountsApiController，类级 OAuth 功能开关）
 
@@ -249,12 +251,36 @@ SuperGrok 设备码登录与账号管理（详见 [xai-accounts.md](xai-accounts
 | DELETE | `/accounts/{id}` | 删除（级联清理隐藏站点） |
 | GET | `/accounts/{id}/fetch-models` | 拉取 api.x.ai/v1/models 模型清单 |
 | POST | `/accounts/{id}/import-selected-models` | 导入勾选模型 |
+| POST | `/accounts/batch-apply-models` | 批量应用模型到全部账号（组内拉一次、应用到全组；逐账号结果） |
 | POST | `/import-credential` | 导入凭证 JSON（`~/.grok/auth.json` 形态或平铺 token） |
 
-## 19. Core 宿主运行状态（仪表盘联动）
+## 18.2 号池 `api/admin/account-pools`（类级 OAuth 功能开关，关闭时 404）
 
-仪表盘 `/api/admin/dashboard/stats` 返回 `coreStatusText` / `coreSyncStatusText` / `coreSyncDetailText`：
-服务端带共享密钥调用 Core 握手端点实时探测（结果内存缓存 8s，离线时不阻塞 stats）；
-Core 不可达时文案降级为「Core 离线（异常类型）」，前端以红色标识。
+生成式路由总包：把多个同厂商账号打包。Codex 套餐为可选候选筛选条件，建池时不传、null 或空值表示全部套餐，允许混合；指定套餐时只纳入匹配账号。同套餐的模型权限也可能不同。
+每个成员模型生成一个托管路由入口（ExternalModelName=模型名、对外名透出上游名），对外照常按模型名调用；包括混合套餐在内，池根据各成员站点的启用映射逐模型扇出，只扇出到持有该模型映射的成员。池名只是管理标签，不占用路由命名空间。
+转发热路径零改动——池规则就是普通规则，池内静态顺序=InstancePriority 基线，运行时叠加
+配额感知排序 / 分级冷却 / 熔断 / 会话亲和（P0 起对 OAuth 账号贯通巡检数据）。
+被手工路由/其它池占用的模型名同步时跳过（结果 skippedModels 列出）；托管入口的
+有效候选设置会在同步时保留，不再符合条件的池规则会被移除。删除池会清除成员行和明确标记属于该池的规则；托管入口没有剩余规则时一并删除，仍有其他规则时解除托管并保留入口及剩余规则。未标记归属的旧规则会保守保留，需人工检查清理。引用已删除入口的其他路由会保留失效引用，不会自动连接到同名新入口。
 
-> 注：早期版本的 Hangfire 仪表盘 `/hangfire` 已随内存治理移除；检测任务调度改由秒级轮询服务承担。
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `` | 池列表（含成员摘要/托管状态） |
+| GET | `/candidates?vendorKey=&planType=` | 同厂商账号候选；Codex 可选传入套餐筛选，不传则返回全部套餐 |
+| POST | `` | 建池（名称为管理标签，池之间唯一，创建后不可改；路由入口按托管模型名生成；autoInclude=自动纳入，手动池传 memberAccountIds） |
+| PUT | `/{id}/members` | 整体替换成员行（勾选/排序/排除；自动池用排除位控制参与） |
+| POST | `/{id}/sync` · `/sync-all` | 同步单池/全部池（重生成规则，事务保护，幂等） |
+| POST | `/{id}/claim-legacy-entry` | 管理员核实后显式认领旧入口及指定规则，不自动同步 |
+| DELETE | `/{id}` | 删池及成员行和该池规则；无剩余规则的托管入口一并删除，否则解除托管并保留 |
+
+### 无归属旧路由的人工恢复
+
+旧版池规则没有归属标记，可能与手工规则完全相同，系统不会自动认领。即使升级前已排除或删除成员、仅剩单规则，管理员仍可按以下步骤恢复；不要根据规则形态猜测归属。请先备份数据库，结合旧配置、备份或其他可靠记录确认池、入口和每一条规则的来源。无法确认的规则不要认领；无法确认入口归属时整个入口都不要操作。
+
+1. 在路由管理中检查入口与候选，或调用 `GET /api/admin/route-rules/entries` 查找 `entryId` 和未托管入口，调用 `GET /api/admin/route-rules/list?modelName=<URL编码的入口名>` 获取该入口的**全部**规则 ID、站点和配置。已删除站点会显示为「(已删除站点)」。另从池列表获取目标池 ID。注意 `skippedModels` 只列当前成员仍有映射的冲突模型；已无有效成员的旧入口需从路由列表及历史记录中查找。
+2. 经核实后调用 `POST /api/admin/account-pools/{池ID}/claim-legacy-entry`，JSON 示例：`{"confirm":true,"entryId":"入口ID","observedRuleIds":["规则1ID","规则2ID"],"claimRuleIds":["规则1ID"]}`。`observedRuleIds` 必须包括当前入口下所有规则（包括手工规则）；`claimRuleIds` 只填确认属于此池的规则。未选规则保持手工归属。该接口仅允许选择未托管的同模型直连规则，不允许接管其他池；入口内有其他池规则时拒绝。规则增删会使快照失效并拒绝请求；提交前应重新检查规则配置，避免并发编辑。
+3. 认领只打标，不立即修改或删除规则。再调用该池 `sync`：有效成员规则保留配置，已排除、已删除或不再持有映射的已认领规则将删除；未认领规则保留。若入口不再有符合条件的成员且没有其他规则，入口也会删除，其他入口对它的引用会失效；有其他规则时入口解除托管并保留。同步前应评估引用、记录现有配置，确认实际路由变化后再执行。之后正常同步和删池都会管理已认领规则。
+
+## 19. Hangfire 仪表盘
+
+`/hangfire` — Hangfire Dashboard（InMemory 存储），未登录由中间件重定向 `/login?returnUrl=...`。

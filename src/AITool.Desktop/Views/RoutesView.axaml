@@ -73,6 +73,9 @@
             <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="8" IsVisible="{Binding HasMessage}" Margin="16,14,16,0" Padding="12">
               <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
             </Border>
+            <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" IsVisible="{Binding IsReadOnlyEntry}" Margin="16,14,16,0" Padding="12">
+              <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ReadOnlyEntryMessage}" TextWrapping="Wrap" />
+            </Border>
             <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSelectedEntry}" Margin="25" Text="请先选择或创建一个路由入口" />
 
             <StackPanel IsVisible="{Binding HasSelectedEntry}" Spacing="12" Margin="16,14,16,0">
@@ -106,7 +109,7 @@
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="3" MinWidth="0">
                               <WrapPanel ItemSpacing="8" LineSpacing="4">
-                                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding TargetDisplayName}" TextTrimming="CharacterEllipsis" />
                                 <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" IsVisible="{Binding IsSiteDisabled}" Padding="7,2"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="站点已禁用" /></Border>
                                 <Grid>
                                   <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,2" IsVisible="{Binding IsEnabled}"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
@@ -128,7 +131,7 @@
                                 <TextBox Classes="form-input" Width="64" Height="34" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
                               </StackPanel>
                             </WrapPanel>
-                            <UniformGrid Grid.Column="3" Columns="4" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <UniformGrid Grid.Column="3" Columns="4" HorizontalAlignment="Right" VerticalAlignment="Center" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
                               <Button Classes="secondary-button" Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" IsEnabled="{Binding CanToggle}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />
                               <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="上移" IsEnabled="{Binding CanMoveUp}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />
                               <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleDownCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="下移" IsEnabled="{Binding CanMoveDown}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />

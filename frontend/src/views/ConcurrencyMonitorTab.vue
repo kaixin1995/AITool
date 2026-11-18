@@ -155,7 +155,9 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.concurrency-badge {
+/* 徽标元素在 NDataTable columns 的 h() 渲染函数里创建，渲染上下文是 Naive UI 的 Cell 组件，
+   元素上没有本组件的 data-v 属性；裸类选择器永远匹配不上，必须经 :deep 下探。 */
+:deep(.concurrency-badge) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -167,24 +169,28 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
-.concurrency-badge.is-idle {
+:deep(.concurrency-badge.is-idle) {
   background: var(--bg-surface-soft, rgba(0, 0, 0, 0.04));
   color: var(--text-color-secondary, #94a3b8);
 }
 
-.concurrency-badge.is-active {
+:deep(.concurrency-badge.is-active) {
   background: #ecfdf5;
   color: #059669;
 }
 
+:deep(.concurrency-badge.is-queued) {
+  background: #fffbeb;
+  color: #d97706;
+}
+</style>
+
+<style>
+/* 暗色变体依赖 html[data-theme] 祖先选择器：scoped + :deep 会把 data-v 编译进
+   [data-theme='dark'] 那一级导致永不匹配，故暗色规则放全局块（类名带前缀不污染）。 */
 [data-theme='dark'] .concurrency-badge.is-active {
   background: rgba(5, 150, 105, 0.2);
   color: #34d399;
-}
-
-.concurrency-badge.is-queued {
-  background: #fffbeb;
-  color: #d97706;
 }
 
 [data-theme='dark'] .concurrency-badge.is-queued {

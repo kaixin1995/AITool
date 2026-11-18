@@ -1,12 +1,6 @@
 # 架构与启动流程（函数级）
 
-> ⚠️ **历史文档声明**：本文档描述的是**早期单宿主（master 形态，AITool.Web + Hangfire + Razor 时代）**的架构快照，
-> 仅供回溯阅读。当前 split 分支为 **Admin/Core 双宿主 + 可选 AllInOne 单进程**架构（SqlSugar、无 Hangfire、Vue3 SPA），
-> 请以 [README.md](../README.md)、[core-admin-split-design.md](core-admin-split-design.md)、
-> [core-admin-split-communication-protocol.md](core-admin-split-communication-protocol.md)、
-> [deployment-guide.md](deployment-guide.md) 为准；本文中的 AITool.Web / Hangfire / Razor Pages /
-> HangfireDetectionScheduler 等表述均已失效，不再适用于现分支。
->
+> 本文是 [README.md](../README.md) 的架构细节篇，覆盖：项目分层、依赖关系、`Program.cs` 启动流程、依赖注入全表、配置节、数据库与实体全量字段、后台服务。
 > 代理请求转发链路的函数级细节见 [proxy-pipeline.md](proxy-pipeline.md)；协议转换见 [protocol-bridge.md](protocol-bridge.md)。
 
 ---
@@ -102,7 +96,7 @@ graph TD
 - `AddScoped<ModelHealthRequestService>()`、`AddScoped<SiteKeySelector>()`
 
 ### 2.7 代理热路径单例与后台服务（L230-289）
-逐条注册（完整语义见第 4 节 DI 全表）：`ProxyUsageLogBatchWriter`(+HostedService)、`SiteUsageTracker`、`MemoryMaintenanceService`、`CodexTokenRefreshService`、`CodexCooldownRecoveryService`、`DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`UsageLogService`、`RouteCircuitStateStore`、`ProxyRequestMetadataCache`、`ModelVendorCatalogService`、`SiteCascadeDeleter`、`CodexAccountProvisioner`、`CodexCredentialRefreshService`、`CodexQuotaCooldownService`、`CodexResetCreditsService`、`OAuthFeatureToggleAttribute`、`AccountInspectionToggleAttribute`、`AccountQuotaInspectionService`(+HostedService)、`LogRetentionService`、`SystemRuntimeSettingsService`、**`SqlMigrationRunnerService`**、`HangfireDetectionScheduler`、`AnalyticsBackgroundQueryExecutor`(+HostedService)、`AddHangfire(InMemoryStorage)` + `AddHangfireServer()`
+逐条注册（完整语义见第 4 节 DI 全表）：`ProxyUsageLogBatchWriter`(+HostedService)、`SiteUsageTracker`、`MemoryMaintenanceService`、`CodexTokenRefreshService`、`GoogleTokenRefreshService`、`KimiTokenRefreshService`、`XaiTokenRefreshService`、`CodexCooldownRecoveryService`、`DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`UsageLogService`、`RouteCircuitStateStore`、`ProxyRequestMetadataCache`、`ModelVendorCatalogService`、`SiteCascadeDeleter`、`CodexAccountProvisioner`、`GoogleAccountProvisioner`、`KimiAccountProvisioner`、`XaiAccountProvisioner`、`SiteQuotaService`（站点额度编排 + `ISiteQuotaProvider` 供应商扩展点：智谱 GLM / DeepSeek）、`CodexCredentialRefreshService`、`CodexQuotaCooldownService`、`CodexResetCreditsService`、`OAuthFeatureToggleAttribute`、`AccountInspectionToggleAttribute`、`AccountQuotaInspectionService`(+HostedService，巡检全部 `IAccountQuotaProvider`：Codex/Google/Kimi/xAI)、`LogRetentionService`、`SystemRuntimeSettingsService`、**`SqlMigrationRunnerService`**、`HangfireDetectionScheduler`、`AnalyticsBackgroundQueryExecutor`(+HostedService)、`AddHangfire(InMemoryStorage)` + `AddHangfireServer()`
 
 ### 2.8 启动作用域初始化（L291-338，`builder.Build()` 之后）
 1. `SqlSugarSetup.InitializeDatabase(db, logger)` — CodeFirst 建表/差量补列 + PRAGMA（WAL / synchronous=NORMAL / cache_size=-65536 / busy_timeout=5000），随后 `MigrateLegacySiteKeys` 幂等迁移（把自建站点 `Site.ApiKey` 复制成一条 Priority=0 的默认 `SiteKey`；OAuth 托管站点不迁移）。失败不阻断启动
@@ -199,9 +193,11 @@ graph TD
 
 ---
 
-## 5. 数据库与实体（17 表实体 + 1 DTO）
+## 5. 数据库与实体（20 表实体 + 1 DTO）
 
 引擎 SQLite（WAL），初始化 `SqlSugarSetup.InitializeDatabase`（`Infrastructure/Persistence/AppDbContext.cs`）：`CodeFirst.InitTables` **差量更新只增不删**，自动补齐历史库缺失列；不使用 EF Migration。
+
+> 陷阱：既有表的 **ALTER 补列**路径会把 `Length>8000` 的字符串列映射成 `varchar(max)`（SQLite 语法不认；CREATE 路径无此问题）——长文本列必须显式 `ColumnDataType="text"`（见 `SiteKey.LastQuotaRawJson`、`XaiAccount.LastQuotaRawJson`）。
 
 ### 5.1 实体总览
 
@@ -217,13 +213,19 @@ graph TD
 | `Proxy` | `ProxyAccessKey` | ProxyAccessKeys | `IX_..._AccessKeyHash_IsEnabled` |
 | `Proxy` | `ProxyUsageLog` | ProxyUsageLogs | RequestedAt / RequestId / (RequestedAt,Status) / TargetSiteId / AccessKeyId / AttemptedModel 共 6 个索引 |
 | `Proxy` | `CompatibilityProfile` | CompatibilityProfiles | — |
+| `Proxy` | `ProxyProfile` | ProxyProfiles | 出口代理方案 |
 | `Operations` | `SystemRuntimeSettings` | SystemRuntimeSettings | 单例行 Id=1 |
 | `Operations` | `SqlMigrationExecution` | SqlMigrationExecutions | `IX_..._FileName_ExecutedAt`（SQL 迁移审计） |
 | `Codex` | `CodexAccount` | CodexAccounts | LinkedSiteId、TokenExpiresAt |
+| `Google` | `GoogleAccount` | GoogleAccounts | LinkedSiteId（Antigravity 托管，见 [google-accounts.md](google-accounts.md)） |
+| `Kimi` | `KimiAccount` | KimiAccounts | LinkedSiteId、TokenExpiresAt（设备码托管） |
+| `Xai` | `XaiAccount` | XaiAccounts | LinkedSiteId、TokenExpiresAt（SuperGrok 设备码托管，见 [xai-accounts.md](xai-accounts.md)） |
 | `Auth` | `RefreshTokenRecord` | RefreshToken | Token 主键（string） |
 | `Detection` | `DetectionTask` | DetectionTasks | — |
 | `Detection` | `DetectionTaskExecution` | DetectionTaskExecutions | `IX_..._StartedAt` |
 | `Proxy`（DTO） | `CompatibilityRule` | —（存于 CompatibilityProfile.RulesJson） | — |
+
+> 账号实体（Codex/Google/Kimi/Xai）均含 `LinkedSiteId` 指向自动创建的隐藏 Site（`ManagedSource` 标识来源），共用「隐藏 Site 复用」方案；`SiteKey` 的 `LastQuotaRawJson/LastQuotaCheckedAt/LastQuotaStatus/LastQuotaError` 四列为站点额度查询的落库缓存。
 
 ### 5.2 实体全字段清单
 
@@ -422,7 +424,7 @@ sealed class SystemRuntimeSettings
 
 **SqlMigrationExecution**（`Domain/Operations/SqlMigrationExecution.cs`）：`Id`、`FileName`（≤255）、`FileHash`（SHA256，64）、`DryRun`、`Success`、`RowsAffected`、`StatementCount`、`DurationMs`、`ErrorMessage`、`OperatorIp`、`ExecutedAt`；(FileName, ExecutedAt) 索引。每次执行（含试运行）一条审计。
 
-**CodexAccount**（`Domain/Codex/CodexAccount.cs`）：`Id`、`DisplayName`、`Email?`、`AccountId?`（chatgpt_account_id，去重首选）、`PlanType?`（free/plus/team/pro）、`AccessToken?`（同步写回隐藏 Site.ApiKey，≤2000）、`RefreshToken?`（≤4000）、`IdToken?`、`TokenExpiresAt?`、`LastRefreshAt?`、`LinkedSiteId`、`IsEnabled`、`DisabledByFeatureToggle`、`ManuallyDisabled`、`AutoDisableThreshold?`（账号级）、`IsQuotaCooling`、`QuotaCoolingUntil?`、`LastQuotaRawJson?`（≤4000）、`LastQuotaCheckedAt?`、`CreatedAt`；LinkedSiteId/TokenExpiresAt 索引。
+**CodexAccount**（`Domain/Codex/CodexAccount.cs`）：`Id`、`DisplayName`、`Email?`、`AccountId?`（chatgpt_account_id，与 Email 组成复合去重键——它标识 workspace，同 team 成员共享）、`PlanType?`（free/plus/team/pro）、`AccessToken?`（同步写回隐藏 Site.ApiKey，≤2000）、`RefreshToken?`（≤4000）、`IdToken?`、`TokenExpiresAt?`、`LastRefreshAt?`、`LinkedSiteId`、`IsEnabled`、`DisabledByFeatureToggle`、`ManuallyDisabled`、`AutoDisableThreshold?`（账号级）、`IsQuotaCooling`、`QuotaCoolingUntil?`、`LastQuotaRawJson?`（≤4000）、`LastQuotaCheckedAt?`、`CreatedAt`；LinkedSiteId/TokenExpiresAt 索引。
 
 **RefreshTokenRecord**（`Domain/Auth/RefreshTokenRecord.cs`）：`Token`（string 主键）、`SubjectId`、`ExpiresAt`、`CreatedAt`。
 

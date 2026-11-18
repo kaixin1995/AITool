@@ -77,7 +77,8 @@ const keyOptions = computed(() => filters.value.accessKeys.map((k) => ({ label: 
 const statusOptions: SelectOption[] = [
   { label: '全部', value: '' },
   { label: '成功', value: 'success' },
-  { label: '失败', value: 'fail' }
+  { label: '失败', value: 'fail' },
+  { label: '已取消', value: 'canceled' }
 ]
 const streamOptions: SelectOption[] = [
   { label: '全部', value: '' },
@@ -147,7 +148,8 @@ function formatForwardingMode(forwardingMode: string): string {
   return '-'
 }
 
-function getStatusMeta(row: UsageLogItem): { label: string; type: 'success' | 'error' } {
+function getStatusMeta(row: UsageLogItem): { label: string; type: 'success' | 'warning' | 'error' } {
+  if (row.status === 'canceled') return { label: '已取消', type: 'warning' }
   const success = row.status === 'success' || row.status === 'ok'
   const label = row.fallbackTriggered && success ? '回退后成功' : row.isStreamInterrupted && !success ? '流中断' : success ? '成功' : '失败'
   return { label, type: success ? 'success' : 'error' }

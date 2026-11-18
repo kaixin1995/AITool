@@ -19,6 +19,7 @@ using Xunit;
 
 namespace AITool.Core.IntegrationTests.Proxy;
 
+[Collection("HeavyIoSerialized")]
 public sealed class RouteReferenceExecutionTests
 {
     [Theory]

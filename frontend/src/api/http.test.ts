@@ -1,10 +1,40 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  clearTokens,
+  getAuthSessionKey,
+  saveTokens,
   isApiResponse,
   isRequestCanceled,
   prepareRequestForTokenRefreshRetry,
   unwrapResponseData
 } from './http'
+
+afterEach(() => vi.unstubAllGlobals())
+
+describe('HTTP 会话标识', () => {
+  it('changes on login, token refresh and logout, even when tokens are reused', () => {
+    const values = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key)
+    })
+    const tokens = { accessToken: 'access', refreshToken: 'refresh', accessTokenExpiresAt: '', refreshTokenExpiresAt: '' }
+    const before = getAuthSessionKey()
+    saveTokens(tokens)
+    const login = getAuthSessionKey()
+    expect(login).not.toBe(before)
+    saveTokens(tokens)
+    const refresh = getAuthSessionKey()
+    expect(refresh).not.toBe(login)
+    clearTokens()
+    expect(getAuthSessionKey()).not.toBe(before)
+    expect(getAuthSessionKey()).not.toBe(refresh)
+    const afterLogout = getAuthSessionKey()
+    values.set('aitool.accessToken', 'external')
+    expect(getAuthSessionKey()).not.toBe(afterLogout)
+  })
+})
 
 describe('HTTP 响应识别', () => {
   it('识别标准 ApiResponse 包装', () => {

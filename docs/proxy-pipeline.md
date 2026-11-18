@@ -3,6 +3,8 @@
 > 本文是 [README.md](../README.md) 的代理转发细节篇。描述一次代理请求从进入 `/v1/*` 端点到返回客户端的完整调用链，精确到函数名与文件位置。
 > 协议转换本身的语义（转换矩阵、usage 口径、流式状态机）见 [protocol-bridge.md](protocol-bridge.md)。
 
+可选网关增强通过 `GatewayEnhancementMiddleware` 做 HTTP 预算准入/结算与 SSE 事件边界保活，通过 `GatewayWebSocketTurn` 做 WS 逐轮结算；原始 token 计算不变。循环检测位于转发层，亲和使用五分钟活跃窗口。配置、验证及限制见 [gateway-enhancements.md](gateway-enhancements.md)。
+
 ---
 
 ## 1. 入口总览
@@ -16,7 +18,7 @@
 | `/v1/embeddings` | POST | `Embeddings`（`:435`） | 禁流式，仅 OpenAI 协议路由（`routeEligibility` 过滤） |
 | `/v1/responses` | POST | `Responses`（`OpenAiProxyController.Responses.cs:94`） | Responses 主入口（透传/降级/双重转换） |
 | `/v1/responses` | GET(WS) | `ResponsesWebSocket`（`OpenAiProxyController.Responses.cs:24`） | WebSocket 会话模式 |
-| `/v1/responses/compact` | POST | `ResponsesCompact`（`OpenAiProxyController.cs:479`） | Codex 远程压缩：走 ResponsesCore(isCompact)，上游端点 responses/compact，非流式 |
+| `/v1/responses/compact` | POST | `ResponsesCompact` | Codex 远程压缩：原生 Responses 转发至 responses/compact；跨协议请求摘要并封装为可回放的 compaction，非流式 |
 | `/v1/models` | GET | `Models`（`OpenAiProxyController.cs:171`） | 按 `x-api-key`/`anthropic-version` 头自动切 OpenAI/Anthropic 展示格式；按 AccessKey 路由限定过滤 |
 | `/v1/models/{modelId}` | GET | `ModelDetail`（`:249`） | 不存在 → 403 `model_not_found`；无权限 → 403 `route_forbidden` |
 | `/v1/messages` | POST | `AnthropicProxyController.Messages`（`AnthropicProxyController.cs:140`） | Anthropic 主入口 |

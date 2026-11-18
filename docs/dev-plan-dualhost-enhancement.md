@@ -291,3 +291,28 @@ Antigravity 额度两桶聚合（SelectDisablePercent 钩子）+ 暗色修复 + 
 
 版本号 1.0.1.26 → 1.0.1.28；README 核心能力/管理页面章节全面刷新。
 回归：Admin 187 / Core 291 / 单元 400 / 前端 156 全绿。
+
+---
+
+## 附录 F：master 四次同步记录（2026-11-18，cc8f000 → 1.0.1.58，6 批提交）
+
+### 移植范围（30 个小版本跨度：v1.0.1.29 → 1.0.1.58）
+- **设备 OAuth 通用体系**：9 厂商 vendor + 统一卡片/表格 UI + 站点头同步 + 凭证失效禁用
+- **账号网络策略**：三态 Legacy/Direct/ProxyProfile + NetworkBound 双工厂 + 发送边界双解析器
+- **号池三件套**：P0 配额贯通/P1 批量模型/P2 生成式号池 + 对账同步 + 前端四视图
+- **Codex 演进**：(account_id,email) 复合判重键、额度周期统计/预测、凭证恢复、原账号重授权
+- **会话隔离 v2**：钥匙圈裸存 SQLite（EnableRawV2 分相）+ 派生器 + 引用守卫
+- **流式韧性（master 版）**：桥接补发 [DONE] 终止符、canceled 用量照常入账、非流式 Responses 工具调用聚合、压缩续接
+- **网关增强（终态）**：keep-alive/预算闸/共享工具与 MCP（会话统计已由 master 自删，split 未引入）
+- **OAuth UI 大改**：卡片锁宽居左、进度条网格、表格资源包折叠、厂商筛选下拉
+- **运维**：空闲内存裁剪参考、生产默认关 Swagger、nlog/runtimeconfig 模板、canceled 用量修正 SQL
+
+### 双宿主适配要点（split 特有）
+- 转发路径栈下沉 Infrastructure/Proxy（会话隔离/网关/引用守卫/候选策略/路由变更闸门——Core 可达）
+- Core 无库形态：SnapshotForward 双解析器 + 快照 AccountNetworkPolicies 段（Admin 预解析明文代理地址）
+- 设备账号 Core 401 即刷为占位：refresh token 轮换权集中 Admin（防双端轮换分叉）
+- 心跳/断线续传在新控制器 7 个流式点重新挂载；TestHost 跨宿主后台服务运行时门控
+- AdminCacheInvalidation 推送钩子全量恢复（Google/Kimi/Codex 全量同步，Xai/DeviceOAuth Sites 补丁）
+
+### 回归基线
+Admin 1100 / Core 629 / Unit 419 / Frontend 261 全绿；版本对齐 1.0.1.58。

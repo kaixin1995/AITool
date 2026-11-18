@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NCard, NButton, NSpace, NTag, NModal, NForm, NFormItem, NInput, NInputNumber,
-  NSwitch, NSelect, NPopconfirm, NEmpty, NSpin, NTabs, NTabPane, NTooltip, useMessage
+  NSwitch, NSelect, NPopselect, NPopconfirm, NEmpty, NSpin, NTabs, NTabPane, NTooltip, useMessage
 } from 'naive-ui'
 import * as modelsApi from '@/api/models'
 import * as compatApi from '@/api/compatibility'
@@ -85,6 +85,8 @@ const matchTypeOptions = [
   { label: '通配符 *', value: 'wildcard' },
   { label: '正则', value: 'regex' }
 ]
+const reasoningEffortOptions = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+  .map(value => ({ label: value, value }))
 
 const showModal = ref(false)
 const activeEditorTab = ref('basic')
@@ -125,7 +127,8 @@ const clientEmulationOptions = computed(() => {
       { label: '⚡ OpenCode CLI 终端', value: 'OpenCode' },
       { label: '⚡ Claude Code 官方命令行', value: 'ClaudeCode' },
       { label: '⚡ ZCode / GLM 客户端', value: 'ZCode' },
-      { label: '⚡ Google Antigravity CLI', value: 'Antigravity' }
+      { label: '⚡ Google Antigravity CLI', value: 'Antigravity' },
+      { label: '⚡ WorkBuddy 官方客户端 (腾讯 CodeBuddy)', value: 'WorkBuddy' }
     )
   }
   return options
@@ -716,7 +719,9 @@ onMounted(() => {
                 </div>
                 <div class="model-form-grid model-form-grid-secondary">
                   <NFormItem label="强制思考等级（留空=透传）">
-                    <NInput v-model:value="form.overrideReasoningEffort" placeholder="如 low / medium / high" />
+                    <NInput v-model:value="form.overrideReasoningEffort" placeholder="选择或输入自定义等级">
+                      <template #suffix><NPopselect :options="reasoningEffortOptions" @update:value="value => form.overrideReasoningEffort = String(value)"><NButton text aria-label="选择思考等级">▾</NButton></NPopselect></template>
+                    </NInput>
                   </NFormItem>
                   <NFormItem label="兼容规则集">
                     <NSelect
@@ -814,7 +819,9 @@ onMounted(() => {
                           <NSelect v-model:value="m.clientEmulation" :options="clientEmulationOptions" size="small" />
                         </div>
                         <div class="col-effort">
-                          <NInput v-model:value="m.overrideReasoningEffort" size="small" placeholder="留空=跟随模型/透传" />
+                          <NInput v-model:value="m.overrideReasoningEffort" size="small" placeholder="选择或输入；留空=跟随模型">
+                            <template #suffix><NPopselect :options="reasoningEffortOptions" @update:value="value => m.overrideReasoningEffort = String(value)"><NButton text aria-label="选择站点思考等级">▾</NButton></NPopselect></template>
+                          </NInput>
                         </div>
                         <div class="col-status">
                           <NSwitch v-model:value="m.isEnabled" size="small" />

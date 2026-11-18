@@ -5,6 +5,9 @@ export interface ProxyProfile {
   key: string
   name: string
   proxyUrl: string
+  hasCredentials: boolean
+  revision: number
+  configurationError?: string | null
   description?: string | null
   isEnabled: boolean
   sortOrder: number
@@ -19,16 +22,22 @@ export interface ProxyProfilePayload {
   description?: string | null
   isEnabled: boolean
   sortOrder: number
+  revision?: number
+  credentialAction?: 'Keep' | 'Replace' | 'Clear'
+  username?: string
+  password?: string
 }
 
 export interface TestProxyRequest {
-  proxyUrl: string
+  profileId?: string
+  proxyUrl?: string
   targetUrl?: string | null
 }
 
 export interface TestProxyResponse {
   isSuccess: boolean
   statusCode: number
+  httpResponseReceived?: boolean
   latencyMs: number
   errorMessage?: string | null
   targetUrl: string
