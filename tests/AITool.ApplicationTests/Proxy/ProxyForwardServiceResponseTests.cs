@@ -55,13 +55,12 @@ public sealed class ProxyForwardServiceResponseTests
     [Fact]
     public void ExtractUsageMetrics_Anthropic_InputTokensExcludeCache()
     {
-        // Anthropic 的 input_tokens 已包含缓存 token，输入列必须是减去缓存后的"新输入"，
-        // 否则缓存会在输入列和缓存列重复统计。
+        // Anthropic 的 input_tokens、缓存读取和缓存创建为独立桶。
         var body = """{"usage":{"input_tokens":405415,"cache_read_input_tokens":405248,"cache_creation_input_tokens":0,"output_tokens":349}}""";
 
         var usage = ExtractUsageMetricsCore(body, "Anthropic");
 
-        usage.InputTokens.Should().Be(167, "input_tokens 应减去缓存，得到真实新输入");
+        usage.InputTokens.Should().Be(405415);
         usage.CachedTokens.Should().Be(405248);
         usage.OutputTokens.Should().Be(349);
     }
@@ -69,12 +68,12 @@ public sealed class ProxyForwardServiceResponseTests
     [Fact]
     public void ExtractUsageMetrics_Anthropic_WithCacheCreationAlsoExcluded()
     {
-        // cache_read + cache_creation 都是 input_tokens 的子集，都要从输入中减掉。
+        // 缓存读取和创建合计记录，不能从新输入扣除。
         var body = """{"usage":{"input_tokens":1000,"cache_read_input_tokens":600,"cache_creation_input_tokens":100,"output_tokens":50}}""";
 
         var usage = ExtractUsageMetricsCore(body, "Anthropic");
 
-        usage.InputTokens.Should().Be(300, "应减去 cache_read + cache_creation");
+        usage.InputTokens.Should().Be(1000);
         usage.CachedTokens.Should().Be(700);
         usage.OutputTokens.Should().Be(50);
     }
@@ -82,12 +81,12 @@ public sealed class ProxyForwardServiceResponseTests
     [Fact]
     public void ExtractUsageMetrics_Anthropic_NoNegativeInput()
     {
-        // 异常数据（缓存大于 input_tokens）不应产生负数输入。
+        // 缓存大于新输入是有效情况。
         var body = """{"usage":{"input_tokens":100,"cache_read_input_tokens":150,"output_tokens":10}}""";
 
         var usage = ExtractUsageMetricsCore(body, "Anthropic");
 
-        usage.InputTokens.Should().Be(0);
+        usage.InputTokens.Should().Be(100);
         usage.CachedTokens.Should().Be(150);
         usage.OutputTokens.Should().Be(10);
     }

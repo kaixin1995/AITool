@@ -80,7 +80,7 @@ public sealed class GeminiSchemaCrashTests
     }
 
     [Fact]
-    public void PrepareRequestBody_gemini_with_non_string_required_items_does_not_crash()
+    public void PrepareRequestBody_gemini_with_non_string_required_items_is_rejected_cleanly()
     {
         // required 数组含非字符串项
         var body = BuildOpenAiBodyWithTools("""
@@ -99,12 +99,11 @@ public sealed class GeminiSchemaCrashTests
             }]
             """);
 
-        var result = ProxyProtocolBridge.PrepareRequestBody(
+        Action act = () => ProxyProtocolBridge.PrepareRequestBody(
             "OpenAI", "Gemini", body, "gemini-3-pro", false,
             null, "https://daily-cloudcode-pa.googleapis.com", null,
             isPassthrough: false, isCompact: false, geminiProjectId: "test-project");
-
-        result.Should().NotBeNullOrEmpty("非字符串 required 项应被剔除而非崩溃");
+        act.Should().Throw<ProtocolConversionException>();
     }
 
     [Fact]

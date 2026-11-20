@@ -32,6 +32,36 @@ public class ProxyDiagnosticServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Bridge_stream_dump_separates_raw_and_converted_and_marks_capture_limit()
+    {
+        var route = Guid.NewGuid().ToString("N");
+        _unitTestService.RecordDiagnostic(new ProxyDiagnosticContext
+        {
+            RouteName = route, ClientProtocol = "Anthropic", UpstreamProtocol = "Responses",
+            ClientHeaders = new() { ["Cookie"] = "session=12345678901234567890", ["x-api-token"] = "secret-long-token-123456" },
+            Result = new ProxyForwardResult
+            {
+                Success = false, StatusCode = 200, IsStreaming = true, IsStreamInterrupted = true,
+                RawUpstreamResponseIsSse = true, RawUpstreamResponseBody = "event: response.created\ndata: {}\n\n",
+                RawUpstreamResponseTruncated = true, RawUpstreamResponseCaptureLimitChars = 128,
+                ResponseBody = "event: error\ndata: {}\n\n", ClientResponseTruncated = true
+            }
+        });
+        var dump = await WaitForDumpAsync(_unitTestService, x => x.RouteName == route, TimeSpan.FromSeconds(3));
+        Assert.NotNull(dump);
+        var json = JsonNode.Parse(_unitTestService.ReadDumpContent(dump.FileName)!)!;
+        Assert.Contains("response.created", json["upstreamResponseBody"]!.ToString());
+        Assert.Contains("event: error", json["clientResponseBody"]!.ToString());
+        Assert.Equal("pre-conversion-stream", json["captureInfo"]!["upstreamBodySource"]!.ToString());
+        Assert.True(json["captureInfo"]!["upstreamStreamTruncated"]!.GetValue<bool>());
+        Assert.True(json["captureInfo"]!["clientStreamTruncated"]!.GetValue<bool>());
+        Assert.DoesNotContain("12345678901234567890", json["clientHeaders"]!.ToJsonString());
+        Assert.DoesNotContain("secret-long-token-123456", json["clientHeaders"]!.ToJsonString());
+        Assert.Equal("[REDACTED]", json["clientHeaders"]!["Cookie"]!.ToString());
+        Assert.Equal("[REDACTED]", json["clientHeaders"]!["x-api-token"]!.ToString());
+    }
+
+    [Fact]
     public async Task RecordDiagnostic_failed_request_generates_reproduction_file_and_memory_item()
     {
         var service = _unitTestService;
@@ -110,7 +140,7 @@ public class ProxyDiagnosticServiceTests : IDisposable
         var authHeader = json["clientHeaders"]?["Authorization"]?.ToString();
         Assert.NotNull(authHeader);
         Assert.DoesNotContain("1234567890", authHeader);
-        Assert.Contains("...", authHeader);
+        Assert.Equal("[REDACTED]", authHeader);
 
         // Request and response bodies are captured in full
         Assert.NotNull(json["clientRequestBody"]);

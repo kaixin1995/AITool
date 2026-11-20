@@ -212,13 +212,27 @@ public sealed partial class OpenAiProxyController
         return correlationId;
     }
 
-    private async Task TraceGatewayRejectionAsync(Guid correlationId, string protocolType, int statusCode, string category, string? diagnostic, CancellationToken ct)
+    private async Task TraceGatewayRejectionAsync(Guid correlationId, string protocolType, int statusCode, string category, string? diagnostic, CancellationToken ct, string? requestBody = null, string? model = null)
     {
         // Both category and diagnostic must be internally generated, not upstream text.
         try
         {
             var settings = await _metadataCache.GetRuntimeSettingsAsync(ct);
-            if (!settings.DeveloperFeaturesEnabled || !settings.DeveloperTraceEnabled) return;
+            if (!settings.DeveloperFeaturesEnabled) return;
+            if (settings.DeveloperFailureDumpEnabled && requestBody is not null)
+            {
+                _diagnosticService.RecordDiagnostic(new ProxyDiagnosticContext
+                {
+                    RequestId = correlationId, ClientProtocol = protocolType,
+                    RequestSource = ResolveRequestSource(Request), RequestPath = Request.Path,
+                    RequestModel = model ?? string.Empty, RouteName = "gateway rejection",
+                    RawClientRequestBody = requestBody,
+                    ClientHeaders = ProxyDiagnosticContext.SnapshotHeaders(Request.Headers),
+                    Result = new ProxyForwardResult { Success = false, StatusCode = statusCode,
+                        ErrorMessage = diagnostic is null ? category : $"{category}: {diagnostic}" }
+                });
+            }
+            if (!settings.DeveloperTraceEnabled) return;
             var traceId = _traceStore.AddRequest(new DeveloperInvocationTraceRequest
             {
                 RequestId = correlationId, Source = ResolveRequestSource(Request), ProtocolType = protocolType,
@@ -276,7 +290,7 @@ public sealed partial class OpenAiProxyController
         {
             var correlationId = LogReferenceRejection(ex, "request_validation", "http");
             await TraceGatewayRejectionAsync(correlationId, "Responses", ReferenceFailureStatusCode(ex), ex.Code,
-                ex.Diagnostic, cancellationToken);
+                ex.Diagnostic, cancellationToken, requestBody, modelName);
             return ReferenceError(ex);
         }
         try { requestBody = ProxyProtocolBridge.ExpandLocalCompactions(requestBody); }
@@ -366,7 +380,10 @@ public sealed partial class OpenAiProxyController
             // 不支持的 /responses 请求，常见表现为 HTTP 406。
             var isPassthrough = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
             var summarizeCompact = hasCompactTrigger || (isCompact && !isPassthrough);
-            var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+            string preparedRequestBody;
+            try
+            {
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Responses",
                 actualProtocolType,
                 summarizeCompact ? ProxyProtocolBridge.PrepareCompactSummaryRequest(requestBody) : requestBody,
@@ -378,6 +395,13 @@ public sealed partial class OpenAiProxyController
                 isPassthrough: isPassthrough,
                 isCompact: isCompact && !summarizeCompact,
                 geminiProjectId: route.GoogleProjectId);
+
+            }
+            catch (ProtocolConversionException ex)
+            {
+                lastResult = new ProxyForwardResult { Success = false, StatusCode = 400, ErrorMessage = ex.Message };
+                continue;
+            }
 
             var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
             if (_sessionIsolation is not null)
@@ -865,6 +889,11 @@ public sealed partial class OpenAiProxyController
         }
 
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
+        if (traceId.HasValue)
+        {
+            try { _traceStore.CompletePendingRequest(traceId.Value, "fail", statusCode, lastResult?.ErrorMessage ?? "All upstream routes failed"); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to settle Responses request trace"); }
+        }
         return new JsonResult(new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } })
         {
             StatusCode = statusCode,
@@ -993,7 +1022,10 @@ public sealed partial class OpenAiProxyController
 
             var isPassthrough = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
             // Anthropic 上游走 PrepareRequestBody 的直转分支；Chat 上游经 ConvertResponsesRequestToChat。
-            var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+            string preparedRequestBody;
+            try
+            {
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Responses",
                 actualProtocolType,
                 compactTrigger ? ProxyProtocolBridge.PrepareCompactSummaryRequest(normalizedRequestBody) : normalizedRequestBody,
@@ -1004,6 +1036,13 @@ public sealed partial class OpenAiProxyController
                 route.CompatibilityRules,
                 isPassthrough: isPassthrough,
                 geminiProjectId: route.GoogleProjectId);
+
+            }
+            catch (ProtocolConversionException ex)
+            {
+                lastResult = new ProxyForwardResult { Success = false, StatusCode = 400, ErrorMessage = ex.Message };
+                continue;
+            }
 
             var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
             if (_sessionIsolation is not null)
@@ -1330,6 +1369,11 @@ public sealed partial class OpenAiProxyController
             }
         }
 
+        if (traceId.HasValue)
+        {
+            try { _traceStore.CompletePendingRequest(traceId.Value, "fail", lastResult?.StatusCode > 0 ? lastResult.StatusCode : StatusCodes.Status502BadGateway, lastResult?.ErrorMessage ?? "All upstream routes failed"); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to settle Responses WebSocket request trace"); }
+        }
         if (webSocket.State == WebSocketState.Open)
         {
             await TryWriteResponsesWebSocketErrorAsync(webSocket, lastResult?.StatusCode > 0 ? lastResult.StatusCode : StatusCodes.Status502BadGateway, lastResult?.ErrorMessage ?? "All upstream routes failed", cancellationToken);

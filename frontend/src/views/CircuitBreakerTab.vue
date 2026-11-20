@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { NCard, NButton, NSpace, NTag, NEmpty, NPopconfirm, useMessage } from 'naive-ui'
+import { NCard, NButton, NSpace, NTag, NEmpty, NAlert, NPopconfirm, useMessage } from 'naive-ui'
 import * as api from '@/api/circuitBreaker'
 import type { CircuitBreakerRoute } from '@/api/circuitBreaker'
 
 const message = useMessage()
 const loading = ref(false)
 const routes = ref<CircuitBreakerRoute[]>([])
+const loadError = ref('')
 let timer: ReturnType<typeof setInterval> | null = null
 
 async function load(): Promise<void> {
@@ -15,8 +16,9 @@ async function load(): Promise<void> {
   try {
     const resp = await api.getCircuitBreakerStates()
     routes.value = resp.routes ?? []
-  } catch {
-    // 功能开关关闭时静默
+    loadError.value = ''
+  } catch (e) {
+    loadError.value = (e as Error).message || '加载熔断状态失败，请检查开发者功能和登录状态'
   } finally { loading.value = false }
 }
 
@@ -66,9 +68,11 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       </NSpace>
     </template>
 
-    <NEmpty v-if="routes.length === 0" description="当前无熔断或失败记录" />
+    <NAlert v-if="loadError" type="error" class="mb-3">加载失败：{{ loadError }}。当前显示可能不是最新数据。</NAlert>
+    <NAlert type="info" class="mb-3">这里只显示当前熔断、冷却或连续失败计数，不是历史失败列表。同一熔断键成功后连续失败计数会清零；进程重启也会清空内存状态。历史中断请查看使用日志和诊断抓包。</NAlert>
+    <NEmpty v-if="!loadError && routes.length === 0" description="当前没有熔断、冷却或正在累计的连续失败" />
 
-    <div v-else>
+    <div v-else-if="routes.length > 0">
       <div v-for="r in routes" :key="r.circuitKey" class="circuit-row">
         <NSpace align="center" :size="8" style="flex: 1">
           <NTag size="small" :type="r.isBlocked ? 'error' : 'warning'" :bordered="false">

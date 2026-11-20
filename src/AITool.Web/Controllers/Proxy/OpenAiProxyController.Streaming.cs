@@ -40,13 +40,21 @@ public sealed partial class OpenAiProxyController
         var inputTokens = 0;
         var cachedTokens = 0;
         var outputTokens = 0;
+        var mergedUsage = new ResponsesUsageAccumulator();
         var receivedDoneEvent = false;
+        var receivedErrorEvent = false;
 
         async Task FlushSseBlockAsync(CancellationToken token)
         {
             // 上游 SSE 以空行作为事件边界，这里按完整事件块转成一条 WebSocket 消息。
             if (pendingSseLines.Count == 0)
             {
+                return;
+            }
+
+            if (receivedErrorEvent)
+            {
+                pendingSseLines.Clear();
                 return;
             }
 
@@ -58,7 +66,26 @@ public sealed partial class OpenAiProxyController
                 }
                 else
                 {
-                    UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+                    try
+                    {
+                        using var errorDoc = JsonDocument.Parse(payload);
+                        var root = errorDoc.RootElement;
+                        receivedErrorEvent = root.ValueKind == JsonValueKind.Object
+                            && ((root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+                                || (root.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String
+                                    && type.GetString() is "error" or "response.failed"));
+                    }
+                    catch (JsonException) { }
+                    if (receivedErrorEvent && payloadConverter is not null)
+                    {
+                        if (responsesState is not null) { responsesState.ConversionFailed = true; responsesState.StopReason = "error"; }
+                        pendingSseLines.Clear();
+                        return;
+                    }
+                    mergedUsage.Observe(payload);
+                    cachedTokens = (mergedUsage.CacheRead ?? 0) + (mergedUsage.CacheWrite ?? 0);
+                    if (mergedUsage.TotalInput.HasValue) inputTokens = Math.Max(0, mergedUsage.TotalInput.Value - cachedTokens);
+                    outputTokens = mergedUsage.Output ?? outputTokens;
                     var responsePayload = payloadConverter is null ? payload : payloadConverter(payload);
                     if (payloadConverter is not null && responsePayload.Contains("event: response.failed", StringComparison.Ordinal))
                         receivedDoneEvent = false;
@@ -125,12 +152,21 @@ public sealed partial class OpenAiProxyController
             }
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
-        result.InputTokens = inputTokens;
-        result.CachedTokens = cachedTokens;
-        result.OutputTokens = outputTokens;
+        if (mergedUsage.CacheRead.HasValue || mergedUsage.CacheWrite.HasValue) result.CachedTokens = cachedTokens;
+        if (mergedUsage.TotalInput.HasValue) result.InputTokens = Math.Max(0, mergedUsage.TotalInput.Value - result.CachedTokens);
+        if (mergedUsage.Output.HasValue) result.OutputTokens = outputTokens;
+
+        if (receivedErrorEvent)
+        {
+            receivedDoneEvent = false;
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= "Upstream stream returned an error event.";
+        }
 
         if (responsesState is not null && (responsesState.ConversionFailed || responsesState.StopReason == "error"))
         {
@@ -183,6 +219,8 @@ public sealed partial class OpenAiProxyController
         var completedOutputJson = "[]";
         var inputTokens = 0;
         var cachedTokens = 0;
+        var cacheReadTokens = 0;
+        var cacheCreationTokens = 0;
         var outputTokens = 0;
         var responsesState = new ChatToResponsesStreamState
         {
@@ -208,13 +246,15 @@ public sealed partial class OpenAiProxyController
             try
             {
                 using var doc = JsonDocument.Parse(payload);
-                UpdateAnthropicUsageFromSseEvent(eventName, doc.RootElement, ref inputTokens, ref cachedTokens, ref outputTokens);
+                UpdateAnthropicUsageFromSseEvent(eventName, doc.RootElement, ref inputTokens, ref cacheReadTokens, ref cacheCreationTokens, ref outputTokens);
+                cachedTokens = cacheReadTokens + cacheCreationTokens;
             }
             catch
             {
             }
 
-            // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。            var responsesSse = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
+            // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
+            var responsesSse = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
             if (string.IsNullOrEmpty(responsesSse))
             {
                 return;
@@ -255,6 +295,7 @@ public sealed partial class OpenAiProxyController
             await FlushAnthropicBlockAsync(cancellationToken);
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
@@ -311,6 +352,8 @@ public sealed partial class OpenAiProxyController
         var startedWriting = false;
         var inputTokens = 0;
         var cachedTokens = 0;
+        var cacheReadTokens = 0;
+        var cacheCreationTokens = 0;
         var outputTokens = 0;
 
         // Responses 流式状态
@@ -335,7 +378,8 @@ public sealed partial class OpenAiProxyController
                 return;
             }
 
-            // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。            // 直接把 Anthropic SSE 事件转为 Responses 事件
+            // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
+            // 直接把 Anthropic SSE 事件转为 Responses 事件
             var responsesChunk = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
             if (!string.IsNullOrEmpty(responsesChunk))
             {
@@ -352,7 +396,8 @@ public sealed partial class OpenAiProxyController
             {
                 using var doc = JsonDocument.Parse(payload);
                 var root = doc.RootElement;
-                UpdateAnthropicUsageFromSseEvent(eventName, root, ref inputTokens, ref cachedTokens, ref outputTokens);
+                UpdateAnthropicUsageFromSseEvent(eventName, root, ref inputTokens, ref cacheReadTokens, ref cacheCreationTokens, ref outputTokens);
+                cachedTokens = cacheReadTokens + cacheCreationTokens;
             }
             catch
             {
@@ -378,6 +423,7 @@ public sealed partial class OpenAiProxyController
             await FlushAnthropicSseBlockAsync(cancellationToken);
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
@@ -417,79 +463,20 @@ public sealed partial class OpenAiProxyController
         };
     }
 
-    /// <summary>
-    /// 从 Anthropic SSE 事件中提取用量信息。
-    /// </summary>
-    /// <param name="eventName">当前 Anthropic SSE 事件名称。</param>
-    /// <param name="root">当前 SSE data 行对应的 JSON 根节点。</param>
-    /// <param name="inputTokens">保存提取到的输入 token 数。</param>
-    /// <param name="cachedTokens">保存提取到的缓存命中 token 数。</param>
-    /// <param name="outputTokens">保存提取到的输出 token 数。</param>
-    private static void UpdateAnthropicUsageFromSseEvent(string eventName, JsonElement root, ref int inputTokens, ref int cachedTokens, ref int outputTokens)
+    /// <summary>Merge Anthropic cumulative usage buckets without subtracting cache.</summary>
+    private static void UpdateAnthropicUsageFromSseEvent(string eventName, JsonElement root,
+        ref int inputTokens, ref int cacheReadTokens, ref int cacheCreationTokens, ref int outputTokens)
     {
-        // 口径与 AnthropicProxyController.UpdateAnthropicUsageFromElement / UpdateAnthropicUsageFromPayload 保持一致：
-        // input_tokens 按含缓存处理，扣除 cache_read + cache_creation 得到"不含缓存的新输入"；
-        // 减法仅在该事件自带 input_tokens 时执行，避免对已扣减的值重复扣减。
-        if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
-        {
-            if (root.TryGetProperty("message", out var message) && message.TryGetProperty("usage", out var usage))
-            {
-                var hasInputTokens = false;
-                if (usage.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number)
-                {
-                    inputTokens = it.GetInt32();
-                    hasInputTokens = true;
-                }
-
-                cachedTokens = 0;
-                if (usage.TryGetProperty("cache_read_input_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number)
-                {
-                    cachedTokens += ct.GetInt32();
-                }
-
-                if (usage.TryGetProperty("cache_creation_input_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
-                {
-                    cachedTokens += cct.GetInt32();
-                }
-
-                if (hasInputTokens)
-                {
-                    inputTokens = Math.Max(0, inputTokens - cachedTokens);
-                }
-            }
-        }
-        else if (string.Equals(eventName, "message_delta", StringComparison.OrdinalIgnoreCase))
-        {
-            if (root.TryGetProperty("usage", out var usage))
-            {
-                var hasInputTokens = false;
-                if (usage.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number)
-                {
-                    inputTokens = it.GetInt32();
-                    hasInputTokens = true;
-                }
-
-                if (usage.TryGetProperty("cache_read_input_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number)
-                {
-                    cachedTokens = ct.GetInt32();
-                }
-
-                if (usage.TryGetProperty("cache_creation_input_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
-                {
-                    cachedTokens += cct.GetInt32();
-                }
-
-                if (hasInputTokens)
-                {
-                    inputTokens = Math.Max(0, inputTokens - cachedTokens);
-                }
-
-                if (usage.TryGetProperty("output_tokens", out var ot) && ot.ValueKind == JsonValueKind.Number)
-                {
-                    outputTokens = ot.GetInt32();
-                }
-            }
-        }
+        var usage = string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase)
+            && root.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.Object
+            && message.TryGetProperty("usage", out var start) && start.ValueKind == JsonValueKind.Object ? start
+            : string.Equals(eventName, "message_delta", StringComparison.OrdinalIgnoreCase)
+                && root.TryGetProperty("usage", out var delta) && delta.ValueKind == JsonValueKind.Object ? delta : default;
+        if (usage.ValueKind != JsonValueKind.Object) return;
+        if (usage.TryGetProperty("input_tokens", out var input) && input.ValueKind == JsonValueKind.Number) inputTokens = input.GetInt32();
+        if (usage.TryGetProperty("cache_read_input_tokens", out var read) && read.ValueKind == JsonValueKind.Number) cacheReadTokens = read.GetInt32();
+        if (usage.TryGetProperty("cache_creation_input_tokens", out var write) && write.ValueKind == JsonValueKind.Number) cacheCreationTokens = write.GetInt32();
+        if (usage.TryGetProperty("output_tokens", out var output) && output.ValueKind == JsonValueKind.Number) outputTokens = output.GetInt32();
     }
 
     /// <summary>
@@ -518,9 +505,11 @@ public sealed partial class OpenAiProxyController
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var receivedDoneEvent = false;
+        var receivedErrorEvent = false;
         var inputTokens = 0;
         var cachedTokens = 0;
         var outputTokens = 0;
+        var mergedUsage = new ResponsesUsageAccumulator();
         // 首包蓄流（默认关闭）：扣住开头的热身块，出现内容块才写客户端，扩大可回退窗口。
         var headBuffer = await TryCreateSseHeadBufferAsync(cancellationToken);
 
@@ -584,6 +573,11 @@ public sealed partial class OpenAiProxyController
             {
                 return;
             }
+            if (receivedErrorEvent)
+            {
+                pendingSseLines.Clear();
+                return;
+            }
 
             if (TryExtractSseDataPayload(pendingSseLines, out var payload))
             {
@@ -593,9 +587,22 @@ public sealed partial class OpenAiProxyController
                 }
                 else
                 {
+                    try
+                    {
+                        using var errorDoc = JsonDocument.Parse(payload);
+                        var root = errorDoc.RootElement;
+                        receivedErrorEvent = root.ValueKind == JsonValueKind.Object
+                            && ((root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+                                || (root.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String
+                                    && type.GetString() is "error" or "response.failed"));
+                    }
+                    catch (JsonException) { }
                     if (payload.Contains("\"usage\"", StringComparison.Ordinal))
                     {
-                        UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+                        mergedUsage.Observe(payload);
+                        cachedTokens = (mergedUsage.CacheRead ?? 0) + (mergedUsage.CacheWrite ?? 0);
+                        if (mergedUsage.TotalInput.HasValue) inputTokens = Math.Max(0, mergedUsage.TotalInput.Value - cachedTokens);
+                        outputTokens = mergedUsage.Output ?? outputTokens;
                     }
 
                     // 兼容 Responses API：上游可能以 response.completed 事件而非 [DONE] 结束流。
@@ -617,6 +624,16 @@ public sealed partial class OpenAiProxyController
                 }
             }
 
+            // A Chat-to-Responses converter cannot pass a Chat error envelope as a
+            // Responses event. Emit a protocol-correct failure and never flush completion.
+            if (receivedErrorEvent && responsesState is not null)
+            {
+                responsesState.ConversionFailed = true;
+                responsesState.StopReason = "error";
+                if (startedWriting) await WriteChunkDirectAsync(ResponsesStreamFailure(responsesState), token);
+                pendingSseLines.Clear();
+                return;
+            }
             await WriteRawSseBlockAsync(pendingSseLines, token);
             pendingSseLines.Clear();
         }
@@ -648,12 +665,21 @@ public sealed partial class OpenAiProxyController
             receivedDoneEvent = responsesState.Done;
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
-        result.InputTokens = inputTokens;
-        result.CachedTokens = cachedTokens;
-        result.OutputTokens = outputTokens;
+        if (mergedUsage.CacheRead.HasValue || mergedUsage.CacheWrite.HasValue) result.CachedTokens = cachedTokens;
+        if (mergedUsage.TotalInput.HasValue) result.InputTokens = Math.Max(0, mergedUsage.TotalInput.Value - result.CachedTokens);
+        if (mergedUsage.Output.HasValue) result.OutputTokens = outputTokens;
+
+        if (receivedErrorEvent)
+        {
+            receivedDoneEvent = false;
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= "Upstream stream returned an error event.";
+        }
 
         if (responsesState is not null && (!responsesState.Done || responsesState.ConversionFailed || responsesState.StopReason == "error"))
         {
@@ -704,7 +730,7 @@ public sealed partial class OpenAiProxyController
         // 流中断但已开始写入时，向客户端补发终止信号避免挂起。
         // 上游 [DONE] 已透传（receivedDoneEvent）后不再补发（其后中断会双发）；
         // IsCanceled（客户端已断开）补发无意义。
-        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent)
+        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent && !receivedErrorEvent)
         {
             if (responsesState is not null)
             {
@@ -713,7 +739,7 @@ public sealed partial class OpenAiProxyController
             }
             else await Response.TryWriteTerminatorAsync(result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true
                 ? "data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\ndata: [DONE]\n\n"
-                : "data: [DONE]\n\n", cancellationToken);
+                : "data: {\"error\":{\"code\":\"upstream_stream_interrupted\",\"message\":\"Upstream stream ended before completion.\"}}\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -821,6 +847,7 @@ public sealed partial class OpenAiProxyController
         var cachedTokens = 0;
         var outputTokens = 0;
         var conversionFailed = false;
+        var usage = new ResponsesUsageAccumulator();
         var responsesState = new ResponsesToChatStreamState
         {
             Model = modelName
@@ -855,9 +882,13 @@ public sealed partial class OpenAiProxyController
                 return;
             }
 
-            UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+            usage.Observe(payload);
+            inputTokens = usage.TotalInput.HasValue ? Math.Max(0, usage.TotalInput.Value - (usage.CacheRead ?? 0) - (usage.CacheWrite ?? 0)) : inputTokens;
+            cachedTokens = (usage.CacheRead ?? 0) + (usage.CacheWrite ?? 0);
+            outputTokens = usage.Output ?? outputTokens;
             responsesState.InputTokens = inputTokens;
-            responsesState.CachedTokens = cachedTokens;
+            responsesState.CachedTokens = usage.CacheRead ?? 0;
+            responsesState.CacheWriteTokens = usage.CacheWrite ?? 0;
             responsesState.OutputTokens = outputTokens;
             // 累积原始 Responses 正文，不受 64KB 诊断副本限制。
             var openAiChunk = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
@@ -872,7 +903,7 @@ public sealed partial class OpenAiProxyController
                 conversionFailed = true;
             }
 
-            if (string.Equals(eventName, "response.completed", StringComparison.OrdinalIgnoreCase))
+            if (responsesState.Completed)
             {
                 receivedDoneEvent = true;
             }
@@ -897,17 +928,19 @@ public sealed partial class OpenAiProxyController
             await FlushResponsesSseBlockAsync(cancellationToken);
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
-        result.InputTokens = inputTokens;
-        result.CachedTokens = cachedTokens;
-        result.OutputTokens = outputTokens;
+        if (usage.TotalInput.HasValue) result.InputTokens = inputTokens;
+        if (usage.CacheRead.HasValue || usage.CacheWrite.HasValue) result.CachedTokens = cachedTokens;
+        if (usage.Output.HasValue) result.OutputTokens = outputTokens;
 
-        if (result.Success && conversionFailed && !startedWriting)
+        if (result.Success && conversionFailed)
         {
             result.Success = false;
             result.ErrorMessage ??= "upstream response protocol conversion failed";
+            result.IsStreamInterrupted = startedWriting;
         }
 
         if (result.Success && !responsesState.Completed && !receivedDoneEvent)
@@ -930,9 +963,7 @@ public sealed partial class OpenAiProxyController
         // 仅「completed 未到 + 非取消的中断」补终止符防客户端挂起。
         if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !receivedDoneEvent)
         {
-            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
-                await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
-            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
+            await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"upstream_stream_interrupted\",\"message\":\"Upstream stream ended before completion.\"}}\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome
@@ -1028,7 +1059,8 @@ public sealed partial class OpenAiProxyController
                 using var document = JsonDocument.Parse(payload);
                 var root = document.RootElement;
 
-                // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。                if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
+                // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
+                if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
                 {
                     if (root.TryGetProperty("message", out var message) &&
                         message.TryGetProperty("usage", out var startUsage))
@@ -1216,6 +1248,7 @@ public sealed partial class OpenAiProxyController
             await FlushAnthropicSseBlockAsync(cancellationToken);
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
@@ -1244,9 +1277,9 @@ public sealed partial class OpenAiProxyController
         // 仅「message_stop 未到 + 非取消的中断」补终止符防客户端挂起。
         if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !state.ReceivedMessageStop)
         {
-            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
-                await Response.TryWriteTerminatorAsync("data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
-            await Response.TryWriteTerminatorAsync("data: [DONE]\n\n", cancellationToken);
+            await Response.TryWriteTerminatorAsync(result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true
+                ? "data: {\"error\":{\"code\":\"reply_loop\",\"message\":\"Repeated model output was stopped.\"}}\n\n"
+                : "data: {\"error\":{\"code\":\"upstream_stream_interrupted\",\"message\":\"Upstream stream ended before completion.\"}}\n\n", cancellationToken);
         }
 
         return new StreamForwardOutcome

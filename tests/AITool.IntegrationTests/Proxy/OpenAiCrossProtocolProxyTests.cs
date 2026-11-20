@@ -24,6 +24,56 @@ public sealed class OpenAiCrossProtocolProxyTests
     /// <summary>
     /// 验证仅存在 Anthropic 站点时，OpenAI 入口会自动走兼容转发。
     /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Responses_chat_stream_maps_incomplete_and_failure_without_fake_success(bool incomplete)
+    {
+        var terminal = incomplete
+            ? "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}}"
+            : "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"upstream_error\"}}}";
+        var forwarder = new OpenAiCrossProtocolFakeProxyForwardService
+        {
+            ResponsesStreamingLines = ["event: response.output_text.delta", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}", "", incomplete ? "event: response.incomplete" : "event: response.failed", terminal, ""],
+            StreamingResultFactory = _ => new ProxyForwardResult { Success = incomplete, StatusCode = 200, IsStreaming = true }
+        };
+        await using var factory = new OpenAiCrossProtocolWebApplicationFactory(forwarder, "Responses");
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        { Content = new StringContent("{\"model\":\"auto\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json") };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "openai-cross-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("partial");
+        if (incomplete) body.Should().Contain("\"finish_reason\":\"length\"").And.Contain("[DONE]");
+        else body.Should().Contain("upstream_stream_interrupted").And.NotContain("[DONE]");
+        forwarder.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Responses_stream_split_usage_preserves_zero_and_cache_write()
+    {
+        var forwarder = new OpenAiCrossProtocolFakeProxyForwardService
+        {
+            ResponsesStreamingLines = [
+                "event: response.output_text.delta", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}", "",
+                "event: response.in_progress", "data: {\"type\":\"response.in_progress\",\"response\":{\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":40,\"cache_write_tokens\":20}}}}", "",
+                "event: response.completed", "data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"output_tokens\":0}}}", ""]
+        };
+        await using var factory = new OpenAiCrossProtocolWebApplicationFactory(forwarder, "Responses");
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        { Content = new StringContent("{\"model\":\"auto\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json") };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "openai-cross-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("\"prompt_tokens\":100").And.Contain("\"cached_tokens\":40").And.Contain("\"cached_creation_tokens\":20").And.Contain("\"completion_tokens\":0");
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(40); logs[0].CachedTokens.Should().Be(60); logs[0].OutputTokens.Should().Be(0);
+    }
+
     [Fact]
     public async Task Post_chat_completions_bridges_to_anthropic_route_when_only_anthropic_site_exists()
     {
@@ -48,9 +98,8 @@ public sealed class OpenAiCrossProtocolProxyTests
         using var document = JsonDocument.Parse(body);
         document.RootElement.GetProperty("object").GetString().Should().Be("chat.completion");
         document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("anthropic-bridged-ok");
-        // Anthropic 上游 input_tokens=7 已含缓存（cache_read=1），转 OpenAI 的 prompt_tokens 直接映射为 7，
-        // 不再叠加缓存（旧逻辑 7+1=8 导致缓存重复统计）。
-        document.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32().Should().Be(7);
+        // Anthropic 三桶独立：新输入 7 + 缓存读取 1 = OpenAI 总输入 8。
+        document.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32().Should().Be(8);
         document.RootElement.GetProperty("usage").GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(1);
         document.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32().Should().Be(8);
 
@@ -284,8 +333,8 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"reasoning_content\":\"step-1\"");
         body.Should().Contain("\"content\":\"bridged-openai-stream\"");
         body.Should().Contain("\"finish_reason\":\"stop\"");
-        // 上游 input_tokens=7 已含缓存（cache_read=1），输出 prompt_tokens 还原为 7，不再叠加缓存。
-        body.Should().Contain("\"prompt_tokens\":7");
+        // Anthropic 新输入 7 与缓存读取 1 为独立桶。
+        body.Should().Contain("\"prompt_tokens\":8");
         body.Should().Contain("\"cached_tokens\":1");
         body.Should().Contain("\"completion_tokens\":8");
         body.Should().Contain("data: [DONE]");
@@ -335,8 +384,8 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"object\":\"text_completion\"");
         body.Should().Contain("\"text\":\"legacy-stream\"");
         body.Should().Contain("\"finish_reason\":\"stop\"");
-        // 上游 input_tokens=7 已含缓存（cache_read=1），输出 prompt_tokens 还原为 7，不再叠加缓存。
-        body.Should().Contain("\"prompt_tokens\":7");
+        // Anthropic 新输入 7 与缓存读取 1 为独立桶。
+        body.Should().Contain("\"prompt_tokens\":8");
         body.Should().Contain("data: [DONE]");
         body.Should().NotContain("chat.completion.chunk");
     }

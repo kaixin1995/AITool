@@ -728,12 +728,13 @@ public sealed class ProxyDiagnosticService : IProxyDiagnosticService
             foreach (var h in context.ClientHeaders)
             {
                 if (string.IsNullOrWhiteSpace(h.Key)) continue;
-                var val = h.Value;
-                if (string.Equals(h.Key, "Authorization", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(h.Key, "x-api-key", StringComparison.OrdinalIgnoreCase))
-                {
-                    val = MaskApiKey(val);
-                }
+                // Unknown custom headers are redacted by default: deployments use many
+                // credential/session naming conventions that cannot be enumerated safely.
+                var safeHeader = h.Key.Equals("Content-Type", StringComparison.OrdinalIgnoreCase)
+                    || h.Key.Equals("Accept", StringComparison.OrdinalIgnoreCase)
+                    || h.Key.Equals("User-Agent", StringComparison.OrdinalIgnoreCase)
+                    || h.Key.Equals("anthropic-version", StringComparison.OrdinalIgnoreCase);
+                var val = safeHeader ? h.Value : "[REDACTED]";
                 headersObj[h.Key] = val;
             }
             root["clientHeaders"] = headersObj;
@@ -741,11 +742,35 @@ public sealed class ProxyDiagnosticService : IProxyDiagnosticService
 
         root["clientRequestBody"] = TryParseJsonOrRaw(context.RawClientRequestBody);
         root["preparedRequestBody"] = TryParseJsonOrRaw(context.PreparedRequestBody);
-        root["upstreamResponseBody"] = TryParseJsonOrRaw(context.Result.ResponseBody);
+        // Bridges may replace ResponseBody with the converted client stream.
+        root["upstreamResponseBody"] = TryParseJsonOrRaw(context.Result.RawUpstreamResponseBody ?? context.Result.ResponseBody);
+        if (context.Result.RawUpstreamResponseBody is not null)
+        {
+            root["clientResponseBody"] = TryParseJsonOrRaw(context.Result.ResponseBody);
+            root["upstreamResponseTruncated"] = context.Result.RawUpstreamResponseTruncated;
+        }
+
+        root["captureInfo"] = new JsonObject
+        {
+            ["schemaVersion"] = 2,
+            ["upstreamBodySource"] = context.Result.RawUpstreamResponseIsSse && context.Result.RawUpstreamResponseBody is not null ? "pre-conversion-stream" : "result-body-not-verified",
+            ["upstreamStreamCaptureLimitChars"] = context.Result.RawUpstreamResponseCaptureLimitChars,
+            ["clientStreamCaptureLimitChars"] = ProxyForwardConstants.MaxStreamBodyCaptureChars,
+            ["clientStreamTruncated"] = context.Result.ClientResponseTruncated,
+            ["upstreamStreamTruncated"] = context.Result.IsStreaming && context.Result.RawUpstreamResponseTruncated,
+            ["dumpBodyLimitChars"] = MaxBodyLengthBytes,
+            ["clientRequestTruncated"] = context.RawClientRequestBody.Length > MaxBodyLengthBytes,
+            ["preparedRequestTruncated"] = context.PreparedRequestBody.Length > MaxBodyLengthBytes,
+            ["upstreamBodyTruncatedByDump"] = (context.Result.RawUpstreamResponseBody ?? context.Result.ResponseBody).Length > MaxBodyLengthBytes,
+            ["clientBodyTruncatedByDump"] = context.Result.ResponseBody.Length > MaxBodyLengthBytes,
+            ["streamRepresentation"] = "decoded SSE lines; line endings normalized; not TCP/TLS packets",
+            ["headers"] = "client headers only; non-allowlisted headers fully redacted; review before sharing",
+            ["clientResponseRepresentation"] = "attempted writes; final delivery to client is not guaranteed"
+        };
 
         root["reproduction"] = new JsonObject
         {
-            ["description"] = "可直接使用此请求正文及配置向上游进行二次复现排查",
+            ["description"] = "仅供辅助排查；请求可能截断，出站地址、请求头及凭证未完整记录，不能保证复现",
             ["targetBaseUrl"] = context.TargetBaseUrl,
             ["upstreamModel"] = context.AttemptedModel,
             ["upstreamProtocol"] = context.UpstreamProtocol
@@ -764,7 +789,7 @@ public sealed class ProxyDiagnosticService : IProxyDiagnosticService
         var limitBytes = MaxBodyLengthBytes;
         if (body.Length > limitBytes)
         {
-            var truncated = body[..limitBytes] + $"\n... [TRUNCATED DUE TO SIZE: Original length {body.Length} bytes, limit {limitBytes / (1024 * 1024)}MB]";
+            var truncated = body[..limitBytes] + $"\n... [TRUNCATED DUE TO SIZE: Original length {body.Length} characters, limit {limitBytes / (1024 * 1024)}MB]";
             return JsonValue.Create(truncated)!;
         }
 

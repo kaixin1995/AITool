@@ -24,6 +24,84 @@ public sealed class ProxyProtocolBridgeGeminiTests
 
     // ============ 请求方向：Anthropic → Gemini ============
 
+    [Theory]
+    [InlineData("#")]
+    [InlineData("#/$defs/missing")]
+    [InlineData("https://example.com/schema")]
+    public void Unsafe_schema_references_are_rejected(string reference)
+    {
+        var schema = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject { ["item"] = new JsonObject { ["$ref"] = reference } } };
+        var request = new JsonObject { ["messages"] = new JsonArray(new JsonObject { ["role"] = "user", ["content"] = "hi" }), ["tools"] = new JsonArray(new JsonObject { ["name"] = "t", ["input_schema"] = schema }) };
+        Action act = () => ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test");
+        act.Should().Throw<ProtocolConversionException>();
+    }
+
+    [Fact]
+    public void Reference_with_sibling_validation_is_not_silently_weakened()
+    {
+        var request = JsonNode.Parse("""{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"t","input_schema":{"type":"object","$defs":{"path":{"type":"string"}},"properties":{"x":{"$ref":"#/$defs/path","minLength":10}}}}]}""")!.AsObject();
+        Action act = () => ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test");
+        act.Should().Throw<ProtocolConversionException>().WithMessage("*additional constraints*");
+    }
+
+    [Fact]
+    public void Mutually_recursive_reference_aliases_are_rejected()
+    {
+        var request = JsonNode.Parse("""{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"t","input_schema":{"type":"object","$defs":{"a":{"$ref":"#/$defs/b"},"b":{"$ref":"#/$defs/a"}},"properties":{"x":{"$ref":"#/$defs/a"}}}}]}""")!.AsObject();
+        Action act = () => ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test");
+        act.Should().Throw<ProtocolConversionException>().WithMessage("*recursive*");
+    }
+
+    [Fact]
+    public void Gemini_tool_results_keep_all_text_and_mark_errors_without_replaying_signature()
+    {
+        var request = JsonNode.Parse("""{"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call1","name":"t","input":{},"signature":"foreign-secret"}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call1","is_error":true,"content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}]}]}""")!.AsObject();
+        var result = ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test").ToJsonString();
+        result.Should().Contain("first").And.Contain("second").And.Contain("Tool execution error");
+        result.Should().Contain(ProxyProtocolBridge.SkipThoughtSignatureValidator).And.NotContain("foreign-secret");
+    }
+
+    [Fact]
+    public void Gemini_does_not_silently_drop_unmatched_tool_result()
+    {
+        var request = JsonNode.Parse("""{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"missing","content":"result"}]}]}""")!.AsObject();
+        Action act = () => ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test");
+        act.Should().Throw<ProtocolConversionException>().WithMessage("*tool results*");
+    }
+
+    [Fact]
+    public void AllOf_overlapping_properties_are_rejected()
+    {
+        var request = JsonNode.Parse("""{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"t","input_schema":{"allOf":[{"type":"object","properties":{"x":{"type":"string"}}},{"type":"object","properties":{"x":{"type":"number"}}}]}}]}""")!.AsObject();
+        Action act = () => ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test");
+        act.Should().Throw<ProtocolConversionException>();
+    }
+
+    [Fact]
+    public void Tool_choice_none_is_preserved_for_gemini()
+    {
+        var request = JsonNode.Parse("""{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"t","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}""")!.AsObject();
+        var result = ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test");
+        result["toolConfig"]!["functionCallingConfig"]!["mode"]!.ToString().Should().Be("NONE");
+    }
+
+    [Fact]
+    public void Tool_schema_alternatives_are_not_silently_dropped()
+    {
+        var request = JsonNode.Parse("""{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"t","input_schema":{"type":"object","properties":{"arg":{"oneOf":[{"type":"string"},{"type":"number"}]}}}}]}""")!.AsObject();
+        Action act = () => ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test");
+        act.Should().Throw<ProtocolConversionException>().WithMessage("*alternatives*");
+    }
+
+    [Fact]
+    public void Recursive_tool_schema_is_rejected_without_unbounded_expansion()
+    {
+        var request = JsonNode.Parse("""{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"node","input_schema":{"type":"object","properties":{"child":{"$ref":"#"}},"$defs":{"node":{"type":"object","properties":{"child":{"$ref":"#/$defs/node"}}}}}}]}""")!.AsObject();
+        request["tools"]![0]!["input_schema"]!["properties"]!["child"]!["$ref"] = "#/$defs/node";
+        var act = () => ProxyProtocolBridge.BuildGeminiInnerFromAnthropic(request, "test");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*recursive reference*");
+    }
+
     [Fact]
     public void PrepareRequestBody_anthropic_to_gemini_builds_envelope_and_contents()
     {
@@ -707,7 +785,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
     }
 
     [Fact]
-    public void CleanJsonSchemaForGemini_strips_required_properties_that_are_unspecified_to_prevent_400()
+    public void CleanJsonSchemaForGemini_rejects_required_properties_that_are_unspecified()
     {
         // 覆盖上游报 requires unspecified property 'title' 场景：
         // 客户端声明了 required: ["title", "validProp"]，但 properties 字典中只有 "validProp"。
@@ -749,15 +827,9 @@ public sealed class ProxyProtocolBridgeGeminiTests
         }
         """;
 
-        var result = ProxyProtocolBridge.PrepareRequestBody(
+        Action act = () => ProxyProtocolBridge.PrepareRequestBody(
             "OpenAI", "Gemini", openAiBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: AntigravityBaseUrl);
-
-        var declaration = ParseEnvelope(result)["request"]!["tools"]!.AsArray()[0]!["functionDeclarations"]!.AsArray()[0]!.AsObject();
-        var schemaText = declaration["parameters"]!.ToJsonString();
-        
-        // 校验：不存在的 "title" 已经被从 required 数组中清洗掉，只保留了 "description"
-        schemaText.Should().NotContain("\"title\"", "未在 properties 中定义的 required 项必须被剔除以防 Google 报 400");
-        schemaText.Should().Contain("\"description\"");
+        act.Should().Throw<ProtocolConversionException>().WithMessage("*requires an unspecified property*");
     }
 
     [Fact]

@@ -156,6 +156,7 @@ public static partial class ProxyProtocolBridge
                     var trContent = blockObj["content"];
                     // tool_result content 可能是字符串或数组
                     var trContentStr = SerializeAnthropicToolResultContent(trContent);
+                    if (blockObj["is_error"]?.GetValue<bool>() == true) trContentStr = "[Tool execution error]\n" + trContentStr;
                     toolResults.Add(new JsonObject
                     {
                         ["role"] = "tool",
@@ -166,15 +167,17 @@ public static partial class ProxyProtocolBridge
                 case "image":
                     if (blockObj["source"] is JsonObject src)
                     {
+                        var sourceType = src["type"]?.ToString() ?? "base64";
                         var mediaType = src["media_type"]?.GetValue<string>() ?? "image/png";
                         var data = src["data"]?.GetValue<string>() ?? "";
-                        userImageBlocks.Add(new JsonObject
-                        {
-                            ["type"] = "image_url",
-                            ["image_url"] = new JsonObject { ["url"] = $"data:{mediaType};base64,{data}" }
-                        });
+                        var url = sourceType == "url" ? src["url"]?.ToString() : sourceType == "base64" && data.Length > 0 ? $"data:{mediaType};base64,{data}" : null;
+                        if (string.IsNullOrWhiteSpace(url)) throw new ProtocolConversionException("Unsupported Anthropic image source.");
+                        userImageBlocks.Add(new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = url } });
                     }
+                    else throw new ProtocolConversionException("Unsupported Anthropic image source.");
                     break;
+                default:
+                    throw new ProtocolConversionException("Anthropic user content block cannot be converted to Chat safely.");
             }
         }
 
@@ -218,9 +221,12 @@ public static partial class ProxyProtocolBridge
             else if (type == "image_url")
             {
                 var url = partObj["image_url"]?["url"]?.GetValue<string>() ?? "";
-                if (!string.IsNullOrWhiteSpace(url) && url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(url)) throw new ProtocolConversionException("Chat image requires a URL.");
+                if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 {
                     var commaIdx = url.IndexOf(',');
+                    if (commaIdx <= 0 || commaIdx == url.Length - 1 || !url[..commaIdx].EndsWith(";base64", StringComparison.OrdinalIgnoreCase))
+                        throw new ProtocolConversionException("Chat image data URL must contain base64 data.");
                     if (commaIdx > 0)
                     {
                         var meta = url[..commaIdx];
@@ -240,7 +246,9 @@ public static partial class ProxyProtocolBridge
                         });
                     }
                 }
+                else imageBlocks.Add(new JsonObject { ["type"] = "image", ["source"] = new JsonObject { ["type"] = "url", ["url"] = url } });
             }
+            else throw new ProtocolConversionException("Chat content block cannot be converted to Anthropic safely.");
         }
 
         if (textParts.Count > 0)
@@ -328,14 +336,10 @@ public static partial class ProxyProtocolBridge
             var textParts = new List<string>();
             foreach (var block in blocks)
             {
-                if (block is JsonObject blockObj && blockObj["type"]?.GetValue<string>() == "text")
-                {
-                    var text = blockObj["text"]?.GetValue<string>();
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        textParts.Add(text);
-                    }
-                }
+                if (block is not JsonObject blockObj || blockObj["type"]?.GetValue<string>() != "text")
+                    throw new ProtocolConversionException("Non-text tool result cannot be converted safely.");
+                var text = blockObj["text"]?.GetValue<string>();
+                if (text is not null) textParts.Add(text);
             }
 
             if (textParts.Count > 0)
@@ -1383,25 +1387,21 @@ public static partial class ProxyProtocolBridge
     /// 兼容标准 OpenAI（prompt_tokens）、Responses（input_tokens）以及 newapi 等中间层：
     /// input_tokens 优先、缺失时回退 prompt_tokens；output_tokens 为 0 时回退 completion_tokens。
     /// <para>
-    /// 返回的 InputTokens 统一为"不含缓存的新输入"：OpenAI/Responses/Anthropic 的输入字段
-    /// 都包含缓存命中部分（cached_tokens / cache_read+cache_creation 是其子集），
-    /// 此处一律先减去缓存，保证 新输入 + 缓存 + 输出 = 总 token 且不重复统计。
+    /// 返回的新输入不含缓存。OpenAI/Responses 的输入含缓存，需要扣除；
+    /// 原生 Anthropic 的 input_tokens 与 cache_read/cache_creation 为独立分桶。
     /// </para>
     /// </summary>
     public static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
     {
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
         {
-            // Anthropic 的 input_tokens 已包含缓存 token（cache_read + cache_creation 是其子集），
-            // 必须减去缓存才是真正的"新输入"，否则缓存会在"输入"列和"缓存"列重复统计，
-            // 导致总 token 虚高、缓存命中率看起来偏低。
+            // Anthropic 的 input_tokens 是新输入，缓存读取与创建是独立分桶。
             var input = ReadUsageInteger(usage, "input_tokens");
             var cached = ReadUsageInteger(usage, "cache_read_input_tokens")
                 + ReadUsageInteger(usage, "cache_creation_input_tokens");
 
-            var newInput = Math.Max(0, input - cached);
             var output = ReadUsageInteger(usage, "output_tokens");
-            return (newInput, cached, output);
+            return (input, cached, output);
         }
 
         if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))

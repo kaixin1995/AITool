@@ -163,6 +163,51 @@ public static partial class ProxyProtocolBridge
         ["required"] = new JsonArray("input")
     };
 
+    private static JsonObject ApplyResponsesAllowedTools(JsonObject root)
+    {
+        if (root["tool_choice"] is not JsonObject choice || choice["type"]?.ToString() != "allowed_tools") return root;
+        var mode = choice["mode"]?.ToString();
+        if (mode is not ("auto" or "required") || choice["tools"] is not JsonArray allowed)
+            throw new ProtocolConversionException("Invalid allowed_tools selection.");
+        var names = new HashSet<(string Namespace, string Name, string Type)>();
+        foreach (var node in allowed)
+        {
+            if (node is not JsonObject item || item["type"]?.ToString() is not ("function" or "custom")
+                || string.IsNullOrWhiteSpace(item["name"]?.ToString()))
+                throw new ProtocolConversionException("Unsupported allowed_tools selection.");
+            names.Add((item["namespace"]?.ToString() ?? "", item["name"]!.ToString(), item["type"]!.ToString()));
+        }
+        var filtered = new JsonArray();
+        var matched = new HashSet<(string Namespace, string Name, string Type)>();
+        var flattened = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (tool, ns) in ResponsesTools(root))
+        {
+            if (tool["type"]?.ToString() is not ("function" or "custom")) continue;
+            var name = tool["name"]?.ToString();
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            // Output reconstruction also uses the original definitions. A disallowed tool
+            // must not alias an allowed one when both names flatten to the same value.
+            if (!flattened.Add(FlatToolName(ns, name))) throw new ProtocolConversionException("Tool names collide after conversion.");
+            var identity = (ns ?? "", name, tool["type"]!.ToString());
+            if (!names.Contains(identity)) continue;
+            matched.Add(identity);
+            var copy = (JsonObject)tool.DeepClone();
+            copy["name"] = FlatToolName(ns, name);
+            filtered.Add(copy);
+        }
+        if (!matched.SetEquals(names))
+            throw new ProtocolConversionException("Allowed tool definitions are missing or unsupported.");
+        if (mode == "required" && filtered.Count == 0)
+            throw new ProtocolConversionException("Required allowed_tools has no supported matching tool.");
+        var clone = (JsonObject)root.DeepClone();
+        clone["tools"] = filtered;
+        clone["tool_choice"] = filtered.Count == 0 ? "none" : mode;
+        if (clone["input"] is JsonArray input)
+            foreach (var item in input.OfType<JsonObject>())
+                if (item["type"]?.ToString() is "additional_tools" or "tool_search_output") item.Remove("tools");
+        return clone;
+    }
+
     private static IEnumerable<(JsonObject Tool, string? Namespace)> ResponsesTools(JsonObject root)
     {
         var arrays = new List<JsonArray>();

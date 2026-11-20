@@ -124,14 +124,16 @@ public static partial class ProxyProtocolBridge
                     }
                     else if (type == "image" && blockObj["source"] is JsonObject imgSrc)
                     {
+                        var sourceType = imgSrc["type"]?.ToString();
                         var mediaType = imgSrc["media_type"]?.GetValue<string>() ?? "image/png";
                         var data = imgSrc["data"]?.GetValue<string>() ?? string.Empty;
-                        pendingParts.Add(new JsonObject
-                        {
-                            ["type"] = "input_image",
-                            ["image_url"] = $"data:{mediaType};base64,{data}"
-                        });
+                        var url = sourceType == "url" ? imgSrc["url"]?.GetValue<string>() :
+                            sourceType == "base64" && !string.IsNullOrEmpty(data) ? $"data:{mediaType};base64,{data}" : null;
+                        if (string.IsNullOrWhiteSpace(url)) throw new ProtocolConversionException("Unsupported Anthropic image source.");
+                        pendingParts.Add(new JsonObject { ["type"] = "input_image", ["image_url"] = url });
                     }
+                    else if (type == "image")
+                        throw new ProtocolConversionException("Unsupported Anthropic image source.");
                     else if (type == "document" && blockObj["source"] is JsonObject docSrc
                              && string.Equals(docSrc["type"]?.GetValue<string>(), "base64", StringComparison.OrdinalIgnoreCase))
                     {
@@ -151,15 +153,20 @@ public static partial class ProxyProtocolBridge
 
                         pendingParts.Add(fileItem);
                     }
+                    else if (type == "document")
+                        throw new ProtocolConversionException("Unsupported Anthropic document source.");
                     else if (type == "tool_result")
                     {
+                        // Responses has no is_error flag; preserve its meaning in the result text.
+                        var toolOutput = SerializeAnthropicToolResultContent(blockObj["content"]);
+                        if (blockObj["is_error"]?.GetValue<bool>() == true) toolOutput = "[Tool execution error]\n" + toolOutput;
                         // tool_result 是顶层 function_call_output item，必须先落盘累积的文本。
                         FlushPendingMessageItem(input, ref pendingParts, role);
                         input.Add(new JsonObject
                         {
                             ["type"] = "function_call_output",
                             ["call_id"] = blockObj["tool_use_id"]?.DeepClone() ?? string.Empty,
-                            ["output"] = SerializeAnthropicToolResultContent(blockObj["content"])
+                            ["output"] = toolOutput
                         });
                     }
                     else if (type == "tool_use")
@@ -221,6 +228,7 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     public static string BuildAnthropicRequestFromResponses(JsonObject rootNode, string targetModelName, bool enableStreaming)
     {
+        rootNode = ApplyResponsesAllowedTools(rootNode);
         var claudeMessages = new JsonArray();
         var systemParts = new List<string>();
 
@@ -471,7 +479,9 @@ public static partial class ProxyProtocolBridge
                 return string.Empty;
             }
 
-            if (IsResponsesFailureStatus(root))
+            if (IsResponsesFailureStatus(root)
+                || (string.Equals(root["status"]?.ToString(), "incomplete", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(root["incomplete_details"]?["reason"]?.ToString(), "max_output_tokens", StringComparison.OrdinalIgnoreCase)))
             {
                 return string.Empty;
             }
@@ -579,8 +589,8 @@ public static partial class ProxyProtocolBridge
                     : "end_turn";
 
             var usageNode = root["usage"] as JsonObject;
-            var usageInput = usageNode?["input_tokens"]?.GetValue<int>() ?? 0;
-            var usageOutput = usageNode?["output_tokens"]?.GetValue<int>() ?? 0;
+            var usageInput = usageNode?["input_tokens"]?.GetValue<int>();
+            var usageOutput = usageNode?["output_tokens"]?.GetValue<int>();
             var details = usageNode?["input_tokens_details"] as JsonObject;
             var cacheRead = details?["cached_tokens"]?.GetValue<int>() ?? cachedTokens;
             var cacheWrite = details?["cached_creation_tokens"]?.GetValue<int>()
@@ -588,8 +598,8 @@ public static partial class ProxyProtocolBridge
                 ?? 0;
 
             // Responses input_tokens 含缓存；Anthropic 出口口径 input_tokens 不含缓存（官方三桶加法）。
-            var freshInput = usageInput > 0 ? Math.Max(0, usageInput - cacheRead - cacheWrite) : inputTokens;
-            var effectiveOutput = usageOutput > 0 ? usageOutput : outputTokens;
+            var freshInput = usageInput.HasValue ? Math.Max(0, usageInput.Value - cacheRead - cacheWrite) : inputTokens;
+            var effectiveOutput = usageOutput ?? outputTokens;
 
             var responseId = root["id"]?.GetValue<string>();
             return new JsonObject
@@ -727,6 +737,10 @@ public static partial class ProxyProtocolBridge
     {
         public AnthropicOpenAiStreamState Core { get; } = new();
         public string Model { get; set; } = string.Empty;
+        public int? TotalInput { get; set; }
+        public int? CacheRead { get; set; }
+        public int? CacheWrite { get; set; }
+        public int? Output { get; set; }
         /// <summary>是否已收到 response.completed（或 incomplete）终态事件。</summary>
         public bool Completed { get; set; }
         /// <summary>是否收到 response.failed / error 终态事件。</summary>
@@ -757,11 +771,30 @@ public static partial class ProxyProtocolBridge
     {
         var builder = new StringBuilder();
         var core = state.Core;
+        if (state.Failed || core.ConversionFailed || state.Completed) return string.Empty;
 
         try
         {
             using var doc = JsonDocument.Parse(payloadJson);
             var root = doc.RootElement;
+            var usage = root.TryGetProperty("usage", out var top) && top.ValueKind == JsonValueKind.Object ? top
+                : root.TryGetProperty("response", out var usageResponse) && usageResponse.ValueKind == JsonValueKind.Object
+                    && usageResponse.TryGetProperty("usage", out var nested) && nested.ValueKind == JsonValueKind.Object ? nested : default;
+            if (usage.ValueKind == JsonValueKind.Object)
+            {
+                static int? Read(JsonElement obj, string key) => obj.ValueKind == JsonValueKind.Object
+                    && obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number
+                    && v.TryGetInt32(out var n) && n >= 0 ? n : null;
+                state.TotalInput = Read(usage, "input_tokens") ?? state.TotalInput;
+                state.Output = Read(usage, "output_tokens") ?? state.Output;
+                var details = usage.TryGetProperty("input_tokens_details", out var d) && d.ValueKind == JsonValueKind.Object ? d : default;
+                state.CacheRead = Read(details, "cached_tokens") ?? state.CacheRead;
+                state.CacheWrite = Read(details, "cached_creation_tokens") ?? Read(details, "cache_write_tokens") ?? state.CacheWrite;
+                if (state.TotalInput.HasValue) core.InputTokens = Math.Max(0, state.TotalInput.Value - (state.CacheRead ?? 0) - (state.CacheWrite ?? 0));
+                if (state.CacheRead.HasValue) core.CachedTokens = state.CacheRead.Value;
+                if (state.CacheWrite.HasValue) core.CacheCreationTokens = state.CacheWrite.Value;
+                if (state.Output.HasValue) core.OutputTokens = state.Output.Value;
+            }
 
             if (string.Equals(eventName, "response.created", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(eventName, "response.in_progress", StringComparison.OrdinalIgnoreCase))
@@ -964,61 +997,24 @@ public static partial class ProxyProtocolBridge
                         state.Model = modelEl.GetString() ?? state.Model;
                     }
 
-                    if (responseEl.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
-                    {
-                        // Responses input_tokens 含缓存；归一化为 Anthropic 出口的三桶口径。
-                        var totalInput = usageEl.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number ? it.GetInt32() : 0;
-                        var cachedRead = 0;
-                        var cacheWrite = 0;
-                        if (usageEl.TryGetProperty("input_tokens_details", out var det) && det.ValueKind == JsonValueKind.Object)
-                        {
-                            if (det.TryGetProperty("cached_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number)
-                            {
-                                cachedRead = ct.GetInt32();
-                            }
-
-                            if (det.TryGetProperty("cached_creation_tokens", out var cc) && cc.ValueKind == JsonValueKind.Number)
-                            {
-                                cacheWrite = cc.GetInt32();
-                            }
-                            else if (det.TryGetProperty("cache_write_tokens", out var cw) && cw.ValueKind == JsonValueKind.Number)
-                            {
-                                cacheWrite = cw.GetInt32();
-                            }
-                        }
-
-                        if (totalInput > 0)
-                        {
-                            core.InputTokens = Math.Max(0, totalInput - cachedRead - cacheWrite);
-                        }
-
-                        if (cachedRead > 0)
-                        {
-                            core.CachedTokens = cachedRead;
-                        }
-
-                        if (cacheWrite > 0)
-                        {
-                            core.CacheCreationTokens = cacheWrite;
-                        }
-
-                        if (usageEl.TryGetProperty("output_tokens", out var ot) && ot.ValueKind == JsonValueKind.Number && ot.GetInt32() > 0)
-                        {
-                            core.OutputTokens = ot.GetInt32();
-                        }
-                    }
-
                     var incompleteReason = responseEl.TryGetProperty("incomplete_details", out var inc) && inc.ValueKind == JsonValueKind.Object
                         && inc.TryGetProperty("reason", out var r) && r.ValueKind == JsonValueKind.String
                         ? r.GetString()
                         : null;
-                    if (string.Equals(incompleteReason, "max_output_tokens", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(eventName, "response.incomplete", StringComparison.OrdinalIgnoreCase))
                     {
-                        core.StopReason = "max_tokens";
+                        if (string.Equals(incompleteReason, "max_output_tokens", StringComparison.OrdinalIgnoreCase))
+                            core.StopReason = "max_tokens";
+                        else
+                            state.Failed = true; // unknown/content-filter incomplete is not a normal end_turn
                     }
                 }
 
-                if (core.ToolCalls.Values.Any(t => t.Started))
+                if (string.Equals(eventName, "response.incomplete", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(core.StopReason, "max_tokens", StringComparison.Ordinal))
+                    state.Failed = true;
+                if (core.ToolCalls.Values.Any(t => t.Started)
+                    && !string.Equals(eventName, "response.incomplete", StringComparison.OrdinalIgnoreCase))
                 {
                     core.StopReason = "tool_use";
                 }
@@ -1396,13 +1392,13 @@ public static partial class ProxyProtocolBridge
             {
                 var url = part["image_url"]?.GetValue<string>() ?? "";
                 if (string.IsNullOrWhiteSpace(url))
-                {
-                    continue;
-                }
+                    throw new ProtocolConversionException("Responses image requires image_url for this upstream.");
 
                 if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 {
                     var commaIdx = url.IndexOf(',');
+                    if (commaIdx <= 0 || !url[..commaIdx].EndsWith(";base64", StringComparison.OrdinalIgnoreCase) || commaIdx == url.Length - 1)
+                        throw new ProtocolConversionException("Responses image data URL must contain base64 data.");
                     if (commaIdx > 0)
                     {
                         var meta = url[..commaIdx];
@@ -1435,15 +1431,11 @@ public static partial class ProxyProtocolBridge
             {
                 var fileData = part["file_data"]?.GetValue<string>() ?? "";
                 if (!fileData.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
+                    throw new ProtocolConversionException("Responses file requires inline data for this upstream.");
 
                 var commaIdx = fileData.IndexOf(',');
-                if (commaIdx <= 0)
-                {
-                    continue;
-                }
+                if (commaIdx <= 0 || !fileData[..commaIdx].EndsWith(";base64", StringComparison.OrdinalIgnoreCase) || commaIdx == fileData.Length - 1)
+                    throw new ProtocolConversionException("Responses file data URL must contain base64 data.");
 
                 var meta = fileData[..commaIdx];
                 var data = fileData[(commaIdx + 1)..];
@@ -1467,6 +1459,7 @@ public static partial class ProxyProtocolBridge
 
                 ((JsonArray)targetMessage["content"]!).Add(documentBlock);
             }
+            else throw new ProtocolConversionException("Responses content block cannot be converted to Anthropic safely.");
         }
     }
 
@@ -1496,6 +1489,7 @@ public static partial class ProxyProtocolBridge
                     textParts.Add(t);
                 }
             }
+            else throw new ProtocolConversionException("Non-text Responses system content cannot be converted safely.");
         }
 
         return textParts.Count > 0 ? string.Join("\n", textParts) : null;

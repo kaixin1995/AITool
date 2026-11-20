@@ -676,6 +676,11 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase),
                     geminiProjectId: route.GoogleProjectId);
             }
+            catch (ProtocolConversionException ex)
+            {
+                lastResult = new ProxyForwardResult { Success = false, StatusCode = 400, ErrorMessage = ex.Message };
+                continue;
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex,
@@ -1038,6 +1043,11 @@ public sealed partial class OpenAiProxyController : ControllerBase
         }
 
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
+        if (traceId.HasValue)
+        {
+            try { _traceStore.CompletePendingRequest(traceId.Value, "fail", statusCode, lastResult?.ErrorMessage ?? "All upstream routes failed"); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to settle OpenAI request trace"); }
+        }
         return new JsonResult(new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } })
         {
             StatusCode = statusCode,

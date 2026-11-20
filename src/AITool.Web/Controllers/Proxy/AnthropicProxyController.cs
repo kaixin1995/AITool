@@ -339,7 +339,10 @@ public sealed class AnthropicProxyController : ControllerBase
             }
             if (attemptedRoutes.UsesGroupedFallback) attemptIndex++;
 
-            var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+            string preparedRequestBody;
+            try
+            {
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Anthropic",
                 actualProtocolType,
                 requestBody,
@@ -350,6 +353,15 @@ public sealed class AnthropicProxyController : ControllerBase
                 route.CompatibilityRules,
                 isPassthrough: string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase),
                 geminiProjectId: route.GoogleProjectId);
+
+            }
+            catch (ProtocolConversionException ex)
+            {
+                lastResult = new ProxyForwardResult { Success = false, StatusCode = 400, ErrorMessage = ex.Message };
+                unfinishedCode = StatusCodes.Status400BadRequest;
+                unfinishedReason = ex.Message;
+                continue;
+            }
 
             var effectiveProtocolType = actualProtocolType switch
             {
@@ -416,6 +428,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 RequestBody = requestBody,
                 PreparedRequestBody = preparedRequestBody,
                 EnableStreaming = enableStreaming,
+                StreamCaptureLimitChars = Math.Min(_diagnosticService.MaxBodyLengthBytes, 1024 * 1024),
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
@@ -781,18 +794,27 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         var responseBuilder = new StringBuilder();
+        var clientCaptureTruncated = false;
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var receivedMessageStop = false;
         var inputTokens = 0;
         var cachedTokens = 0;
         var outputTokens = 0;
+        var cacheReadTokens = 0;
+        var cacheCreationTokens = 0;
         // 首包蓄流（默认关闭）：扣住开头的热身块（message_start/ping 等），出现内容块才写客户端。
         var headBuffer = await TryCreateSseHeadBufferAsync(cancellationToken);
 
         async Task WriteChunkDirectAsync(string chunk, CancellationToken token)
         {
-            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                var remaining = ProxyForwardConstants.MaxStreamBodyCaptureChars - responseBuilder.Length;
+                responseBuilder.Append(chunk.AsSpan(0, Math.Min(remaining, chunk.Length)));
+                if (chunk.Length > remaining) clientCaptureTruncated = true;
+            }
+            else clientCaptureTruncated = true;
             startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
@@ -817,7 +839,7 @@ public sealed class AnthropicProxyController : ControllerBase
             {
                 if (headBuffer.TryHold(chunk))
                 {
-                    if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+                    // Held chunks have not reached the client; capture only on actual write.
                     return;
                 }
 
@@ -842,7 +864,8 @@ public sealed class AnthropicProxyController : ControllerBase
             {
                 if (!string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
-                    UpdateAnthropicUsageFromPayload(eventName, payload, ref inputTokens, ref cachedTokens, ref outputTokens, ref receivedMessageStop);
+                    UpdateAnthropicUsageFromPayload(eventName, payload, ref inputTokens, ref cacheReadTokens, ref cacheCreationTokens, ref outputTokens, ref receivedMessageStop);
+                    cachedTokens = cacheReadTokens + cacheCreationTokens;
                     // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
                 }
             }
@@ -870,7 +893,9 @@ public sealed class AnthropicProxyController : ControllerBase
             await FlushAnthropicSseBlockAsync(cancellationToken);
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
+        result.ClientResponseTruncated = clientCaptureTruncated;
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
         result.InputTokens = inputTokens;
@@ -908,13 +933,19 @@ public sealed class AnthropicProxyController : ControllerBase
             }
         }
 
-        // 流中断但已开始写入时，向客户端补发 Anthropic 终止事件避免挂起
-        if (result.IsStreamInterrupted && startedWriting)
+        // Captured client response follows the actual released stream, not held frames.
+        if (result.IsStreamInterrupted && startedWriting && !result.IsCanceled && !cancellationToken.IsCancellationRequested)
         {
-            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
-                await Response.TryWriteTerminatorAsync("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
-            await Response.TryWriteTerminatorAsync("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", cancellationToken);
+            const string failure = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Upstream stream ended before completion.\"}}\n\n";
+            await Response.TryWriteTerminatorAsync(failure, cancellationToken);
+            // The helper is best effort and may suppress a write failure.
+            var remaining = ProxyForwardConstants.MaxStreamBodyCaptureChars - responseBuilder.Length;
+            if (remaining > 0) responseBuilder.Append(failure.AsSpan(0, Math.Min(remaining, failure.Length)));
+            if (remaining < failure.Length) clientCaptureTruncated = true;
         }
+        result.ResponseBody = responseBuilder.ToString();
+        result.ClientResponseTruncated = clientCaptureTruncated;
+        result.HasStartedStreaming = startedWriting;
 
         if (result.Success && startedWriting)
         {
@@ -965,7 +996,9 @@ public sealed class AnthropicProxyController : ControllerBase
         };
         var state = responsesToAnthropicState.Core;
         var responseBuilder = new StringBuilder();
+        var clientCaptureTruncated = false;
         var pendingSseLines = new List<string>();
+        var structuralBuffer = new StringBuilder();
         var startedWriting = false;
 
         async Task WriteChunkAsync(string chunk, CancellationToken token)
@@ -975,7 +1008,13 @@ public sealed class AnthropicProxyController : ControllerBase
                 return;
             }
 
-            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                var remaining = ProxyForwardConstants.MaxStreamBodyCaptureChars - responseBuilder.Length;
+                responseBuilder.Append(chunk.AsSpan(0, Math.Min(remaining, chunk.Length)));
+                if (chunk.Length > remaining) clientCaptureTruncated = true;
+            }
+            else clientCaptureTruncated = true;
             startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
@@ -1001,15 +1040,61 @@ public sealed class AnthropicProxyController : ControllerBase
                 // Responses → Anthropic 逐事件直转；只有真正产生 Anthropic 事件时才发送 message_start，
                 // 保留尚未写出时的 fallback 能力。收尾事件由流结束后的 CompleteAnthropicStream 统一补齐。
                 var responsesConvertedChunk = ProxyProtocolBridge.ConvertResponsesSseEventToAnthropic(responsesEventName, responsesPayload, responsesToAnthropicState);
-                if (!string.IsNullOrEmpty(responsesConvertedChunk))
+                // Output-item begin/end frames for message or reasoning do not themselves expose
+                // content. Keep them until a delta, tool call, terminal event, or a bounded limit.
+                // Whitespace may be meaningful; retain it verbatim and release it before
+                // real output or successful completion. On failure before exposure it can
+                // be discarded together with the attempt so fallback remains safe.
+                var structureOnly = string.Equals(responsesEventName, "response.output_item.done", StringComparison.OrdinalIgnoreCase);
+                if (string.Equals(responsesEventName, "response.output_item.added", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!startedWriting)
+                    try
                     {
-                        await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
+                        using var structureDoc = JsonDocument.Parse(responsesPayload);
+                        var structureRoot = structureDoc.RootElement;
+                        structureOnly = structureRoot.ValueKind == JsonValueKind.Object
+                            && structureRoot.TryGetProperty("item", out var item)
+                            && item.ValueKind == JsonValueKind.Object
+                            && item.TryGetProperty("type", out var itemType)
+                            && itemType.ValueKind == JsonValueKind.String
+                            && (string.Equals(itemType.GetString(), "message", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(itemType.GetString(), "reasoning", StringComparison.OrdinalIgnoreCase));
                     }
-
-                    await WriteChunkAsync(responsesConvertedChunk, token);
+                    catch (JsonException) { structureOnly = false; }
                 }
+                var whitespaceDelta = false;
+                if (string.Equals(responsesEventName, "response.output_text.delta", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        using var deltaDoc = JsonDocument.Parse(responsesPayload);
+                        whitespaceDelta = deltaDoc.RootElement.ValueKind == JsonValueKind.Object
+                            && deltaDoc.RootElement.TryGetProperty("delta", out var delta)
+                            && delta.ValueKind == JsonValueKind.String
+                            && !string.IsNullOrEmpty(delta.GetString())
+                            && string.IsNullOrWhiteSpace(delta.GetString());
+                    }
+                    catch (JsonException) { }
+                }
+                if (!startedWriting && (structureOnly || whitespaceDelta) && !string.IsNullOrEmpty(responsesConvertedChunk)
+                    && structuralBuffer.Length + responsesConvertedChunk.Length <= 4096)
+                {
+                    structuralBuffer.Append(responsesConvertedChunk);
+                    return;
+                }
+                var terminal = string.Equals(responsesEventName, "response.completed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(responsesEventName, "response.incomplete", StringComparison.OrdinalIgnoreCase);
+                if (!startedWriting && (responsesConvertedChunk.Length > 0 || (terminal && structuralBuffer.Length > 0 && !responsesToAnthropicState.Failed)))
+                {
+                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
+                    if (structuralBuffer.Length > 0)
+                    {
+                        await WriteChunkAsync(structuralBuffer.ToString(), token);
+                        structuralBuffer.Clear();
+                    }
+                }
+                if (!string.IsNullOrEmpty(responsesConvertedChunk))
+                    await WriteChunkAsync(responsesConvertedChunk, token);
 
                 return;
             }
@@ -1067,12 +1152,20 @@ public sealed class AnthropicProxyController : ControllerBase
             },
             cancellationToken);
 
-        if (pendingSseLines.Count > 0)
+        if (pendingSseLines.Count > 0 && !result.IsCanceled && !cancellationToken.IsCancellationRequested)
         {
-            await FlushOpenAiSseBlockAsync(cancellationToken);
+            try { await FlushOpenAiSseBlockAsync(cancellationToken); }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+            {
+                result.Success = false;
+                result.IsCanceled = true;
+                result.ErrorMessage = "Client disconnected during stream finalization.";
+            }
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
+        result.ClientResponseTruncated = clientCaptureTruncated;
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
 
@@ -1084,9 +1177,10 @@ public sealed class AnthropicProxyController : ControllerBase
             result.IsStreamInterrupted = startedWriting;
         }
 
-        if (result.Success && state.ConversionFailed && !startedWriting)
+        if (result.Success && state.ConversionFailed)
         {
             result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
             result.ErrorMessage ??= "upstream response protocol conversion failed";
         }
 
@@ -1099,19 +1193,41 @@ public sealed class AnthropicProxyController : ControllerBase
 
         if (result.Success)
         {
-
-            if (startedWriting)
+            try
             {
+                if (!startedWriting)
+                {
+                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), cancellationToken);
+                    if (structuralBuffer.Length > 0)
+                    {
+                        await WriteChunkAsync(structuralBuffer.ToString(), cancellationToken);
+                        structuralBuffer.Clear();
+                    }
+                }
                 var closingChunk = ProxyProtocolBridge.CompleteAnthropicStream(state);
                 await WriteChunkAsync(closingChunk, cancellationToken);
                 result.ResponseBody = responseBuilder.ToString();
+                result.ClientResponseTruncated = clientCaptureTruncated;
+                result.HasStartedStreaming = startedWriting;
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+            {
+                result.Success = false;
+                result.IsCanceled = true;
+                result.HasStartedStreaming = startedWriting;
+                result.IsStreamInterrupted = startedWriting;
+                result.ResponseBody = responseBuilder.ToString();
+                result.ClientResponseTruncated = clientCaptureTruncated;
+                result.ErrorMessage = "Client disconnected during stream finalization.";
+                return new StreamForwardOutcome { Result = result, CanFallback = false };
             }
 
-            result.InputTokens = state.InputTokens;
+            if (responsesToAnthropicState.TotalInput.HasValue || state.InputTokens > 0) result.InputTokens = state.InputTokens;
             // 日志的 CachedTokens 是"读+写"合并口径（与 ExtractUsageFromElement 一致）；
             // 客户端出口的 message_delta 由 CompleteAnthropicStream 按读/写分桶，互不影响。
-            result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
-            result.OutputTokens = state.OutputTokens;
+            if (responsesToAnthropicState.CacheRead.HasValue || responsesToAnthropicState.CacheWrite.HasValue || state.CachedTokens + state.CacheCreationTokens > 0)
+                result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
+            if (responsesToAnthropicState.Output.HasValue || state.OutputTokens > 0) result.OutputTokens = state.OutputTokens;
 
             if (startedWriting)
             {
@@ -1139,15 +1255,22 @@ public sealed class AnthropicProxyController : ControllerBase
         if (startedWriting)
         {
             result.ResponseBody = responseBuilder.ToString();
-            if (result.ErrorMessage?.StartsWith("reply_loop:", StringComparison.Ordinal) == true)
-                await Response.TryWriteTerminatorAsync("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Repeated model output was stopped.\"}}\n\n", cancellationToken);
-            var closingChunk = ProxyProtocolBridge.CompleteAnthropicStream(state);
-            await WriteChunkAsync(closingChunk, cancellationToken);
+            result.ClientResponseTruncated = clientCaptureTruncated;
+            if (!result.IsCanceled && !cancellationToken.IsCancellationRequested)
+            {
+                const string failure = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Upstream stream ended before completion.\"}}\n\n";
+                await Response.TryWriteTerminatorAsync(failure, cancellationToken);
+                var remaining = ProxyForwardConstants.MaxStreamBodyCaptureChars - responseBuilder.Length;
+                if (remaining > 0) responseBuilder.Append(failure.AsSpan(0, Math.Min(remaining, failure.Length)));
+                if (remaining < failure.Length) clientCaptureTruncated = true;
+            }
             result.ResponseBody = responseBuilder.ToString();
-            result.InputTokens = state.InputTokens;
+            result.ClientResponseTruncated = clientCaptureTruncated;
+            if (responsesToAnthropicState.TotalInput.HasValue || state.InputTokens > 0) result.InputTokens = state.InputTokens;
             // 同成功路径：日志缓存列按"读+写"合并口径。
-            result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
-            result.OutputTokens = state.OutputTokens;
+            if (responsesToAnthropicState.CacheRead.HasValue || responsesToAnthropicState.CacheWrite.HasValue || state.CachedTokens + state.CacheCreationTokens > 0)
+                result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
+            if (responsesToAnthropicState.Output.HasValue || state.OutputTokens > 0) result.OutputTokens = state.OutputTokens;
             result.IsStreamInterrupted = true;
 
             return new StreamForwardOutcome
@@ -1319,7 +1442,8 @@ public sealed class AnthropicProxyController : ControllerBase
         string eventName,
         string payload,
         ref int inputTokens,
-        ref int cachedTokens,
+        ref int cacheReadTokens,
+        ref int cacheCreationTokens,
         ref int outputTokens,
         ref bool receivedMessageStop)
     {
@@ -1337,19 +1461,16 @@ public sealed class AnthropicProxyController : ControllerBase
                     inputTokens = startInput.GetInt32();
                 }
 
-                // Anthropic 的 input_tokens 已含缓存（cache_read + cache_creation 是其子集），
-                // 必须减去缓存才是"新输入"，否则缓存会在输入列与缓存列重复统计，总 token 虚高。
                 if (startUsage.TryGetProperty("cache_read_input_tokens", out var startCached) && startCached.ValueKind == JsonValueKind.Number)
                 {
-                    cachedTokens = startCached.GetInt32();
+                    cacheReadTokens = startCached.GetInt32();
                 }
 
                 if (startUsage.TryGetProperty("cache_creation_input_tokens", out var startCreated) && startCreated.ValueKind == JsonValueKind.Number)
                 {
-                    cachedTokens += startCreated.GetInt32();
+                    cacheCreationTokens = startCreated.GetInt32();
                 }
 
-                inputTokens = Math.Max(0, inputTokens - cachedTokens);
 
                 if (startUsage.TryGetProperty("output_tokens", out var startOutput) && startOutput.ValueKind == JsonValueKind.Number)
                 {
@@ -1370,19 +1491,12 @@ public sealed class AnthropicProxyController : ControllerBase
                     // 否则缓存会被重复累加（与 OpenAiProxyController.UpdateAnthropicUsageFromElement 保持一致）。
                     if (deltaUsage.TryGetProperty("cache_read_input_tokens", out var deltaCached) && deltaCached.ValueKind == JsonValueKind.Number)
                     {
-                        cachedTokens = deltaCached.GetInt32();
+                        cacheReadTokens = deltaCached.GetInt32();
                     }
 
                     if (deltaUsage.TryGetProperty("cache_creation_input_tokens", out var deltaCreated) && deltaCreated.ValueKind == JsonValueKind.Number)
                     {
-                        cachedTokens += deltaCreated.GetInt32();
-                    }
-
-                    // 减法只在该事件自带 input_tokens 时执行（官方 message_delta 通常只有 output_tokens），
-                    // 否则会对已减去缓存的新输入再次减法，导致输入被重复扣减。
-                    if (deltaUsage.TryGetProperty("input_tokens", out var _))
-                    {
-                        inputTokens = Math.Max(0, inputTokens - cachedTokens);
+                        cacheCreationTokens = deltaCreated.GetInt32();
                     }
 
                     if (deltaUsage.TryGetProperty("output_tokens", out var deltaOutput) && deltaOutput.ValueKind == JsonValueKind.Number)
@@ -2093,6 +2207,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
         var state = new ProxyProtocolBridge.GeminiToAnthropicStreamState();
         var responseBuilder = new StringBuilder();
+        var clientCaptureTruncated = false;
         var pendingSseLines = new List<string>();
         var startedWriting = false;
 
@@ -2103,7 +2218,13 @@ public sealed class AnthropicProxyController : ControllerBase
                 return;
             }
 
-            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                var remaining = ProxyForwardConstants.MaxStreamBodyCaptureChars - responseBuilder.Length;
+                responseBuilder.Append(chunk.AsSpan(0, Math.Min(remaining, chunk.Length)));
+                if (chunk.Length > remaining) clientCaptureTruncated = true;
+            }
+            else clientCaptureTruncated = true;
             startedWriting = true;
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
@@ -2146,7 +2267,9 @@ public sealed class AnthropicProxyController : ControllerBase
             await FlushGeminiBlockAsync(cancellationToken);
         }
 
+        result.RawUpstreamResponseBody ??= result.ResponseBody;
         result.ResponseBody = responseBuilder.ToString();
+        result.ClientResponseTruncated = clientCaptureTruncated;
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
         result.InputTokens = state.InputTokens;
@@ -2167,6 +2290,7 @@ public sealed class AnthropicProxyController : ControllerBase
         {
             await WriteChunkAsync(ProxyProtocolBridge.CompleteGeminiToAnthropicStream(state), cancellationToken);
             result.ResponseBody = responseBuilder.ToString();
+            result.ClientResponseTruncated = clientCaptureTruncated;
             result.IsStreamInterrupted = false;
             result.ErrorMessage = null;
 
@@ -2203,6 +2327,7 @@ public sealed class AnthropicProxyController : ControllerBase
             }
             await Response.TryWriteTerminatorAsync(terminator, cancellationToken);
             result.ResponseBody = responseBuilder.ToString();
+            result.ClientResponseTruncated = clientCaptureTruncated;
             result.IsStreamInterrupted = true;
         }
 

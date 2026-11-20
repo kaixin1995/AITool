@@ -158,7 +158,7 @@ function isSuccess(status: string): boolean {
 function statusLabel(status: string): string {
   if (isPending(status)) return '等待'
   if (isSuccess(status)) return '成功'
-  if (status?.toLowerCase() === 'canceled') return '已取消'
+  if (status?.toLowerCase() === 'canceled') return '请求中止'
   return '失败'
 }
 
@@ -641,9 +641,9 @@ onUnmounted(() => {
                   </div>
                   <div class="trace-card-title-row">
                     <div class="trace-model-pair">
-                      <span class="trace-request-model">{{ entry.requestModel || '-' }}</span>
-                      <span class="trace-model-arrow">→</span>
-                      <span class="trace-attempted-model">{{ entry.attemptedModel || '-' }}</span>
+                      <span class="trace-request-model">{{ entry.requestModel === '[gateway rejection]' ? '网关请求校验失败（未进入路由）' : (entry.requestModel || '-') }}</span>
+                      <span v-if="entry.requestModel !== '[gateway rejection]'" class="trace-model-arrow">→</span>
+                      <span v-if="entry.requestModel !== '[gateway rejection]'" class="trace-attempted-model">{{ entry.attemptedModel || '-' }}</span>
                     </div>
                     <span class="trace-summary-time">{{ expandedTraceIds.has(entry.traceId) ? '收起详情' : '展开详情' }}</span>
                   </div>
@@ -670,7 +670,7 @@ onUnmounted(() => {
                         <div><span>客户端 IP</span><strong>{{ details[entry.traceId].clientIp || '-' }}</strong></div>
                         <div><span>协议</span><strong>{{ details[entry.traceId].protocolType || '-' }}</strong></div>
                         <div><span>路径</span><strong>{{ details[entry.traceId].requestPath || '-' }}</strong></div>
-                        <div><span>模型</span><strong>{{ details[entry.traceId].requestModel || '-' }}</strong></div>
+                        <div><span>模型</span><strong>{{ details[entry.traceId].requestModel === '[gateway rejection]' ? '未记录：请求校验阶段被拦截' : (details[entry.traceId].requestModel || '-') }}</strong></div>
                         <div><span>User-Agent</span><strong>{{ details[entry.traceId].userAgent || '-' }}</strong></div>
                       </div>
                     </div>

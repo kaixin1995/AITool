@@ -862,99 +862,37 @@ public sealed partial class OpenAiProxyController
         return true;
     }
 
-    /// <summary>
-    /// 从 OpenAI 流式负载中刷新当前流的 token 统计。
-    /// </summary>
-    /// <param name="jsonText">单个 OpenAI 或 Responses SSE data 负载 JSON。</param>
-    /// <param name="inputTokens">保存提取到的输入 token 数。</param>
-    /// <param name="cachedTokens">保存提取到的缓存命中 token 数。</param>
-    /// <param name="outputTokens">保存提取到的输出 token 数。</param>
-    private static void UpdateOpenAiUsageFromPayload(string jsonText, ref int inputTokens, ref int cachedTokens, ref int outputTokens)
+    /// <summary>Merge cumulative Responses usage fields without confusing missing with zero.</summary>
+    private sealed class ResponsesUsageAccumulator
     {
-        try
+        public int? TotalInput { get; private set; }
+        public int? CacheRead { get; private set; }
+        public int? CacheWrite { get; private set; }
+        public int? Output { get; private set; }
+        public void Observe(string json)
         {
-            using var document = JsonDocument.Parse(jsonText);
-            var root = document.RootElement;
-            var usage = root.TryGetProperty("usage", out var topLevelUsage)
-                ? topLevelUsage
-                : root.TryGetProperty("response", out var responseElement) && responseElement.TryGetProperty("usage", out var nestedUsage)
-                    ? nestedUsage
-                    : default;
-            if (usage.ValueKind != JsonValueKind.Object)
+            try
             {
-                return;
-            }
-
-            var hasInputTokens = false;
-            if (usage.TryGetProperty("input_tokens", out var inputTokenElement) && inputTokenElement.ValueKind == JsonValueKind.Number)
-            {
-                inputTokens = inputTokenElement.GetInt32();
-                hasInputTokens = true;
-            }
-            else if (usage.TryGetProperty("prompt_tokens", out var promptTokens) && promptTokens.ValueKind == JsonValueKind.Number)
-            {
-                inputTokens = promptTokens.GetInt32();
-                hasInputTokens = true;
-            }
-
-            // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
-            // 所以 output_tokens=0 时回退到 completion_tokens。
-            if (usage.TryGetProperty("output_tokens", out var outputTokenElement) && outputTokenElement.ValueKind == JsonValueKind.Number && outputTokenElement.GetInt32() > 0)
-            {
-                outputTokens = outputTokenElement.GetInt32();
-            }
-            else if (usage.TryGetProperty("completion_tokens", out var completionTokens) && completionTokens.ValueKind == JsonValueKind.Number)
-            {
-                outputTokens = completionTokens.GetInt32();
-            }
-
-            // 缓存 token：同时兼容 input_tokens_details / prompt_tokens_details 两种格式。
-            // 部分中间层（如 newapi）会在同一个 usage 里同时放这两种字段，取先命中的非零值。
-            if (usage.TryGetProperty("input_tokens_details", out var inputTokenDetails)
-                && inputTokenDetails.ValueKind == JsonValueKind.Object
-                && inputTokenDetails.TryGetProperty("cached_tokens", out var inputCachedTokenElement)
-                && inputCachedTokenElement.ValueKind == JsonValueKind.Number)
-            {
-                cachedTokens = inputCachedTokenElement.GetInt32();
-            }
-            else if (usage.TryGetProperty("prompt_tokens_details", out var promptTokenDetails)
-                     && promptTokenDetails.ValueKind == JsonValueKind.Object
-                     && promptTokenDetails.TryGetProperty("cached_tokens", out var cachedTokenElement)
-                     && cachedTokenElement.ValueKind == JsonValueKind.Number)
-            {
-                cachedTokens = cachedTokenElement.GetInt32();
-            }
-
-            // 缓存写 token：兼容 cached_creation_tokens / cache_write_tokens（与 ExtractUsageFromElement 口径一致），
-            // 并入缓存列，避免被计入"新输入"。
-            var detailsForWrite = usage.TryGetProperty("input_tokens_details", out var itdWrite) && itdWrite.ValueKind == JsonValueKind.Object
-                ? itdWrite
-                : usage.TryGetProperty("prompt_tokens_details", out var ptdWrite) && ptdWrite.ValueKind == JsonValueKind.Object
-                    ? ptdWrite
-                    : default;
-            if (detailsForWrite.ValueKind == JsonValueKind.Object)
-            {
-                if (detailsForWrite.TryGetProperty("cached_creation_tokens", out var ccWrite) && ccWrite.ValueKind == JsonValueKind.Number)
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) return;
+                var usage = root.TryGetProperty("usage", out var top) && top.ValueKind == JsonValueKind.Object ? top
+                    : root.TryGetProperty("response", out var response) && response.ValueKind == JsonValueKind.Object
+                        && response.TryGetProperty("usage", out var nested) && nested.ValueKind == JsonValueKind.Object ? nested : default;
+                if (usage.ValueKind != JsonValueKind.Object) return;
+                static int? Read(JsonElement obj, string name) => obj.TryGetProperty(name, out var value)
+                    && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var count) && count >= 0 ? count : null;
+                TotalInput = Read(usage, "input_tokens") ?? Read(usage, "prompt_tokens") ?? TotalInput;
+                Output = Read(usage, "output_tokens") ?? Read(usage, "completion_tokens") ?? Output;
+                var details = usage.TryGetProperty("input_tokens_details", out var input) && input.ValueKind == JsonValueKind.Object ? input
+                    : usage.TryGetProperty("prompt_tokens_details", out var prompt) && prompt.ValueKind == JsonValueKind.Object ? prompt : default;
+                if (details.ValueKind == JsonValueKind.Object)
                 {
-                    cachedTokens += ccWrite.GetInt32();
-                }
-                else if (detailsForWrite.TryGetProperty("cache_write_tokens", out var cwWrite) && cwWrite.ValueKind == JsonValueKind.Number)
-                {
-                    cachedTokens += cwWrite.GetInt32();
+                    CacheRead = Read(details, "cached_tokens") ?? CacheRead;
+                    CacheWrite = Read(details, "cached_creation_tokens") ?? Read(details, "cache_write_tokens") ?? CacheWrite;
                 }
             }
-
-            // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集），
-            // 统一减去缓存，日志输入记录"不含缓存的新输入"，避免缓存重复统计。
-            // 减法只在本事件自带输入字段时执行：部分中间层的后续 usage 事件只带 cached 字段，
-            // 否则会对已减去缓存的输入再次扣减（与 UpdateAnthropicUsageFromElement 的守卫一致）。
-            if (hasInputTokens)
-            {
-                inputTokens = Math.Max(0, inputTokens - cachedTokens);
-            }
-        }
-        catch
-        {
+            catch (JsonException) { }
         }
     }
 
@@ -965,14 +903,10 @@ public sealed partial class OpenAiProxyController
     /// <param name="state">正在转换为 OpenAI SSE 的流式状态对象。</param>
     private static void UpdateAnthropicUsageFromElement(JsonElement usage, AnthropicToOpenAiStreamState state)
     {
-        // Anthropic 的 input_tokens 已含缓存（cache_read + cache_creation 是其子集），
-        // 这里记录"不含缓存的新输入"，缓存分别记入 CachedTokens / CacheCreationTokens，
-        // 输出与日志需要"含缓存"时再按 新输入 + 缓存 还原，避免缓存重复统计。
-        var hasInputTokens = false;
+        // Anthropic 输入、缓存读取和缓存创建是独立的累计分桶。
         if (usage.TryGetProperty("input_tokens", out var inputTokens) && inputTokens.ValueKind == JsonValueKind.Number)
         {
             state.InputTokens = inputTokens.GetInt32();
-            hasInputTokens = true;
         }
 
         if (usage.TryGetProperty("cache_read_input_tokens", out var cachedTokens) && cachedTokens.ValueKind == JsonValueKind.Number)
@@ -990,12 +924,7 @@ public sealed partial class OpenAiProxyController
             state.OutputTokens = outputTokens.GetInt32();
         }
 
-        // 减法只在本事件自带 input_tokens 时执行：message_delta 通常只有 output_tokens，
-        // 否则会对已减去缓存的输入再次扣减。
-        if (hasInputTokens)
-        {
-            state.InputTokens = Math.Max(0, state.InputTokens - state.CachedTokens - state.CacheCreationTokens);
-        }
+
     }
 
     /// <summary>

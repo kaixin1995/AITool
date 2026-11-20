@@ -49,6 +49,44 @@ public sealed class AccountSessionIsolationTests : IDisposable
     }
 
     [Fact]
+    public async Task Chat_to_responses_error_after_partial_output_emits_failed_not_completed()
+    {
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            StreamingLines = ["data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}", "", "data: {\"error\":{\"message\":\"synthetic failure\"}}", "", "data: [DONE]", ""]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.PostAsync("/v1/responses", new StringContent("{\"model\":\"auto\",\"input\":\"hi\",\"stream\":true}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("partial").And.Contain("response.failed").And.NotContain("response.completed");
+        var usage = (await AssertUsageRowsAsync(factory)).Should().ContainSingle().Subject;
+        usage.Status.Should().Be("fail"); usage.IsStreamInterrupted.Should().BeTrue();
+        forwarder.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Chat_upstream_error_is_not_masked_by_done_or_logged_as_success()
+    {
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            StreamingLines = ["data: {\"error\":{\"message\":\"synthetic failure\",\"type\":\"server_error\"}}", "", "data: [DONE]", ""]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.PostAsync("/v1/chat/completions", new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("synthetic failure").And.NotContain("[DONE]");
+        var usage = (await AssertUsageRowsAsync(factory)).Should().ContainSingle().Subject;
+        usage.Status.Should().Be("fail"); usage.IsStreamInterrupted.Should().BeTrue();
+        forwarder.Requests.Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task Original_body_priority_and_post_merge_rewrite_are_stable_and_account_client_scoped()
     {
         var headers = new HeaderDictionary { ["Session-Id"] = "client-session", ["Thread-Id"] = "same", ["Conversation_id"] = "same" };
@@ -453,7 +491,7 @@ public sealed class AccountSessionIsolationTests : IDisposable
     [Theory]
     [InlineData(true, false, 35, 15, 7)]
     [InlineData(false, false, 0, 0, 0)]
-    [InlineData(true, true, 900, 15, 90)]
+    [InlineData(true, true, 885, 15, 90)]
     public async Task Real_forwarder_settles_only_usage_parsed_before_stream_guard_failure(
         bool includePriorUsage, bool includeRejectedUsage, int expectedInput, int expectedCached, int expectedOutput)
     {

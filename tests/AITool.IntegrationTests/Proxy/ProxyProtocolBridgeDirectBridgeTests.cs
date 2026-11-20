@@ -12,6 +12,137 @@ public sealed class ProxyProtocolBridgeDirectBridgeTests
 {
     // ============ 请求方向：Anthropic → Responses 直转 ============
 
+    [Theory]
+    [InlineData("OpenAI")]
+    [InlineData("Anthropic")]
+    public void Responses_allowed_tools_preserves_subset_and_required_mode(string protocol)
+    {
+        const string body = """{"input":"hi","tools":[{"type":"function","name":"safe","parameters":{"type":"object"}},{"type":"function","name":"forbidden","parameters":{"type":"object"}}],"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"safe"}]}}""";
+        var result = ProxyProtocolBridge.PrepareRequestBody("Responses", protocol, body, "target", false);
+        var json = JsonNode.Parse(result)!;
+        json["tools"]!.ToJsonString().Should().Contain("safe").And.NotContain("forbidden");
+        json["tool_choice"]!.ToJsonString().Should().Contain(protocol == "OpenAI" ? "required" : "any");
+    }
+
+    [Theory]
+    [InlineData("input_image", "image_url", "data:image/png;base64")]
+    [InlineData("input_file", "file_data", "data:application/pdf;base64")]
+    public void Malformed_inline_data_is_rejected(string type, string key, string data)
+    {
+        var part = new JsonObject { ["type"] = type, [key] = data };
+        var root = new JsonObject { ["input"] = new JsonArray(new JsonObject { ["role"] = "user", ["content"] = new JsonArray(part) }) };
+        Action act = () => ProxyProtocolBridge.PrepareRequestBody("Responses", "Anthropic", root.ToJsonString(), "target", false);
+        act.Should().Throw<ProtocolConversionException>();
+    }
+
+    [Fact]
+    public void Responses_failed_event_prevents_later_completed_event_even_in_same_batch()
+    {
+        var state = new ResponsesToChatStreamState { Model = "m" };
+        var sse = "event: response.failed\ndata: {\"type\":\"response.failed\"}\n\n" +
+            "event: response.completed\ndata: {\"response\":{\"output\":[]}}\n\n";
+        ProxyProtocolBridge.ConvertResponsesStreamingToChat(sse, state).Should().BeEmpty();
+        state.ConversionFailed.Should().BeTrue(); state.Completed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Responses_stream_failure_is_sticky_and_cannot_be_followed_by_success()
+    {
+        var state = new ResponsesToChatStreamState { Model = "m" };
+        ProxyProtocolBridge.ConvertResponsesStreamingToChat("event: response.output_text.delta\ndata: {broken}\n\n", state).Should().BeEmpty();
+        state.ConversionFailed.Should().BeTrue();
+        var result = ProxyProtocolBridge.ConvertResponsesStreamingToChat("event: response.completed\ndata: {\"response\":{\"output\":[]}}\n\n", state);
+        result.Should().BeEmpty(); state.Completed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Anthropic_bridge_failure_is_sticky_and_cannot_be_followed_by_success()
+    {
+        var state = new ProxyProtocolBridge.ResponsesToAnthropicStreamState();
+        ProxyProtocolBridge.ConvertResponsesSseEventToAnthropic("response.failed", "{}", state);
+        state.Failed.Should().BeTrue();
+        ProxyProtocolBridge.ConvertResponsesSseEventToAnthropic("response.completed", "{\"response\":{}}", state).Should().BeEmpty();
+        state.Completed.Should().BeFalse(); state.Core.ReceivedDoneEvent.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Chat_url_image_survives_anthropic_conversion()
+    {
+        const string body = """{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}""";
+        var result = ProxyProtocolBridge.PrepareRequestBody("OpenAI", "Anthropic", body, "target", false);
+        result.Should().Contain("https://example.com/a.png").And.Contain("\"type\":\"url\"");
+    }
+
+    [Fact]
+    public void Responses_nonstream_zero_usage_does_not_use_stale_fallback()
+    {
+        const string body = """{"id":"resp_zero","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":0,"output_tokens":0}}""";
+        var root = JsonNode.Parse(ProxyProtocolBridge.BuildAnthropicResponseFromResponses(body, "test", 42, 0, 17))!;
+        root["usage"]!["input_tokens"]!.GetValue<int>().Should().Be(0);
+        root["usage"]!["output_tokens"]!.GetValue<int>().Should().Be(0);
+    }
+
+    [Fact]
+    public void Anthropic_url_image_survives_chat_conversion()
+    {
+        const string body = """{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}],"max_tokens":8}""";
+        var result = ProxyProtocolBridge.PrepareRequestBody("Anthropic", "OpenAI", body, "target", false);
+        result.Should().Contain("https://example.com/a.png").And.NotContain("data:image/png;base64,");
+    }
+
+    [Fact]
+    public void Responses_to_anthropic_merges_usage_across_events_without_losing_cache_write()
+    {
+        var state = new ProxyProtocolBridge.ResponsesToAnthropicStreamState();
+        ProxyProtocolBridge.ConvertResponsesSseEventToAnthropic("response.in_progress", """{"response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":40,"cache_write_tokens":20},"output_tokens":9}}}""", state);
+        ProxyProtocolBridge.ConvertResponsesSseEventToAnthropic("response.completed", """{"response":{"usage":{"output_tokens":0}}}""", state);
+        state.Core.InputTokens.Should().Be(40); state.Core.CachedTokens.Should().Be(40);
+        state.Core.CacheCreationTokens.Should().Be(20); state.Core.OutputTokens.Should().Be(0);
+    }
+
+    [Fact]
+    public void Allowed_tools_namespace_collision_does_not_allow_other_tool()
+    {
+        const string body = """{"input":"hi","tools":[{"type":"namespace","name":"a","tools":[{"type":"function","name":"b","parameters":{"type":"object"}}]},{"type":"function","name":"a__b","parameters":{"type":"object"}}],"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"a__b"}]}}""";
+        Action act = () => ProxyProtocolBridge.ConvertResponsesRequestToChat(body, "target", false);
+        act.Should().Throw<ProtocolConversionException>().WithMessage("*collide*");
+    }
+
+    [Fact]
+    public void Anthropic_url_image_survives_responses_conversion()
+    {
+        var body = JsonNode.Parse("""{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}],"max_tokens":8}""")!.AsObject();
+        var result = ProxyProtocolBridge.BuildResponsesRequestFromAnthropic(body, "target", false);
+        result.Should().Contain("https://example.com/a.png").And.NotContain("data:image/png;base64,");
+    }
+
+    [Theory]
+    [InlineData("OpenAI")]
+    [InlineData("Anthropic")]
+    public void Responses_file_id_image_is_not_silently_lost(string protocol)
+    {
+        const string body = """{"input":[{"role":"user","content":[{"type":"input_image","file_id":"opaque"}]}]}""";
+        Action act = () => ProxyProtocolBridge.PrepareRequestBody("Responses", protocol, body, "target", false);
+        act.Should().Throw<ProtocolConversionException>();
+    }
+
+    [Fact]
+    public void Responses_incomplete_max_tokens_maps_to_chat_length()
+    {
+        var state = new ResponsesToChatStreamState { Model = "m" };
+        var result = ProxyProtocolBridge.ConvertResponsesStreamingToChat("event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}}\n\n", state);
+        state.Completed.Should().BeTrue();
+        result.Should().Contain("\"finish_reason\":\"length\"").And.Contain("[DONE]");
+    }
+
+    [Fact]
+    public void Responses_required_allowed_tools_cannot_silently_become_none()
+    {
+        const string body = """{"input":"hi","tools":[],"tool_choice":{"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"missing"}]}}""";
+        Action act = () => ProxyProtocolBridge.ConvertResponsesRequestToChat(body, "target", false);
+        act.Should().Throw<InvalidOperationException>();
+    }
+
     [Fact]
     public void PrepareRequestBody_anthropic_to_responses_maps_instructions_tools_and_tool_choice()
     {

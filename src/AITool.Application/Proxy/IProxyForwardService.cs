@@ -40,9 +40,10 @@ public sealed class ProxyForwardRequest
     /// </summary>
     public string TargetModelName { get; set; } = string.Empty;
 
-    /// <summary>
-    /// 原始请求体 JSON 字符串，保留调用方提交的完整内容。
-    /// </summary>
+    /// <summary>Maximum captured stream characters; bounded separately from the live stream.</summary>
+    public int StreamCaptureLimitChars { get; set; } = ProxyForwardConstants.MaxStreamBodyCaptureChars;
+
+    /// <summary>原始请求体 JSON 字符串，保留调用方提交的完整内容。</summary>
     public string RequestBody { get; set; } = string.Empty;
 
     /// <summary>
@@ -136,6 +137,16 @@ public sealed class ProxyForwardResult
     /// 保存上游响应体内容；流式场景下通常用于补充最终结果或错误信息。
     /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
+
+    /// <summary>Bounded raw upstream response captured before protocol conversion, when available.</summary>
+    public string? RawUpstreamResponseBody { get; set; }
+    public bool RawUpstreamResponseIsSse { get; set; }
+
+    /// <summary>Whether the bounded raw stream capture reached its limit.</summary>
+    public bool RawUpstreamResponseTruncated { get; set; }
+    public int RawUpstreamResponseCaptureLimitChars { get; set; } = ProxyForwardConstants.MaxStreamBodyCaptureChars;
+    public bool ClientResponseTruncated { get; set; }
+
 
     /// <summary>
     /// 记录本次请求消耗的输入 Token 数。

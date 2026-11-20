@@ -23,6 +23,67 @@ public sealed class AnthropicProxyControllerTests
     /// <summary>
     /// 验证 Anthropic 客户端获取模型列表时会返回兼容格式的数据。
     /// </summary>
+    private sealed class LoopbackCredentialResolver : IForwardCredentialResolver
+    {
+        public Task<ForwardCredentialLease> ResolveAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new ForwardCredentialLease("synthetic"));
+    }
+    private sealed class LoopbackNetworkResolver : IForwardNetworkPolicyResolver
+    {
+        public Task<ForwardNetworkPolicyResolution> ResolveAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new ForwardNetworkPolicyResolution(AITool.Application.Networking.ResolvedNetworkConfiguration.Legacy, "loopback-test", true));
+    }
+
+    [Fact]
+    public async Task Loopback_responses_failure_records_raw_stream_and_usage_through_controller()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptTcpClientAsync();
+            await using var stream = socket.GetStream();
+            using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
+            string? line; do { line = await reader.ReadLineAsync(); } while (!string.IsNullOrEmpty(line));
+            var sse = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
+                "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"upstream_error\"},\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":40,\"cache_write_tokens\":20},\"output_tokens\":7}}}\n\n";
+            var bytes = Encoding.UTF8.GetBytes(sse);
+            var headers = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: " + bytes.Length + "\r\n\r\n");
+            await stream.WriteAsync(headers); await stream.WriteAsync(bytes); await stream.FlushAsync();
+        });
+        using var http = new HttpClient();
+        var forwarder = new AITool.Infrastructure.Proxy.ProxyForwardService(http, Microsoft.Extensions.Logging.Abstractions.NullLogger<AITool.Infrastructure.Proxy.ProxyForwardService>.Instance, networkPolicyResolver: new LoopbackNetworkResolver(), credentialResolver: new LoopbackCredentialResolver());
+        await using var factory = new AnthropicProxyWebApplicationFactory(forwarder, "Responses", $"http://127.0.0.1:{port}");
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Client.Updateable<SystemRuntimeSettings>().SetColumns(x => new SystemRuntimeSettings { DeveloperFeaturesEnabled = true, DeveloperFailureDumpEnabled = true }).Where(x => x.Id == 1).ExecuteCommandAsync();
+        factory.Services.GetRequiredService<AITool.Web.Services.ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        { Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":64,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json") };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        await server.WaitAsync(TimeSpan.FromSeconds(5));
+        body.Should().Contain("hello").And.Contain("event: error").And.NotContain("event: message_stop");
+        var logs = await db.ProxyUsageLogs.ToListAsync(); logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(40); logs[0].CachedTokens.Should().Be(60); logs[0].OutputTokens.Should().Be(7);
+        var diagnostic = factory.Services.GetRequiredService<AITool.Web.Services.IProxyDiagnosticService>();
+        string? dump = null;
+        for (var n = 0; n < 50 && dump is null; n++)
+        {
+            foreach (var item in diagnostic.ListRecentDumps())
+            {
+                var text = diagnostic.ReadDumpContent(item.FileName);
+                if (text?.Contains(logs[0].RequestId.ToString("N"), StringComparison.OrdinalIgnoreCase) == true) { dump = text; break; }
+            }
+            if (dump is null) await Task.Delay(100);
+        }
+        dump.Should().NotBeNull();
+        dump.Should().Contain("response.failed").And.Contain("pre-conversion-stream").And.Contain("clientResponseBody");
+    }
+
     [Fact]
     public async Task Get_models_returns_anthropic_model_list()
     {
@@ -41,6 +102,118 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("data")[0].GetProperty("id").GetString().Should().Be("claude-proxy");
         document.RootElement.GetProperty("data")[0].GetProperty("type").GetString().Should().Be("model");
         document.RootElement.GetProperty("has_more").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Whitespace_then_upstream_failure_reaches_the_second_route_without_leaking_first_attempt()
+    {
+        var fallback = new AnthropicFallbackStreamProxyForwardService();
+        var forwarder = new WhitespaceFailureForwarder(fallback);
+        await using var factory = new AnthropicProxyFallbackWebApplicationFactory(forwarder, "Responses");
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        { Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json") };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("anthropic-fallback-ok").And.NotContain("event: error");
+        forwarder.Attempts.Should().Be(2);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Responses_whitespace_is_held_until_success_or_fallback(bool success)
+    {
+        var lines = new List<string>
+        {
+            "event: response.output_item.added", "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\"}}", "",
+            "event: response.output_text.delta", "data: {\"type\":\"response.output_text.delta\",\"delta\":\" \"}", ""
+        };
+        if (success) lines.AddRange(["event: response.completed", "data: {\"type\":\"response.completed\",\"response\":{}}", ""]);
+        else lines.AddRange(["event: response.failed", "data: {\"type\":\"response.failed\",\"response\":{}}", ""]);
+        var fake = new AnthropicFakeProxyForwardService
+        {
+            ResponsesStreamingLines = lines,
+            StreamingResultFactory = _ => new ProxyForwardResult { Success = success, StatusCode = 200, ErrorMessage = success ? null : "upstream failed" }
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fake, "Responses");
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        { Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json") };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        if (success)
+        {
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+            body.Should().Contain("text_delta").And.Contain("event: message_stop");
+            var actualText = body.Split('\n').Where(l => l.StartsWith("data: "))
+                .Select(l => System.Text.Json.Nodes.JsonNode.Parse(l[6..]))
+                .Where(o => o?["delta"]?["type"]?.ToString() == "text_delta")
+                .Select(o => o!["delta"]!["text"]!.ToString());
+            actualText.Should().ContainSingle().Which.Should().Be(" ");
+        }
+        else
+        {
+            body.Should().NotContain("event: message_start");
+            body.Should().NotContain("event: content_block_delta");
+        }
+    }
+
+    [Theory]
+    [InlineData("max_output_tokens", true)]
+    [InlineData("content_filter", false)]
+    public async Task Responses_incomplete_is_mapped_by_reason(string reason, bool accepted)
+    {
+        var fake = new AnthropicFakeProxyForwardService
+        {
+            ResponsesStreamingLines =
+            [
+                "event: response.output_text.delta", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"abc\"}", string.Empty,
+                "event: response.incomplete", "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"" + reason + "\"}}}", string.Empty
+            ],
+            StreamingResultFactory = _ => new ProxyForwardResult { Success = true, StatusCode = 200 }
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fake, "Responses");
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        { Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json") };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        var body = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+        if (accepted) body.Should().Contain("max_tokens").And.Contain("event: message_stop").And.NotContain("event: error");
+        else body.Should().Contain("event: error").And.NotContain("event: message_stop");
+    }
+
+    [Fact]
+    public async Task Interrupted_responses_tool_output_sends_error_not_success_or_retry()
+    {
+        var fake = new AnthropicFakeProxyForwardService
+        {
+            ResponsesStreamingLines =
+            [
+                "event: response.output_item.added",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"Read\"}}",
+                string.Empty,
+                "event: response.function_call_arguments.delta",
+                "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\"}",
+                string.Empty
+            ],
+            StreamingResultFactory = _ => new ProxyForwardResult { Success = false, StatusCode = 200, IsStreamInterrupted = true, ErrorMessage = "stream interrupted before normal completion" }
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fake, "Responses");
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("tool_use").And.Contain("event: error");
+        body.Should().NotContain("event: message_stop").And.NotContain("end_turn");
+        fake.Requests.Should().ContainSingle();
     }
 
     [Fact]
@@ -210,7 +383,7 @@ public sealed class AnthropicProxyControllerTests
         logs[0].HttpStatusCode.Should().Be(200);
         logs[0].IsStreaming.Should().BeTrue();
         // 上游 input_tokens=6 已含缓存（cache_read=2），日志输入统一为不含缓存的新输入。
-        logs[0].InputTokens.Should().Be(4);
+        logs[0].InputTokens.Should().Be(6);
         logs[0].CachedTokens.Should().Be(2);
         logs[0].OutputTokens.Should().Be(5);
     }
@@ -262,7 +435,7 @@ public sealed class AnthropicProxyControllerTests
         logs.Should().ContainSingle();
         logs[0].Status.Should().Be("success");
         // 缓存只按累计值记一次：80（而非 start 80 + delta 80 = 160）；新输入 = 100 - 80 = 20。
-        logs[0].InputTokens.Should().Be(20);
+        logs[0].InputTokens.Should().Be(100);
         logs[0].CachedTokens.Should().Be(80);
         logs[0].OutputTokens.Should().Be(1);
     }
@@ -602,13 +775,12 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("hello world");
         document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("reasoning_content").GetString().Should().Be("step-1\nstep-2");
 
-        // Anthropic input_tokens 已含缓存（cache_read=1），转为 OpenAI 的 prompt_tokens 不应再叠加缓存，
-        // 否则缓存被重复统计（prompt_tokens 变成 6+1=7 而非 6）。
+        // Anthropic 新输入 6 与缓存读取 1 分开计数。
         var usage = document.RootElement.GetProperty("usage");
-        usage.GetProperty("prompt_tokens").GetInt32().Should().Be(6);
+        usage.GetProperty("prompt_tokens").GetInt32().Should().Be(7);
         usage.GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(1);
         usage.GetProperty("completion_tokens").GetInt32().Should().Be(3);
-        usage.GetProperty("total_tokens").GetInt32().Should().Be(9);
+        usage.GetProperty("total_tokens").GetInt32().Should().Be(10);
     }
 
     /// <summary>
@@ -1012,7 +1184,8 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
     /// <summary>
     /// 保存当前测试使用的伪造转发服务。
     /// </summary>
-    private readonly AnthropicFakeProxyForwardService _fakeForwardService;
+    private readonly IProxyForwardService _fakeForwardService;
+    private readonly string _baseUrl;
     /// <summary>
     /// 保存当前测试站点声明的协议类型。
     /// </summary>
@@ -1021,10 +1194,11 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
     /// <summary>
     /// 初始化 Anthropic 代理测试宿主。
     /// </summary>
-    public AnthropicProxyWebApplicationFactory(AnthropicFakeProxyForwardService fakeForwardService, string siteProtocol = "Anthropic")
+    public AnthropicProxyWebApplicationFactory(IProxyForwardService fakeForwardService, string siteProtocol = "Anthropic", string baseUrl = "https://anthropic-proxy.example.com")
     {
         _fakeForwardService = fakeForwardService;
         _siteProtocol = siteProtocol;
+        _baseUrl = baseUrl;
     }
 
     /// <summary>
@@ -1067,7 +1241,7 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
         {
             Id = siteId,
             Name = "Anthropic Proxy Site",
-            BaseUrl = "https://anthropic-proxy.example.com",
+            BaseUrl = _baseUrl,
             ApiKey = "site-anthropic-key",
             ProtocolType = _siteProtocol,
             SupportsOpenAi = string.Equals(_siteProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase),
@@ -1139,14 +1313,16 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
     /// <summary>
     /// 保存混合路由回退场景下使用的伪造转发服务。
     /// </summary>
-    private readonly AnthropicFallbackStreamProxyForwardService _fakeForwardService;
+    private readonly IProxyForwardService _fakeForwardService;
+    private readonly string _firstProtocol;
 
     /// <summary>
     /// 初始化混合路由回退测试宿主。
     /// </summary>
-    public AnthropicProxyFallbackWebApplicationFactory(AnthropicFallbackStreamProxyForwardService fakeForwardService)
+    public AnthropicProxyFallbackWebApplicationFactory(IProxyForwardService fakeForwardService, string firstProtocol = "OpenAI")
     {
         _fakeForwardService = fakeForwardService;
+        _firstProtocol = firstProtocol;
     }
 
     /// <summary>
@@ -1193,8 +1369,8 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
                 Name = "OpenAI First",
                 BaseUrl = "https://openai-first.example.com",
                 ApiKey = "site-openai-key",
-                ProtocolType = "OpenAI",
-                SupportsOpenAi = true,
+                ProtocolType = _firstProtocol,
+                SupportsOpenAi = _firstProtocol == "OpenAI",
                 SupportsAnthropic = false,
                 IsEnabled = true
             },
@@ -1617,5 +1793,25 @@ internal sealed class AnthropicFallbackStreamProxyForwardService : IProxyForward
             HasStartedStreaming = false,
             TotalDurationMs = 5
         };
+    }
+}
+
+internal sealed class WhitespaceFailureForwarder(AnthropicFallbackStreamProxyForwardService fallback) : IProxyForwardService
+{
+    public int Attempts { get; private set; }
+    public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+        => fallback.ForwardAsync(request, cancellationToken);
+    public async Task<ProxyForwardResult> ForwardStreamingAsync(ProxyForwardRequest request,
+        Func<string, CancellationToken, Task> callback, CancellationToken cancellationToken = default)
+    {
+        Attempts++;
+        if (!string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+            return await fallback.ForwardStreamingAsync(request, callback, cancellationToken);
+        string[] frames = [
+            "event: response.output_item.added", "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\"}}", "",
+            "event: response.output_text.delta", "data: {\"type\":\"response.output_text.delta\",\"delta\":\" \"}", "",
+            "event: response.failed", "data: {\"type\":\"response.failed\",\"response\":{}}", ""];
+        foreach (var line in frames) await callback(line, cancellationToken);
+        return new ProxyForwardResult { Success = false, StatusCode = 200, ErrorMessage = "upstream failed", IsStreaming = true };
     }
 }

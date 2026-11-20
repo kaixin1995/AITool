@@ -52,6 +52,7 @@ public sealed class ResponsesToChatStreamState
     public Dictionary<int, string> ChatToolCallIds { get; } = [];
     public int InputTokens { get; set; }
     public int CachedTokens { get; set; }
+    public int CacheWriteTokens { get; set; }
     public int OutputTokens { get; set; }
 }
 
@@ -212,6 +213,7 @@ public static partial class ProxyProtocolBridge
             return requestBody;
         }
 
+        root = ApplyResponsesAllowedTools(root);
         var messages = new JsonArray();
 
         // instructions → system 消息
@@ -1532,7 +1534,7 @@ public static partial class ProxyProtocolBridge
                     ["output"] = new JsonArray(state.CompletedItems.Values.Select(x => x.DeepClone()).ToArray()),
                     ["usage"] = new JsonObject
                     {
-                        ["prompt_tokens"] = inp,
+                        ["prompt_tokens"] = inp + cached + state.CacheCreationTokens,
                         ["completion_tokens"] = outp,
                         ["total_tokens"] = inp + cached + state.CacheCreationTokens + outp,
                         ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached },
@@ -1803,7 +1805,7 @@ public static partial class ProxyProtocolBridge
             var builder = new StringBuilder();
             var finishReason = "stop";
 
-            if (state.Completed)
+            if (state.Completed || state.ConversionFailed)
             {
                 return string.Empty;
             }
@@ -1815,6 +1817,12 @@ public static partial class ProxyProtocolBridge
 
             void FlushEvent()
             {
+                if (state.Completed || state.ConversionFailed)
+                {
+                    dataLines.Clear();
+                    currentEvent = string.Empty;
+                    return;
+                }
                 if (dataLines.Count == 0)
                 {
                     currentEvent = string.Empty;
@@ -1837,6 +1845,14 @@ public static partial class ProxyProtocolBridge
                     : (root.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String
                         ? typeEl.GetString() ?? string.Empty
                         : string.Empty);
+
+                if (string.Equals(eventType, "response.failed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(eventType, "error", StringComparison.OrdinalIgnoreCase))
+                {
+                    state.ConversionFailed = true;
+                    currentEvent = string.Empty;
+                    return;
+                }
 
                 if (string.Equals(eventType, "response.created", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(eventType, "response.in_progress", StringComparison.OrdinalIgnoreCase))
@@ -2124,10 +2140,21 @@ public static partial class ProxyProtocolBridge
                     return;
                 }
 
-                if (string.Equals(eventType, "response.completed", StringComparison.OrdinalIgnoreCase)
+                if ((string.Equals(eventType, "response.completed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(eventType, "response.incomplete", StringComparison.OrdinalIgnoreCase))
                     && root.TryGetProperty("response", out var completedResponse)
                     && completedResponse.ValueKind == JsonValueKind.Object)
                 {
+                    var incomplete = string.Equals(eventType, "response.incomplete", StringComparison.OrdinalIgnoreCase);
+                    if (incomplete && !(completedResponse.TryGetProperty("incomplete_details", out var incompleteDetails)
+                        && incompleteDetails.ValueKind == JsonValueKind.Object
+                        && incompleteDetails.TryGetProperty("reason", out var incompleteReason)
+                        && incompleteReason.ValueKind == JsonValueKind.String
+                        && string.Equals(incompleteReason.GetString(), "max_output_tokens", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        state.ConversionFailed = true;
+                        return;
+                    }
                     if (completedResponse.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String)
                     {
                         state.Model = modelEl.GetString() ?? state.Model;
@@ -2343,21 +2370,28 @@ public static partial class ProxyProtocolBridge
                         {
                             state.CachedTokens = cachedEl.GetInt32();
                         }
+                        if (usageEl.TryGetProperty("input_tokens_details", out var writeDetails) && writeDetails.ValueKind == JsonValueKind.Object)
+                        {
+                            if (writeDetails.TryGetProperty("cached_creation_tokens", out var written) && written.ValueKind == JsonValueKind.Number)
+                                state.CacheWriteTokens = written.GetInt32();
+                            else if (writeDetails.TryGetProperty("cache_write_tokens", out written) && written.ValueKind == JsonValueKind.Number)
+                                state.CacheWriteTokens = written.GetInt32();
+                        }
                     }
 
-                    finishReason = toolCalls.Count > 0 ? "tool_calls" : "stop";
+                    finishReason = incomplete ? "length" : toolCalls.Count > 0 ? "tool_calls" : "stop";
                     state.Completed = true;
                     // OpenAI 协议的 prompt_tokens 含缓存命中部分。completed 未提供 input_tokens 时，
                     // state.InputTokens 是调用方 seeding 的"不含缓存的新输入"，必须还原为 新输入+缓存
                     // 再输出，否则客户端侧按 prompt_tokens 计费会低估。
-                    var promptTokens = inputTokensFromUsage ? state.InputTokens : state.InputTokens + state.CachedTokens;
+                    var promptTokens = inputTokensFromUsage ? state.InputTokens : state.InputTokens + state.CachedTokens + state.CacheWriteTokens;
                     builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject(), finishReason, new JsonObject
                     {
                         ["prompt_tokens"] = promptTokens,
                         ["prompt_tokens_details"] = new JsonObject
                         {
                             ["cached_tokens"] = state.CachedTokens,
-                            ["cached_creation_tokens"] = 0
+                            ["cached_creation_tokens"] = state.CacheWriteTokens
                         },
                         ["completion_tokens"] = state.OutputTokens,
                         ["total_tokens"] = promptTokens + state.OutputTokens
@@ -2436,9 +2470,7 @@ public static partial class ProxyProtocolBridge
         foreach (var part in contentArray)
         {
             if (part is not JsonObject partObj)
-            {
-                continue;
-            }
+                throw new ProtocolConversionException("Chat content block cannot be converted to Responses safely.");
 
             var type = partObj["type"]?.ToString() ?? string.Empty;
             if (string.Equals(type, "text", StringComparison.OrdinalIgnoreCase))
@@ -2453,12 +2485,16 @@ public static partial class ProxyProtocolBridge
 
             if (string.Equals(type, "image_url", StringComparison.OrdinalIgnoreCase))
             {
+                if (string.IsNullOrWhiteSpace(partObj["image_url"]?["url"]?.ToString()))
+                    throw new ProtocolConversionException("Chat image requires a URL.");
                 result.Add(new JsonObject
                 {
                     ["type"] = "input_image",
                     ["image_url"] = partObj["image_url"]?["url"]?.DeepClone() ?? string.Empty
                 });
+                continue;
             }
+            throw new ProtocolConversionException("Chat content block cannot be converted to Responses safely.");
         }
 
         return result;
@@ -2725,18 +2761,18 @@ public static partial class ProxyProtocolBridge
                     result.Add(new JsonObject { ["type"] = "text", ["text"] = itemObj["text"]?.DeepClone() ?? "" });
                     break;
                 case "input_image":
+                    if (string.IsNullOrWhiteSpace(itemObj["image_url"]?.ToString()))
+                        throw new ProtocolConversionException("Responses image requires image_url for Chat upstream.");
                     result.Add(new JsonObject
                     {
                         ["type"] = "image_url",
                         ["image_url"] = new JsonObject { ["url"] = itemObj["image_url"]?.DeepClone() ?? "" }
                     });
                     break;
+                case "input_file":
+                    throw new ProtocolConversionException("Responses file input cannot be converted to Chat safely.");
                 default:
-                    if (itemObj.ContainsKey("text"))
-                    {
-                        result.Add(new JsonObject { ["type"] = "text", ["text"] = itemObj["text"]?.DeepClone() ?? "" });
-                    }
-                    break;
+                    throw new ProtocolConversionException("Responses content block cannot be converted to Chat safely.");
             }
         }
 

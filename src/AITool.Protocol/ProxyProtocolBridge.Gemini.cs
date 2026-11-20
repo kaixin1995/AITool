@@ -18,8 +18,9 @@ namespace AITool.Protocol;
 public static partial class ProxyProtocolBridge
 {
     /// <summary>
-    /// Google 官方的 thought signature 校验跳过占位符：作为 functionCall part 的 thoughtSignature 发送，
-    /// 上游跳过跨轮签名校验（中转/换号场景下真实签名回传反而会触发 Corrupted thought signature）。
+    /// Provider-specific placeholder used for converted function calls without a trusted signature.
+    /// It is not proof of universal Gemini support; some providers may reject it. Real opaque
+    /// thought signatures are deliberately not replayed across accounts or providers.
     /// </summary>
     public const string SkipThoughtSignatureValidator = "skip_thought_signature_validator";
 
@@ -747,7 +748,8 @@ public static partial class ProxyProtocolBridge
                     {
                         var source = block["source"] as JsonObject;
                         if (source is not null
-                            && string.Equals(source["type"]?.GetValue<string>(), "base64", StringComparison.OrdinalIgnoreCase))
+                            && string.Equals(source["type"]?.GetValue<string>(), "base64", StringComparison.OrdinalIgnoreCase)
+                            && !string.IsNullOrWhiteSpace(source["data"]?.ToString()))
                         {
                             parts.Add(new JsonObject
                             {
@@ -758,7 +760,10 @@ public static partial class ProxyProtocolBridge
                                 }
                             });
                         }
+                        else throw new ProtocolConversionException("Gemini requires inline image data for this bridge.");
                     }
+                    else if (string.Equals(blockType, "document", StringComparison.OrdinalIgnoreCase))
+                        throw new ProtocolConversionException("Anthropic document cannot be converted to Gemini safely.");
                     else if (string.Equals(blockType, "tool_use", StringComparison.OrdinalIgnoreCase))
                     {
                         var functionCall = new JsonObject
@@ -782,6 +787,7 @@ public static partial class ProxyProtocolBridge
                     else if (string.Equals(blockType, "tool_result", StringComparison.OrdinalIgnoreCase))
                     {
                         var output = ExtractAnthropicToolResultOutput(block["content"]);
+                        if (block["is_error"]?.GetValue<bool>() == true) output = "[Tool execution error]\n" + output;
                         var toolUseId = block["tool_use_id"]?.GetValue<string>() ?? string.Empty;
                         var functionName = toolNamesById.TryGetValue(toolUseId, out var resolved)
                             ? resolved
@@ -839,7 +845,8 @@ public static partial class ProxyProtocolBridge
                     && part["functionResponse"] is JsonObject response
                     && response["id"]?.GetValue<string>() is { Length: > 0 } id)
                 {
-                    responsesById[id] = part;
+                    if (!responsesById.TryAdd(id, part))
+                        throw new ProtocolConversionException("Gemini bridge received duplicate tool results.");
                 }
             }
         }
@@ -863,6 +870,7 @@ public static partial class ProxyProtocolBridge
         }
 
         var result = new JsonArray();
+        var matchedResponses = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (role, part) in flattened)
         {
             if (part.ContainsKey("functionResponse"))
@@ -876,6 +884,7 @@ public static partial class ProxyProtocolBridge
                 var id = part["functionCall"]?["id"]?.GetValue<string>();
                 if (!string.IsNullOrEmpty(id) && responsesById.TryGetValue(id!, out var response))
                 {
+                    if (!matchedResponses.Add(id!)) throw new ProtocolConversionException("Gemini bridge received duplicate tool calls.");
                     result.Add(new JsonObject { ["role"] = "user", ["parts"] = new JsonArray(response.DeepClone()) });
                 }
 
@@ -885,6 +894,8 @@ public static partial class ProxyProtocolBridge
             result.Add(new JsonObject { ["role"] = role, ["parts"] = new JsonArray(part.DeepClone()) });
         }
 
+        if (flattened.Count(x => x.Part.ContainsKey("functionResponse")) != matchedResponses.Count)
+            throw new ProtocolConversionException("Gemini bridge cannot safely pair all tool results.");
         return result;
     }
 
@@ -1077,6 +1088,9 @@ public static partial class ProxyProtocolBridge
             return new JsonObject { ["functionCallingConfig"] = new JsonObject { ["mode"] = "AUTO" } };
         }
 
+        if (string.Equals(choiceType, "none", StringComparison.OrdinalIgnoreCase))
+            return new JsonObject { ["functionCallingConfig"] = new JsonObject { ["mode"] = "NONE" } };
+
         if (string.Equals(choiceType, "any", StringComparison.OrdinalIgnoreCase))
         {
             return new JsonObject { ["functionCallingConfig"] = new JsonObject { ["mode"] = "ANY" } };
@@ -1107,13 +1121,14 @@ public static partial class ProxyProtocolBridge
                 return string.Empty;
             }
 
-            if (blocks[0] is JsonObject first
-                && string.Equals(first["type"]?.GetValue<string>(), "text", StringComparison.OrdinalIgnoreCase))
+            var texts = new List<string>();
+            foreach (var node in blocks)
             {
-                return first["text"]?.GetValue<string>() ?? string.Empty;
+                if (node is not JsonObject item || item["type"]?.ToString() != "text")
+                    throw new ProtocolConversionException("Non-text tool result cannot be converted to Gemini safely.");
+                texts.Add(item["text"]?.ToString() ?? string.Empty);
             }
-
-            return blocks[0]?.ToJsonString() ?? string.Empty;
+            return string.Join("\n", texts);
         }
 
         if (content is null)
@@ -1319,9 +1334,7 @@ public static partial class ProxyProtocolBridge
             foreach (var blockNode in blocks)
             {
                 if (blockNode is not JsonObject block)
-                {
-                    continue;
-                }
+                    throw new ProtocolConversionException("Chat content block cannot be converted to Gemini safely.");
 
                 var blockType = block["type"]?.GetValue<string>();
                 if (string.Equals(blockType, "text", StringComparison.OrdinalIgnoreCase)
@@ -1336,6 +1349,8 @@ public static partial class ProxyProtocolBridge
                     if (url?.StartsWith("data:", StringComparison.OrdinalIgnoreCase) == true)
                     {
                         var metaSeparator = url.IndexOf(',', StringComparison.Ordinal);
+                        if (metaSeparator <= 5 || metaSeparator == url.Length - 1 || !url[..metaSeparator].EndsWith(";base64", StringComparison.OrdinalIgnoreCase))
+                            throw new ProtocolConversionException("Chat image data URL must contain base64 data.");
                         if (metaSeparator > 5 && metaSeparator < url.Length - 1)
                         {
                             var meta = url[5..metaSeparator];
@@ -1350,7 +1365,10 @@ public static partial class ProxyProtocolBridge
                             });
                         }
                     }
+                    else throw new ProtocolConversionException("Gemini requires inline image data for this bridge.");
                 }
+                else if (!string.Equals(blockType, "text", StringComparison.OrdinalIgnoreCase))
+                    throw new ProtocolConversionException("Chat content block cannot be converted to Gemini safely.");
             }
         }
         else if (content is JsonObject { } contentObject && contentObject["text"]?.GetValue<string>() is { Length: > 0 } objectText)
@@ -1503,6 +1521,7 @@ public static partial class ProxyProtocolBridge
             {
                 "auto" => new JsonObject { ["functionCallingConfig"] = new JsonObject { ["mode"] = "AUTO" } },
                 "required" => new JsonObject { ["functionCallingConfig"] = new JsonObject { ["mode"] = "ANY" } },
+                "none" => new JsonObject { ["functionCallingConfig"] = new JsonObject { ["mode"] = "NONE" } },
                 _ => null
             };
         }
@@ -1529,7 +1548,12 @@ public static partial class ProxyProtocolBridge
     /// nullable/校验信息并入 description（对齐 gcli2api clean_json_schema + _clean_parameters_json_schema）。
     /// </summary>
     private static JsonObject CleanJsonSchemaForGemini(JsonNode? node, JsonObject root)
+        => CleanJsonSchemaForGemini(node, root, new HashSet<string>(StringComparer.Ordinal), 0, new[] { 0 });
+
+    private static JsonObject CleanJsonSchemaForGemini(JsonNode? node, JsonObject root, HashSet<string> activeRefs, int depth, int[] visited)
     {
+        if (depth > 64 || ++visited[0] > 10000)
+            throw new ProtocolConversionException("Gemini schema exceeds safe expansion limits.");
         var result = new JsonObject();
         if (node is not JsonObject schema)
         {
@@ -1541,101 +1565,86 @@ public static partial class ProxyProtocolBridge
         JsonObject effective = schema;
         var refName = (schema["$ref"]?.GetValueKind() == JsonValueKind.String ? schema["$ref"]!.GetValue<string>() : null)
             ?? (schema["ref"]?.GetValueKind() == JsonValueKind.String ? schema["ref"]!.GetValue<string>() : null);
+        if (refName == "#")
+            throw new ProtocolConversionException("Gemini schema contains a recursive reference.");
+        if (refName is not null && !refName.StartsWith("#/", StringComparison.Ordinal))
+            throw new ProtocolConversionException("Gemini schema contains an unsupported reference.");
         if (refName?.StartsWith("#/", StringComparison.Ordinal) == true)
         {
+            // JSON Schema permits validation keywords alongside $ref. Dropping them
+            // silently broadens the accepted arguments; only annotations are safe to ignore.
+            if (schema.Any(pair => pair.Key is not ("$ref" or "ref" or "title" or "description" or "$comment" or "default" or "examples" or "example" or "$defs" or "definitions")))
+                throw new ProtocolConversionException("Gemini schema reference has additional constraints that cannot be converted safely.");
+            if (!activeRefs.Add(refName))
+                throw new ProtocolConversionException("Gemini schema contains a recursive reference.");
             var resolved = ResolveSchemaRef(root, refName);
-            if (resolved is not null)
+            if (resolved is null) throw new ProtocolConversionException("Gemini schema contains an unresolved reference.");
+            // A reference-to-reference must be traversed while its ancestors remain active,
+            // otherwise mutual cycles collapse to an empty schema.
+            if (resolved.ContainsKey("$ref") || resolved.ContainsKey("ref"))
             {
-                effective = resolved;
+                var chained = CleanJsonSchemaForGemini(resolved, root, activeRefs, depth + 1, visited);
+                activeRefs.Remove(refName);
+                return chained;
             }
+            effective = resolved;
         }
 
-        // allOf 拍平：合并子 schema 的 properties/required。
+        // Flatten only the representable object intersection; arbitrary allOf merging
+        // would silently discard constraints or change overlapping properties.
         if (effective["allOf"] is JsonArray allOf)
         {
             var merged = new JsonObject();
             var properties = new JsonObject();
-            var required = new JsonArray();
-            foreach (var itemNode in allOf)
+            var required = new HashSet<string>(StringComparer.Ordinal);
+            void MergeObject(JsonObject item, bool outer)
             {
-                if (itemNode is not JsonObject item)
-                {
-                    continue;
-                }
-
-                if (item["properties"] is JsonObject itemProperties)
-                {
-                    foreach (var (key, value) in itemProperties)
-                    {
-                        properties[key] = value?.DeepClone();
-                    }
-                }
-
-                if (item["required"] is JsonArray itemRequired)
-                {
-                    foreach (var nameNode in itemRequired)
-                    {
-                        if (nameNode?.GetValueKind() == JsonValueKind.String)
-                        {
-                            required.Add(nameNode.GetValue<string>());
-                        }
-                    }
-                }
-
                 foreach (var (key, value) in item)
                 {
-                    if (string.Equals(key, "properties") || string.Equals(key, "required") || string.Equals(key, "allOf"))
+                    if (key == "allOf" && outer) continue;
+                    if (key is "$defs" or "definitions" && outer) { merged[key] = value?.DeepClone(); continue; }
+                    if (key == "type" && value?.ToString() == "object") { merged["type"] = "object"; continue; }
+                    if (key == "properties" && value is JsonObject props)
                     {
+                        foreach (var (name, schemaValue) in props)
+                        {
+                            if (properties.ContainsKey(name)) throw new ProtocolConversionException("Gemini allOf has overlapping properties.");
+                            properties[name] = schemaValue?.DeepClone();
+                        }
                         continue;
                     }
-
-                    merged[key] = value?.DeepClone();
-                }
-            }
-
-            foreach (var (key, value) in effective)
-            {
-                if (string.Equals(key, "allOf"))
-                {
-                    continue;
-                }
-
-                if (string.Equals(key, "properties"))
-                {
-                    if (properties.Count == 0)
+                    if (key == "required" && value is JsonArray req)
                     {
+                        foreach (var entry in req)
+                        {
+                            if (entry is not JsonValue v || !v.TryGetValue<string>(out var name) || string.IsNullOrEmpty(name))
+                                throw new ProtocolConversionException("Gemini allOf has an invalid required property.");
+                            required.Add(name);
+                        }
                         continue;
                     }
-
-                    foreach (var (propertyKey, propertyValue) in (JsonObject)value!)
+                    if (key is "description" or "title" or "$schema" or "$id")
                     {
-                        properties[propertyKey] = propertyValue?.DeepClone();
+                        if (!merged.ContainsKey(key)) merged[key] = value?.DeepClone();
+                        continue;
                     }
-
-                    continue;
+                    throw new ProtocolConversionException("Gemini allOf cannot be converted safely.");
                 }
-
-                if (string.Equals(key, "required") && required.Count > 0)
-                {
-                    continue;
-                }
-
-                merged[key] = value?.DeepClone();
             }
-
-            if (properties.Count > 0)
+            foreach (var item in allOf)
             {
-                merged["properties"] = properties;
+                if (item is not JsonObject obj) throw new ProtocolConversionException("Gemini allOf has an invalid branch.");
+                MergeObject(obj, false);
             }
-
-            if (required.Count > 0)
-            {
-                merged["required"] = required;
-            }
-
+            MergeObject(effective, true);
+            if (properties.Count > 0) merged["properties"] = properties;
+            if (required.Count > 0) merged["required"] = new JsonArray(required.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray());
             effective = merged;
         }
 
+        // Alternatives cannot be silently removed: that changes the accepted tool arguments.
+        if (effective.ContainsKey("oneOf") || effective.ContainsKey("anyOf"))
+            throw new ProtocolConversionException("Gemini schema alternatives cannot be converted safely.");
         string[] unsupportedKeys =
         [
             "$schema", "$id", "$ref", "ref", "$defs", "definitions", "title",
@@ -1686,7 +1695,7 @@ public static partial class ProxyProtocolBridge
 
             if (value is JsonObject childObject)
             {
-                result[key] = CleanJsonSchemaForGemini(childObject, root);
+                result[key] = CleanJsonSchemaForGemini(childObject, root, activeRefs, depth + 1, visited);
             }
             else if (value is JsonArray childArray)
             {
@@ -1694,7 +1703,7 @@ public static partial class ProxyProtocolBridge
                 foreach (var itemNode in childArray)
                 {
                     cleaned.Add(itemNode is JsonObject itemObject
-                        ? CleanJsonSchemaForGemini(itemObject, root)
+                        ? CleanJsonSchemaForGemini(itemObject, root, activeRefs, depth + 1, visited)
                         : itemNode?.DeepClone());
                 }
 
@@ -1717,22 +1726,20 @@ public static partial class ProxyProtocolBridge
             result["type"] = "object";
         }
 
-        // Google Antigravity / Gemini 严格校验防御：
-        // 如果 schema 中声明了 required 数组，但 required 包含的字段在 properties 中未定义，
-        // Google 上游会直接拒绝并报：requires unspecified property 'xxx'。
-        // 网关在此处自动对齐：剔除 properties 中不存在的 required 项，彻底避免上游 400。
+        // Gemini cannot express required properties absent from properties. Reject rather
+        // than silently weaken the caller's schema and change tool-call semantics.
         if (result.TryGetPropertyValue("required", out var reqNode) && reqNode is JsonArray reqArr)
         {
             var propObj = result["properties"] as JsonObject;
             for (var i = reqArr.Count - 1; i >= 0; i--)
             {
-                // 防御：required 数组项可能非字符串，守卫后视为无效项剔除。
+                // Invalid entries are rejected as controlled conversion errors.
                 var reqPropName = reqArr[i]?.GetValueKind() == JsonValueKind.String
                     ? reqArr[i]!.GetValue<string>()
                     : null;
                 if (string.IsNullOrEmpty(reqPropName) || propObj == null || !propObj.ContainsKey(reqPropName))
                 {
-                    reqArr.RemoveAt(i);
+                    throw new ProtocolConversionException("Gemini schema requires an unspecified property.");
                 }
             }
 
@@ -1742,6 +1749,7 @@ public static partial class ProxyProtocolBridge
             }
         }
 
+        if (refName?.StartsWith("#/", StringComparison.Ordinal) == true) activeRefs.Remove(refName);
         return result;
     }
 

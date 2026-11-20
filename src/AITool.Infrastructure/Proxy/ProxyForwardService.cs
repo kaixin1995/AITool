@@ -447,7 +447,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
-                // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义。
+                // 调用方请求令牌已取消（可能是断连、调用方超时或主动中止），不再重试或回退。
                 stopwatch.Stop();
                 return new ProxyForwardResult
                 {
@@ -480,10 +480,9 @@ public sealed class ProxyForwardService : IProxyForwardService
             catch (Exception ex)
             {
                 stopwatch.Stop();
-                // 客户端断开（token 取消或 IO 异常）：不重试、不 fallback，直接返回取消。
-                if (cancellationToken.IsCancellationRequested
-                    || ex is System.IO.IOException
-                    || ex is ObjectDisposedException)
+                // 这里执行的是上游请求/读取，I/O 或释放异常不代表客户端断开。
+                // 只有调用方取消令牌触发，才可按请求中止处理；上游错误仍允许重试和回退。
+                if (cancellationToken.IsCancellationRequested)
                 {
                     return new ProxyForwardResult
                     {
@@ -699,7 +698,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
-                // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义。
+                // 调用方请求令牌已取消（可能是断连、调用方超时或主动中止），不再重试或回退。
                 stopwatch.Stop();
                 return new ProxyForwardResult
                 {
@@ -732,10 +731,9 @@ public sealed class ProxyForwardService : IProxyForwardService
             catch (Exception ex)
             {
                 stopwatch.Stop();
-                // 客户端断开（token 取消或 IO 异常）：不重试、不 fallback，直接返回取消。
-                if (cancellationToken.IsCancellationRequested
-                    || ex is System.IO.IOException
-                    || ex is ObjectDisposedException)
+                // 这里执行的是上游请求/读取，I/O 或释放异常不代表客户端断开。
+                // 只有调用方取消令牌触发，才可按请求中止处理；上游错误仍允许重试和回退。
+                if (cancellationToken.IsCancellationRequested)
                 {
                     return new ProxyForwardResult
                     {
@@ -838,6 +836,40 @@ public sealed class ProxyForwardService : IProxyForwardService
         var hasFirstContent = false;
         var receivedDoneEvent = false;
         var receivedAnthropicMessageStop = false;
+        var receivedResponsesFailure = false;
+        var rawCaptureTruncated = false;
+        var captureLimit = Math.Clamp(request.StreamCaptureLimitChars, 0, 50 * 1024 * 1024);
+        var callbackFailed = false;
+        var frameEvent = string.Empty;
+        var frameData = new StringBuilder();
+        int? responseTotalInput = null, responseCacheRead = null, responseCacheWrite = null, responseOutput = null;
+        void MergeResponsesUsage(JsonElement usage)
+        {
+            static int? Read(JsonElement obj, string name) => obj.ValueKind == JsonValueKind.Object
+                && obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+                && value.TryGetInt32(out var n) && n >= 0 ? n : null;
+            responseTotalInput = Read(usage, "input_tokens") ?? Read(usage, "prompt_tokens") ?? responseTotalInput;
+            responseOutput = Read(usage, "output_tokens") ?? Read(usage, "completion_tokens") ?? responseOutput;
+            var details = usage.TryGetProperty("input_tokens_details", out var d) && d.ValueKind == JsonValueKind.Object ? d
+                : usage.TryGetProperty("prompt_tokens_details", out var p) && p.ValueKind == JsonValueKind.Object ? p : default;
+            responseCacheRead = Read(details, "cached_tokens") ?? responseCacheRead;
+            responseCacheWrite = Read(details, "cached_creation_tokens") ?? Read(details, "cache_write_tokens") ?? responseCacheWrite;
+            if (responseCacheRead.HasValue || responseCacheWrite.HasValue) cachedTokens = (responseCacheRead ?? 0) + (responseCacheWrite ?? 0);
+            if (responseTotalInput.HasValue) inputTokens = Math.Max(0, responseTotalInput.Value - cachedTokens);
+            if (responseOutput.HasValue) outputTokens = responseOutput.Value;
+        }
+
+        int? anthropicRead = null, anthropicWrite = null;
+        void MergeAnthropicUsage(JsonElement usage)
+        {
+            static int? Read(JsonElement obj, string name) => obj.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var n) && n >= 0 ? n : null;
+            inputTokens = Read(usage, "input_tokens") ?? inputTokens;
+            outputTokens = Read(usage, "output_tokens") ?? outputTokens;
+            anthropicRead = Read(usage, "cache_read_input_tokens") ?? anthropicRead;
+            anthropicWrite = Read(usage, "cache_creation_input_tokens") ?? anthropicWrite;
+            if (anthropicRead.HasValue || anthropicWrite.HasValue) cachedTokens = (anthropicRead ?? 0) + (anthropicWrite ?? 0);
+        }
 
         var sb = new StringBuilder();
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -877,9 +909,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                         {
                             // 已有内容时按"中断"处理（客户端已收到部分数据，不算路由失败）；
                             // 尚无内容时按失败处理，允许上层回退到下一条路由。
-                            Success = hasFirstContent,
+                            Success = hasFirstContent && !string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase),
                             StatusCode = (int)response.StatusCode,
-                            ResponseBody = sb.ToString(),
+                            ResponseBody = sb.ToString(), RawUpstreamResponseIsSse = true, RawUpstreamResponseTruncated = rawCaptureTruncated, RawUpstreamResponseCaptureLimitChars = captureLimit,
                             InputTokens = inputTokens,
                             CachedTokens = cachedTokens,
                             OutputTokens = outputTokens,
@@ -901,14 +933,78 @@ public sealed class ProxyForwardService : IProxyForwardService
                 if (line == null) break;
 
                 // 仅累积诊断副本，达到上限后停止追加（转发本身不受影响）。
-                if (sb.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+                var remainingCapture = captureLimit - sb.Length;
+                if (remainingCapture > 0)
                 {
-                    sb.AppendLine(line);
+                    var capture = line + "\n";
+                    sb.Append(capture.AsSpan(0, Math.Min(capture.Length, remainingCapture)));
+                    if (capture.Length > remainingCapture) rawCaptureTruncated = true;
                 }
+                else rawCaptureTruncated = true;
 
                 if (onSseDataAsync is not null)
                 {
-                    await onSseDataAsync(line, cancellationToken);
+                    try { await onSseDataAsync(line, cancellationToken); }
+                    catch { callbackFailed = true; throw; }
+                }
+
+                // Parse the same assembled SSE frame that was sent to the bridge; JSON type
+                // may be absent when the event name is supplied in the SSE event field.
+                if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (line.Length == 0)
+                    {
+                        if (frameData.Length > 0)
+                        {
+                            var payload = frameData.ToString();
+                            try
+                            {
+                                using var frameDoc = JsonDocument.Parse(payload);
+                                var frameRoot = frameDoc.RootElement;
+                                // Usage can be nested in a multi-line SSE event. Parse the
+                                // assembled frame before returning on a terminal event.
+                                if (frameRoot.ValueKind == JsonValueKind.Object)
+                                {
+                                    var frameUsage = frameRoot.TryGetProperty("usage", out var topUsage) && topUsage.ValueKind == JsonValueKind.Object
+                                        ? topUsage : frameRoot.TryGetProperty("response", out var usageResponse)
+                                            && usageResponse.ValueKind == JsonValueKind.Object
+                                            && usageResponse.TryGetProperty("usage", out var nestedUsage)
+                                            && nestedUsage.ValueKind == JsonValueKind.Object ? nestedUsage : default;
+                                    if (frameUsage.ValueKind == JsonValueKind.Object)
+                                    {
+                                        MergeResponsesUsage(frameUsage);
+                                    }
+                                }
+                                var kind = frameEvent;
+                                if (string.IsNullOrEmpty(kind) && frameRoot.ValueKind == JsonValueKind.Object
+                                    && frameRoot.TryGetProperty("type", out var k) && k.ValueKind == JsonValueKind.String)
+                                    kind = k.GetString() ?? string.Empty;
+                                if (string.Equals(kind, "response.completed", StringComparison.OrdinalIgnoreCase)) receivedDoneEvent = true;
+                                else if (string.Equals(kind, "response.failed", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(kind, "error", StringComparison.OrdinalIgnoreCase)) receivedResponsesFailure = true;
+                                else if (string.Equals(kind, "response.incomplete", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var accepted = frameRoot.ValueKind == JsonValueKind.Object
+                                        && frameRoot.TryGetProperty("response", out var responseObj) && responseObj.ValueKind == JsonValueKind.Object
+                                        && responseObj.TryGetProperty("incomplete_details", out var details) && details.ValueKind == JsonValueKind.Object
+                                        && details.TryGetProperty("reason", out var reason) && reason.ValueKind == JsonValueKind.String
+                                        && string.Equals(reason.GetString(), "max_output_tokens", StringComparison.OrdinalIgnoreCase);
+                                    if (accepted) receivedDoneEvent = true;
+                                    else receivedResponsesFailure = true;
+                                }
+                            }
+                            catch (JsonException) { }
+                        }
+                        frameEvent = string.Empty;
+                        frameData.Clear();
+                        if (receivedDoneEvent || receivedResponsesFailure) break;
+                    }
+                    else if (ProxyProtocolBridge.TryExtractSseFieldPayload(line, "event", out var eventValue)) frameEvent = eventValue;
+                    else if (ProxyProtocolBridge.TryExtractSseFieldPayload(line, "data", out var dataValue) && frameData.Length < 1024 * 1024)
+                    {
+                        if (frameData.Length > 0) frameData.Append('\n');
+                        frameData.Append(dataValue.AsSpan(0, Math.Min(dataValue.Length, 1024 * 1024 - frameData.Length)));
+                    }
                 }
 
                 // 跳过空行和注释行
@@ -936,12 +1032,19 @@ public sealed class ProxyForwardService : IProxyForwardService
                                 && r.TryGetProperty("usage", out var ru) && ru.ValueKind == JsonValueKind.Object ? ru : default;
                         if (loopUsage.ValueKind == JsonValueKind.Object)
                         {
-                            var counts = ExtractUsageFromElement(loopUsage, request.ProtocolType);
-                            inputTokens = counts.InputTokens; cachedTokens = counts.CachedTokens; outputTokens = counts.OutputTokens;
+                            if (string.Equals(request.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)) MergeAnthropicUsage(loopUsage);
+                            else if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)) MergeResponsesUsage(loopUsage);
+                            else
+                            {
+                                var counts = ExtractUsageFromElement(loopUsage, request.ProtocolType);
+                                if (counts.InputTokens > 0) inputTokens = counts.InputTokens;
+                                if (counts.CachedTokens > 0) cachedTokens = counts.CachedTokens;
+                                if (counts.OutputTokens > 0) outputTokens = counts.OutputTokens;
+                            }
                         }
                     }
                     catch (JsonException) { }
-                    return new ProxyForwardResult { Success = false, StatusCode = 502, ResponseBody = sb.ToString(),
+                    return new ProxyForwardResult { Success = false, StatusCode = 502, ResponseBody = sb.ToString(), RawUpstreamResponseIsSse = true, RawUpstreamResponseTruncated = rawCaptureTruncated, RawUpstreamResponseCaptureLimitChars = captureLimit,
                         InputTokens = inputTokens, CachedTokens = cachedTokens, OutputTokens = outputTokens,
                         IsStreaming = true, HasStartedStreaming = hasFirstContent, IsStreamInterrupted = true,
                         TotalDurationMs = (int)stopwatch.ElapsedMilliseconds, ErrorMessage = "reply_loop: Repeated model output was stopped." };
@@ -969,10 +1072,28 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                     // Responses 协议（如 Codex 上游）以 response.completed 事件结束流，而非 [DONE]。
                     // 不限定协议类型：个别 OpenAI 协议中间层（包装 Responses 上游）也会以该事件收尾。
-                    if (root.TryGetProperty("type", out var responsesEventType)
-                        && string.Equals(responsesEventType.GetString(), "response.completed", StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        && root.TryGetProperty("type", out var responsesEventType) && responsesEventType.ValueKind == JsonValueKind.String)
                     {
-                        receivedDoneEvent = true;
+                        var kind = responsesEventType.GetString();
+                        if (string.Equals(kind, "response.completed", StringComparison.OrdinalIgnoreCase))
+                            receivedDoneEvent = true;
+                        if (string.Equals(kind, "response.incomplete", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var accepted = root.TryGetProperty("response", out var incompleteResponse)
+                                && incompleteResponse.ValueKind == JsonValueKind.Object
+                                && incompleteResponse.TryGetProperty("incomplete_details", out var details)
+                                && details.ValueKind == JsonValueKind.Object
+                                && details.TryGetProperty("reason", out var reason)
+                                && reason.ValueKind == JsonValueKind.String
+                                && string.Equals(reason.GetString(), "max_output_tokens", StringComparison.OrdinalIgnoreCase);
+                            if (accepted) receivedDoneEvent = true;
+                            else receivedResponsesFailure = true;
+                        }
+                        if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                            && (string.Equals(kind, "response.failed", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(kind, "error", StringComparison.OrdinalIgnoreCase)))
+                            receivedResponsesFailure = true;
                     }
 
                     // usage 兼容顶层与 response.usage 嵌套两种形态（newapi 类中间层）；
@@ -987,10 +1108,17 @@ public sealed class ProxyForwardService : IProxyForwardService
                             : default;
                     if (usageElement.ValueKind == JsonValueKind.Object)
                     {
-                        var extracted = ExtractUsageFromElement(usageElement, request.ProtocolType);
-                        if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
-                        if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
-                        if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                        if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+                            MergeResponsesUsage(usageElement);
+                        else if (string.Equals(request.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
+                            MergeAnthropicUsage(usageElement);
+                        else
+                        {
+                            var extracted = ExtractUsageFromElement(usageElement, request.ProtocolType);
+                            if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
+                            if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
+                            if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                        }
                     }
 
                     // Gemini 上游（v1internal 封套）：usage 用 usageMetadata 表达，且流没有
@@ -1038,12 +1166,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                         && message.TryGetProperty("usage", out var msgUsage)
                         && msgUsage.ValueKind == JsonValueKind.Object)
                     {
-                        var extracted = ExtractUsageFromElement(msgUsage, request.ProtocolType);
-                        if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
-                        // 缓存桶不能漏：message_start 通常同时携带 input 与 cache_read/cache_creation，
-                        // 只更新 input/output 会把缓存用量整体丢掉。
-                        if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
-                        if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                        MergeAnthropicUsage(msgUsage);
                     }
                 }
                 catch
@@ -1088,7 +1211,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             {
                 Success = false,
                 StatusCode = (int)response.StatusCode,
-                ResponseBody = sb.ToString(),
+                ResponseBody = sb.ToString(), RawUpstreamResponseIsSse = true, RawUpstreamResponseTruncated = rawCaptureTruncated, RawUpstreamResponseCaptureLimitChars = captureLimit,
                 InputTokens = inputTokens,
                 CachedTokens = cachedTokens,
                 OutputTokens = outputTokens,
@@ -1102,7 +1225,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 ErrorMessage = ex.Message
             };
         }
-        catch (Exception ex) when (hasFirstContent)
+        catch (Exception ex) when (hasFirstContent || callbackFailed || sb.Length > 0)
         {
             stopwatch.Stop();
             totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
@@ -1110,14 +1233,13 @@ public sealed class ProxyForwardService : IProxyForwardService
             // 客户端断开（token 取消，或往 Response 写抛 IOException/ObjectDisposedException）
             // 识别为取消，而非成功/中断——避免上层误判为成功或继续 fallback 后续路由。
             if (cancellationToken.IsCancellationRequested
-                || ex is System.IO.IOException
-                || ex is ObjectDisposedException)
+                || (callbackFailed && (ex is System.IO.IOException || ex is ObjectDisposedException)))
             {
                 return new ProxyForwardResult
                 {
                     Success = false,
                     StatusCode = (int)response.StatusCode,
-                    ResponseBody = sb.ToString(),
+                    ResponseBody = sb.ToString(), RawUpstreamResponseIsSse = true, RawUpstreamResponseTruncated = rawCaptureTruncated, RawUpstreamResponseCaptureLimitChars = captureLimit,
                     InputTokens = inputTokens,
                     CachedTokens = cachedTokens,
                     OutputTokens = outputTokens,
@@ -1139,15 +1261,15 @@ public sealed class ProxyForwardService : IProxyForwardService
 
             return new ProxyForwardResult
             {
-                Success = true,
+                Success = (request.ProtocolType == "Anthropic" ? receivedAnthropicMessageStop : receivedDoneEvent) && !receivedResponsesFailure && !callbackFailed,
                 StatusCode = (int)response.StatusCode,
-                ResponseBody = sb.ToString(),
+                ResponseBody = sb.ToString(), RawUpstreamResponseIsSse = true, RawUpstreamResponseTruncated = rawCaptureTruncated, RawUpstreamResponseCaptureLimitChars = captureLimit,
                 InputTokens = inputTokens,
                 CachedTokens = cachedTokens,
                 OutputTokens = outputTokens,
                 IsStreaming = isStreaming,
-                HasStartedStreaming = true,
-                IsStreamInterrupted = true,
+                HasStartedStreaming = hasFirstContent,
+                IsStreamInterrupted = !(request.ProtocolType == "Anthropic" ? receivedAnthropicMessageStop : receivedDoneEvent) || receivedResponsesFailure || callbackFailed,
                 FirstTokenLatencyMs = firstTokenLatencyMs,
                 StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
                 TotalDurationMs = totalDurationMs,
@@ -1164,23 +1286,23 @@ public sealed class ProxyForwardService : IProxyForwardService
         var streamCompletedNormally = request.ProtocolType == "Anthropic"
             ? receivedAnthropicMessageStop
             : receivedDoneEvent;
-        var streamHasUsableResponse = streamCompletedNormally || hasFirstContent;
+        var streamHasUsableResponse = !receivedResponsesFailure && (streamCompletedNormally || (hasFirstContent && !string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)));
 
         return new ProxyForwardResult
         {
             Success = streamHasUsableResponse,
             StatusCode = (int)response.StatusCode,
-            ResponseBody = sb.ToString(),
+            ResponseBody = sb.ToString(), RawUpstreamResponseIsSse = true, RawUpstreamResponseTruncated = rawCaptureTruncated, RawUpstreamResponseCaptureLimitChars = captureLimit,
             InputTokens = inputTokens,
             CachedTokens = cachedTokens,
             OutputTokens = outputTokens,
             IsStreaming = isStreaming,
             HasStartedStreaming = hasFirstContent,
-            IsStreamInterrupted = hasFirstContent && !streamCompletedNormally,
+            IsStreamInterrupted = hasFirstContent && (!streamCompletedNormally || receivedResponsesFailure),
             FirstTokenLatencyMs = firstTokenLatencyMs,
             StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
             TotalDurationMs = totalDurationMs,
-            ErrorMessage = !streamCompletedNormally
+            ErrorMessage = receivedResponsesFailure ? "upstream responses stream failed" : !streamCompletedNormally
                 ? hasFirstContent
                     ? "stream interrupted before normal completion"
                     : "empty stream response without completion event"

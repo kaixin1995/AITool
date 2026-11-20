@@ -27,6 +27,84 @@ public sealed class ResponsesProxyTests
     /// <summary>
     /// OpenAI 上游非流式请求应直接透传 Responses 格式。
     /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unsupported_response_image_reference_returns_400_without_upstream_or_circuit_failure(bool anthropic)
+    {
+        var forwarder = new ResponsesFakeProxyForwardService { IsAnthropicOnly = anthropic, IsOpenAiChatOnly = !anthropic };
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        const string body = """{"model":"auto","input":[{"role":"user","content":[{"type":"input_image","file_id":"opaque"}]}]}""";
+        var response = await client.PostAsync("/v1/responses", new StringContent(body, Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        forwarder.Requests.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Chat_websocket_error_after_partial_does_not_emit_completed()
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsOpenAiChatOnly = true, StreamingLines = [
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}", "",
+            "data: {\"error\":{\"message\":\"synthetic failure\"}}", "", "data: [DONE]", ""] };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        _ = factory.CreateClient();
+        var client = factory.Server.CreateWebSocketClient();
+        client.ConfigureRequest = request => request.Headers["Authorization"] = "Bearer responses-test-key";
+        using var socket = await client.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(socket, "{\"type\":\"response.create\",\"model\":\"auto\",\"input\":\"hi\"}");
+        var messages = await ReceiveWebSocketMessagesUntilAsync(socket, "error");
+        messages.Should().Contain(message => message.Contains("partial", StringComparison.Ordinal));
+        messages.Should().NotContain(message => message.Contains("response.completed", StringComparison.Ordinal));
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle(); logs[0].Status.Should().Be("fail");
+    }
+
+    [Fact]
+    public async Task Anthropic_to_responses_stream_records_independent_cache_buckets()
+    {
+        var fake = new ResponsesFakeProxyForwardService { IsAnthropicOnly = true, StreamingLines = [
+            "event: message_start", "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":600,\"cache_creation_input_tokens\":100,\"output_tokens\":0}}}", "",
+            "event: content_block_start", "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}", "",
+            "event: content_block_delta", "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}", "",
+            "event: message_delta", "data: {\"type\":\"message_delta\",\"usage\":{\"cache_creation_input_tokens\":100,\"output_tokens\":50},\"delta\":{\"stop_reason\":\"end_turn\"}}", "",
+            "event: message_stop", "data: {\"type\":\"message_stop\"}", ""] };
+        await using var factory = new ResponsesWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.PostAsync("/v1/responses", new StringContent("{\"model\":\"auto\",\"input\":\"hi\",\"stream\":true}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("\"input_tokens\":800").And.Contain("\"total_tokens\":850");
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle(); logs[0].InputTokens.Should().Be(100); logs[0].CachedTokens.Should().Be(700); logs[0].OutputTokens.Should().Be(50);
+    }
+
+    [Fact]
+    public async Task Conversion_rejection_falls_back_to_compatible_route_without_forwarding_rejected_route()
+    {
+        var forwarder = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Client.Updateable<ProxyRouteRule>()
+            .SetColumns(x => new ProxyRouteRule { Priority = 0, ModelPriority = 0 })
+            .Where(x => x.Id == Guid.Parse("e5e5e5e5-e5e5-e5e5-e5e5-e5e5e5e5e5e5")).ExecuteCommandAsync();
+        await db.Client.Updateable<ProxyRouteRule>()
+            .SetColumns(x => new ProxyRouteRule { Priority = 1, ModelPriority = 1 })
+            .Where(x => x.Id == Guid.Parse("d4d4d4d4-d4d4-d4d4-d4d4-d4d4d4d4d4d4")).ExecuteCommandAsync();
+        factory.Services.GetRequiredService<AITool.Web.Services.ProxyRequestMetadataCache>().InvalidateRouteTargets();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        const string body = """{"model":"auto","input":[{"role":"user","content":[{"type":"input_image","file_id":"opaque"}]}]}""";
+        var response = await client.PostAsync("/v1/responses", new StringContent(body, Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        forwarder.Requests.Should().ContainSingle().Which.ProtocolType.Should().Be("Responses");
+    }
+
     [Fact]
     public async Task Post_responses_passthrough_openai_non_streaming()
     {
@@ -987,9 +1065,8 @@ public sealed class ResponsesProxyTests
         logs[0].IsStreaming.Should().BeTrue();
         logs[0].Status.Should().Be("success");
         logs[0].HttpStatusCode.Should().Be(200);
-        // F6 口径统一：Anthropic 上游 input_tokens=10 含缓存（cache_read=2），
-        // 桥接路径的日志输入与其他路径一致按"不含缓存的新输入"记 8，而不是旧解析器的含缓存 10。
-        logs[0].InputTokens.Should().Be(8);
+        // Anthropic input_tokens 与 cache_read_input_tokens 是独立累计桶。
+        logs[0].InputTokens.Should().Be(10);
         logs[0].CachedTokens.Should().Be(2);
         logs[0].OutputTokens.Should().Be(5);
     }

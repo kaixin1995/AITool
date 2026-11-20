@@ -396,7 +396,7 @@ public sealed class DeveloperInvocationTraceStore
         }
 
         return body[..MaxStoredBodyChars]
-            + $"\n... [跟踪存储截断：原始 {body.Length} 字符，保留 {MaxStoredBodyChars}；完整报文见诊断 dump 文件]";
+            + $"\n... [跟踪存储截断：原始 {body.Length} 字符，保留 {MaxStoredBodyChars}；可检查诊断 dump（也可能截断或未保存）]";
     }
 
     /// <summary>

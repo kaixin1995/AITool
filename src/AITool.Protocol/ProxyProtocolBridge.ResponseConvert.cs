@@ -492,8 +492,8 @@ public static partial class ProxyProtocolBridge
                 : "end_turn";
             var cacheCreation = 0;
             var cacheRead = 0;
-            var upstreamInput = 0;
-            var upstreamOutput = 0;
+            int? upstreamInput = null;
+            int? upstreamOutput = null;
             var responseText = new StringBuilder();
             var thinkingParts = new List<string>();
             var tools = new JsonArray();
@@ -547,14 +547,10 @@ public static partial class ProxyProtocolBridge
                 }
             }
 
-            var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
-            var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
-            // Anthropic 的 input_tokens 已包含缓存（cache_read + cache_creation 是其子集），
-            // 转为 OpenAI 时 prompt_tokens 语义同样含缓存，直接映射即可，不能再叠加缓存。
-            // 回退参数 inputTokens 是"新输入"（不含缓存），需补回缓存才是含缓存的总输入。
-            var totalInput = upstreamInput > 0
-                ? upstreamInput
-                : effectiveInput + cacheRead + cacheCreation;
+            var effectiveInput = upstreamInput ?? inputTokens;
+            var effectiveOutput = upstreamOutput ?? outputTokens;
+            // Anthropic 的三个输入桶互相独立；OpenAI prompt_tokens 是它们的总和。
+            var totalInput = effectiveInput + cacheRead + cacheCreation;
             var messageObject = new JsonObject
             {
                 ["role"] = "assistant",

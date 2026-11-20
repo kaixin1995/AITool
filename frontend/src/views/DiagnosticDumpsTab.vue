@@ -225,18 +225,6 @@ function loadIntoProtocolDiagnostics(item: DiagnosticDumpItem, content: any): vo
   message.success(`已载入抓包现场至 AI 协议自愈调试工作台`)
 }
 
-function generateCurlCommand(item: DiagnosticDumpItem, dumpData: any): string {
-  if (!dumpData) return ''
-  const baseUrl = dumpData.diagnostic?.baseUrl || ''
-  const clientProtocol = dumpData.diagnostic?.clientProtocol || 'OpenAI'
-  const isAnthropic = clientProtocol.toLowerCase().includes('anthropic')
-  const endpoint = isAnthropic ? '/v1/messages' : '/v1/chat/completions'
-  const targetUrl = `${baseUrl.replace(/\/$/, '')}${endpoint}`
-  const body = JSON.stringify(dumpData.preparedRequestBody || dumpData.clientRequestBody || {}, null, 2)
-
-  return `curl -X POST "${targetUrl}" \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -d '${body.replace(/'/g, "'\\''")}'`
-}
-
 const columns: DataTableColumns<DiagnosticDumpItem> = [
   {
     title: '类别',
@@ -364,12 +352,12 @@ onUnmounted(() => {
     <div class="dumps-banner p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-gradient-to-r from-slate-50 to-blue-50/40 dark:from-slate-900 dark:to-slate-800/60 flex flex-col md:flex-row md:items-center justify-between gap-4">
       <div class="flex flex-col gap-1">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="font-bold text-base text-slate-800 dark:text-slate-100">代理诊断全量抓包与对比样本</span>
+          <span class="font-bold text-base text-slate-800 dark:text-slate-100">代理诊断记录与对比样本</span>
           <NTag type="info" size="small" round>保留 {{ configForm.retentionDays }} 天</NTag>
           <NTag type="default" size="small" round>正文上限 {{ configForm.maxBodyLengthMb }}MB</NTag>
         </div>
         <div class="text-xs text-slate-500 leading-relaxed max-w-3xl">
-          <span class="text-red-500 font-semibold">🔴 失败请求</span>：始终自动 100% 完整抓包落地到磁盘（含原始体、发往上游体、真实报错及复现参数），方便随时二次精准复现。<br />
+          <span class="text-red-500 font-semibold">🔴 失败请求</span>：尽力异步保存诊断；受正文上限、数量和保留时间影响，可能截断或写入失败。流为解码后的 SSE 行，不是逐字节网络包；出站地址、请求头和凭证不一定记录，不能保证复现。内容可能包含对话及代码，请谨慎分享。<br />
           <span class="text-emerald-600 font-semibold">🟢 成功请求</span>：默认<strong class="text-slate-700 dark:text-slate-200">不记录</strong>以防止硬盘爆满；点击右侧按钮可开启临时对比采样，<strong class="text-amber-600 dark:text-amber-400">最多开启 10 分钟后自动关闭</strong>。
         </div>
       </div>
@@ -450,6 +438,10 @@ onUnmounted(() => {
         </div>
 
         <div v-else class="flex flex-col gap-4 text-xs">
+          <NAlert type="warning" :bordered="false">
+            <template v-if="!currentDumpContent.captureInfo">历史记录没有来源和截断信息，桥接流的上游响应可能实际是客户端响应，无法恢复遗漏的数据。</template>
+            <template v-else>上游 SSE 上限 {{ currentDumpContent.captureInfo.upstreamStreamCaptureLimitChars }} 字符（{{ currentDumpContent.captureInfo.upstreamStreamTruncated || currentDumpContent.captureInfo.upstreamBodyTruncatedByDump ? '已截断' : '未标记截断' }}）；客户端流上限 {{ currentDumpContent.captureInfo.clientStreamCaptureLimitChars }} 字符（{{ currentDumpContent.captureInfo.clientStreamTruncated || currentDumpContent.captureInfo.clientBodyTruncatedByDump ? '已截断' : '未标记截断' }}）；客户端请求{{ currentDumpContent.captureInfo.clientRequestTruncated ? '已截断' : '未标记截断' }}；上游请求{{ currentDumpContent.captureInfo.preparedRequestTruncated ? '已截断' : '未标记截断' }}；序列化上限 {{ currentDumpContent.captureInfo.dumpBodyLimitChars }} 字符。非逐字节网络包；客户端副本为尝试发送的内容，不能证明客户端全部收到。</template>
+          </NAlert>
           <!-- 核心元数据概览 -->
           <div class="p-3 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 flex flex-col gap-2">
             <div class="grid grid-cols-2 gap-2 text-xs">
@@ -474,16 +466,14 @@ onUnmounted(() => {
               <NButton size="tiny" type="warning" secondary @click="loadIntoProtocolDiagnostics(currentDumpItem!, currentDumpContent)">
                 🤖 载入至 AI 协议自愈调试
               </NButton>
-              <NButton size="tiny" type="primary" @click="copyText(generateCurlCommand(currentDumpItem!, currentDumpContent), '已生成并复制复现 curl 命令')">
-                复制 cURL 复现命令
-              </NButton>
+              <NTooltip><template #trigger><NButton size="tiny" disabled>cURL 复现不可用</NButton></template>未记录完整出站地址、请求头和凭证，不能保证安全准确复现</NTooltip>
             </div>
           </div>
 
           <!-- 发往上游的实际请求体 (preparedRequestBody) -->
           <div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
             <div class="bg-slate-100 dark:bg-slate-800 px-3 py-2 flex items-center justify-between font-semibold">
-              <span>发往上游的实际请求体 (preparedRequestBody - 转换后)</span>
+              <span>准备发送的上游请求体 (preparedRequestBody，可能再加工或截断)</span>
               <NButton size="tiny" secondary @click="copyText(JSON.stringify(currentDumpContent.preparedRequestBody, null, 2))">
                 复制 JSON
               </NButton>
@@ -502,10 +492,17 @@ onUnmounted(() => {
             <pre class="p-3 bg-slate-950 text-slate-200 font-mono text-[11px] overflow-auto max-h-72 leading-relaxed">{{ JSON.stringify(currentDumpContent.clientRequestBody, null, 2) }}</pre>
           </div>
 
+          <div v-if="currentDumpContent.clientResponseBody !== undefined" class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+            <div class="bg-slate-100 dark:bg-slate-800 px-3 py-2 flex items-center justify-between font-semibold">
+              <span>转换后的客户端响应副本 (clientResponseBody)</span>
+              <NButton size="tiny" secondary @click="copyText(stringifyDumpField(currentDumpContent.clientResponseBody))">复制</NButton>
+            </div>
+            <pre class="p-3 bg-slate-950 text-slate-200 font-mono text-[11px] overflow-auto max-h-72 leading-relaxed">{{ stringifyDumpField(currentDumpContent.clientResponseBody) }}</pre>
+          </div>
           <!-- 上游响应体 (upstreamResponseBody) -->
           <div class="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
             <div class="bg-slate-100 dark:bg-slate-800 px-3 py-2 flex items-center justify-between font-semibold">
-              <span>上游返回正文 (upstreamResponseBody)</span>
+              <span>上游响应副本 — {{ currentDumpContent.captureInfo?.upstreamBodySource === 'pre-conversion-stream' ? '转换前 SSE' : '来源未验证 / 历史记录' }}</span>
               <NButton size="tiny" secondary @click="copyText(typeof currentDumpContent.upstreamResponseBody === 'string' ? currentDumpContent.upstreamResponseBody : JSON.stringify(currentDumpContent.upstreamResponseBody, null, 2))">
                 复制
               </NButton>
