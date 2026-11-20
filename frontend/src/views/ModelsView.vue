@@ -128,7 +128,7 @@ const clientEmulationOptions = computed(() => {
       { label: '⚡ Claude Code 官方命令行', value: 'ClaudeCode' },
       { label: '⚡ ZCode / GLM 客户端', value: 'ZCode' },
       { label: '⚡ Google Antigravity CLI', value: 'Antigravity' },
-      { label: '⚡ WorkBuddy 官方客户端 (腾讯 CodeBuddy)', value: 'WorkBuddy' }
+      { label: '⚡ WorkBuddy 官方客户端', value: 'WorkBuddy' }
     )
   }
   return options

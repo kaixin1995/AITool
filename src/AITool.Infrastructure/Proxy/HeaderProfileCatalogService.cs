@@ -561,7 +561,7 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
             {
                 Id = Guid.Parse("10000000-0000-0000-0000-000000000008"),
                 Key = ClientEmulationConstants.WorkBuddy,
-                Name = "WorkBuddy 官方客户端 (腾讯 CodeBuddy)",
+                Name = "WorkBuddy 官方客户端",
                 Description = "官方客户端 5.9.3 / CLI 2.165.0 真实抓包指纹；已内置强制流式；目标兼容非流式时可在站点/模型/映射自定义头设 false 关闭；X-User-Id / X-Domain / X-Machine-ID / X-Session-ID 为账号级身份头，需在站点自定义头中补充或由设备 OAuth 托管站点自动注入",
                 HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
                 {
