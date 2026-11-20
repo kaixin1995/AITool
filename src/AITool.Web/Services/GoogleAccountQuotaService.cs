@@ -92,7 +92,8 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
 
     public async Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
     {
-        var accounts = await _dbContext.GoogleAccounts
+        using var client = _dbContext.Client.CopyNew();
+        var accounts = await client.Queryable<GoogleAccount>()
             .Where(a => !a.DisabledByFeatureToggle && !a.DisabledByUpstream)
             .OrderBy(a => a.LastQuotaCheckedAt)
             .ToListAsync(cancellationToken);

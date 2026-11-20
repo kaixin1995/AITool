@@ -28,6 +28,8 @@ export interface DeveloperInvocationSummary {
   targetSiteName: string
   attemptedModel: string
   status: string
+  stage?: string
+  stageStartedAt?: string | null
   statusCode: number
   totalDurationMs: number
   attemptCount: number

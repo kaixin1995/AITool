@@ -633,7 +633,7 @@ onUnmounted(() => {
                 <div class="trace-card-main">
                   <div class="trace-card-topline">
                     <div class="trace-title-group">
-                      <span class="trace-status-pill" :class="`trace-status-pill-${statusClass(entry.status)}`">{{ statusLabel(entry.status) }}</span>
+                      <span class="trace-status-pill" :class="`trace-status-pill-${statusClass(entry.status)}`">{{ entry.status === 'pending' && entry.stage === 'acquiring_slot' ? '获取并发许可中' : statusLabel(entry.status) }}</span>
                       <span class="trace-protocol-pill">{{ entry.protocolType || '-' }}</span>
                       <span class="trace-source-pill">{{ entry.source || 'proxy' }}</span>
                     </div>
@@ -652,7 +652,7 @@ onUnmounted(() => {
                     <div class="trace-meta-chip"><span class="trace-meta-label">站点</span><strong>{{ entry.targetSiteName || '-' }}</strong></div>
                     <div class="trace-meta-chip"><span class="trace-meta-label">HTTP</span><strong>{{ entry.statusCode || '-' }}</strong></div>
                     <div class="trace-meta-chip"><span class="trace-meta-label">耗时</span><strong>{{ formatDuration(entry.totalDurationMs) }}</strong></div>
-                    <div class="trace-meta-chip"><span class="trace-meta-label">尝试次数</span><strong>{{ entry.attemptCount }}</strong></div>
+                    <div class="trace-meta-chip"><span class="trace-meta-label">{{ entry.stage === 'acquiring_slot' && entry.status === 'pending' ? '许可等待开始' : '尝试次数' }}</span><strong>{{ entry.stage === 'acquiring_slot' && entry.status === 'pending' ? formatDateTime(entry.stageStartedAt || '') : entry.attemptCount }}</strong></div>
                     <div class="trace-meta-chip"><span class="trace-meta-label">尝试统计</span><strong>{{ attemptStats(entry) }}</strong></div>
                   </div>
                 </div>

@@ -112,18 +112,15 @@ public static partial class ProxyProtocolBridge
                     else if (type == "thinking")
                     {
                         FlushPendingMessageItem(input, ref pendingParts, role);
-                        var thinking = blockObj["thinking"]?.ToString() ?? string.Empty;
-                        var signature = blockObj["signature"]?.ToString();
-                        var item = new JsonObject { ["type"] = "reasoning", ["id"] = $"rs_{Guid.NewGuid():N}",
-                            ["summary"] = new JsonArray(new JsonObject { ["type"] = "summary_text", ["text"] = thinking }) };
-                        if (!string.IsNullOrEmpty(signature)) item["encrypted_content"] = EncodeAnthropicThinkingBridge(thinking, signature);
-                        input.Add(item);
+                        // Claude's thinking and signatures are not Responses provider state.
+                        // A synthetic rs_ id is treated as a stored item reference, and our
+                        // bridge envelope is not encrypted_content the provider can verify.
+                        // Omit this historical block, just as for redacted thinking below.
                     }
                     else if (type == "redacted_thinking")
                     {
                         FlushPendingMessageItem(input, ref pendingParts, role);
-                        input.Add(new JsonObject { ["type"] = "reasoning", ["id"] = $"rs_{Guid.NewGuid():N}",
-                            ["summary"] = new JsonArray(), ["encrypted_content"] = EncodeAnthropicRedactedThinking(blockObj) });
+                        // Opaque Claude state cannot be decrypted or replayed by another provider.
                     }
                     else if (type == "image" && blockObj["source"] is JsonObject imgSrc)
                     {

@@ -72,7 +72,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
     public async Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
     {
-        var accounts = await _dbContext.CodexAccounts
+        using var client = _dbContext.Client.CopyNew();
+        var accounts = await client.Queryable<CodexAccount>()
             .Where(a => !a.DisabledByFeatureToggle)
             .OrderBy(a => a.LastQuotaCheckedAt)
             .ToListAsync(cancellationToken);

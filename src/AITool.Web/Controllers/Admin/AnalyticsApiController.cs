@@ -1299,6 +1299,7 @@ public sealed class AnalyticsApiController : ControllerBase
             "timeout" => "超时",
             "stream-interrupted" => "流中断",
             "model-not-found" => "模型不存在",
+            "upstream-reference-not-found" => "上游引用不存在或已过期",
             "upstream-error" => "上游错误",
             "network-error" => "网络错误",
             _ => "其他"

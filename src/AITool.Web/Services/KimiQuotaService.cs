@@ -62,7 +62,8 @@ public sealed class KimiQuotaService : IAccountQuotaProvider
     {
         // 与 Google 提供程序口径一致：总开关禁用的账号不参与巡检（避免白发真实查询），
         // 功能重开时由 ApplyFeatureToggleAsync 统一恢复。
-        var accounts = await _dbContext.KimiAccounts
+        using var client = _dbContext.Client.CopyNew();
+        var accounts = await client.Queryable<KimiAccount>()
             .Where(a => !a.IsDeleted && !a.DisabledByFeatureToggle)
             .OrderBy(a => a.LastQuotaCheckedAt)
             .ToListAsync(cancellationToken);

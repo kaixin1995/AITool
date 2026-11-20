@@ -545,6 +545,7 @@ public sealed class ProxyDiagnosticService : IProxyDiagnosticService
                 };
 
                 AddRecentDumpInMemory(dumpItem);
+                _logger.LogInformation("失败诊断文件已写入: {DumpFilePath}", fullPath);
             }
             catch (Exception ex)
             {
@@ -553,8 +554,7 @@ public sealed class ProxyDiagnosticService : IProxyDiagnosticService
         });
 
         _logger.LogError(
-            "代理请求失败 [诊断复现文件已生成: {DumpFileName}]\n" +
-            "DumpFile={DumpFilePath}\n" +
+            "代理请求失败 [诊断转储由开关控制，写入成功后另行记录]\n" +
             "Route={RouteName}\n" +
             "SiteName={SiteName}\n" +
             "SiteId={SiteId}\n" +
@@ -573,8 +573,6 @@ public sealed class ProxyDiagnosticService : IProxyDiagnosticService
             "ClientIp={ClientIp}\n" +
             "RequestBodyPreview={RequestBodyPreview}\n" +
             "ResponseBodyPreview={ResponseBodyPreview}",
-            fileName,
-            fullPath,
             context.RouteName,
             context.TargetSiteName,
             context.TargetSiteId,

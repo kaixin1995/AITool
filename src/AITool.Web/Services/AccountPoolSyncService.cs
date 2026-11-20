@@ -509,8 +509,11 @@ public sealed class AccountPoolSyncService
     /// 返回 (账号行 Id, 展示名, 隐藏站点 Id)。设备厂商按 VendorKey 过滤，
     /// 四个垂直厂商按固定键分发。
     /// </summary>
-    public Task<List<AccountPoolCandidate>> ListVendorAccountsAsync(string vendorKey, string? planType, CancellationToken ct)
-        => ListVendorAccountsAsync(_dbContext.Client, vendorKey, planType, ct);
+    public async Task<List<AccountPoolCandidate>> ListVendorAccountsAsync(string vendorKey, string? planType, CancellationToken ct)
+    {
+        using var client = _dbContext.Client.CopyNew();
+        return await ListVendorAccountsAsync(client, vendorKey, planType, ct);
+    }
 
     private static async Task<List<AccountPoolCandidate>> ListVendorAccountsAsync(ISqlSugarClient client, string vendorKey, string? planType, CancellationToken ct)
     {

@@ -69,6 +69,64 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
+    /// <summary>Complete a gateway-level failure without inventing an upstream attempt.</summary>
+    public void CompleteRequestFailure(Guid traceId, int statusCode, string errorMessage, string responseBody)
+    {
+        lock (_gate)
+        {
+            PurgeExpiredUnsafe();
+            if (!_nodes.TryGetValue(traceId, out var node)) return;
+            node.Value.Status = "failed";
+            node.Value.Stage = "completed";
+            node.Value.StatusCode = statusCode;
+            node.Value.ErrorMessage = errorMessage;
+            node.Value.ResponseBody = CapBody(responseBody);
+            node.Value.ResponseContentType = "application/json";
+            node.Value.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    /// <summary>Track route admission without counting it as an upstream attempt.</summary>
+    public void MarkAcquiringSlot(Guid traceId, Guid siteId, string siteName, string model)
+    {
+        lock (_gate)
+        {
+            PurgeExpiredUnsafe();
+            if (!_nodes.TryGetValue(traceId, out var node)) return;
+            node.Value.Status = "pending";
+            node.Value.Stage = "acquiring_slot";
+            node.Value.StageStartedAt = DateTimeOffset.UtcNow;
+            node.Value.TargetSiteId = siteId;
+            node.Value.TargetSiteName = siteName;
+            node.Value.AttemptedModel = model;
+            node.Value.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    /// <summary>Settle only unfinished work; retain completed upstream attempts and their results.</summary>
+    public void CompletePendingRequest(Guid traceId, string status, int statusCode, string errorMessage)
+    {
+        lock (_gate)
+        {
+            PurgeExpiredUnsafe();
+            if (!_nodes.TryGetValue(traceId, out var node)) return;
+            var entry = node.Value;
+            foreach (var attempt in entry.Attempts.Where(a => a.Status == "pending"))
+            {
+                attempt.Status = status;
+                attempt.StatusCode = statusCode;
+                attempt.ErrorMessage = errorMessage;
+                attempt.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+            if (entry.Status != "pending" && status != "canceled") return;
+            entry.Status = status;
+            entry.StatusCode = statusCode;
+            entry.ErrorMessage = errorMessage;
+            entry.Stage = "completed";
+            entry.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
     /// <summary>
     /// 添加调用尝试记录。
     /// </summary>
@@ -103,6 +161,9 @@ public sealed class DeveloperInvocationTraceStore
                     : [],
                 Status = "pending"
             };
+            node.Value.Stage = "forwarding";
+            node.Value.StageStartedAt = DateTimeOffset.UtcNow;
+            node.Value.Status = "pending";
             node.Value.Attempts.Add(traceAttempt);
             node.Value.AttemptedModel = traceAttempt.AttemptedModel;
             node.Value.UpstreamProtocolType = traceAttempt.UpstreamProtocolType;
@@ -149,6 +210,7 @@ public sealed class DeveloperInvocationTraceStore
             node.Value.UpstreamProtocolType = attempt.UpstreamProtocolType;
             node.Value.TargetSiteId = attempt.TargetSiteId;
             node.Value.TargetSiteName = attempt.TargetSiteName;
+            node.Value.Stage = "completed";
             node.Value.Status = result.Status;
             node.Value.StatusCode = result.StatusCode;
             node.Value.ErrorMessage = result.ErrorMessage;
@@ -245,6 +307,8 @@ public sealed class DeveloperInvocationTraceStore
                 ? new Dictionary<string, string>(entry.PreparedRequestHeaders, StringComparer.OrdinalIgnoreCase)
                 : [],
             Status = entry.Status,
+            Stage = entry.Stage,
+            StageStartedAt = entry.StageStartedAt,
             StatusCode = entry.StatusCode,
             ErrorMessage = entry.ErrorMessage,
             ResponseBody = entry.ResponseBody,
@@ -613,6 +677,11 @@ public sealed class DeveloperInvocationTraceEntry
     /// 状态。
     /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>Current request stage, independent of upstream attempts.</summary>
+    public string Stage { get; set; } = "received";
+    /// <summary>When the current stage started.</summary>
+    public DateTimeOffset? StageStartedAt { get; set; }
+
     /// <summary>
     /// 状态码。
     /// </summary>

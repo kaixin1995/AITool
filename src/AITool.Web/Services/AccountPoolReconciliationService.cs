@@ -1,5 +1,8 @@
 using System.Text.Json;
 using AITool.Infrastructure.Persistence;
+using AITool.Domain.Proxy;
+using AITool.Domain.SiteCatalog;
+using SqlSugar;
 
 namespace AITool.Web.Services;
 
@@ -50,9 +53,10 @@ public sealed class AccountPoolReconciliationService : BackgroundService
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var sync = scope.ServiceProvider.GetRequiredService<AccountPoolSyncService>();
-            var pools = await db.AccountPools.ToListAsync(ct);
-            var members = await db.AccountPoolMembers.ToListAsync(ct);
-            var mappings = await db.SiteModelMappings.ToListAsync(ct);
+            using var client = db.Client.CopyNew();
+            var pools = await client.Queryable<AccountPool>().ToListAsync(ct);
+            var members = await client.Queryable<AccountPoolMember>().ToListAsync(ct);
+            var mappings = await client.Queryable<SiteModelMapping>().ToListAsync(ct);
             var ids = pools.Select(p => p.Id).ToHashSet();
             lock (_statusGate)
             {

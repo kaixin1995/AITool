@@ -268,7 +268,11 @@ public sealed class AnthropicProxyController : ControllerBase
         // 读取运行时设置缓存，后台修改后会在短时间内刷新。
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
         var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "Anthropic", modelName, requestBody);
-
+        var unfinishedStatus = "fail";
+        var unfinishedCode = StatusCodes.Status502BadGateway;
+        var unfinishedReason = "Request ended before an upstream attempt completed.";
+        try
+        {
         // 获取已经和站点信息合并后的候选路由，优先尝试支持 Anthropic 原协议的站点。
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("Anthropic", modelName, cancellationToken);
 
@@ -279,12 +283,16 @@ public sealed class AnthropicProxyController : ControllerBase
             allRoutes = allRoutes.Where(r => allowedRoutes.Contains(r.ExternalModelName)).ToList();
             if (allRoutes.Count == 0)
             {
+                unfinishedCode = StatusCodes.Status403Forbidden;
+                unfinishedReason = "Access key is not authorized for this route.";
                 return StatusCode(403, new { error = new { type = "permission_error", message = $"当前访问密钥无权访问路由: {modelName}" } });
             }
         }
 
         if (allRoutes.Count == 0)
         {
+            unfinishedCode = StatusCodes.Status403Forbidden;
+            unfinishedReason = "No available route for the requested model.";
             return StatusCode(403, new { error = new { type = "invalid_request_error", message = $"模型 '{modelName}' 没有可用的路由，请检查路由配置或联系管理员", code = "no_available_route" } });
         }
 
@@ -319,6 +327,8 @@ public sealed class AnthropicProxyController : ControllerBase
             var actualProtocolType = route.ResolveProtocolForClient("Anthropic");
 
             // 按站点+模型粒度获取并发许可，根据配置决定跳过或排队。
+            if (traceId.HasValue) _traceStore.MarkAcquiringSlot(traceId.Value, route.SiteId, route.SiteName, route.SiteModelName);
+            unfinishedReason = "No eligible route acquired a concurrency slot.";
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
                 concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
@@ -387,6 +397,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 preparedRequestBody = isolated.PreparedRequestBody;
                 effectiveForwardHeaders = isolated.ForwardHeaders;
             }
+            unfinishedReason = "Upstream attempt ended without a recorded result.";
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, effectiveForwardHeaders);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
@@ -721,11 +732,35 @@ public sealed class AnthropicProxyController : ControllerBase
 
         // 所有路由均失败
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
+        unfinishedCode = statusCode;
+        if (cancellationToken.IsCancellationRequested) { unfinishedStatus = "canceled"; unfinishedCode = 0; unfinishedReason = "Client disconnected or request was canceled."; }
         return new JsonResult(new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } })
         {
             StatusCode = statusCode,
             ContentType = "application/json"
         };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            unfinishedStatus = "canceled";
+            unfinishedCode = 0;
+            unfinishedReason = "Client disconnected or request was canceled.";
+            throw;
+        }
+        catch
+        {
+            unfinishedCode = Response.HasStarted ? Response.StatusCode : StatusCodes.Status500InternalServerError;
+            unfinishedReason = "Gateway failed while processing the request; see server error log.";
+            throw;
+        }
+        finally
+        {
+            if (traceId.HasValue)
+            {
+                try { _traceStore.CompletePendingRequest(traceId.Value, unfinishedStatus, unfinishedCode, unfinishedReason); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Failed to settle Anthropic request trace"); }
+            }
+        }
     }
 
     /// <summary>
@@ -1055,13 +1090,15 @@ public sealed class AnthropicProxyController : ControllerBase
             result.ErrorMessage ??= "upstream response protocol conversion failed";
         }
 
+        if (result.Success && !state.ReceivedDoneEvent)
+        {
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= startedWriting ? "stream interrupted before DONE" : "stream ended before DONE";
+        }
+
         if (result.Success)
         {
-            if (!state.ReceivedDoneEvent)
-            {
-                result.IsStreamInterrupted = state.HadAnyContent;
-                result.ErrorMessage ??= state.HadAnyContent ? "stream interrupted before DONE" : result.ErrorMessage;
-            }
 
             if (startedWriting)
             {

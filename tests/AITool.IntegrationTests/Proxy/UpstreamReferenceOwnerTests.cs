@@ -88,6 +88,17 @@ public sealed class UpstreamReferenceOwnerTests : IDisposable
         result.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Codex_custom_tool_output_with_optional_name_is_inline_but_unknown_fields_are_rejected()
+    {
+        (await Guard().ResolveRequestAsync("client-a", """{"input":[{"type":"custom_tool_call_output","id":"out_1","call_id":"call_1","name":"exec","output":[{"type":"input_text","text":"ok"}]}]}"""))
+            .Should().BeNull();
+        var act = () => Guard().ResolveRequestAsync("client-a", """{"input":[{"type":"custom_tool_call_output","id":"out_1","call_id":"call_1","name":"exec","output":"ok","unknown":"secret-value"}]}""");
+        var error = (await act.Should().ThrowAsync<UpstreamReferenceException>()).Which;
+        error.Code.Should().Be("invalid_reference_shape");
+        error.Diagnostic.Should().Contain("input[0]").And.Contain("custom_tool_call_output").And.NotContain("secret-value");
+    }
+
     [Theory]
     [InlineData("{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[]}")]
     [InlineData("{\"type\":\"reasoning\",\"id\":\"rs_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"hmm\"}],\"encrypted_content\":\"opaque-content\"}")]

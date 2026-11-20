@@ -158,6 +158,31 @@ public sealed class ProxyProtocolBridgeDirectBridgeTests
         root["output_config"]!["effort"]!.GetValue<string>().Should().Be("high");
     }
 
+    [Fact]
+    public void Anthropic_history_does_not_send_synthetic_reasoning_to_responses_upstream()
+    {
+        const string body = """
+        {"model":"route","stream":true,"messages":[
+          {"role":"user","content":"question"},
+          {"role":"assistant","content":[
+            {"type":"thinking","thinking":"","signature":""},
+            {"type":"thinking","thinking":"private","signature":"signed"},
+            {"type":"redacted_thinking","data":"opaque"},
+            {"type":"tool_use","id":"call_1","name":"read","input":{"path":"a"}}
+          ]},
+          {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"ok"}]}
+        ]}
+        """;
+        var sent = ProxyProtocolBridge.PrepareRequestBody("Anthropic", "Responses", body, "target", true);
+        var root = JsonNode.Parse(sent)!.AsObject();
+        var input = root["input"]!.AsArray();
+        input.Select(x => x!["type"]!.GetValue<string>()).Should().Equal("message", "function_call", "function_call_output");
+        root["store"]!.GetValue<bool>().Should().BeFalse();
+        sent.Should().NotContain("aitool-anthropic-thinking-v1:").And.NotContain("rs_");
+        input[1]!["call_id"]!.GetValue<string>().Should().Be("call_1");
+        input[2]!["call_id"]!.GetValue<string>().Should().Be("call_1");
+    }
+
     // ============ thinking 签名桥接往返 ============
 
     [Fact]

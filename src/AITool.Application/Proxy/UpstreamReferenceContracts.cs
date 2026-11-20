@@ -57,6 +57,9 @@ public sealed class UpstreamReferenceException(string code, string message) : In
 {
     public string Code { get; } = code;
 
+    /// <summary>Safe structural diagnostic only; never raw content or reference values.</summary>
+    public string? Diagnostic { get; init; }
+
     public ProxyForwardResult? PartialResult { get; private set; }
 
     /// <summary>Whether the downstream writer successfully exposed output before rejecting this event.</summary>

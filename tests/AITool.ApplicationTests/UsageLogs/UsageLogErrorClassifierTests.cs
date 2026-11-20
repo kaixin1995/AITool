@@ -8,6 +8,16 @@ namespace AITool.ApplicationTests.UsageLogs;
 /// </summary>
 public sealed class UsageLogErrorClassifierTests
 {
+    [Fact]
+    public void Classify_missing_reference_item_is_not_model_not_found()
+    {
+        UsageLogErrorClassifier.Classify("fail", 404,
+            "Item with id 'rs_example' not found. Items are not persisted when store is false.", false)
+            .Should().Be("upstream-reference-not-found");
+        UsageLogErrorClassifier.Classify("fail", 404, "model not found", false)
+            .Should().Be("model-not-found");
+    }
+
     /// <summary>
     /// 成功请求不应产生错误分类，即使日志中残留了错误文本。
     /// </summary>

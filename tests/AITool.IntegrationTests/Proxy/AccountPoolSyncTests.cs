@@ -1,4 +1,7 @@
 using AITool.Application.Codex;
+using AITool.Application.UsageLogs;
+using AITool.Infrastructure.Proxy;
+using Microsoft.Extensions.Hosting;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
@@ -33,6 +36,67 @@ public sealed class AccountPoolSyncTests : IDisposable
         services.AddScoped<AccountPoolSyncService>();
         _services = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_services.GetRequiredService<SqlSugar.ISqlSugarClient>());
+    }
+
+    [Fact]
+    public async Task Reconciliation_and_account_list_can_run_while_independent_writes_are_in_flight()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = deadline.Token;
+        var worker = new AccountPoolReconciliationService(_services.GetRequiredService<IServiceScopeFactory>(), NullLogger<AccountPoolReconciliationService>.Instance);
+        var (_, sync, _) = CreateServices();
+        async Task Scan()
+        {
+            for (var i = 0; i < 30; i++)
+            {
+                token.ThrowIfCancellationRequested();
+                await worker.RunOnceAsync(token);
+                worker.GetStatus().ScanFailure.Should().BeNull();
+                worker.GetStatus().PoolFailures.Should().BeEmpty();
+            }
+        }
+        async Task ListAccounts()
+        {
+            for (var i = 0; i < 30; i++)
+            {
+                token.ThrowIfCancellationRequested();
+                (await sync.ListVendorAccountsAsync("codex", null, token)).Should().BeEmpty();
+            }
+        }
+        using var writer = new ProxyUsageLogBatchWriter(_services.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<ProxyUsageLogBatchWriter>.Instance, new TestHostEnvironment(), new SiteUsageTracker());
+        await writer.StartAsync(CancellationToken.None);
+        async Task Write()
+        {
+            for (var i = 0; i < 30; i++)
+                await writer.EnqueueAsync(new UsageLogEntry { RequestId = Guid.NewGuid(), Status = "success", RequestedAt = DateTimeOffset.UtcNow }, token);
+        }
+        using var barrier = new Barrier(3);
+        Task OnWorker(Func<Task> action) => Task.Factory.StartNew(async () =>
+        {
+            barrier.SignalAndWait(TimeSpan.FromSeconds(10)).Should().BeTrue();
+            await action();
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+        var tasks = Task.WhenAll(OnWorker(Scan), OnWorker(ListAccounts), OnWorker(Write));
+        try { await tasks.WaitAsync(token); }
+        finally
+        {
+            deadline.Cancel();
+            try { await tasks; } catch { /* preserve the original worker failure */ }
+            using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await writer.StopAsync(shutdown.Token);
+        }
+        using var check = _services.GetRequiredService<SqlSugar.ISqlSugarClient>().CopyNew();
+        (await check.Queryable<ProxyUsageLog>().CountAsync()).Should().Be(30);
+
+    }
+
+    private sealed class TestHostEnvironment : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = "Production";
+        public string ApplicationName { get; set; } = "test";
+        public string ContentRootPath { get; set; } = Path.GetTempPath();
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider();
     }
 
     [Fact]

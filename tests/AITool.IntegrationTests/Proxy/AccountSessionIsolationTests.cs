@@ -340,6 +340,28 @@ public sealed class AccountSessionIsolationTests : IDisposable
     }
 
     [Fact]
+    public async Task Interrupted_responses_stream_after_output_is_failed_and_not_retried()
+    {
+        var forwarder = new ResponsesFakeProxyForwardService
+        {
+            FailStreamingAfterCallbacks = true,
+            StreamingLines = ["data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}", ""]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.PostAsync("/v1/responses", new StringContent("{\"model\":\"auto\",\"input\":[],\"stream\":true}", Encoding.UTF8, "application/json"));
+        (await response.Content.ReadAsStringAsync()).Should().Contain("partial");
+        forwarder.Requests.Should().ContainSingle();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var logs = await scope.ServiceProvider.GetRequiredService<AppDbContext>().ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("fail");
+        logs[0].IsStreamInterrupted.Should().BeTrue();
+        logs[0].FallbackTriggered.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Commit_failure_exposes_no_id_and_does_not_try_another_account()
     {
         var forwarder = new ResponsesFakeProxyForwardService();
@@ -1070,6 +1092,124 @@ public sealed class AccountSessionIsolationTests : IDisposable
     }
 
     [Fact]
+    public async Task Invalid_reference_is_recorded_as_sanitized_gateway_failure_before_any_upstream_attempt()
+    {
+        var forwarder = new ResponsesFakeProxyForwardService();
+        var logger = new RecordingProxyLogger();
+        await using var factory = new ResponsesWebApplicationFactory(forwarder, configureServices: services =>
+        {
+            services.RemoveAll<ILogger<AITool.Web.Controllers.Proxy.OpenAiProxyController>>();
+            services.AddSingleton<ILogger<AITool.Web.Controllers.Proxy.OpenAiProxyController>>(logger);
+        });
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Client.Updateable<AITool.Domain.Operations.SystemRuntimeSettings>()
+            .SetColumns(s => new AITool.Domain.Operations.SystemRuntimeSettings { DeveloperFeaturesEnabled = true, DeveloperTraceEnabled = true })
+            .Where(s => s.Id == 1).ExecuteCommandAsync();
+        factory.Services.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.PostAsync("/v1/responses", new StringContent(
+            """{"model":"auto","input":[{"type":"custom_tool_call_output","id":"secret-id","call_id":"c1","output":"secret-body","unrecognized":"secret-extra"}]}""",
+            Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        forwarder.Requests.Should().BeEmpty();
+        var trace = factory.Services.GetRequiredService<DeveloperInvocationTraceStore>().List().Should().ContainSingle().Subject;
+        trace.Status.Should().Be("failed");
+        trace.StatusCode.Should().Be(400);
+        trace.ErrorMessage.Should().Contain("invalid_reference_shape").And.Contain("input[0]").And.Contain("custom_tool_call_output");
+        trace.RequestBody.Should().BeEmpty();
+        trace.RequestHeaders.Should().BeEmpty();
+        trace.Attempts.Should().BeEmpty();
+        logger.Entries.Should().ContainSingle(x => x.Contains($"CorrelationId={trace.RequestId}"));
+        trace.ResponseBody.Should().NotContain("secret-id").And.NotContain("secret-body").And.NotContain("secret-extra");
+    }
+
+    [Fact]
+    public async Task Invalid_reference_always_logs_safe_structural_details_without_developer_trace()
+    {
+        var logger = new RecordingProxyLogger();
+        var forwarder = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(forwarder, configureServices: services =>
+        {
+            services.RemoveAll<ILogger<AITool.Web.Controllers.Proxy.OpenAiProxyController>>();
+            services.AddSingleton<ILogger<AITool.Web.Controllers.Proxy.OpenAiProxyController>>(logger);
+        });
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.PostAsync("/v1/responses", new StringContent(
+            """{"model":"secret-model","input":[{"type":"custom_tool_call_output","id":"secret-id","call_id":"secret-call","output":"secret-body","secret-field":"secret-value"}]}""",
+            Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var entry = logger.Entries.Should().ContainSingle(x => x.Contains("Responses reference rejection")).Subject;
+        entry.Should().Contain("RequestId=").And.Contain("Phase=request_validation").And.Contain("Code=invalid_reference_shape")
+            .And.Contain("input[0]").And.Contain("type=custom_tool_call_output").And.Contain("unknown_field_count=1");
+        foreach (var secret in new[] { "secret-model", "secret-id", "secret-call", "secret-body", "secret-field", "secret-value", "responses-test-key" })
+            entry.Should().NotContain(secret);
+        factory.Services.GetRequiredService<DeveloperInvocationTraceStore>().List().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Invalid_websocket_reference_logs_and_traces_the_same_correlation_id()
+    {
+        var logger = new RecordingProxyLogger();
+        var forwarder = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(forwarder, configureServices: services =>
+        {
+            services.RemoveAll<ILogger<AITool.Web.Controllers.Proxy.OpenAiProxyController>>();
+            services.AddSingleton<ILogger<AITool.Web.Controllers.Proxy.OpenAiProxyController>>(logger);
+        });
+        using var client = factory.CreateClient(); // seeds the test database
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Client.Updateable<AITool.Domain.Operations.SystemRuntimeSettings>()
+            .SetColumns(s => new AITool.Domain.Operations.SystemRuntimeSettings { DeveloperFeaturesEnabled = true, DeveloperTraceEnabled = true })
+            .Where(s => s.Id == 1).ExecuteCommandAsync();
+        factory.Services.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+        var ws = factory.Server.CreateWebSocketClient();
+        ws.ConfigureRequest = request => request.Headers["Authorization"] = "Bearer responses-test-key";
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var socket = await ws.ConnectAsync(new Uri("ws://localhost/v1/responses"), timeout.Token);
+        var body = Encoding.UTF8.GetBytes("""{"type":"response.create","model":"auto","input":[{"type":"item_reference"}]}""");
+        await socket.SendAsync(new ArraySegment<byte>(body), WebSocketMessageType.Text, true, timeout.Token);
+        var buffer = new byte[4096];
+        var frame = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), timeout.Token);
+        Encoding.UTF8.GetString(buffer, 0, frame.Count).Should().Contain("invalid_reference_shape");
+        var trace = factory.Services.GetRequiredService<DeveloperInvocationTraceStore>().List().Should().ContainSingle().Subject;
+        trace.Status.Should().Be("failed");
+        trace.Attempts.Should().BeEmpty();
+        logger.Entries.Should().ContainSingle(x => x.Contains("Transport=websocket") && x.Contains($"CorrelationId={trace.RequestId}"));
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", timeout.Token);
+    }
+
+    [Fact]
+    public async Task Invalid_local_compaction_is_recorded_without_sensitive_body_or_upstream_attempt()
+    {
+        var forwarder = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(forwarder);
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Client.Updateable<AITool.Domain.Operations.SystemRuntimeSettings>()
+            .SetColumns(s => new AITool.Domain.Operations.SystemRuntimeSettings { DeveloperFeaturesEnabled = true, DeveloperTraceEnabled = true })
+            .Where(s => s.Id == 1).ExecuteCommandAsync();
+        factory.Services.GetRequiredService<ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        var response = await client.PostAsync("/v1/responses", new StringContent(
+            """{"model":"auto","input":[{"type":"compaction","encrypted_content":"aitool-compact-v1:!secret!"}]}""",
+            Encoding.UTF8, "application/json"));
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        forwarder.Requests.Should().BeEmpty();
+        var trace = factory.Services.GetRequiredService<DeveloperInvocationTraceStore>().List().Should().ContainSingle().Subject;
+        trace.Status.Should().Be("failed");
+        trace.ErrorMessage.Should().Be("invalid_compaction");
+        trace.RequestBody.Should().BeEmpty();
+        trace.RequestHeaders.Should().BeEmpty();
+        trace.Attempts.Should().BeEmpty();
+        trace.ResponseBody.Should().NotContain("secret");
+    }
+
+    [Fact]
     public async Task Dynamic_unknown_credential_header_fails_before_upstream_can_expose_an_unowned_reference()
     {
         var forwarder = new ResponsesFakeProxyForwardService();
@@ -1168,6 +1308,17 @@ public sealed class AccountSessionIsolationTests : IDisposable
         await guard.CommitOutputAsync(managedContext, """{"id":"resp-managed"}""", true);
         var resolvedManaged = await guard.ResolveRequestAsync("client-test", """{"previous_response_id":"resp-managed"}""");
         resolvedManaged!.Owner.Should().Be(_account);
+    }
+
+    private sealed class RecordingProxyLogger : ILogger<AITool.Web.Controllers.Proxy.OpenAiProxyController>
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<string> Entries { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (level >= LogLevel.Error) Entries.Enqueue(formatter(state, exception));
+        }
     }
 
     private sealed class GatedCommitGuard : IUpstreamReferenceGuard

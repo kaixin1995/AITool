@@ -102,7 +102,9 @@ public sealed partial class OpenAiProxyController
             }
             catch (UpstreamReferenceException ex)
             {
-                await WriteResponsesWebSocketErrorAsync(webSocket, 400, ex.Code + ": " + ex.Message, cancellationToken);
+                var correlationId = LogReferenceRejection(ex, "request_validation", "websocket");
+                await TraceGatewayRejectionAsync(correlationId, "ResponsesWebSocket", ReferenceFailureStatusCode(ex), SafeReferenceCode(ex.Code), ex.Diagnostic, cancellationToken);
+                await WriteResponsesWebSocketErrorAsync(webSocket, ReferenceFailureStatusCode(ex), ex.Code + ": " + ex.Message, cancellationToken);
                 continue;
             }
             catch (JsonException)
@@ -150,8 +152,10 @@ public sealed partial class OpenAiProxyController
             }
             catch (UpstreamReferenceException ex)
             {
+                var correlationId = LogReferenceRejection(ex, "turn", "websocket");
+                await TraceGatewayRejectionAsync(correlationId, "ResponsesWebSocket", ReferenceFailureStatusCode(ex), SafeReferenceCode(ex.Code), ex.Diagnostic, cancellationToken);
                 sessionState.HasFullTranscript = false;
-                await TryWriteResponsesWebSocketErrorAsync(webSocket, 400, ex.Code + ": " + ex.Message, cancellationToken);
+                await TryWriteResponsesWebSocketErrorAsync(webSocket, ReferenceFailureStatusCode(ex), ex.Code + ": " + ex.Message, cancellationToken);
             }
         }
 
@@ -188,8 +192,49 @@ public sealed partial class OpenAiProxyController
         try { return await ResponsesCoreGuarded(cancellationToken, isCompact); }
         catch (UpstreamReferenceException ex)
         {
+            LogReferenceRejection(ex, "request_or_output", "http");
             return Response.HasStarted ? new EmptyResult() : ReferenceError(ex);
         }
+    }
+
+    private static string SafeReferenceCode(string code) => code is
+        "invalid_reference_shape" or "invalid_reference_context" or "unknown_reference" or "reference_conflict"
+        or "reference_replay_required" or "reference_owner_mismatch" or "reference_store_unavailable"
+        ? code : "reference_rejected";
+
+    private Guid LogReferenceRejection(UpstreamReferenceException error, string phase, string transport)
+    {
+        // The guard emits only fixed structural labels; arbitrary exception details are never logged.
+        var diagnostic = error.Code == "invalid_reference_shape" ? error.Diagnostic ?? "shape detail unavailable" : "not applicable";
+        var correlationId = Guid.NewGuid();
+        _logger.LogError("Responses reference rejection: RequestId={RequestId} CorrelationId={CorrelationId} Transport={Transport} Phase={Phase} Code={Code} Detail={Detail}",
+            HttpContext.TraceIdentifier, correlationId, transport, phase, SafeReferenceCode(error.Code), diagnostic);
+        return correlationId;
+    }
+
+    private async Task TraceGatewayRejectionAsync(Guid correlationId, string protocolType, int statusCode, string category, string? diagnostic, CancellationToken ct)
+    {
+        // Both category and diagnostic must be internally generated, not upstream text.
+        try
+        {
+            var settings = await _metadataCache.GetRuntimeSettingsAsync(ct);
+            if (!settings.DeveloperFeaturesEnabled || !settings.DeveloperTraceEnabled) return;
+            var traceId = _traceStore.AddRequest(new DeveloperInvocationTraceRequest
+            {
+                RequestId = correlationId, Source = ResolveRequestSource(Request), ProtocolType = protocolType,
+                RequestPath = Request.Path, RequestModel = "[gateway rejection]"
+                // No untrusted model, request body or headers: these may contain credentials and sensitive content.
+            });
+            var label = category is "invalid_compaction" or "invalid_reference_shape" or "invalid_reference_context"
+                or "unknown_reference" or "reference_conflict" or "reference_replay_required"
+                or "reference_owner_mismatch" or "reference_store_unavailable" ? category : "reference_rejected";
+            // The diagnostic is generated internally by the guard from allowlisted type labels.
+            _traceStore.CompleteRequestFailure(traceId, statusCode,
+                diagnostic is null ? label : $"{label}: {diagnostic}",
+                string.Empty); // This is a gateway diagnostic; do not claim it is the exact client response.
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception traceError) { _logger.LogWarning(traceError, "Failed to record gateway rejection"); }
     }
 
     private async Task<IActionResult> ResponsesCoreGuarded(CancellationToken cancellationToken, bool isCompact)
@@ -227,9 +272,19 @@ public sealed partial class OpenAiProxyController
         {
             referenceRestriction = await ResolveReferencesAsync(accessKey.Id.ToString("D"), requestBody, cancellationToken);
         }
-        catch (UpstreamReferenceException ex) { return ReferenceError(ex); }
+        catch (UpstreamReferenceException ex)
+        {
+            var correlationId = LogReferenceRejection(ex, "request_validation", "http");
+            await TraceGatewayRejectionAsync(correlationId, "Responses", ReferenceFailureStatusCode(ex), ex.Code,
+                ex.Diagnostic, cancellationToken);
+            return ReferenceError(ex);
+        }
         try { requestBody = ProxyProtocolBridge.ExpandLocalCompactions(requestBody); }
-        catch (FormatException) { return BadRequest(new { error = new { message = "Invalid local compaction content.", type = "invalid_request_error", code = "invalid_compaction" } }); }
+        catch (FormatException)
+        {
+            await TraceGatewayRejectionAsync(Guid.NewGuid(), "Responses", StatusCodes.Status400BadRequest, "invalid_compaction", null, cancellationToken);
+            return BadRequest(new { error = new { message = "Invalid local compaction content.", type = "invalid_request_error", code = "invalid_compaction" } });
+        }
         var requestSource = ResolveRequestSource(Request);
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
         var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "Responses", modelName, requestBody);
@@ -408,6 +463,7 @@ public sealed partial class OpenAiProxyController
                 }
                 catch (AITool.Application.Proxy.UpstreamReferenceException ex)
                 {
+                    LogReferenceRejection(ex, "stream_output", "http");
                     // 引用守卫在流中拒绝输出：合成失败结果，让追踪/用量/熔断走正常收口（不卡「等待」）；
                     // 终态返回保留 ReferenceError 的显式 JSON 语义（503/400，防 SSE 协商 406）。
                     referenceFault = ex;
@@ -848,6 +904,8 @@ public sealed partial class OpenAiProxyController
         }
         catch (UpstreamReferenceException ex)
         {
+            var correlationId = LogReferenceRejection(ex, "normalized_request", "websocket");
+            await TraceGatewayRejectionAsync(correlationId, "ResponsesWebSocket", ReferenceFailureStatusCode(ex), SafeReferenceCode(ex.Code), ex.Diagnostic, cancellationToken);
             await WriteResponsesWebSocketErrorAsync(webSocket, ReferenceFailureStatusCode(ex), ex.Code + ": " + ex.Message, cancellationToken);
             return false;
         }
@@ -1118,6 +1176,7 @@ public sealed partial class OpenAiProxyController
             }
             catch (AITool.Application.Proxy.UpstreamReferenceException ex)
             {
+                LogReferenceRejection(ex, "stream_output", "websocket");
                 // 引用守卫在流中拒绝输出：合成失败结果，让追踪/用量/熔断走正常收口（不卡「等待」）。
                 referenceFault = ex;
                 streamOutcome = StreamReferenceFaultOutcome(ex);

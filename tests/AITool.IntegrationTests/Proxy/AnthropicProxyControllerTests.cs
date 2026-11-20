@@ -43,6 +43,32 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("has_more").GetBoolean().Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Missing_anthropic_route_settles_trace_without_an_attempt()
+    {
+        var fake = new AnthropicFakeProxyForwardService();
+        await using var factory = new AnthropicProxyWebApplicationFactory(fake);
+        using var client = factory.CreateClient();
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Client.Updateable<SystemRuntimeSettings>()
+            .SetColumns(x => new SystemRuntimeSettings { DeveloperFeaturesEnabled = true, DeveloperTraceEnabled = true })
+            .Where(x => x.Id == 1).ExecuteCommandAsync();
+        scope.ServiceProvider.GetRequiredService<AITool.Web.Services.ProxyRequestMetadataCache>().InvalidateRuntimeSettings();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"missing-route\",\"messages\":[]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        var trace = factory.Services.GetRequiredService<AITool.Web.Services.DeveloperInvocationTraceStore>().List().Single();
+        trace.Status.Should().Be("fail");
+        trace.StatusCode.Should().Be(403);
+        trace.Stage.Should().Be("completed");
+        trace.Attempts.Should().BeEmpty();
+    }
+
     /// <summary>
     /// 验证 count_tokens 接口会返回基于请求文本估算出的输入 token 数量。
     /// </summary>

@@ -50,6 +50,12 @@ public static class UsageLogErrorClassifier
             return "rate-limit";
         }
 
+        if (httpStatusCode == 404 && ContainsAny(errorMessage, "item")
+            && ContainsAny(errorMessage, "not found", "not persisted", "has expired"))
+        {
+            return "upstream-reference-not-found";
+        }
+
         if (httpStatusCode == 404 || ContainsAny(errorMessage, "model not found", "model-not-found", "model_not_found"))
         {
             return "model-not-found";

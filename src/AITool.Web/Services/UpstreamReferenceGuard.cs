@@ -21,45 +21,59 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
         var root = doc.RootElement;
         var references = new HashSet<UpstreamReferenceLookup>();
         if (root.TryGetProperty("previous_response_id", out var previous) && previous.ValueKind != JsonValueKind.Null)
-            Add(references, UpstreamReferenceKind.Response, previous);
+        {
+            try { Add(references, UpstreamReferenceKind.Response, previous); }
+            catch (UpstreamReferenceException ex) when (ex.Code == "invalid_reference_shape")
+            { throw Invalid($"previous_response_id: invalid identifier; kind={previous.ValueKind}"); }
+        }
         if (root.TryGetProperty("conversation", out var conversation) && conversation.ValueKind != JsonValueKind.Null)
         {
             if (conversation.ValueKind == JsonValueKind.Object
-                && conversation.EnumerateObject().Any(p => p.Name != "id")) throw Invalid();
-            AddConversation(references, conversation);
+                && conversation.EnumerateObject().Any(p => p.Name != "id")) throw Invalid("conversation: unsupported fields");
+            try { AddConversation(references, conversation); }
+            catch (UpstreamReferenceException ex) when (ex.Code == "invalid_reference_shape")
+            { throw Invalid($"conversation: invalid identifier; kind={conversation.ValueKind}"); }
         }
-        if (root.TryGetProperty("item_reference", out _)) throw Invalid();
+        if (root.TryGetProperty("item_reference", out _)) throw Invalid("root: item_reference is unsupported");
         if (root.TryGetProperty("input", out var input))
         {
             if (input.ValueKind == JsonValueKind.Array)
             {
+                var itemIndex = -1;
                 foreach (var item in input.EnumerateArray())
                 {
+                    itemIndex++;
                     ct.ThrowIfCancellationRequested();
-                    if (item.ValueKind != JsonValueKind.Object) throw Invalid();
+                    if (item.ValueKind != JsonValueKind.Object) throw Invalid($"input[{itemIndex}]: expected object; kind={item.ValueKind}");
                     var hasType = item.TryGetProperty("type", out var type);
                     var hasId = item.TryGetProperty("id", out var id);
                     var isReference = (hasType && type.ValueKind == JsonValueKind.String
                             && type.GetString() == "item_reference")
                         || (!hasType && hasId);
-                    if (isReference)
+                    try
                     {
-                        // Responses ItemReference.type is optional. An untyped object with an id
-                        // must never bypass ownership checks as an ordinary input message.
-                        if (item.EnumerateObject().Any(p => p.Name is not ("type" or "id"))
-                            || !hasId) throw Invalid();
-                        Add(references, UpstreamReferenceKind.Item, id);
+                        if (isReference)
+                        {
+                            // An untyped object with an id must never bypass ownership checks.
+                            if (item.EnumerateObject().Any(p => p.Name is not ("type" or "id"))
+                                || !hasId) throw Invalid("invalid reference fields");
+                            Add(references, UpstreamReferenceKind.Item, id);
+                        }
+                        else
+                        {
+                            if (hasId && (!hasType || type.ValueKind != JsonValueKind.String
+                                || !IsExplicitInlineItem(item, type.GetString()))) throw Invalid("inline item fields or payload invalid");
+                            CollectCompaction(item, references);
+                            RejectNestedReferences(item);
+                        }
                     }
-                    else
+                    catch (UpstreamReferenceException ex) when (ex.Code == "invalid_reference_shape")
                     {
-                        if (hasId && (!hasType || type.ValueKind != JsonValueKind.String
-                            || !IsExplicitInlineItem(item, type.GetString()))) throw Invalid();
-                        CollectCompaction(item, references);
-                        RejectNestedReferences(item);
+                        throw InvalidItem(itemIndex, item, type, isReference ? "invalid_reference_item" : "invalid_inline_item");
                     }
                 }
             }
-            else if (input.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) throw Invalid();
+            else if (input.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) throw Invalid($"input: unsupported kind={input.ValueKind}");
         }
         return await store.ResolveAsync(clientScope, references.ToArray(), ct);
     }
@@ -176,8 +190,8 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
                 && HasString(item, "call_id") && HasTextOrContent(item, "output"),
             "custom_tool_call" => HasOnly(item, "type", "id", "call_id", "name", "namespace", "input", "status")
                 && OptionalString(item, "namespace") && HasString(item, "call_id") && HasString(item, "name") && HasString(item, "input", allowEmpty: true),
-            "custom_tool_call_output" => HasOnly(item, "type", "id", "call_id", "output", "status")
-                && HasString(item, "call_id") && HasTextOrContent(item, "output"),
+            "custom_tool_call_output" => HasOnly(item, "type", "id", "call_id", "name", "output", "status")
+                && OptionalString(item, "name") && HasString(item, "call_id") && HasTextOrContent(item, "output"),
             "reasoning" => HasOnly(item, "type", "id", "summary", "content", "encrypted_content", "status")
                 && (item.TryGetProperty("summary", out _) || HasString(item, "encrypted_content"))
                 && OptionalTypedTextArray(item, "summary", "summary_text")
@@ -267,10 +281,10 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
     {
         JsonDocument doc;
         try { doc = JsonDocument.Parse(json); }
-        catch (Exception ex) when (ex is JsonException or ArgumentException) { throw Invalid(); }
+        catch (Exception ex) when (ex is JsonException or ArgumentException) { throw Invalid("json: invalid syntax"); }
         try
         {
-            if (doc.RootElement.ValueKind != JsonValueKind.Object) throw Invalid();
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) throw Invalid("json: root must be an object");
             RejectDuplicates(doc.RootElement);
             return doc;
         }
@@ -284,7 +298,7 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var property in element.EnumerateObject())
             {
-                if (!names.Add(property.Name)) throw Invalid();
+                if (!names.Add(property.Name)) throw Invalid("json: duplicate property");
                 RejectDuplicates(property.Value);
             }
         }
@@ -292,5 +306,28 @@ public sealed class UpstreamReferenceGuard(IUpstreamReferenceOwnerStore store) :
             foreach (var child in element.EnumerateArray()) RejectDuplicates(child);
     }
 
-    private static UpstreamReferenceException Invalid() => new("invalid_reference_shape", "The upstream reference shape is invalid or unsupported.");
+    private static UpstreamReferenceException InvalidItem(int index, JsonElement item, JsonElement type, string reason)
+    {
+        // Names and values are client-controlled: report only fixed protocol field names and value kinds.
+        var name = type.ValueKind == JsonValueKind.String ? type.GetString() : null;
+        name = name is "message" or "function_call" or "function_call_output" or "custom_tool_call"
+            or "custom_tool_call_output" or "reasoning" or "compaction" or "compaction_summary"
+            or "web_search_call" or "additional_tools" or "tool_search_call" or "tool_search_output"
+            or "item_reference" ? name : "unknown";
+        string[] knownFields = ["type", "id", "role", "content", "status", "phase", "call_id", "name",
+            "namespace", "arguments", "input", "output", "summary", "encrypted_content", "action", "tools", "execution"];
+        var fields = new List<string>();
+        var unknown = 0;
+        foreach (var property in item.EnumerateObject())
+        {
+            if (knownFields.Contains(property.Name, StringComparer.Ordinal))
+                fields.Add($"{property.Name}:{property.Value.ValueKind}");
+            else unknown++;
+        }
+        fields.Sort(StringComparer.Ordinal);
+        return Invalid($"input[{index}]: type={name}; reason={reason}; fields=[{string.Join(",", fields)}]; unknown_field_count={unknown}");
+    }
+
+    private static UpstreamReferenceException Invalid(string? diagnostic = null) =>
+        new("invalid_reference_shape", "The upstream reference shape is invalid or unsupported.") { Diagnostic = diagnostic };
 }

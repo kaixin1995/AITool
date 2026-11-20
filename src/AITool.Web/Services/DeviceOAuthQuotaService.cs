@@ -54,7 +54,8 @@ public sealed class DeviceOAuthQuotaService : IAccountQuotaProvider
 
     public async Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
     {
-        var accounts = await _dbContext.DeviceOAuthAccounts
+        using var client = _dbContext.Client.CopyNew();
+        var accounts = await client.Queryable<DeviceOAuthAccount>()
             .Where(a => !a.IsDeleted && !a.DisabledByFeatureToggle)
             .OrderBy(a => a.LastQuotaCheckedAt)
             .ToListAsync(cancellationToken);

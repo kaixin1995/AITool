@@ -5,6 +5,7 @@ using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using SqlSugar;
 
 namespace AITool.Infrastructure.Proxy;
 
@@ -246,8 +247,9 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
         }).ToList();
 
         // 用全局 SQLite 串行化锁包裹批量写入，避免与巡检/冷却恢复等后台服务并发踩 SqlSugarScope 竞态。
+        using var client = dbContext.Client.CopyNew();
         await dbContext.SerialExecuteAsync(
-            () => dbContext.InsertRangeAsync(logs, cancellationToken),
+            () => client.Insertable(logs).ExecuteCommandAsync(cancellationToken),
             cancellationToken);
     }
 }
